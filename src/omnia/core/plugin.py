@@ -116,7 +116,9 @@ class FeaturePlugin:
         """Return the configurable options for the settings GUI (default: none)."""
         return []
 
-    def custom_config_dialog(self, repo: ConfigRepository, parent: Any) -> Optional[Any]:
+    def custom_config_dialog(
+        self, repo: ConfigRepository, parent: Any
+    ) -> Optional[Any]:
         """Return a bespoke settings ``QDialog`` for this plugin, or None for the generic form.
 
         Override when the plugin's config can't be expressed as flat :class:`ConfigField`s (e.g.
