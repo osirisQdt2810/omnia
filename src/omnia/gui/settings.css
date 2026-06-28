@@ -1,0 +1,83 @@
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+body.omnia-light {
+  --bg-top: #f7f8fb; --bg-bottom: #eef1f7; --fg: #1d2230; --muted: #6b7280;
+  --card-top: rgba(255,255,255,0.92); --card-bottom: rgba(246,248,252,0.88);
+  --card-border: rgba(20,30,60,0.10); --accent: #5b6ef5; --accent-2: #8a5cf6;
+  --switch-off: rgba(20,30,60,0.18); --shadow: rgba(20,30,60,0.12); --fail: #c0392b;
+}
+body.omnia-dark {
+  --bg-top: #1b1e27; --bg-bottom: #14161d; --fg: #e7e9f0; --muted: #9aa3b2;
+  --card-top: rgba(46,51,66,0.65); --card-bottom: rgba(32,36,48,0.55);
+  --card-border: rgba(255,255,255,0.08); --accent: #7c8cff; --accent-2: #a685ff;
+  --switch-off: rgba(255,255,255,0.18); --shadow: rgba(0,0,0,0.45); --fail: #ff6b6b;
+}
+body {
+  color: var(--fg);
+  background: linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+}
+.omnia-shell { max-width: 720px; margin: 0 auto; padding: 0 18px 24px; }
+.omnia-header {
+  position: sticky; top: 0; z-index: 5; padding: 22px 4px 14px;
+  background: linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
+}
+.omnia-title {
+  font-size: 22px; font-weight: 800; letter-spacing: 0.2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.omnia-subtitle { color: var(--muted); margin-top: 4px; }
+.omnia-section { margin-top: 18px; }
+.omnia-section-label {
+  font-size: 12px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.8px; color: var(--muted); margin: 0 0 8px 2px;
+}
+.omnia-cards { display: flex; flex-direction: column; gap: 10px; }
+.omnia-card {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 14px; border-radius: 14px;
+  border: 1px solid var(--card-border);
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.omnia-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px var(--shadow);
+  border-color: var(--accent);
+}
+.omnia-card.omnia-failed { border-color: var(--fail); }
+.omnia-card-text { flex: 1; min-width: 0; }
+.omnia-card-title { font-size: 15px; font-weight: 650; }
+.omnia-card-desc { color: var(--muted); margin-top: 2px; line-height: 1.35; }
+.omnia-card-status { font-size: 11px; color: var(--muted); margin-top: 6px; }
+.omnia-card.omnia-failed .omnia-card-status { color: var(--fail); font-weight: 600; }
+.omnia-card-actions { display: flex; align-items: center; gap: 10px; }
+.omnia-configure {
+  border: 1px solid var(--card-border); border-radius: 9px; cursor: pointer;
+  padding: 6px 12px; font-size: 13px; color: var(--fg);
+  background: var(--card-top);
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.omnia-configure:hover { border-color: var(--accent); }
+.omnia-configure:active { transform: scale(0.97); }
+.omnia-switch { position: relative; display: inline-block; width: 46px; height: 26px; }
+.omnia-switch input { opacity: 0; width: 0; height: 0; }
+.omnia-slider {
+  position: absolute; cursor: pointer; inset: 0; border-radius: 999px;
+  background: var(--switch-off); transition: background 0.25s ease;
+}
+.omnia-slider::before {
+  content: ""; position: absolute; height: 20px; width: 20px; left: 3px; top: 3px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  transition: transform 0.25s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+.omnia-switch input:checked + .omnia-slider {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.omnia-switch input:checked + .omnia-slider::before { transform: translateX(20px); }

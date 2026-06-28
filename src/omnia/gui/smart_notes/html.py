@@ -1,0 +1,205 @@
+"""Pure HTML/CSS/JS builder + row↔config mapping for the Smart Notes config page.
+
+The Smart Notes dialog (``dialog.py``) is thin Qt/webview glue; this module assembles the
+page from sibling asset files (``page.html`` / ``page.css`` / ``page.js``) and holds the pure
+mapping between the note-type config model and the table rows, so both unit-test headless.
+Everything is inlined into one document (no external <link>/<script src>) because the host
+:class:`~omnia.gui.web_dialog.WebDialog` applies a strict CSP.
+
+The page is note-type-centric: one always-present BASE (input) field that is never
+generated, and one table row per other field describing how to generate it. It talks back to
+Python through the WebDialog bridge with these ops:
+
+* ``list_note_types`` → ``[name, ...]``
+* ``load`` ``{note_type}`` → the note type's base field, all fields, rows, and providers
+* ``set_base_field`` ``{note_type, base_field}`` → re-rendered rows for the new base
+* ``create_field`` ``{note_type, field_name}`` → the note type's updated field names
+* ``auto_smart`` ``{note_type, base_field, rows}`` → rows with prompts/types filled in
+* ``save`` ``{note_type, base_field, rows}`` → ``{ok: true}`` once persisted
+
+This module imports nothing from ``aqt``/``anki``; it only knows the config models.
+"""
+
+from __future__ import annotations
+
+import json
+
+from omnia.gui.assets import read_asset
+from omnia.plugins.smart_notes.config import (
+    SmartNotesFieldConfig,
+    SmartNotesNoteTypeConfig,
+)
+
+_FIELD_TYPES = ("text", "tts", "image")
+
+
+def rows_for_note_type(
+    config: SmartNotesNoteTypeConfig | None,
+    all_fields: list[str],
+    base_field: str,
+) -> list[SmartNotesFieldConfig]:
+    """Return one :class:`SmartNotesFieldConfig` per NON-base field, merging saved + live.
+
+    Every current field of the note type except ``base_field`` gets a row: a previously saved
+    row is reused as-is (preserving the user's prompt/type/overrides), and a field with no
+    saved row appears with defaults. Saved rows whose field no longer exists on the note type
+    are dropped, and a saved row matching the base field is excluded. Order follows the note
+    type's live field order so the table mirrors the editor.
+
+    Args:
+        config: The saved note-type config, or None when the note type has none yet.
+        all_fields: The note type's current field names, in order.
+        base_field: The designated base (input) field, never generated.
+
+    Returns:
+        The per-field rows the table renders, in ``all_fields`` order.
+    """
+    saved = {row.field: row for row in config.fields} if config is not None else {}
+    rows: list[SmartNotesFieldConfig] = []
+    for name in all_fields:
+        if name == base_field:
+            continue
+        existing = saved.get(name)
+        rows.append(
+            existing.copy()
+            if existing is not None
+            else SmartNotesFieldConfig(field=name)
+        )
+    return rows
+
+
+def resolve_base_field(
+    config: SmartNotesNoteTypeConfig | None, all_fields: list[str]
+) -> str:
+    """Return the base field to show: the saved one (if still present) else the first field."""
+    if config is not None and config.base_field in all_fields:
+        return config.base_field
+    return all_fields[0] if all_fields else ""
+
+
+def field_configs_from_payload(
+    rows: list[dict[str, object]],
+) -> list[SmartNotesFieldConfig]:
+    """Build :class:`SmartNotesFieldConfig`s from the JS-posted row dicts (one per non-base field).
+
+    Each dict carries the row's editable state (``field``, ``enabled``, ``type``, ``prompt``,
+    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``overwrite``). A row with no
+    ``field`` name is skipped; an invalid ``type`` falls back to ``"text"`` so a malformed
+    payload can't raise during validation.
+
+    Args:
+        rows: The row dicts posted from the page.
+
+    Returns:
+        Validated field configs, ready to assemble into a note-type config.
+    """
+    configs: list[SmartNotesFieldConfig] = []
+    for row in rows:
+        name = str(row.get("field", "")).strip()
+        if not name:
+            continue
+        field_type = str(row.get("type", "text"))
+        if field_type not in _FIELD_TYPES:
+            field_type = "text"
+        configs.append(
+            SmartNotesFieldConfig(
+                field=name,
+                enabled=bool(row.get("enabled", False)),
+                type=field_type,
+                prompt=str(row.get("prompt", "")),
+                prompt_locked=bool(row.get("prompt_locked", False)),
+                provider=str(row.get("provider", "")),
+                model=str(row.get("model", "")),
+                voice=str(row.get("voice", "")),
+                overwrite=bool(row.get("overwrite", False)),
+            )
+        )
+    return configs
+
+
+def note_type_config_from_payload(
+    note_type: str, base_field: str, rows: list[dict[str, object]]
+) -> SmartNotesNoteTypeConfig:
+    """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, and rows."""
+    return SmartNotesNoteTypeConfig(
+        note_type=note_type,
+        base_field=base_field,
+        fields=field_configs_from_payload(rows),
+    )
+
+
+def merge_note_type_into(
+    note_types: list[SmartNotesNoteTypeConfig], updated: SmartNotesNoteTypeConfig
+) -> list[SmartNotesNoteTypeConfig]:
+    """Return ``note_types`` with ``updated`` replacing its same-name entry (or appended).
+
+    Used by the save handler: the dialog edits one note type at a time, so persisting it must
+    merge that note type into the existing list without disturbing the others.
+    """
+    merged = [nt for nt in note_types if nt.note_type != updated.note_type]
+    merged.append(updated)
+    return merged
+
+
+def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
+    """Serialize one field config to the dict the page consumes (kept in sync with the JS)."""
+    return {
+        "field": row.field,
+        "enabled": row.enabled,
+        "type": row.type,
+        "prompt": row.prompt,
+        "prompt_locked": row.prompt_locked,
+        "provider": row.provider,
+        "model": row.model,
+        "voice": row.voice,
+        "overwrite": row.overwrite,
+    }
+
+
+def load_payload(
+    note_type: str,
+    config: SmartNotesNoteTypeConfig | None,
+    all_fields: list[str],
+    providers: list[str],
+) -> dict[str, object]:
+    """Build the ``load`` op's response: base field, fields, rows, and providers."""
+    base_field = resolve_base_field(config, all_fields)
+    rows = rows_for_note_type(config, all_fields, base_field)
+    return {
+        "note_type": note_type,
+        "base_field": base_field,
+        "all_fields": all_fields,
+        "rows": [row_to_payload(row) for row in rows],
+        "providers": providers,
+    }
+
+
+def build_smart_notes_html(*, dark: bool, init: dict[str, object] | None = None) -> str:
+    """Build the full Smart Notes config page HTML, with the initial data baked in.
+
+    The selectors + first note type's rows are seeded from ``init`` (``window.__SN_INIT``) so
+    the page renders fully populated on load WITHOUT an init ``pycmd`` callback — Anki's bridge
+    callback channel isn't ready the instant the page's inline script runs, so an init
+    ``list_note_types``/``load`` round-trip is dropped and the dialog comes up blank. User
+    actions (change note type, set base, create field, auto-smart, save) happen later, when the
+    bridge is ready, so they keep using ``pycmd``.
+
+    Args:
+        dark: Render the dark palette (Anki night mode) when True, else the light palette.
+        init: ``{note_types, note_type, base_field, all_fields, rows, providers}`` for the
+            initially-selected note type. None/empty falls back to a JS ``list_note_types``.
+
+    Returns:
+        A complete, self-contained HTML document string.
+    """
+    return read_asset(__file__, "page.html").format(
+        theme_class="omnia-dark" if dark else "omnia-light",
+        css=read_asset(__file__, "page.css"),
+        types_json=json.dumps(_FIELD_TYPES),
+        init_json=json.dumps(init) if init else "null",
+        js=read_asset(__file__, "page.js"),
+    )
+
+
+# Re-exported for the dialog so it doesn't duplicate the literal anywhere.
+FIELD_TYPES = _FIELD_TYPES

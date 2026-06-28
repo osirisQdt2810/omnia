@@ -8,9 +8,9 @@ type (text/tts/image), a prompt template, a lock to protect the prompt from Auto
 optional provider/model overrides, and an overwrite flag. The ✨ Auto-smart button asks the
 LLM (off the Qt main thread) to fill in prompts/types for the enabled, unlocked fields.
 
-The page markup and the pure row↔config mapping live in ``smart_notes_html.py``; this class
-is the thin Qt/Anki glue handling the ``pycmd`` ops and persisting through the config repo.
-Only loaded inside Anki.
+The page markup and the pure row↔config mapping live in ``html.py``; this class is the thin
+Qt/Anki glue handling the ``pycmd`` ops and persisting through the config repo. Only loaded
+inside Anki.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from aqt.theme import theme_manager
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.providers import ProviderError, ProviderHub, available_llm_providers
-from omnia.gui.smart_notes_html import (
+from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
     load_payload,
     merge_note_type_into,

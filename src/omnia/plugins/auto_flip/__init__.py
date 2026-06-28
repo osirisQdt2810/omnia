@@ -252,7 +252,7 @@ class AutoFlipPlugin(FeaturePlugin):
         # Add the per-deck "Omnia: Auto-Flip…" action to the deck's options menu. The
         # deck_options module is imported lazily: it subclasses QDialog (needs aqt.qt), so
         # importing it at module top would break the headless import of this feature.
-        from omnia.plugins.auto_flip.deck_options import add_deck_menu_action
+        from omnia.gui.auto_flip.deck_options import add_deck_menu_action
 
         if self._ctx is not None:
             add_deck_menu_action(menu, deck_id, self._ctx)

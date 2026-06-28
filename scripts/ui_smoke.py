@@ -211,7 +211,7 @@ def build_smart_notes_dialog():
     through the same ``_on_cmd`` envelope the webview uses.
     """
     from omnia.core.reviewer.web_injector import build_message
-    from omnia.gui.smart_notes_dialog import SmartNotesDialog
+    from omnia.gui.smart_notes.dialog import SmartNotesDialog
 
     dialog = SmartNotesDialog(repo, None)
 
@@ -261,7 +261,7 @@ step("SmartNotesDialog (custom Configure + pycmd ops)", build_smart_notes_dialog
 
 
 def build_prompt_dialog():
-    from omnia.gui.smart_notes_prompt_dialog import PromptDialog
+    from omnia.gui.smart_notes.prompt_dialog import PromptDialog
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
     rule = SmartNotesFieldRule(note_type="Basic", target_field="Back", kind="text")
@@ -272,7 +272,7 @@ step("PromptDialog (add/edit one rule)", build_prompt_dialog)
 step(
     "CustomPromptDialog (one-off custom text)",
     lambda: __import__(
-        "omnia.gui.smart_notes_custom_prompt", fromlist=["CustomPromptDialog"]
+        "omnia.gui.smart_notes.custom_prompt", fromlist=["CustomPromptDialog"]
     ).CustomPromptDialog(
         repo,
         kind="text",
@@ -286,7 +286,7 @@ step(
 step(
     "AutoFlipDeckDialog (per-deck options)",
     lambda: __import__(
-        "omnia.plugins.auto_flip.deck_options", fromlist=["AutoFlipDeckDialog"]
+        "omnia.gui.auto_flip.deck_options", fromlist=["AutoFlipDeckDialog"]
     ).AutoFlipDeckDialog(deck_id, repo.feature_settings("auto_flip"), None),
 )
 step(

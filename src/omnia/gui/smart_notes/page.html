@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>{css}</style>
+</head>
+<body class="{theme_class}">
+<div class="sn-shell">
+  <header class="sn-header">
+    <div class="sn-title">✨ Smart Notes</div>
+    <div class="sn-subtitle">Your senior language master — pick a base word and let AI build every other field.</div>
+  </header>
+  <div class="sn-toolbar">
+    <label class="sn-field">
+      <span class="sn-label">Note type</span>
+      <select id="sn-note-type"></select>
+    </label>
+    <label class="sn-field">
+      <span class="sn-label" title="The always-present INPUT field (a single word OR a phrase). It is never generated.">Base field</span>
+      <select id="sn-base-field"></select>
+    </label>
+  </div>
+  <div class="sn-table-wrap">
+    <table class="sn-table">
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th title="Generate this field?">On</th>
+          <th>Type</th>
+          <th>Prompt — reference fields as {{{{Base}}}}</th>
+          <th title="Inherit the central provider when blank">Provider</th>
+          <th title="Inherit the central model when blank">Model</th>
+          <th title="Overwrite the field even if it already has content">Overwrite</th>
+        </tr>
+      </thead>
+      <tbody id="sn-rows"></tbody>
+    </table>
+    <div id="sn-empty" class="sn-empty"></div>
+  </div>
+  <footer class="sn-footer">
+    <div class="sn-footer-left">
+      <button id="sn-create" class="sn-btn">+ Create field</button>
+      <button id="sn-auto" class="sn-btn sn-btn-magic">✨ Auto-smart</button>
+      <span id="sn-msg" class="sn-msg"></span>
+    </div>
+    <div class="sn-footer-right">
+      <button id="sn-cancel" class="sn-btn">Cancel</button>
+      <button id="sn-save" class="sn-btn sn-btn-primary">Save</button>
+    </div>
+  </footer>
+</div>
+<script>var SN_TYPES = {types_json};</script>
+<script>window.__SN_INIT = {init_json};</script>
+<script>{js}</script>
+</body>
+</html>
