@@ -22,11 +22,11 @@ from typing import TYPE_CHECKING
 from omnia.core.providers.errors import ProviderError
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import (
+    from omnia.core.providers import ProviderHub
+    from omnia.plugins.smart_notes.config import (
         SmartNotesFieldConfig,
         SmartNotesNoteTypeConfig,
     )
-    from omnia.core.providers import ProviderHub
 
 _PERSONA = (
     "You are a senior language master fluent in many languages, helping an Anki learner "
@@ -136,7 +136,7 @@ def apply_auto_smart(
         suggestions: Per-field suggestions from :func:`parse_auto_smart_response`.
 
     Returns:
-        A new :class:`~omnia.core.config.models.SmartNotesNoteTypeConfig` (the input is not
+        A new :class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` (the input is not
         mutated).
     """
     updated: list[SmartNotesFieldConfig] = []

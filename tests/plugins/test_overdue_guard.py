@@ -59,8 +59,8 @@ class TestOverdueGuardPlugin:
     def test_disable_removes_transformer(self):
         import types
 
-        from omnia.core.config.models import OverdueGuardSettings
         from omnia.core.reviewer.ease_pipeline import EasePipeline
+        from omnia.plugins.overdue_guard.config import OverdueGuardSettings
 
         ease = EasePipeline()
         ctx = types.SimpleNamespace(settings=OverdueGuardSettings(), ease=ease)

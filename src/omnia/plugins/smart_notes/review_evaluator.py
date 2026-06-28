@@ -24,7 +24,7 @@ from omnia.plugins.smart_notes.logic import (
 )
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import SmartNotesFieldRule, SmartNotesSettings
+    from omnia.plugins.smart_notes.config import SmartNotesFieldRule, SmartNotesSettings
 
 
 class ReviewTimeEvaluator:

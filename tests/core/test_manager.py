@@ -108,10 +108,16 @@ class TestPluginManager:
             mgr.teardown()
 
     def test_typed_settings_reach_the_plugin(self, make_manager):
+        from omnia.plugins.auto_flip.config import AutoFlipSettings
+
         seen = {}
 
         @registry.register("auto_flip")  # real config id -> typed settings model
         class Fake(FeaturePlugin):
+            # The plugin declares its own settings model; the repository resolves it via the
+            # registry to validate the raw [auto_flip] namespace into a typed instance.
+            config_model = AutoFlipSettings
+
             def on_enable(self, ctx):
                 seen["delay"] = ctx.settings.delay_question_seconds
 

@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import AutoFlipSettings
+    from omnia.plugins.auto_flip.config import AutoFlipSettings
 
 
 def delay_ms(seconds: float) -> int:

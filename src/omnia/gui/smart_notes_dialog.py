@@ -2,7 +2,7 @@
 
 A :class:`~omnia.gui.web_dialog.WebDialog`-hosted page (gradient header, rounded card, a
 scrolling per-field table, light/dark) that edits ONE note type's
-:class:`~omnia.core.config.models.SmartNotesNoteTypeConfig` at a time: pick the note type,
+:class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` at a time: pick the note type,
 designate its base (input) field, then for every other field set whether to generate it, its
 type (text/tts/image), a prompt template, a lock to protect the prompt from Auto-smart,
 optional provider/model overrides, and an overwrite flag. The ✨ Auto-smart button asks the
@@ -34,7 +34,7 @@ from omnia.gui.web_dialog import WebDialog
 
 if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
-    from omnia.core.config.models import SmartNotesNoteTypeConfig
+    from omnia.plugins.smart_notes.config import SmartNotesNoteTypeConfig
 
 
 class SmartNotesDialog(WebDialog):
@@ -168,7 +168,9 @@ class SmartNotesDialog(WebDialog):
 
     # --- helpers ---------------------------------------------------------------------
     def _settings(self) -> Any:
-        return self._repo.config.smart_notes
+        # smart_notes' typed settings now come from the plugin's own model, resolved by the
+        # repository via the registry (config.smart_notes no longer exists on OmniaConfig).
+        return self._repo.feature_settings("smart_notes")
 
     def _build_hub(self) -> Optional[ProviderHub]:
         try:

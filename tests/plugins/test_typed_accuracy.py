@@ -116,7 +116,7 @@ def _logged_rows(conn: sqlite3.Connection):
 
 class TestTypedAccuracyPlugin:
     def test_pass_grades_good_via_pipeline_and_logs(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
         plugin = TypedAccuracyPlugin()
@@ -138,7 +138,7 @@ class TestTypedAccuracyPlugin:
         assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_GOOD)]
 
     def test_fail_grades_hard(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="easy"))
         TypedAccuracyPlugin().on_enable(ctx)
@@ -154,7 +154,7 @@ class TestTypedAccuracyPlugin:
         assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_BAD)]
 
     def test_empty_no_markup_forces_hard_and_logs_empty(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
         TypedAccuracyPlugin().on_enable(ctx)
@@ -171,7 +171,7 @@ class TestTypedAccuracyPlugin:
         assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_EMPTY)]
 
     def test_auto_answer_no_stages_nothing_but_logs(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="no"))
         TypedAccuracyPlugin().on_enable(ctx)
@@ -189,7 +189,7 @@ class TestTypedAccuracyPlugin:
         assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_GOOD)]
 
     def test_other_card_not_affected(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         TypedAccuracyPlugin().on_enable(ctx)
@@ -201,7 +201,7 @@ class TestTypedAccuracyPlugin:
         assert ctx.ease.compute_ease(other, 3) == 3  # no pending ease for this card
 
     def test_question_clears_stale_pending(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         plugin = TypedAccuracyPlugin()
@@ -214,7 +214,7 @@ class TestTypedAccuracyPlugin:
         assert ctx.ease.compute_ease(fake_mw.card, 3) == 3
 
     def test_query_op_returns_attempts_and_unique(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         TypedAccuracyPlugin().on_enable(ctx)
@@ -243,7 +243,7 @@ class TestTypedAccuracyPlugin:
         assert res["data"]["unique_last"]["good"] == 1  # latest was good
 
     def test_get_current_did_op(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         TypedAccuracyPlugin().on_enable(ctx)
@@ -253,7 +253,7 @@ class TestTypedAccuracyPlugin:
         assert res == {"ok": True, "did": 7}
 
     def test_session_open_ms_recorded_on_state_change(self, fake_mw):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         plugin = TypedAccuracyPlugin()
@@ -271,7 +271,7 @@ class TestTypedAccuracyPlugin:
         assert after["ok"] is True and after["openMs"] > 0
 
     def test_disable_fully_tears_down(self, fake_mw, gui_hooks):
-        from omnia.core.config.models import TypedAccuracySettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         plugin = TypedAccuracyPlugin()

@@ -34,8 +34,15 @@ class ConfigLoader:
 
     def load(self) -> OmniaConfig:
         """Read defaults + user overrides, merge, and validate into an :class:`OmniaConfig`."""
-        merged = self._deep_merge(self._load_defaults(), self.read_overrides())
-        return OmniaConfig.parse_obj(merged)
+        return OmniaConfig.parse_obj(self.load_merged())
+
+    def load_merged(self) -> dict[str, Any]:
+        """Return the fully merged raw config dict (defaults + user overrides).
+
+        The repository keeps this so per-plugin sections (``[auto_flip]``, …) — which
+        :class:`OmniaConfig` ignores — can be validated by each plugin's own ``config_model``.
+        """
+        return self._deep_merge(self._load_defaults(), self.read_overrides())
 
     def read_overrides(self) -> dict[str, Any]:
         """Return the user's override layer (``user_files/omnia.toml``), or ``{}``."""

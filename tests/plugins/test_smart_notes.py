@@ -25,10 +25,6 @@ from conftest import (
 from omnia.core.config.models import (
     LLMSettings,
     OpenAICompatibleLLMSettings,
-    SmartNotesFieldConfig,
-    SmartNotesFieldRule,
-    SmartNotesNoteTypeConfig,
-    SmartNotesSettings,
     TTSSettings,
 )
 from omnia.core.providers import ProviderError, ProviderHub
@@ -39,6 +35,12 @@ from omnia.plugins.smart_notes.auto_smart import (
     candidate_fields,
     generate_auto_smart,
     parse_auto_smart_response,
+)
+from omnia.plugins.smart_notes.config import (
+    SmartNotesFieldConfig,
+    SmartNotesFieldRule,
+    SmartNotesNoteTypeConfig,
+    SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.dag import SmartNotesCycleError, order_rules
 from omnia.plugins.smart_notes.logic import (
@@ -719,8 +721,8 @@ class TestSmartNotesPlugin:
     def test_enable_subscribes_all_hooks_disable_removes_them(self, gui_hooks):
         import types
 
-        from omnia.core.config.models import SmartNotesSettings
         from omnia.plugins.smart_notes import SmartNotesPlugin
+        from omnia.plugins.smart_notes.config import SmartNotesSettings
 
         ctx = types.SimpleNamespace(settings=SmartNotesSettings(), providers=_hub())
         plugin = SmartNotesPlugin()

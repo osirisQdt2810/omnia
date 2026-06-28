@@ -1,8 +1,12 @@
-"""Pydantic v1 models for Omnia configuration.
+"""Pydantic v1 models for Omnia's CORE configuration (non-plugin).
 
-Each feature has a typed settings model (validated defaults + bounds), and the provider
-settings mirror vio-ai's structure. :class:`OmniaConfig` is the validated whole, assembled
-by the :class:`~omnia.core.config.loader.ConfigLoader` from the YAML/TOML files.
+Holds only the cross-cutting config: the log level, the plugin enable-map, and the LLM/TTS
+provider settings — these are core seams, not features. Each FEATURE owns its own settings
+model in ``plugins/<plugin>/config.py`` (resolved via the registry by
+:meth:`~omnia.core.config.repository.ConfigRepository.feature_settings`), so this module never
+imports ``omnia.plugins`` and the coupling rule (``core/* never imports plugins/*``) holds.
+:class:`OmniaConfig` validates only the core sections and tolerates the per-plugin sections
+(``extra = "ignore"``); the repository keeps the raw merged dict for plugin sections.
 
 Pydantic v1 is used because v2 depends on the compiled (Rust) ``pydantic_core`` wheel, which
 is not pure-Python and would break the single cross-platform ``.ankiaddon``. v1 has a
@@ -13,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Optional
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 
 
 class _Strict(BaseModel):
@@ -21,66 +25,6 @@ class _Strict(BaseModel):
 
     class Config:
         extra = "forbid"
-
-
-# --- per-feature settings -------------------------------------------------------------
-class AutoFlipDeckOverride(_Strict):
-    """Per-deck auto-flip override (keyed by deck id in :class:`AutoFlipSettings`).
-
-    Mirrors the reference add-on's two-flag deck gate (``use_general`` / ``use_deck``):
-
-    * ``use_global=True`` → the deck has an override row but defers to the global delays
-      (the reference's ``use_general``); the per-deck delays below are ignored.
-    * ``use_global=False`` + ``enabled=True`` → use this row's delays (``use_deck``).
-    * ``enabled=False`` → auto-flip is OFF for this deck (``use_deck=False``), regardless of
-      ``use_global``.
-    """
-
-    use_global: bool = False
-    enabled: bool = True
-    delay_question_seconds: float = Field(3.0, ge=0)
-    delay_answer_seconds: float = Field(3.0, ge=0)
-
-
-class AutoFlipSettings(_Strict):
-    """Settings for the auto-flip feature."""
-
-    delay_question_seconds: float = Field(3.0, ge=0)
-    delay_answer_seconds: float = Field(3.0, ge=0)
-    wait_for_audio: bool = True
-    show_timer: bool = True
-    # deck id (as a string) -> override; empty means "use the global delays everywhere".
-    per_deck: dict[str, AutoFlipDeckOverride] = Field(default_factory=dict)
-
-
-class TypedAccuracySettings(_Strict):
-    """Settings for the typing-accuracy grader."""
-
-    threshold: float = Field(0.7, ge=0.0, le=1.0)
-    # Auto-answer on a pass: "good"/"easy" stage that ease; "no" stages nothing (the user's
-    # own press stands). A fail always forces Hard regardless of this setting.
-    pass_ease: str = Field("good")
-    show_stats: bool = (
-        True  # show the interactive accuracy panel on the Statistics screen
-    )
-
-    @validator("pass_ease")
-    def _validate_pass_ease(cls, value: str) -> str:
-        if value not in {"good", "easy", "no"}:
-            raise ValueError("pass_ease must be 'good', 'easy', or 'no'")
-        return value
-
-
-class OverdueGuardSettings(_Strict):
-    """Settings for the overdue guard."""
-
-    ratio: float = Field(0.8, ge=0.0)
-    min_days: int = Field(2, ge=0)
-    force_again_after_days: int = Field(7, ge=0)
-
-
-class DisplayIntervalSettings(_Strict):
-    """Settings for the next-interval overlay (currently no options)."""
 
 
 # --- LLM provider settings ------------------------------------------------------------
@@ -260,121 +204,6 @@ class TTSSettings(_Strict):
         return sub if isinstance(sub, BaseModel) else None
 
 
-_GENERATION_TYPES = {"text", "image", "tts"}
-
-
-class SmartNotesFieldRule(_Strict):
-    """A single, self-contained generation rule (the per-call shape the engine consumes).
-
-    This is the unit :meth:`GenerationService.generate` operates on: read ``source_field``,
-    write ``target_field`` via ``kind``. It is NOT the persisted note-type config (see
-    :class:`SmartNotesFieldConfig`) — the engine compiles a note type's enabled fields into
-    these rules at generation time, and the one-off custom-prompt palette builds one directly.
-
-    Provider selection stays central (``[llm]`` / ``[tts]`` + the ProviderHub); the
-    ``provider``/``model``/``voice`` fields here are optional per-rule OVERRIDES that layer
-    on top — empty means "inherit the active central provider".
-
-    Every field has a default, so partial dicts still build.
-    """
-
-    note_type: str = ""
-    source_field: str = ""
-    target_field: str = ""
-    kind: str = Field("text")  # text | image | tts
-    prompt: str = ""
-    deck_id: Optional[int] = None  # None = applies to all decks
-    enabled: bool = True
-    # Per-field provider overrides (empty = inherit the central [llm]/[tts] config).
-    provider: str = ""
-    model: str = ""
-    voice: str = ""
-    # Per-rule overwrite (the note-type config carries the real overwrite flag; the engine
-    # threads it onto the compiled rule so skip logic can read it per field).
-    overwrite: bool = False
-
-    @validator("kind")
-    def _validate_kind(cls, value: str) -> str:
-        if value not in _GENERATION_TYPES:
-            raise ValueError("kind must be 'text', 'image', or 'tts'")
-        return value
-
-
-class SmartNotesFieldConfig(_Strict):
-    """The persisted generation config for ONE field on a note type.
-
-    The base field of a note type is never represented here — it is the input. Every other
-    field the user wants generated gets a row: its ``type`` (text/tts/image), a ``prompt``
-    template that may reference the base field and other generated fields (``{{Word}}``,
-    ``{{Meaning}}``), and optional per-field provider overrides (empty = inherit central
-    ``[llm]``/``[tts]``). ``prompt_locked`` protects a hand-written prompt/type from being
-    overwritten by the auto-smart generator. ``overwrite`` regenerates the field even when it
-    already holds content.
-    """
-
-    field: str
-    enabled: bool = False
-    type: str = "text"  # text | image | tts
-    prompt: str = ""
-    prompt_locked: bool = False
-    provider: str = ""
-    model: str = ""
-    voice: str = ""
-    overwrite: bool = False
-
-    @validator("type")
-    def _validate_type(cls, value: str) -> str:
-        if value not in _GENERATION_TYPES:
-            raise ValueError("type must be 'text', 'image', or 'tts'")
-        return value
-
-
-class SmartNotesNoteTypeConfig(_Strict):
-    """Per-note-type smart-notes config: one designated base field + per-field generation rows.
-
-    ``base_field`` is the always-present input (e.g. "Word" — a single word OR a phrase) and is
-    never generated. ``fields`` holds one :class:`SmartNotesFieldConfig` per other field the
-    user configured. A field's prompt may reference the base field and other generated fields,
-    forming a DAG resolved at generation time.
-    """
-
-    note_type: str
-    base_field: str = ""
-    fields: list[SmartNotesFieldConfig] = Field(default_factory=list)
-
-    def generatable_fields(self) -> list[SmartNotesFieldConfig]:
-        """Return the fields eligible for generation: enabled and not the base field."""
-        return [
-            field
-            for field in self.fields
-            if field.enabled and field.field != self.base_field
-        ]
-
-
-class SmartNotesSettings(_Strict):
-    """smart_notes feature settings, organised PER NOTE TYPE (provider config is shared).
-
-    Each :class:`SmartNotesNoteTypeConfig` designates one base (input) field and configures
-    how every other field is generated. A fresh, empty config (no ``note_types``) validates,
-    so smart_notes ships disabled with no rules and never crashes on load.
-    """
-
-    note_types: list[SmartNotesNoteTypeConfig] = Field(default_factory=list)
-    # Skip a field whose referenced source fields are ALL blank unless this is True.
-    allow_empty_fields: bool = False
-    # Whether automatic batch generation regenerates fields it already filled.
-    regenerate_when_batching: bool = True
-    # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
-    generate_at_review: bool = False
-
-    def note_type_config(self, note_type: str) -> Optional[SmartNotesNoteTypeConfig]:
-        """Return the config for ``note_type``, or None when it has no smart-notes config."""
-        for config in self.note_types:
-            if config.note_type == note_type:
-                return config
-        return None
-
-
 # --- top-level --------------------------------------------------------------------------
 class PluginToggle(_Strict):
     """Whether a plugin is enabled."""
@@ -383,22 +212,21 @@ class PluginToggle(_Strict):
 
 
 class OmniaConfig(BaseModel):
-    """The whole, validated configuration (defaults + user overrides merged)."""
+    """The validated CORE configuration (the cross-cutting, non-plugin sections).
 
-    # Tolerate unknown top-level keys so adding a config file can't crash an old build.
+    Only the core seams are typed here: ``log_level``, the plugin enable-map, and the
+    ``llm``/``tts`` provider settings. The per-feature sections (``[auto_flip]``,
+    ``[typed_accuracy]``, …) are validated separately by each plugin's own ``config_model``
+    via :meth:`~omnia.core.config.repository.ConfigRepository.feature_settings`, so this core
+    model never imports ``omnia.plugins``. ``extra = "ignore"`` lets those plugin sections
+    (and any future top-level key) ride along on the merged dict without tripping validation.
+    """
+
     class Config:
         extra = "ignore"
 
     log_level: str = "INFO"
     plugins: dict[str, PluginToggle] = Field(default_factory=dict)
-
-    auto_flip: AutoFlipSettings = Field(default_factory=AutoFlipSettings)
-    typed_accuracy: TypedAccuracySettings = Field(default_factory=TypedAccuracySettings)
-    overdue_guard: OverdueGuardSettings = Field(default_factory=OverdueGuardSettings)
-    display_interval: DisplayIntervalSettings = Field(
-        default_factory=DisplayIntervalSettings
-    )
-    smart_notes: SmartNotesSettings = Field(default_factory=SmartNotesSettings)
 
     llm: LLMSettings = Field(default_factory=LLMSettings)
     tts: TTSSettings = Field(default_factory=TTSSettings)

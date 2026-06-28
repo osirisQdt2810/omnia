@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import json
 
-from omnia.core.config.models import (
-    SmartNotesFieldConfig,
-    SmartNotesNoteTypeConfig,
-)
 from omnia.gui.smart_notes_html import (
     build_smart_notes_html,
     field_configs_from_payload,
@@ -19,6 +15,10 @@ from omnia.gui.smart_notes_html import (
     rows_for_note_type,
 )
 from omnia.plugins.smart_notes.auto_smart import AutoSmartField, apply_auto_smart
+from omnia.plugins.smart_notes.config import (
+    SmartNotesFieldConfig,
+    SmartNotesNoteTypeConfig,
+)
 
 
 def _config(base: str = "Word", fields=None) -> SmartNotesNoteTypeConfig:

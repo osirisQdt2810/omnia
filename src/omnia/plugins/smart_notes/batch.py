@@ -26,7 +26,7 @@ from omnia.plugins.smart_notes.logic import (
 )
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import (
+    from omnia.plugins.smart_notes.config import (
         SmartNotesFieldRule,
         SmartNotesNoteTypeConfig,
         SmartNotesSettings,

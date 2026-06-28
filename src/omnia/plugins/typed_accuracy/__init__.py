@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 from omnia.core import anki_compat
-from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
+from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.core.reviewer.web_injector import WebAsset
+from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 from omnia.plugins.typed_accuracy.logic import decide_ease, result_code
 from omnia.plugins.typed_accuracy.stats_injector import StatsInjector
 from omnia.plugins.typed_accuracy.store import SessionTracker, TypedAnswerLog
@@ -98,6 +99,7 @@ class TypedAccuracyPlugin(FeaturePlugin):
         "they do not conflict and need not be mutually exclusive."
     )
     order = 20
+    config_model = TypedAccuracySettings
 
     def __init__(self) -> None:
         self._pending: dict[int, int] = {}
@@ -238,42 +240,6 @@ class TypedAccuracyPlugin(FeaturePlugin):
             return
         if webview is not None and hasattr(webview, "eval"):
             self._injector.inject(webview)
-
-    # --- config ---------------------------------------------------------------------
-    def config_schema(self) -> list[ConfigField]:
-        return [
-            ConfigField(
-                "threshold",
-                "Pass threshold (accuracy 0–1)",
-                "float",
-                0.7,
-                help=(
-                    "Fraction of the typed answer that must be correct to count as a pass. "
-                    "0.7 = 70% of characters right. At/above this → the pass ease below; "
-                    "below → Hard."
-                ),
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            ConfigField(
-                "pass_ease",
-                "Auto-answer on a pass",
-                "choice",
-                "good",
-                choices=("good", "easy", "no"),
-                help="'no' stages no ease (your own press stands); a fail always forces Hard.",
-            ),
-            ConfigField(
-                "show_stats",
-                "Show the accuracy panel on the Statistics screen",
-                "bool",
-                True,
-                help=(
-                    "Add the interactive typed-accuracy donut + Good/Bad/Miss/Empty "
-                    "breakdown to Anki's Statistics screen."
-                ),
-            ),
-        ]
 
     # --- helpers --------------------------------------------------------------------
     def _insert_log(self, cid: int, result: int) -> None:
