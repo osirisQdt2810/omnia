@@ -6,8 +6,16 @@ import types
 
 from omnia.core.config.models import AutoFlipDeckOverride, AutoFlipSettings
 from omnia.features.auto_flip import AutoFlipPlugin
-from omnia.features.auto_flip.countdown import build_countdown_js, clear_countdown_js
-from omnia.features.auto_flip.logic import delay_ms, effective_delays
+from omnia.features.auto_flip.countdown import (
+    build_countdown_js,
+    clear_countdown_js,
+    mark_countdown_cancelled_js,
+)
+from omnia.features.auto_flip.logic import (
+    delay_ms,
+    effective_delays,
+    parse_mpv_range_extra_seconds,
+)
 
 
 class TestDelayMs:
@@ -64,6 +72,82 @@ class TestEffectiveDelays:
         enabled, _q_ms, _a_ms = effective_delays(settings, 7)
         assert enabled is False
 
+    def test_use_global_returns_global_delays_despite_override(self):
+        # use_global -> defer to the global delays even though a per-deck row exists.
+        settings = AutoFlipSettings(
+            delay_question_seconds=3,
+            delay_answer_seconds=2,
+            per_deck={
+                "9": AutoFlipDeckOverride(
+                    use_global=True,
+                    delay_question_seconds=9,
+                    delay_answer_seconds=9,
+                )
+            },
+        )
+        assert effective_delays(settings, 9) == (True, 3000, 2000)
+
+    def test_use_global_wins_over_disabled(self):
+        # use_global keeps the deck on (global delays) regardless of enabled.
+        settings = AutoFlipSettings(
+            delay_question_seconds=1,
+            delay_answer_seconds=1,
+            per_deck={"9": AutoFlipDeckOverride(use_global=True, enabled=False)},
+        )
+        assert effective_delays(settings, 9) == (True, 1000, 1000)
+
+    def test_deck_delays_when_not_use_global_and_enabled(self):
+        settings = AutoFlipSettings(
+            delay_question_seconds=3,
+            delay_answer_seconds=3,
+            per_deck={
+                "9": AutoFlipDeckOverride(
+                    use_global=False,
+                    enabled=True,
+                    delay_question_seconds=6,
+                    delay_answer_seconds=7,
+                )
+            },
+        )
+        assert effective_delays(settings, 9) == (True, 6000, 7000)
+
+    def test_disabled_and_not_use_global_is_off(self):
+        settings = AutoFlipSettings(
+            per_deck={"9": AutoFlipDeckOverride(use_global=False, enabled=False)}
+        )
+        enabled, _q_ms, _a_ms = effective_delays(settings, 9)
+        assert enabled is False
+
+
+class TestParseMpvRangeExtraSeconds:
+    def test_no_range_returns_zero(self):
+        assert parse_mpv_range_extra_seconds("[sound:hello.mp3]") == 0.0
+        assert parse_mpv_range_extra_seconds("") == 0.0
+
+    def test_requires_both_markers(self):
+        # The myview.mpv marker without --range= (and vice versa) yields nothing.
+        assert parse_mpv_range_extra_seconds("myview.mpv 00:00:01,000") == 0.0
+        assert parse_mpv_range_extra_seconds("--range=00:00:01,000-00:00:02,000") == 0.0
+
+    def test_single_range_comma_millis(self):
+        cmd = "myview.mpv --range=00:00:01,000-00:00:04,500 clip.mkv"
+        assert parse_mpv_range_extra_seconds(cmd) == 3.5
+
+    def test_dot_millis_supported(self):
+        cmd = "myview.mpv --range=00:01:00.000-00:01:02.250 clip.mkv"
+        assert parse_mpv_range_extra_seconds(cmd) == 2.25
+
+    def test_multiple_ranges_sum(self):
+        cmd = (
+            "myview.mpv --range=00:00:00,000-00:00:02,000 a.mkv "
+            "myview.mpv --range=00:00:10,000-00:00:13,000 b.mkv"
+        )
+        assert parse_mpv_range_extra_seconds(cmd) == 5.0
+
+    def test_hours_minutes_seconds(self):
+        cmd = "myview.mpv --range=01:00:00,000-01:02:03,000 clip.mkv"
+        assert parse_mpv_range_extra_seconds(cmd) == 123.0
+
 
 class _FakeTimer:
     def __init__(self) -> None:
@@ -79,7 +163,7 @@ def _settings(**kw):
     return AutoFlipSettings(**kw)
 
 
-def _fake_mw(monkeypatch, schedule, calls):
+def _fake_mw(monkeypatch, schedule, calls, *, card=None):
     import aqt
 
     def timer(ms, cb, repeat):
@@ -89,13 +173,22 @@ def _fake_mw(monkeypatch, schedule, calls):
 
     reviewer = types.SimpleNamespace(
         state="question",
+        card=card,
         _showAnswer=lambda: calls.append("show_answer"),
         _answerCard=lambda ease: calls.append(("answer", ease)),
     )
+    menu_tools = types.SimpleNamespace(
+        addAction=lambda action: calls.append(("menu_add", action)),
+        removeAction=lambda action: calls.append(("menu_remove", action)),
+    )
     mw = types.SimpleNamespace(
-        progress=types.SimpleNamespace(timer=timer), reviewer=reviewer
+        progress=types.SimpleNamespace(timer=timer),
+        reviewer=reviewer,
+        form=types.SimpleNamespace(menuTools=menu_tools),
     )
     monkeypatch.setattr(aqt, "mw", mw)
+    # Reset the av_player queue + the onEnterKey wrap so tests don't leak into each other.
+    aqt.sound.av_player._enqueued = []
     return mw
 
 
@@ -207,31 +300,12 @@ class TestAutoFlipPlugin:
 
         plugin.on_disable(ctx)
 
-    def test_wait_for_audio_restarts_timer_on_audio_end(self, gui_hooks, monkeypatch):
-        schedule: list = []
-        calls: list = []
-        _fake_mw(monkeypatch, schedule, calls)
-
-        ctx = types.SimpleNamespace(
-            settings=_settings(wait_for_audio=True, delay_question_seconds=5)
-        )
-        plugin = AutoFlipPlugin()
-        plugin.on_enable(ctx)
-
-        gui_hooks.reviewer_did_show_question.fire(object())
-        assert len(schedule) == 1  # initial question timer
-        gui_hooks.av_player_did_end_playing.fire(object())
-        assert len(schedule) == 2  # delay restarted from audio end
-        assert schedule[-1][0] == 5000
-
-        plugin.on_disable(ctx)
-
     def test_disable_unsubscribes_all_hooks(self, gui_hooks, monkeypatch):
         schedule: list = []
         calls: list = []
         _fake_mw(monkeypatch, schedule, calls)
 
-        ctx = types.SimpleNamespace(settings=_settings())
+        ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False))
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
         assert gui_hooks.reviewer_did_show_question.count() == 1
@@ -240,6 +314,276 @@ class TestAutoFlipPlugin:
             gui_hooks.reviewer_did_show_question,
             gui_hooks.reviewer_did_show_answer,
             gui_hooks.reviewer_will_answer_card,
+            gui_hooks.deck_browser_will_show_options_menu,
+        ):
+            assert hook.count() == 0
+
+
+class TestAudioAwareArming:
+    def test_no_sounds_arms_immediately(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=4)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        # An empty sounds list on the will-play hook -> arm right away.
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), [])
+        assert schedule and schedule[-1][0] == 4000
+
+        plugin.on_disable(ctx)
+
+    def test_with_sounds_defers_until_audio_ends(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls, card=object())
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=5)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        # A card WITH audio: nothing is scheduled until the audio queue drains.
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["snd.mp3"])
+        assert schedule == []
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert len(schedule) == 1
+        assert schedule[-1][0] == 5000
+
+        plugin.on_disable(ctx)
+
+    def test_audio_end_waits_for_remaining_queue(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls, card=object())
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=5)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["a.mp3", "b.mp3"])
+
+        # First clip ends but another remains queued -> still don't arm.
+        aqt.sound.av_player._enqueued = ["b.mp3"]
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert schedule == []
+        # Last clip ends, queue empty -> arm.
+        aqt.sound.av_player._enqueued = []
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert len(schedule) == 1
+
+        plugin.on_disable(ctx)
+
+    def test_audio_path_does_not_subscribe_show_hooks(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=True))
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        assert gui_hooks.reviewer_did_show_question.count() == 0
+        assert gui_hooks.reviewer_will_play_question_sounds.count() == 1
+        assert gui_hooks.av_player_did_end_playing.count() == 1
+        plugin.on_disable(ctx)
+        for hook in (
+            gui_hooks.reviewer_will_play_question_sounds,
+            gui_hooks.reviewer_will_play_answer_sounds,
             gui_hooks.av_player_did_end_playing,
         ):
             assert hook.count() == 0
+
+
+class TestFilteredDeckResolution:
+    def test_override_keyed_off_original_deck_for_filtered_card(
+        self, gui_hooks, monkeypatch
+    ):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        # Card is in a filtered deck (did=999) but its home deck (odid=42) is configured.
+        card = types.SimpleNamespace(did=999, odid=42)
+        ctx = types.SimpleNamespace(
+            settings=_settings(
+                wait_for_audio=False,
+                per_deck={"42": AutoFlipDeckOverride(enabled=False)},
+            )
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        gui_hooks.reviewer_did_show_question.fire(card)
+        # The home deck (odid=42) disables auto-flip -> nothing scheduled.
+        assert schedule == []
+
+        plugin.on_disable(ctx)
+
+    def test_no_odid_falls_back_to_did(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        card = types.SimpleNamespace(did=42, odid=0)
+        ctx = types.SimpleNamespace(
+            settings=_settings(
+                wait_for_audio=False,
+                per_deck={"42": AutoFlipDeckOverride(enabled=False)},
+            )
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        gui_hooks.reviewer_did_show_question.fire(card)
+        assert schedule == []
+
+        plugin.on_disable(ctx)
+
+
+class TestMpvRangeWiring:
+    def test_clip_duration_added_to_question_delay(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        card = types.SimpleNamespace(
+            did=1,
+            odid=0,
+            question=lambda: "myview.mpv --range=00:00:01,000-00:00:04,000 clip.mkv",
+            answer=lambda: "",
+        )
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=False, delay_question_seconds=2)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        gui_hooks.reviewer_did_show_question.fire(card)
+        # 2s base delay + 3s clip duration = 5000 ms.
+        assert schedule and schedule[-1][0] == 5000
+
+        plugin.on_disable(ctx)
+
+
+class TestRuntimeToggle:
+    def test_toggle_off_cancels_pending_timer(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=False, delay_question_seconds=5)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        gui_hooks.reviewer_did_show_question.fire(object())
+        pending = schedule[-1][2]
+
+        plugin._on_toggle(False)  # Ctrl+J off
+        assert pending.stopped is True
+
+        # While off, showing a question arms nothing.
+        gui_hooks.reviewer_did_show_question.fire(object())
+        assert len(schedule) == 1
+
+        plugin.on_disable(ctx)
+
+    def test_toggle_on_rearms_current_side(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        card = types.SimpleNamespace(did=1, odid=0)
+        mw = _fake_mw(monkeypatch, schedule, calls, card=card)
+        mw.reviewer.state = "answer"
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=False, delay_answer_seconds=4)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._on_toggle(False)
+        plugin._on_toggle(True)  # mid-card resume -> re-arm the answer side
+
+        assert schedule and schedule[-1][0] == 4000
+
+        plugin.on_disable(ctx)
+
+
+class TestTwoStageEnterCancel:
+    def test_first_enter_cancels_second_enter_acts(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+        evals = _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=False, delay_question_seconds=5)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        gui_hooks.reviewer_did_show_question.fire(object())
+        pending = schedule[-1][2]
+
+        reviewer = aqt.reviewer.Reviewer()
+        before = reviewer.enter_calls
+        # First Enter: cancel the pending auto-flip, mark the ring, don't act.
+        reviewer.onEnterKey()
+        assert pending.stopped is True
+        assert reviewer.enter_calls == before  # no real action yet
+        assert any("3b82f6" in js for js in evals)  # ring marked "cancelled"
+
+        # Second Enter: perform Anki's real action.
+        reviewer.onEnterKey()
+        assert reviewer.enter_calls == before + 1
+
+        plugin.on_disable(ctx)
+
+    def test_enter_without_pending_timer_acts_immediately(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False))
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        reviewer = aqt.reviewer.Reviewer()
+        before = reviewer.enter_calls
+        reviewer.onEnterKey()  # no timer pending -> straight to Anki's action
+        assert reviewer.enter_calls == before + 1
+
+        plugin.on_disable(ctx)
+
+    def test_disable_restores_original_enter_key(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+
+        original = aqt.reviewer.Reviewer.onEnterKey
+        ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False))
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        assert aqt.reviewer.Reviewer.onEnterKey is not original
+        plugin.on_disable(ctx)
+        assert aqt.reviewer.Reviewer.onEnterKey is original
+
+
+class TestCancelledRingJs:
+    def test_marks_ring_and_stops_interval(self):
+        js = mark_countdown_cancelled_js()
+        assert "omnia-autoflip-timer" in js
+        assert "clearInterval" in js
+        assert "3b82f6" in js

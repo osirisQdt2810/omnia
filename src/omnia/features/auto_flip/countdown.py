@@ -105,3 +105,38 @@ def clear_countdown_js(element_id: str = _DEFAULT_ELEMENT_ID) -> str:
     var el = document.getElementById(id);
     if (el) {{ el.parentNode.removeChild(el); }}
 }})();"""
+
+
+# The reference add-on recolors its bottom-bar timer blue when the user cancels a pending
+# auto-flip with the first Enter press; the ring's "cancelled" state maps to that colour.
+_CANCELLED_COLOR = "#3b82f6"
+
+
+def mark_countdown_cancelled_js(element_id: str = _DEFAULT_ELEMENT_ID) -> str:
+    """Return JS that freezes the countdown and recolors the ring as "cancelled".
+
+    Stops the ticking interval (so the ring no longer shrinks) and paints the overlay in the
+    cancelled colour, leaving it visible so the user sees the pending auto-flip was halted by
+    their first Enter. The element is *not* removed — :func:`clear_countdown_js` does that on
+    the next render.
+
+    Args:
+        element_id: DOM id of the overlay element to mark.
+
+    Returns:
+        A self-contained JS snippet; a no-op in the webview if nothing is running.
+    """
+    eid = json.dumps(element_id)
+    color = json.dumps(_CANCELLED_COLOR)
+    return f"""(function() {{
+    var id = {eid};
+    if (window.__omniaAutoflipTimers && window.__omniaAutoflipTimers[id]) {{
+        clearInterval(window.__omniaAutoflipTimers[id]);
+        delete window.__omniaAutoflipTimers[id];
+    }}
+    var el = document.getElementById(id);
+    if (!el) {{ return; }}
+    el.style.color = {color};
+    var ring = el.querySelector(".omnia-ring");
+    if (ring) {{ ring.setAttribute("stroke-dashoffset", 0); }}
+}})();"""

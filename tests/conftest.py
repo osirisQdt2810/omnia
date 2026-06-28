@@ -53,9 +53,13 @@ class FakeReviewer:
     def __init__(self, card=None) -> None:
         self.card = card
         self.answered_with: list = []
+        self.enter_calls = 0
 
     def _answerCard(self, ease: int) -> None:
         self.answered_with.append(ease)
+
+    def onEnterKey(self) -> None:  # mirrors Anki's method name
+        self.enter_calls += 1
 
 
 def _install_anki_stubs() -> None:
@@ -118,9 +122,48 @@ def _install_anki_stubs() -> None:
     operations_mod.QueryOp = QueryOp
     aqt.operations = operations_mod
 
+    # aqt.qt: just the Qt symbols Omnia's seams import lazily (Tools-menu action + shortcut).
+    qt_mod = types.ModuleType("aqt.qt")
+
+    class _FakeAction:
+        def __init__(self, label, _parent=None) -> None:
+            self.label = label
+            self._checkable = False
+            self._checked = False
+            self._shortcut = None
+            self._handlers: list = []
+            self.triggered = types.SimpleNamespace(connect=self._handlers.append)
+
+        def setCheckable(self, value) -> None:
+            self._checkable = value
+
+        def setChecked(self, value) -> None:
+            self._checked = value
+
+        def isChecked(self) -> bool:
+            return self._checked
+
+        def setShortcut(self, value) -> None:
+            self._shortcut = value
+
+        def trigger(self) -> None:
+            for handler in list(self._handlers):
+                handler()
+
+    qt_mod.QAction = _FakeAction
+    qt_mod.QKeySequence = lambda value: value
+    aqt.qt = qt_mod
+
+    # aqt.sound: an av_player whose queue depth tests can set to gate audio-aware arming.
+    sound_mod = types.ModuleType("aqt.sound")
+    sound_mod.av_player = types.SimpleNamespace(_enqueued=[])
+    aqt.sound = sound_mod
+
     sys.modules["aqt"] = aqt
     sys.modules["aqt.reviewer"] = reviewer_mod
     sys.modules["aqt.operations"] = operations_mod
+    sys.modules["aqt.qt"] = qt_mod
+    sys.modules["aqt.sound"] = sound_mod
     sys.modules["anki"] = types.ModuleType("anki")
 
 

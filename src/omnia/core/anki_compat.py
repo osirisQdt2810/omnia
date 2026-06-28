@@ -109,6 +109,56 @@ def reviewer_side() -> Optional[str]:
     return getattr(reviewer, "state", None) if reviewer is not None else None
 
 
+def effective_deck_id(card: Any) -> Optional[int]:
+    """Return the deck whose options apply to ``card`` (``card.odid or card.did``).
+
+    For cards pulled into a filtered/cram deck, ``did`` is the temporary filtered deck and
+    ``odid`` is the card's *original* (home) deck — whose options the user actually
+    configured. Anki resolves per-deck config the same way (see
+    ``decks.config_dict_for_deck_id``), so per-deck overrides must key off the home deck.
+    """
+    odid = getattr(card, "odid", 0)
+    return odid or getattr(card, "did", None)
+
+
+def card_side_av_text(card: Any, side: str) -> str:
+    """Return the rendered text of ``card``'s ``side`` ('question' | 'answer'), or ''.
+
+    The reference auto-flip add-on scans the rendered question/answer HTML for its external
+    "myview.mpv" clip-player command (which carries a ``--range=`` clip duration). We
+    replicate that by returning the rendered side text; the pure
+    :func:`~omnia.features.auto_flip.logic.parse_mpv_range_extra_seconds` parses it.
+    """
+    method = getattr(card, side, None)  # card.question() / card.answer()
+    if not callable(method):
+        return ""
+    try:
+        return str(method())
+    except Exception:
+        from omnia.core.logging import get_logger
+
+        get_logger().exception("card_side_av_text: failed to render %s", side)
+        return ""
+
+
+def current_card() -> Any:
+    """Return the card currently shown in the reviewer, or None."""
+    reviewer = getattr(main_window(), "reviewer", None)
+    return getattr(reviewer, "card", None) if reviewer is not None else None
+
+
+def audio_still_playing() -> bool:
+    """Return True if Anki's ``av_player`` still has queued/playing audio.
+
+    Used to arm auto-flip only once the audio queue drains: the
+    ``av_player_did_end_playing`` hook fires per clip, so a card with several sounds reports
+    a non-empty queue until the last one ends.
+    """
+    from aqt.sound import av_player
+
+    return bool(getattr(av_player, "_enqueued", ()))
+
+
 def reviewer_show_answer() -> None:
     """Flip the current card to its answer side."""
     main_window().reviewer._showAnswer()
@@ -200,3 +250,90 @@ def unsubscribe_hook(hook_name: str, callback: Callable[..., Any]) -> None:
     hook = getattr(gui_hooks(), hook_name)
     with contextlib.suppress(ValueError):
         hook.remove(registered)
+
+
+# --- Tools-menu action + shortcut (used by auto_flip's Ctrl+J toggle) ------------------
+def add_tools_menu_action(
+    label: str,
+    callback: Callable[[bool], None],
+    *,
+    checkable: bool = False,
+    checked: bool = False,
+    shortcut: Optional[str] = None,
+) -> Any:
+    """Add a ``QAction`` to Anki's Tools menu and return it (for later removal).
+
+    Args:
+        label: The menu item text.
+        callback: Invoked on trigger with the action's checked state (always ``False`` for
+            a non-checkable action).
+        checkable: Whether the action is a toggle.
+        checked: Initial checked state when ``checkable``.
+        shortcut: Optional key sequence (e.g. ``"Ctrl+J"``).
+
+    Returns:
+        The created ``QAction`` (pass it to :func:`remove_tools_menu_action` to tear down).
+    """
+    from aqt.qt import QAction, QKeySequence
+
+    mw = main_window()
+    action = QAction(label, mw)
+    if checkable:
+        action.setCheckable(True)
+        action.setChecked(checked)
+    if shortcut:
+        action.setShortcut(QKeySequence(shortcut))
+    action.triggered.connect(lambda *_a: callback(action.isChecked()))
+    mw.form.menuTools.addAction(action)
+    return action
+
+
+def remove_tools_menu_action(action: Any) -> None:
+    """Remove an action created by :func:`add_tools_menu_action` from the Tools menu."""
+    if action is None:
+        return
+    main_window().form.menuTools.removeAction(action)
+
+
+# --- Reviewer.onEnterKey wrap (used by auto_flip's two-stage Enter cancel) --------------
+# (Reviewer class, original onEnterKey) so we can restore exactly what we replaced and never
+# double-wrap if two callers (or a reload) install over each other.
+_ENTER_KEY_ORIG: Optional[tuple[Any, Callable[..., Any]]] = None
+
+
+def wrap_reviewer_enter_key(
+    handler: Callable[[Any, Callable[[Any], None]], None],
+) -> None:
+    """Wrap ``Reviewer.onEnterKey`` so ``handler`` decides whether to act.
+
+    ``handler`` is called as ``handler(reviewer, original)`` where ``original`` is a
+    zero-extra-arg callable that performs Anki's real Enter action for that reviewer. This
+    lets a feature intercept Enter (e.g. a first press cancels a pending timer, a second
+    press calls ``original``) without the feature importing ``aqt`` or knowing the wrap
+    mechanics. Idempotent: re-wrapping restores the original first so only one wrap is live.
+
+    Args:
+        handler: Receives ``(reviewer, original_enter_action)`` on each Enter press.
+    """
+    global _ENTER_KEY_ORIG
+    from aqt.reviewer import Reviewer
+
+    if _ENTER_KEY_ORIG is not None:
+        restore_reviewer_enter_key()
+    orig = Reviewer.onEnterKey
+    _ENTER_KEY_ORIG = (Reviewer, orig)
+
+    def onEnterKey(reviewer: Any) -> None:  # noqa: N802 (mirrors Anki's method name)
+        handler(reviewer, lambda: orig(reviewer))
+
+    Reviewer.onEnterKey = onEnterKey  # type: ignore[method-assign]
+
+
+def restore_reviewer_enter_key() -> None:
+    """Restore the original ``Reviewer.onEnterKey`` (safe if never wrapped)."""
+    global _ENTER_KEY_ORIG
+    if _ENTER_KEY_ORIG is None:
+        return
+    reviewer_cls, orig = _ENTER_KEY_ORIG
+    reviewer_cls.onEnterKey = orig  # type: ignore[method-assign]
+    _ENTER_KEY_ORIG = None
