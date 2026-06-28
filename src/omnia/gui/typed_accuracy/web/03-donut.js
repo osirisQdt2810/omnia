@@ -1,4 +1,13 @@
 
+  /**
+   * Typed-accuracy stats panel — part 3 of 5 of the panel IIFE (load order matters).
+   * Mounts the panel card into the stats grid and draws the SVG donut chart.
+   */
+
+  /**
+   * Instantiate the panel card element from the stashed HTML template.
+   * @return {?Element}
+   */
   function makeCardElement() {
     const tpl = window.__TA_HTML_TEMPLATE;
     if (!tpl) {
@@ -10,6 +19,10 @@
     return wrap.firstElementChild;
   }
 
+  /**
+   * Copy a sibling stats card's classes onto our card so it inherits the grid styling.
+   * @param {!Element} cardEl The panel card element.
+   */
   function adoptCardClass(cardEl) {
     const sample =
       document.querySelector("section") ||
@@ -18,17 +31,25 @@
     if (sample && sample.className) {
       const keep = new Set(cardEl.className.split(/\s+/).filter(Boolean));
       const add = sample.className.split(/\s+/).filter(Boolean);
-      for (const c of add) keep.add(c);
+      for (const c of add) {
+        keep.add(c);
+      }
       cardEl.className = Array.from(keep).join(" ");
     }
   }
 
+  /**
+   * Ensure the panel card is mounted (rebuilding it if corrupted) and return it.
+   * @return {?Element}
+   */
   function ensureMounted() {
     // Remove duplicates if Anki / observer storms created multiple nodes with the same id.
     try {
       const all = Array.from(document.querySelectorAll("#ta-card"));
       if (all.length > 1) {
-        for (let i = 1; i < all.length; i++) all[i].remove();
+        for (let i = 1; i < all.length; i++) {
+          all[i].remove();
+        }
       }
     } catch (e) {}
 
@@ -48,18 +69,26 @@
     } catch (e) {
       // If anything goes wrong during validation, force rebuild.
       try {
-        if (card) card.remove();
+        if (card) {
+          card.remove();
+        }
       } catch (e2) {}
       card = null;
     }
 
-    if (card) return card;
+    if (card) {
+      return card;
+    }
 
     const container = findGridContainer();
-    if (!container) return null;
+    if (!container) {
+      return null;
+    }
 
     card = makeCardElement();
-    if (!card) return null;
+    if (!card) {
+      return null;
+    }
 
     adoptCardClass(card);
 
@@ -77,8 +106,11 @@
     window.__TA_MOUNTING = true;
     try {
       const firstChild = container.querySelector("section, div");
-      if (firstChild) container.insertBefore(card, firstChild);
-      else container.insertBefore(card, container.firstChild || null);
+      if (firstChild) {
+        container.insertBefore(card, firstChild);
+      } else {
+        container.insertBefore(card, container.firstChild || null);
+      }
     } finally {
       window.__TA_MOUNTING = false;
     }
@@ -87,6 +119,15 @@
     return card;
   }
 
+  /**
+   * Build the SVG path "d" for a donut arc.
+   * @param {number} cx Center x.
+   * @param {number} cy Center y.
+   * @param {number} r Radius.
+   * @param {number} startAngle Start angle in degrees.
+   * @param {number} endAngle End angle in degrees.
+   * @return {string}
+   */
   function arcPath(cx, cy, r, startAngle, endAngle) {
     const rad = (a) => (a * Math.PI) / 180;
     const x1 = cx + r * Math.cos(rad(startAngle));
@@ -97,11 +138,19 @@
     return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
   }
 
+  /**
+   * Render a donut chart of the given parts into an <svg> element.
+   * @param {!SVGElement} svg The target SVG node.
+   * @param {!Array<{value: number, color: string}>} parts The slices.
+   */
   function renderDonut(svg, parts) {
     const total = parts.reduce((s, p) => s + (p.value || 0), 0);
     svg.innerHTML = "";
 
-    const cx = 60, cy = 60, r = 46, stroke = 18;
+    const cx = 60;
+    const cy = 60;
+    const r = 46;
+    const stroke = 18;
 
     const base = document.createElementNS("http://www.w3.org/2000/svg", "circle");
     base.setAttribute("cx", cx);
@@ -112,12 +161,16 @@
     base.setAttribute("stroke-width", stroke);
     svg.appendChild(base);
 
-    if (!total) return;
+    if (!total) {
+      return;
+    }
 
     let angle = -90;
     for (const p of parts) {
       const v = p.value || 0;
-      if (v <= 0) continue;
+      if (v <= 0) {
+        continue;
+      }
       const span = (v / total) * 360;
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", arcPath(cx, cy, r, angle, angle + span));
