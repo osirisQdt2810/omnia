@@ -172,15 +172,20 @@ def load_payload(
     }
 
 
-def build_smart_notes_html(*, dark: bool) -> str:
-    """Build the full Smart Notes config page HTML (data is loaded via the ``load`` op).
+def build_smart_notes_html(*, dark: bool, init: dict[str, object] | None = None) -> str:
+    """Build the full Smart Notes config page HTML, with the initial data baked in.
 
-    The shell renders empty; the JS fires ``list_note_types`` then ``load`` to populate the
-    selectors and the table, so the same document serves any note type without re-rendering
-    from Python.
+    The selectors + first note type's rows are seeded from ``init`` (``window.__SN_INIT``) so
+    the page renders fully populated on load WITHOUT an init ``pycmd`` callback — Anki's bridge
+    callback channel isn't ready the instant the page's inline script runs, so an init
+    ``list_note_types``/``load`` round-trip is dropped and the dialog comes up blank. User
+    actions (change note type, set base, create field, auto-smart, save) happen later, when the
+    bridge is ready, so they keep using ``pycmd``.
 
     Args:
         dark: Render the dark palette (Anki night mode) when True, else the light palette.
+        init: ``{note_types, note_type, base_field, all_fields, rows, providers}`` for the
+            initially-selected note type. None/empty falls back to a JS ``list_note_types``.
 
     Returns:
         A complete, self-contained HTML document string.
@@ -189,6 +194,7 @@ def build_smart_notes_html(*, dark: bool) -> str:
         theme_class="omnia-dark" if dark else "omnia-light",
         css=_CSS,
         types_json=json.dumps(_FIELD_TYPES),
+        init_json=json.dumps(init) if init else "null",
         js=_JS,
     )
 
@@ -251,6 +257,7 @@ _PAGE_TEMPLATE = """<!doctype html>
   </footer>
 </div>
 <script>var SN_TYPES = {types_json};</script>
+<script>window.__SN_INIT = {init_json};</script>
 <script>{js}</script>
 </body>
 </html>"""
@@ -572,9 +579,18 @@ _JS = r"""
     send("cancel", {}, null);
   });
 
-  send("list_note_types", {}, function (names) {
-    fill(noteTypeSel, names || [], (names && names[0]) || "");
-    loadNoteType();
-  });
+  // Initial state is baked into window.__SN_INIT (server-side) so the page renders populated
+  // without an init pycmd callback — Anki's bridge callback channel isn't ready the instant
+  // this inline script runs. Fall back to a live list_note_types only if nothing was baked.
+  var INIT = window.__SN_INIT || null;
+  if (INIT && INIT.note_types && INIT.note_types.length) {
+    fill(noteTypeSel, INIT.note_types, INIT.note_type || INIT.note_types[0] || "");
+    applyLoad(INIT);
+  } else {
+    send("list_note_types", {}, function (names) {
+      fill(noteTypeSel, names || [], (names && names[0]) || "");
+      loadNoteType();
+    });
+  }
 })();
 """

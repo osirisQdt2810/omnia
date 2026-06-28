@@ -46,7 +46,9 @@ class SmartNotesDialog(WebDialog):
         super().__init__(
             parent,
             title="Smart Notes ✨",
-            html=build_smart_notes_html(dark=theme_manager.night_mode),
+            html=build_smart_notes_html(
+                dark=theme_manager.night_mode, init=self._initial_state()
+            ),
             handlers={
                 "list_note_types": self._on_list_note_types,
                 "load": self._on_load,
@@ -59,6 +61,25 @@ class SmartNotesDialog(WebDialog):
             width=920,
             height=620,
         )
+
+    def _initial_state(self) -> dict[str, Any]:
+        """The data baked into the page so it renders populated without an init pycmd.
+
+        Seeds the note-type list + the first note type's load payload (base field, fields,
+        rows, providers). The init pycmd callback is unreliable (the bridge channel isn't ready
+        when the page's inline script first runs), so the first paint must not depend on it.
+        """
+        note_types = anki_compat.note_type_names()
+        if not note_types:
+            return {"note_types": []}
+        first = note_types[0]
+        payload = load_payload(
+            first,
+            self._settings().note_type_config(first),
+            anki_compat.note_type_field_names(first),
+            available_llm_providers(),
+        )
+        return {"note_types": note_types, **payload}
 
     # --- pycmd handlers --------------------------------------------------------------
     def _on_list_note_types(self, _data: dict[str, Any]) -> list[str]:
