@@ -1,10 +1,20 @@
 """Per-deck auto-flip options: a small dialog + the deck-list gear-menu glue.
 
 The deck browser's gear (options) menu gets an "Omnia: Auto-Flip…" action that opens
-:class:`AutoFlipDeckDialog` for that deck. The dialog edits one deck's override (on/off plus
-question/answer delays); on accept the glue merges it into ``auto_flip.per_deck``, persists
-through the :class:`~omnia.core.config.repository.ConfigRepository`, and reloads the plugin
-so the new delays take effect.
+:class:`AutoFlipDeckDialog` for that deck. The dialog edits one deck's override (the two-flag
+``use_global`` / ``enabled`` gate plus question/answer delays); on accept the glue merges it
+into ``auto_flip.per_deck``, persists through the
+:class:`~omnia.core.config.repository.ConfigRepository`, and reloads the plugin so the new
+delays take effect.
+
+Native Deck-Options tab — deferred. The reference add-on injects its options into Anki's
+native Deck Options screen via the ``deck_options_did_load`` hook (``option.js`` /
+``option.html``), persisting into the deck config's ``auxData``. That screen is the Svelte
+``$deckOptions`` bundle whose ``addHtmlAddon`` / ``auxData`` surface is undocumented and
+shifts between Anki releases (it changed shape in the 23.10 → 25.09 line), so wiring it
+cleanly is version-fragile. Correctness + clean teardown win over the exact surface here, so
+this gear-menu dialog is the per-deck surface; the native tab can be revisited once that API
+stabilises.
 
 This module subclasses ``QDialog`` and so imports ``aqt.qt`` at the top — it is therefore
 imported lazily by the auto_flip feature (only inside Anki), never at headless load time.
@@ -24,7 +34,7 @@ if TYPE_CHECKING:
 
 
 class AutoFlipDeckDialog(QDialog):
-    """Edits one deck's auto-flip override (enable toggle + question/answer delays)."""
+    """Edits one deck's auto-flip override (use-global / enable toggles + delays)."""
 
     def __init__(
         self,
@@ -34,6 +44,7 @@ class AutoFlipDeckDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._deck_id = deck_id
+        self._settings = settings
         self.setWindowTitle("Omnia — Auto-Flip for this deck")
         self.setMinimumWidth(360)
         self._build(settings)
@@ -47,6 +58,7 @@ class AutoFlipDeckDialog(QDialog):
         )
 
         override = settings.per_deck.get(str(self._deck_id))
+        use_global = override.use_global if override is not None else False
         enabled = override.enabled if override is not None else True
         q_default = (
             override.delay_question_seconds
@@ -61,6 +73,10 @@ class AutoFlipDeckDialog(QDialog):
 
         outer = QVBoxLayout(self)
 
+        self._use_global = QCheckBox("Use the global delays for this deck")
+        self._use_global.setChecked(use_global)
+        outer.addWidget(self._use_global)
+
         self._enabled = QCheckBox("Auto-flip in this deck")
         self._enabled.setChecked(enabled)
         outer.addWidget(self._enabled)
@@ -73,12 +89,37 @@ class AutoFlipDeckDialog(QDialog):
         form.addRow("Delay before auto-grading (s)", self._a_delay)
         outer.addLayout(form)
 
+        # Disable the per-deck delays while deferring to the global ones, mirroring the
+        # reference's "use general" behaviour.
+        self._use_global.toggled.connect(self._sync_enabled_state)
+        self._enabled.toggled.connect(self._sync_enabled_state)
+        self._sync_enabled_state()
+
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.RestoreDefaults
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        buttons.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(
+            self._restore_defaults
+        )
         outer.addWidget(buttons)
+
+    def _sync_enabled_state(self) -> None:
+        """Grey out the per-deck delays when deferring to global delays or when off."""
+        use_deck_delays = self._enabled.isChecked() and not self._use_global.isChecked()
+        self._q_delay.setEnabled(use_deck_delays)
+        self._a_delay.setEnabled(use_deck_delays)
+
+    def _restore_defaults(self) -> None:
+        """Reset the controls to this deck's defaults (the global delays, deck on)."""
+        self._use_global.setChecked(False)
+        self._enabled.setChecked(True)
+        self._q_delay.setValue(float(self._settings.delay_question_seconds))
+        self._a_delay.setValue(float(self._settings.delay_answer_seconds))
+        self._sync_enabled_state()
 
     @staticmethod
     def _make_delay_spin(value: float) -> Any:
@@ -94,6 +135,7 @@ class AutoFlipDeckDialog(QDialog):
     def override_values(self) -> dict[str, Any]:
         """Return this deck's edited override as a plain dict for persistence."""
         return {
+            "use_global": self._use_global.isChecked(),
             "enabled": self._enabled.isChecked(),
             "delay_question_seconds": self._q_delay.value(),
             "delay_answer_seconds": self._a_delay.value(),

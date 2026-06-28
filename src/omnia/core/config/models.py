@@ -22,10 +22,16 @@ class _Strict(BaseModel):
 class AutoFlipDeckOverride(_Strict):
     """Per-deck auto-flip override (keyed by deck id in :class:`AutoFlipSettings`).
 
-    A deck with an entry uses these values instead of the global defaults; ``enabled=False``
-    turns auto-flip off for that deck while leaving the feature on elsewhere.
+    Mirrors the reference add-on's two-flag deck gate (``use_general`` / ``use_deck``):
+
+    * ``use_global=True`` → the deck has an override row but defers to the global delays
+      (the reference's ``use_general``); the per-deck delays below are ignored.
+    * ``use_global=False`` + ``enabled=True`` → use this row's delays (``use_deck``).
+    * ``enabled=False`` → auto-flip is OFF for this deck (``use_deck=False``), regardless of
+      ``use_global``.
     """
 
+    use_global: bool = False
     enabled: bool = True
     delay_question_seconds: float = Field(3.0, ge=0)
     delay_answer_seconds: float = Field(3.0, ge=0)
