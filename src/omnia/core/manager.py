@@ -70,6 +70,8 @@ class PluginManager:
                 web=self._web,
                 providers=self._providers,
                 paths=self._paths,
+                config=self._config,
+                reload_self=lambda pid=plugin_id: self.reload(pid),
             )
             self._contexts[plugin_id] = ctx
         return ctx

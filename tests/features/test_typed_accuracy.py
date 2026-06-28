@@ -37,6 +37,8 @@ def _context(settings):
         web=WebInjector(),
         providers=ProviderHub(),
         paths=AddonPaths(Path("/x"), Path("/x/web"), Path("/x/uf")),
+        config=None,  # not exercised by this seam test
+        reload_self=lambda: None,
     )
 
 
