@@ -14,8 +14,10 @@ from omnia.features.display_interval.logic import format_interval
 
 class TestFormatInterval:
     def test_format_interval_buckets(self):
+        assert format_interval(0) == "0"
         assert format_interval(30) == "<1m"
-        assert format_interval(90) == "2m"
+        assert format_interval(90) == "<2m"  # sub-10-minute -> "<Nm" (reference parity)
+        assert format_interval(60 * 12) == "12m"  # 10+ minutes -> "Nm"
         assert format_interval(3600) == "1h"
         assert format_interval(86_400) == "1d"
         assert format_interval(86_400 * 45) == "2mo"
@@ -37,7 +39,7 @@ class TestDisplayIntervalPlugin:
         ctx = types.SimpleNamespace(ease=ease)
 
         js = DisplayIntervalPlugin._overlay_js(ctx, FakeCard(id=1))
-        assert "next: 3d" in js
+        assert "interval: 3d" in js
         assert captured["ease"] == 2  # used the pipeline-effective ease, not raw Good
 
     def test_overlay_js_none_when_no_interval(self, monkeypatch):
@@ -54,8 +56,8 @@ class TestDisplayIntervalPlugin:
         ctx = types.SimpleNamespace(web=web, ease=EasePipeline())
         plugin = DisplayIntervalPlugin()
         plugin.on_enable(ctx)
-        assert "display_interval" in web._dynamic
-        assert web.collect_js("question") != ""  # css asset registered
+        assert "display_interval" in web._dynamic  # dynamic providers registered
+        assert "display_interval" in web._assets  # asset slot registered (for teardown)
         plugin.on_disable(ctx)
         assert "display_interval" not in web._dynamic
-        assert web.collect_js("answer") == ""
+        assert "display_interval" not in web._assets

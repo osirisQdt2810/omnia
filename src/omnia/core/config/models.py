@@ -46,14 +46,18 @@ class TypedAccuracySettings(_Strict):
     """Settings for the typing-accuracy grader."""
 
     threshold: float = Field(0.7, ge=0.0, le=1.0)
+    # Auto-answer on a pass: "good"/"easy" stage that ease; "no" stages nothing (the user's
+    # own press stands). A fail always forces Hard regardless of this setting.
     pass_ease: str = Field("good")
-    show_stats: bool = True  # show the accuracy stats card on the deck overview
+    show_stats: bool = (
+        True  # show the interactive accuracy panel on the Statistics screen
+    )
 
     @field_validator("pass_ease")
     @classmethod
     def _validate_pass_ease(cls, value: str) -> str:
-        if value not in {"good", "easy"}:
-            raise ValueError("pass_ease must be 'good' or 'easy'")
+        if value not in {"good", "easy", "no"}:
+            raise ValueError("pass_ease must be 'good', 'easy', or 'no'")
         return value
 
 

@@ -1,0 +1,405 @@
+/* =========================
+   Typed Accuracy - ta-card
+   Replace your whole CSS file with this
+   ========================= */
+
+/* Root card */
+#ta-card.ta-card {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 20px 22px;
+  box-sizing: border-box;
+
+  width: 100%;
+  max-width: 640px;     /* prevents huge card from forcing grid changes */
+  min-width: 0;         /* allow shrinking inside grid */
+  overflow: hidden;     /* avoid bleeding into neighbor cards */
+
+  /* Enable container queries based on the card width */
+  container-type: inline-size;
+  container-name: ta;
+
+  /* Layout variables (tuned per container width below) */
+  --ta-donut-size: 220px;
+  --ta-donut-nudge: -4px;       /* lift donut slightly */
+  --ta-main-gap: 18px;          /* distance between donut and stats */
+  --ta-stats-max: 520px;        /* cap stats width so labels don't drift too far */
+  --ta-row-gap: 10px;
+  --ta-row-cols: 18px minmax(0, 1fr) 46px 64px;
+}
+
+/* Title */
+#ta-card .ta-title {
+  font-size: clamp(28px, 3.2vw, 52px);
+  font-weight: 800;
+  letter-spacing: 0.2px;
+  margin: 0 0 10px 0;
+  line-height: 1.05;
+}
+
+#ta-card .ta-controls {
+  margin-bottom: 14px;
+}
+
+/* Top row line */
+#ta-card .ta-rowline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  row-gap: 10px; /* wrap more aggressively */
+}
+
+#ta-card .ta-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  opacity: 0.95;
+}
+
+#ta-card .ta-rated,
+#ta-card .ta-overdue,
+#ta-card .ta-display-interval {
+  margin-left: 6px;
+}
+
+#ta-card .ta-param-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+  margin-top: 14px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.08);
+}
+
+#ta-card .ta-rated-opts,
+#ta-card .ta-overdue-opts {
+  display: inline-flex;
+  align-items: center;
+}
+
+#ta-card .ta-rated span,
+#ta-card .ta-overdue span,
+#ta-card .ta-display-interval span {
+  /* text-decoration: underline; */
+  /* text-decoration-style: dotted; */
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+
+#ta-card .ta-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+#ta-card .ta-mini-label {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+#ta-card select,
+#ta-card input[type="number"] {
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.12);
+  color: inherit;
+}
+
+#ta-card input[type="number"] {
+  width: 96px;
+}
+
+#ta-card .ta-mini-sfx {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-left: -4px;
+}
+
+#ta-card .ta-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+
+#ta-card .ta-range label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  opacity: 0.95;
+}
+
+#ta-card .ta-range2 {
+  margin-top: 8px;
+  gap: 12px;
+}
+
+#ta-card .ta-custom {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  margin-left: 10px;
+}
+
+#ta-card .ta-dt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#ta-card .ta-dt-label {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+#ta-card input[type="datetime-local"] {
+  font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.12);
+  color: inherit;
+}
+
+#ta-card .ta-err {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #ff8a80;
+  min-height: 14px;
+}
+
+/* Main layout: donut + stats MUST stay in one row when possible */
+#ta-card .ta-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--ta-main-gap);
+  align-items: start;
+  margin-top: 8px;
+}
+
+/* Donut */
+#ta-card .ta-donutWrap {
+  width: var(--ta-donut-size);
+  height: var(--ta-donut-size);
+  position: relative;
+  cursor: pointer;
+  user-select: none;
+
+  /* Lift donut a bit to align visually with stats block */
+  transform: translateY(var(--ta-donut-nudge));
+}
+
+#ta-card .ta-donut {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#ta-card .ta-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+#ta-card .ta-center-num {
+  font-size: clamp(36px, 4vw, 64px);
+  font-weight: 800;
+  line-height: 1;
+}
+
+#ta-card .ta-center-label {
+  font-size: clamp(16px, 1.8vw, 24px);
+  font-weight: 700;
+  opacity: 0.7;
+  margin-top: 6px;
+}
+
+/* Stats table */
+#ta-card .ta-stats {
+  width: 100%;
+  max-width: var(--ta-stats-max);
+  min-width: 0; /* allow shrinking inside grid */
+}
+
+/* Each row: dot | label | count | percent */
+#ta-card .ta-row {
+  display: grid;
+  grid-template-columns: var(--ta-row-cols);
+  column-gap: var(--ta-row-gap);
+  align-items: center;
+  padding: 10px 0;
+
+  min-width: 0; /* critical to avoid clipping */
+}
+
+#ta-card .ta-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 5px;
+  display: inline-block;
+}
+
+#ta-card .ta-good { background: #00c853; }
+#ta-card .ta-bad  { background: #ff1744; }
+#ta-card .ta-miss { background: #ffd600; }
+#ta-card .ta-empty{ background: #9e9e9e; }
+
+#ta-card .ta-label {
+  font-size: clamp(14px, 1.2vw, 20px);
+  font-weight: 800;
+  min-width: 0;
+}
+
+#ta-card .ta-num,
+#ta-card .ta-pct {
+  font-size: 18px;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+#ta-card .ta-pct {
+  opacity: 0.7;
+}
+
+#ta-card .ta-sep {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 6px 0;
+}
+
+#ta-card .ta-total .ta-label {
+  font-size: 22px;
+}
+
+#ta-card .ta-total .ta-num {
+  font-size: 18px;
+}
+
+/* =========================
+   Container queries
+   Tune sizes based on actual card width (best-practice per width)
+   ========================= */
+
+/* Wide card (usually 1 section/row): bigger donut, keep stats narrower so label/value aren't too far */
+@container ta (min-width: 900px) {
+  #ta-card.ta-card {
+    --ta-donut-size: 300px;
+    --ta-donut-nudge: -8px;
+    --ta-main-gap: 22px;
+    --ta-stats-max: 460px;
+    --ta-row-gap: 10px;
+    --ta-row-cols: 18px minmax(0, 1fr) 46px 64px;
+  }
+}
+
+/* Medium card (usually 2 sections/row): slightly smaller donut, keep good spacing */
+@container ta (min-width: 680px) and (max-width: 899px) {
+  #ta-card.ta-card {
+    --ta-donut-size: 260px;
+    --ta-donut-nudge: -6px;
+    --ta-main-gap: 20px;
+    --ta-stats-max: 480px;
+  }
+}
+
+/* Narrow card (often 3 sections/row): MUST keep donut + stats on same row -> shrink donut + tighten number columns */
+@container ta (max-width: 679px) {
+  #ta-card.ta-card {
+    --ta-donut-size: 220px;     /* key: small enough to avoid wrapping */
+    --ta-donut-nudge: -6px;
+    --ta-main-gap: 16px;        /* keep some distance between donut and stats */
+    --ta-stats-max: 9999px;     /* allow using full width */
+    --ta-row-gap: 8px;
+    --ta-row-cols: 16px minmax(0, 1fr) 34px 56px; /* prevent % clipping */
+  }
+
+  /* Slightly reduce large texts so the row stays compact */
+  #ta-card .ta-num,
+  #ta-card .ta-pct {
+    font-size: 16px;
+  }
+
+  #ta-card .ta-total .ta-label {
+    font-size: 20px;
+  }
+}
+
+/* Extra narrow (edge cases): still try to keep row; reduce donut a bit more */
+@container ta (max-width: 520px) {
+  #ta-card.ta-card {
+    --ta-donut-size: 200px;
+    --ta-main-gap: 14px;
+    --ta-row-cols: 16px minmax(0, 1fr) 32px 52px;
+  }
+}
+
+/* Ultra narrow (3 sections/row on Anki): keep donut + stats on ONE ROW by shrinking */
+@container ta (max-width: 420px) {
+  #ta-card.ta-card {
+    --ta-donut-size: 170px;      /* shrink donut so it won't force wrap */
+    --ta-donut-nudge: -4px;
+    --ta-main-gap: 12px;
+
+    /* tighten the stats columns to prevent % from being clipped */
+    --ta-row-gap: 6px;
+    --ta-row-cols: 14px minmax(0, 1fr) 26px 44px;
+  }
+
+  /* reduce typography a bit so rows fit */
+  #ta-card .ta-num,
+  #ta-card .ta-pct {
+    font-size: 14px;
+  }
+
+  #ta-card .ta-label {
+    font-size: 16px;
+  }
+
+  #ta-card .ta-total .ta-label {
+    font-size: 18px;
+  }
+
+  /* keep the two-column layout (IMPORTANT) */
+  #ta-card .ta-main {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+}
+
+/* Extreme narrow: shrink a bit more but STILL keep one row */
+@container ta (max-width: 360px) {
+  #ta-card.ta-card {
+    --ta-donut-size: 155px;
+    --ta-main-gap: 10px;
+    --ta-row-cols: 14px minmax(0, 1fr) 24px 40px;
+  }
+
+  #ta-card .ta-num,
+  #ta-card .ta-pct {
+    font-size: 13px;
+  }
+
+  #ta-card .ta-label {
+    font-size: 15px;
+  }
+}

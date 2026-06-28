@@ -1,0 +1,87 @@
+<section id="ta-card" class="ta-card">
+  <div class="ta-title">Typed Accuracy</div>
+
+  <div class="ta-controls">
+    <div class="ta-rowline">
+      <label class="ta-check">
+        <input id="ta_subdecks" type="checkbox" />
+        <span>Include subdecks</span>
+      </label>
+    </div>
+
+    <div class="ta-range">
+      <label><input type="radio" name="ta_range" value="current" checked /> <span>current</span></label>
+      <label><input type="radio" name="ta_range" value="backlog" /> <span>backlog</span></label>
+      <label><input type="radio" name="ta_range" value="1m" /> <span>1 month</span></label>
+      <label><input type="radio" name="ta_range" value="1w" /> <span>1 week</span></label>
+      <label><input type="radio" name="ta_range" value="3d" /> <span>3 days</span></label>
+      <label><input type="radio" name="ta_range" value="1d" /> <span>1 day</span></label>
+    </div>
+
+    <div class="ta-range ta-range2">
+      <label><input type="radio" name="ta_range" value="custom" /> <span>custom</span></label>
+
+      <div id="ta_custom_row" class="ta-custom" style="display:none;">
+        <div class="ta-dt">
+          <div class="ta-dt-label">From</div>
+          <input id="ta_from" type="datetime-local" />
+        </div>
+        <div class="ta-dt">
+          <div class="ta-dt-label">To</div>
+          <input id="ta_to" type="datetime-local" />
+        </div>
+      </div>
+    </div>
+
+    <div id="ta_err" class="ta-err"></div>
+  </div>
+
+  <div class="ta-main">
+    <div id="ta_donut_wrap" class="ta-donutWrap" title="Click to toggle unique/attempts">
+      <svg id="ta_donut" class="ta-donut" viewBox="0 0 120 120" aria-hidden="true"></svg>
+      <div class="ta-center">
+        <div id="ta_center_num" class="ta-center-num">0</div>
+        <div id="ta_center_label" class="ta-center-label">unique</div>
+      </div>
+    </div>
+
+    <div class="ta-stats">
+      <div class="ta-row">
+        <span class="ta-dot ta-good"></span>
+        <span class="ta-label">Good</span>
+        <span class="ta-num" id="ta_good_val">0</span>
+        <span class="ta-pct" id="ta_good_pct">0.0%</span>
+      </div>
+
+      <div class="ta-row">
+        <span class="ta-dot ta-bad"></span>
+        <span class="ta-label">Bad</span>
+        <span class="ta-num" id="ta_bad_val">0</span>
+        <span class="ta-pct" id="ta_bad_pct">0.0%</span>
+      </div>
+
+      <div class="ta-row">
+        <span class="ta-dot ta-miss"></span>
+        <span class="ta-label">Miss</span>
+        <span class="ta-num" id="ta_miss_val">0</span>
+        <span class="ta-pct" id="ta_miss_pct">0.0%</span>
+      </div>
+
+      <div class="ta-row">
+        <span class="ta-dot ta-empty"></span>
+        <span class="ta-label">Empty</span>
+        <span class="ta-num" id="ta_empty_val">0</span>
+        <span class="ta-pct" id="ta_empty_pct">0.0%</span>
+      </div>
+
+      <div class="ta-sep"></div>
+
+      <div class="ta-row ta-total">
+        <span></span>
+        <span class="ta-label">Total</span>
+        <span class="ta-num" id="ta_total_val">0</span>
+        <span></span>
+      </div>
+    </div>
+  </div>
+</section>

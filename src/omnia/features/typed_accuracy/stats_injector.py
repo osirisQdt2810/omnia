@@ -1,0 +1,75 @@
+"""Inject the interactive typed-accuracy panel into Anki's Statistics screen.
+
+Reads the three bundled web assets (CSS + HTML template + JS) and ``eval``s them into the
+stats webview, mirroring the reference's ``stats_injector``: the CSS is installed into a
+``<style>`` element, the HTML template is stashed on ``window.__TA_HTML_TEMPLATE`` for the JS
+to mount, then the JS runs (and gates itself to the stats DOM). The asset *paths* live next
+to the feature module, so no Anki import is needed to read them — only ``webview.eval`` is
+Anki glue, and that webview is passed in.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+_CSS_STYLE_ID = "typed-accuracy-stats-css"
+
+
+class StatsInjector:
+    """Loads the panel assets and evaluates them into a stats webview."""
+
+    def __init__(self, web_dir: Path, logger: logging.Logger) -> None:
+        """Initialise the injector.
+
+        Args:
+            web_dir: Directory holding ``typed_accuracy.{css,html,js}``.
+            logger: Logger for injection failures.
+        """
+        self._web_dir = web_dir
+        self._logger = logger
+
+    def _read(self, name: str) -> str:
+        return (self._web_dir / name).read_text(encoding="utf-8")
+
+    def inject(self, webview: Any) -> None:
+        """Install the CSS, stash the HTML template, and run the panel JS in ``webview``.
+
+        Resilient: a missing asset or eval error is logged, never raised — this fires on the
+        stats screen and must not break it.
+        """
+        try:
+            css = self._read("typed_accuracy.css")
+            html = self._read("typed_accuracy.html")
+            js = self._read("typed_accuracy.js")
+        except OSError:
+            self._logger.exception("typed_accuracy: failed to read panel assets")
+            return
+
+        try:
+            webview.eval(f"""
+(function(){{
+  try {{
+    var id = {json.dumps(_CSS_STYLE_ID)};
+    var el = document.getElementById(id);
+    if (!el) {{
+      el = document.createElement("style");
+      el.id = id;
+      document.head.appendChild(el);
+    }}
+    el.textContent = {json.dumps(css)};
+  }} catch(e) {{}}
+}})();
+""")
+            webview.eval(f"""
+(function(){{
+  try {{
+    window.__TA_HTML_TEMPLATE = {json.dumps(html)};
+  }} catch(e) {{}}
+}})();
+""")
+            webview.eval(js)
+        except Exception:
+            self._logger.exception("typed_accuracy: panel injection failed")
