@@ -69,7 +69,7 @@ class ProviderHub:
         config: dict[str, Any] = {"provider": name}
         active = getattr(settings, name, None)
         if isinstance(active, BaseModel):
-            data = active.model_dump()
+            data = active.dict()
             # The factory/providers use ``model`` for the chat model; settings use text_model.
             # ``image_model`` passes through unchanged so generate_image can target it.
             data["model"] = data.pop("text_model", "")
@@ -89,7 +89,7 @@ class ProviderHub:
         config: dict[str, Any] = {"provider": settings.provider}
         active = settings.active()
         if active is not None:
-            config.update(active.model_dump())
+            config.update(active.dict())
         # google_cloud authenticates with the same Google service account as gemini_vertex.
         if settings.provider == "google_cloud":
             config = {**self._vertex_auth(), **config}

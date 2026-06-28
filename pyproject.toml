@@ -36,6 +36,11 @@ ignore = [
     "UP047",  # non-pep695-generic-function
 ]
 
+[tool.ruff.lint.pep8-naming]
+# Pydantic v1 validators (@validator) are implicit classmethods whose first arg is `cls`;
+# tell N805 to treat the decorator like @classmethod so it doesn't ask for `self`.
+classmethod-decorators = ["pydantic.validator", "validator"]
+
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]   # re-exports / registration-side-effect imports are intentional
 # Tests: fakes legitimately mirror Anki's camelCase API names (N802/N803/N806) and use

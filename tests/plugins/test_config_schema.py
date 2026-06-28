@@ -14,9 +14,9 @@ from omnia.core.config.models import (
     TypedAccuracySettings,
 )
 from omnia.core.plugin import FIELD_KINDS
-from omnia.features.auto_flip import AutoFlipPlugin
-from omnia.features.overdue_guard import OverdueGuardPlugin
-from omnia.features.typed_accuracy import TypedAccuracyPlugin
+from omnia.plugins.auto_flip import AutoFlipPlugin
+from omnia.plugins.overdue_guard import OverdueGuardPlugin
+from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
 
 _CASES = [
     (AutoFlipPlugin, AutoFlipSettings),
@@ -30,7 +30,7 @@ class TestConfigSchema:
     def test_config_schema_keys_exist_on_settings(self, plugin_cls, settings_cls):
         schema = plugin_cls().config_schema()
         assert schema, f"{plugin_cls.__name__} should declare config fields"
-        model_fields = set(settings_cls.model_fields)
+        model_fields = set(settings_cls.__fields__)
         for field in schema:
             assert (
                 field.key in model_fields

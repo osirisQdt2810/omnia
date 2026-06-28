@@ -1,21 +1,26 @@
-"""Pydantic v2 models for Omnia configuration.
+"""Pydantic v1 models for Omnia configuration.
 
 Each feature has a typed settings model (validated defaults + bounds), and the provider
 settings mirror vio-ai's structure. :class:`OmniaConfig` is the validated whole, assembled
 by the :class:`~omnia.core.config.loader.ConfigLoader` from the YAML/TOML files.
+
+Pydantic v1 is used because v2 depends on the compiled (Rust) ``pydantic_core`` wheel, which
+is not pure-Python and would break the single cross-platform ``.ankiaddon``. v1 has a
+pure-Python core, so it vendors cleanly for both macOS and Windows.
 """
 
 from __future__ import annotations
 
 from typing import Any, ClassVar, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, validator
 
 
 class _Strict(BaseModel):
     """Base model that rejects unknown keys (catches config typos early)."""
 
-    model_config = ConfigDict(extra="forbid")
+    class Config:
+        extra = "forbid"
 
 
 # --- per-feature settings -------------------------------------------------------------
@@ -59,8 +64,7 @@ class TypedAccuracySettings(_Strict):
         True  # show the interactive accuracy panel on the Statistics screen
     )
 
-    @field_validator("pass_ease")
-    @classmethod
+    @validator("pass_ease")
     def _validate_pass_ease(cls, value: str) -> str:
         if value not in {"good", "easy", "no"}:
             raise ValueError("pass_ease must be 'good', 'easy', or 'no'")
@@ -121,7 +125,7 @@ class GeminiVertexLLMSettings(LLMModelSettings):
 
     def google_auth(self) -> dict[str, Any]:
         """Return just the Google service-account auth fields (for the google_cloud TTS bridge)."""
-        return self.model_dump(include=set(self._AUTH_FIELDS))
+        return self.dict(include=set(self._AUTH_FIELDS))
 
 
 class GeminiLLMSettings(LLMModelSettings):
@@ -289,8 +293,7 @@ class SmartNotesFieldRule(_Strict):
     # threads it onto the compiled rule so skip logic can read it per field).
     overwrite: bool = False
 
-    @field_validator("kind")
-    @classmethod
+    @validator("kind")
     def _validate_kind(cls, value: str) -> str:
         if value not in _GENERATION_TYPES:
             raise ValueError("kind must be 'text', 'image', or 'tts'")
@@ -319,8 +322,7 @@ class SmartNotesFieldConfig(_Strict):
     voice: str = ""
     overwrite: bool = False
 
-    @field_validator("type")
-    @classmethod
+    @validator("type")
     def _validate_type(cls, value: str) -> str:
         if value not in _GENERATION_TYPES:
             raise ValueError("type must be 'text', 'image', or 'tts'")
@@ -384,7 +386,8 @@ class OmniaConfig(BaseModel):
     """The whole, validated configuration (defaults + user overrides merged)."""
 
     # Tolerate unknown top-level keys so adding a config file can't crash an old build.
-    model_config = ConfigDict(extra="ignore")
+    class Config:
+        extra = "ignore"
 
     log_level: str = "INFO"
     plugins: dict[str, PluginToggle] = Field(default_factory=dict)

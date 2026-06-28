@@ -78,9 +78,7 @@ def single_field_config(
         return None
     for row in config.fields:
         if row.field == field:
-            return config.model_copy(
-                update={"fields": [row.model_copy(update={"enabled": True})]}
-            )
+            return config.copy(update={"fields": [row.copy(update={"enabled": True})]})
     return None
 
 

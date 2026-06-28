@@ -5,13 +5,13 @@ from __future__ import annotations
 import types
 
 from omnia.core.config.models import AutoFlipDeckOverride, AutoFlipSettings
-from omnia.features.auto_flip import AutoFlipPlugin
-from omnia.features.auto_flip.countdown import (
+from omnia.plugins.auto_flip import AutoFlipPlugin
+from omnia.plugins.auto_flip.countdown import (
     build_countdown_js,
     clear_countdown_js,
     mark_countdown_cancelled_js,
 )
-from omnia.features.auto_flip.logic import (
+from omnia.plugins.auto_flip.logic import (
     delay_ms,
     effective_delays,
     parse_mpv_range_extra_seconds,

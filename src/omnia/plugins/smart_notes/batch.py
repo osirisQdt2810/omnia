@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.features.smart_notes.logic import (
+from omnia.plugins.smart_notes.logic import (
     GenerationResult,
     GenerationService,
     chunk,

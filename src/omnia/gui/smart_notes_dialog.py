@@ -139,7 +139,7 @@ class SmartNotesDialog(WebDialog):
             self._push_auto_result(error="Provider config error — see logs.")
             return
 
-        from omnia.features.smart_notes.auto_smart import generate_auto_smart
+        from omnia.plugins.smart_notes.auto_smart import generate_auto_smart
 
         anki_compat.run_in_background(
             lambda: generate_auto_smart(hub, config),
@@ -159,7 +159,7 @@ class SmartNotesDialog(WebDialog):
         merged = merge_note_type_into(list(self._settings().note_types), config)
         self._repo.update_section(
             "smart_notes",
-            {"note_types": [nt.model_dump() for nt in merged]},
+            {"note_types": [nt.dict() for nt in merged]},
         )
         return {"ok": True}
 
