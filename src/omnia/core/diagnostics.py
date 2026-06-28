@@ -59,5 +59,22 @@ def install_crash_logger(logger: Any) -> None:
         previous_hook(etype, value, tb)
 
     sys.excepthook = excepthook
+
+    # Anki's generic "problem may be caused by an add-on" dialog does NOT go through
+    # show_exception — its ErrorHandler hijacks sys.stderr and shows the accumulated text
+    # (incl. the traceback) on a timer. Hook onTimeout so that text lands in omnia.log too.
+    with contextlib.suppress(Exception):
+        handler_cls = aqt_errors.ErrorHandler
+        original_on_timeout = handler_cls.onTimeout
+
+        def on_timeout(self: Any) -> Any:
+            with contextlib.suppress(Exception):
+                pool = getattr(self, "pool", "") or ""
+                if pool.strip():
+                    logger.error("Anki error handler captured:\n%s", pool)
+            return original_on_timeout(self)
+
+        handler_cls.onTimeout = on_timeout  # type: ignore[method-assign]
+
     aqt_errors._omnia_crash_logger_installed = True  # type: ignore[attr-defined]
     logger.info("crash logger installed (tracebacks will be written here)")
