@@ -1,15 +1,15 @@
 """Piper TTS — local, offline, open-source (WAV output).
 
 Piper is a CPU-friendly neural TTS that runs fully offline from an ONNX voice model. It's a
-native binary (not a pure-Python lib), so the subprocess call is isolated behind the
-injectable :class:`PiperRunner` (DIP) — the default :class:`SubprocessPiperRunner` shells out
-to the ``piper`` binary, and tests inject a fake. The user supplies the binary (on PATH or a
-configured path) and a voice ``model`` (.onnx).
+native binary (not a pure-Python lib), so it can't be vendored cross-platform and the add-on
+**does not shell out** to it (Anki can't rely on a CLI/binary on PATH). The transport is
+isolated behind the injectable :class:`PiperRunner` (DIP): the default runner raises a clear
+:class:`ProviderError`, and a future VENDORED native runner — or a test fake — can be injected
+in its place.
 """
 
 from __future__ import annotations
 
-import subprocess
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -25,45 +25,39 @@ class PiperRunner(ABC):
         """Return WAV audio for ``text`` using the voice at ``model_path``."""
 
 
-class SubprocessPiperRunner(PiperRunner):
-    """Default transport shelling out to the ``piper`` CLI binary."""
+class UnavailablePiperRunner(PiperRunner):
+    """Default runner: piper isn't bundled and the add-on never shells out, so it raises.
 
-    def __init__(self, binary: str = "piper") -> None:
-        self._binary = binary
+    Keeps the seam open (inject a vendored native runner or a fake) while ensuring the
+    out-of-the-box path fails clearly instead of silently invoking a CLI.
+    """
 
     def run(self, text: str, model_path: str) -> bytes:
-        if not model_path:
-            raise ProviderError("piper requires 'model' (path to a .onnx voice file)")
-        try:
-            proc = subprocess.run(
-                [self._binary, "--model", model_path, "--output_file", "-"],
-                input=text.encode("utf-8"),
-                capture_output=True,
-                check=True,
-                timeout=120,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ProviderError(f"piper synthesis failed: {exc}") from exc
-        return proc.stdout
+        raise ProviderError(
+            "piper requires a vendored native binary, which is not bundled — "
+            "pick google_translate/edge_tts, or inject a PiperRunner"
+        )
 
 
 class PiperTTS(TTSProvider):
-    """Synthesises speech offline via Piper (WAV)."""
+    """Synthesises speech offline via Piper (WAV) through an injected :class:`PiperRunner`."""
 
     name = "piper"
     audio_ext = "wav"
-    requires_api = False  # offline, open-source; needs the piper binary, not a key
+    requires_api = False  # offline, open-source; needs a native runner, not a key
 
     def __init__(
         self,
         model: str = "",
-        binary: str = "piper",
         runner: Optional[PiperRunner] = None,
     ) -> None:
         self._model = model
-        self._runner = runner or SubprocessPiperRunner(binary)
+        self._runner = runner or UnavailablePiperRunner()
 
     def synthesize(
         self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
     ) -> bytes:
-        return self._runner.run(text, voice or self._model)
+        model_path = voice or self._model
+        if not model_path:
+            raise ProviderError("piper requires 'model' (path to a .onnx voice file)")
+        return self._runner.run(text, model_path)

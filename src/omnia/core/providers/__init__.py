@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Optional
 
+from pydantic import BaseModel
+
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm import (
     LLMProvider,
@@ -49,16 +51,27 @@ class ProviderHub:
         self._llm_settings = llm_settings
         self._tts_settings = tts_settings
         self._http = http
+        # Providers built for a per-rule (provider, model) override, cached so repeated rules
+        # reuse one instance instead of rebuilding it for every note.
+        self._llm_cache: dict[tuple[str, str], LLMProvider] = {}
 
-    def _llm_config(self) -> dict[str, Any]:
+    def _llm_config(self, provider: str = "") -> dict[str, Any]:
+        """Flatten the active (or named ``provider``) ``[llm.<provider>]`` subsection.
+
+        Maps ``text_model`` → ``model`` for the factory; ``image_model`` passes through.
+        ``provider`` selects a non-active subsection (a per-rule override); empty = the
+        configured active provider.
+        """
         settings = self._llm_settings
         if settings is None:
-            return {}
-        config: dict[str, Any] = {"provider": settings.provider}
-        active = settings.active()
-        if active is not None:
+            return {"provider": provider} if provider else {}
+        name = provider or settings.provider
+        config: dict[str, Any] = {"provider": name}
+        active = getattr(settings, name, None)
+        if isinstance(active, BaseModel):
             data = active.model_dump()
             # The factory/providers use ``model`` for the chat model; settings use text_model.
+            # ``image_model`` passes through unchanged so generate_image can target it.
             data["model"] = data.pop("text_model", "")
             config.update(data)
         return config
@@ -82,9 +95,29 @@ class ProviderHub:
             config = {**self._vertex_auth(), **config}
         return config
 
-    def llm(self) -> LLMProvider:
-        """Build the configured LLM provider."""
-        return create_llm_provider(self._llm_config(), self._http)
+    def llm(self, *, model: str = "", provider: str = "") -> LLMProvider:
+        """Build an LLM provider, optionally pinned to a different ``provider``/``model``.
+
+        With both empty, returns the configured active provider. A smart-notes rule may pin
+        its own ``provider``/``model``; the model is fixed at construction (never threaded
+        per call), so the hub builds a provider whose config has ``model`` (and ``provider``)
+        overridden — caching by ``(provider, model)`` so repeated rules reuse one instance.
+
+        Args:
+            provider: Override the active provider name (empty = the configured one).
+            model: Override the text model id (empty = the subsection's configured model).
+        """
+        if not model and not provider:
+            return create_llm_provider(self._llm_config(), self._http)
+        key = (provider, model)
+        cached = self._llm_cache.get(key)
+        if cached is None:
+            config = self._llm_config(provider)
+            if model:
+                config["model"] = model
+            cached = create_llm_provider(config, self._http)
+            self._llm_cache[key] = cached
+        return cached
 
     def tts(self) -> TTSProvider:
         """Build the configured TTS provider."""

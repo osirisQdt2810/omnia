@@ -1,12 +1,12 @@
 """Vertex AI access-token acquisition — a Strategy pattern.
 
 A :class:`TokenSource` knows how to produce a bearer token; concrete strategies cover the
-ways vio-ai authenticates to Vertex:
+ways the add-on authenticates to Vertex WITHOUT shelling out (Anki can't run a CLI reliably
+on every host):
 
 * :class:`StaticTokenSource` — a token supplied directly in config.
 * :class:`ServiceAccountTokenSource` — mints + caches a token from a service-account JSON
   (RS256-signed JWT via :class:`ServiceAccountSigner`; needs vendored ``rsa`` + ``pyasn1``).
-* :class:`GcloudTokenSource` — shells out to ``gcloud auth print-access-token``.
 
 :func:`resolve_token_source` picks the strategy from config. Collaborators (the HTTP client,
 the signer, the clock) are injected, so the whole module is testable without real creds.
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import base64
 import json
-import subprocess
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -47,28 +46,6 @@ class StaticTokenSource(TokenSource):
         return self._token
 
 
-class GcloudTokenSource(TokenSource):
-    """Obtains a token from the local ``gcloud`` CLI."""
-
-    def token(self) -> str:
-        try:
-            out = subprocess.run(
-                ["gcloud", "auth", "print-access-token"],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=30,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ProviderError(
-                f"`gcloud auth print-access-token` failed: {exc}"
-            ) from exc
-        token = out.stdout.strip()
-        if not token:
-            raise ProviderError("gcloud returned an empty access token")
-        return token
-
-
 class ServiceAccountSigner:
     """RS256-signs bytes with a service-account PKCS#8 PEM key (pure-Python rsa + pyasn1)."""
 
@@ -79,8 +56,8 @@ class ServiceAccountSigner:
         except ImportError as exc:  # pragma: no cover - only without the vendored dep
             raise ProviderError(
                 "Service-account auth needs the vendored 'rsa' package. Add 'rsa' + 'pyasn1' "
-                "to requirements-vendor.txt and run scripts/vendor_deps.py, or use "
-                "'access_token'/'use_gcloud' instead."
+                "to requirements-vendor.txt and run scripts/vendor_deps.py, or paste an "
+                "'access_token' instead."
             ) from exc
         return rsa.sign(message, self._load_key(private_key_pem), "SHA-256")
 
@@ -168,17 +145,20 @@ def resolve_token_source(
     signer: Optional[ServiceAccountSigner] = None,
     clock: Callable[[], float] = time.time,
 ) -> TokenSource:
-    """Pick the auth strategy from ``config`` (access_token > service account > gcloud)."""
+    """Pick the auth strategy from ``config`` (access_token > service account JWT mint).
+
+    The add-on never shells out to ``gcloud`` (Anki can't rely on a CLI being installed); the
+    service-account JWT exchange over HTTP is the credential path. ``use_gcloud`` is no longer
+    honored — supply a service-account JSON or a pasted ``access_token`` instead.
+    """
     if config.get("access_token"):
         return StaticTokenSource(str(config["access_token"]))
     service_account = _load_service_account(config)
     if service_account is not None:
         return ServiceAccountTokenSource(service_account, http, signer, clock)
-    if config.get("use_gcloud"):
-        return GcloudTokenSource()
     raise ProviderError(
-        "gemini_vertex needs credentials: set 'access_token', 'credentials_path'/"
-        "'credentials_json', or 'use_gcloud': true"
+        "gemini_vertex needs credentials: set 'access_token' or 'credentials_path'/"
+        "'credentials_json' (a service-account JSON). The 'gcloud' CLI is not used."
     )
 
 

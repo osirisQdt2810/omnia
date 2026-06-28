@@ -27,6 +27,7 @@ class GeminiVertexProvider(GeminiProvider):
         *,
         location: str = "global",
         model: str = "gemini-2.5-flash",
+        image_model: str = "",
         auth: Optional[dict[str, Any]] = None,
         http: Optional[HttpClient] = None,
         token_source: Optional[TokenSource] = None,
@@ -38,13 +39,14 @@ class GeminiVertexProvider(GeminiProvider):
         self._project = project
         self._location = location or "global"
         self._model = model
+        self._image_model = image_model
         self._http = http or DEFAULT_HTTP_CLIENT
         # Inject a token source for tests; otherwise resolve the strategy from config.
         self._token_source = token_source or resolve_token_source(
             auth or {}, self._http
         )
 
-    def _endpoint(self) -> str:
+    def _endpoint(self, model: str) -> str:
         # Gemini 3.x is served on the non-regional "global" host; regions use a prefixed host.
         host = (
             "aiplatform.googleapis.com"
@@ -53,7 +55,7 @@ class GeminiVertexProvider(GeminiProvider):
         )
         return (
             f"https://{host}/v1/projects/{self._project}/locations/{self._location}"
-            f"/publishers/google/models/{self._model}:generateContent"
+            f"/publishers/google/models/{model}:generateContent"
         )
 
     def _headers(self) -> dict[str, str]:

@@ -12,6 +12,7 @@ import pytest
 from conftest import FakeHttpClient
 
 from omnia.core.config.models import (
+    GeminiLLMSettings,
     GeminiVertexLLMSettings,
     LLMSettings,
     OpenAICompatibleLLMSettings,
@@ -69,6 +70,49 @@ class TestProviderHub:
         config = ProviderHub(llm, TTSSettings(provider="google_translate"))
         built = config.tts()
         assert built.name == "google_translate"
+
+    def test_llm_no_override_builds_the_active_provider(self):
+        settings = LLMSettings(
+            provider="openai",
+            openai=OpenAICompatibleLLMSettings(api_key="k", text_model="active-model"),
+        )
+        provider = ProviderHub(settings, http=FakeHttpClient()).llm()
+        assert provider.name == "openai_compatible"
+        # The model is fixed at construction from the active subsection's text_model.
+        assert provider._model == "active-model"
+
+    def test_llm_model_override_builds_a_provider_pinned_to_that_model(self):
+        # A per-rule model override yields a provider INSTANCE configured with it (the model is
+        # never threaded into generate_text) — same provider, different fixed model.
+        settings = LLMSettings(
+            provider="openai",
+            openai=OpenAICompatibleLLMSettings(api_key="k", text_model="active-model"),
+        )
+        hub = ProviderHub(settings, http=FakeHttpClient())
+        provider = hub.llm(model="rule-model")
+        assert provider.name == "openai_compatible"
+        assert provider._model == "rule-model"
+
+    def test_llm_provider_override_switches_provider_and_keeps_its_creds(self):
+        settings = LLMSettings(
+            provider="openai",
+            openai=OpenAICompatibleLLMSettings(api_key="k"),
+            gemini=GeminiLLMSettings(api_key="g-key", text_model="gemini-x"),
+        )
+        provider = ProviderHub(settings, http=FakeHttpClient()).llm(provider="gemini")
+        assert provider.name == "gemini"
+        assert provider._model == "gemini-x"
+
+    def test_llm_override_is_cached_by_provider_and_model(self):
+        settings = LLMSettings(
+            provider="openai", openai=OpenAICompatibleLLMSettings(api_key="k")
+        )
+        hub = ProviderHub(settings, http=FakeHttpClient())
+        first = hub.llm(model="m1")
+        again = hub.llm(model="m1")
+        other = hub.llm(model="m2")
+        assert first is again  # same (provider, model) reuses the instance
+        assert first is not other
 
     def test_vertex_auth_only_exposes_auth_fields_not_model_ids(self):
         llm = LLMSettings(

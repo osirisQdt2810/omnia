@@ -2,7 +2,7 @@
 
 Goal: no provider config has a syntax/wiring gap, and each produces output. HTTP providers
 are driven through a single routing :class:`FakeHttpClient` (real provider code + factories
-run; only the socket is faked). Non-HTTP providers (edge_tts websocket, piper subprocess)
+run; only the socket is faked). Non-HTTP providers (edge_tts websocket, piper native runner)
 have their transport injected as a fake. Real-credential checks live in the ``integration``
 tests and skip unless creds are present.
 """
@@ -132,6 +132,14 @@ class TestTTSSweep:
 
         audio = PiperTTS(model="voice.onnx", runner=_FakeRunner()).synthesize("hi")
         assert audio == b"RIFFwav"
+
+    def test_piper_default_runner_raises_instead_of_shelling_out(self):
+        # No subprocess: the out-of-the-box runner raises a clear error (a native runner must
+        # be injected) rather than invoking a piper CLI.
+        from omnia.core.providers.errors import ProviderError
+
+        with pytest.raises(ProviderError, match="vendored native binary"):
+            PiperTTS(model="voice.onnx").synthesize("hi")
 
 
 # --------------------------------------------------------------------------------------

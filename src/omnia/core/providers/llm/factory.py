@@ -43,6 +43,7 @@ def _build_gemini(config: dict[str, Any], http: Optional[HttpClient]) -> LLMProv
     return GeminiProvider(
         api_key=config.get("api_key", ""),
         model=config.get("model", "gemini-2.0-flash"),
+        image_model=config.get("image_model", ""),
         http=http,
     )
 
@@ -54,11 +55,11 @@ def _build_gemini_vertex(
         project=config.get("project", ""),
         location=config.get("location", "global"),
         model=config.get("model", "gemini-2.5-flash"),
+        image_model=config.get("image_model", ""),
         auth={
             "access_token": config.get("access_token"),
             "credentials_path": config.get("credentials_path"),
             "credentials_json": config.get("credentials_json"),
-            "use_gcloud": config.get("use_gcloud", False),
         },
         http=http,
     )
