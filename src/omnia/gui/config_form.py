@@ -16,9 +16,14 @@ from aqt.qt import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPoint,
     QSpinBox,
+    Qt,
+    QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -53,9 +58,13 @@ class PluginConfigDialog(QDialog):
             self._widgets[field.key] = widget
             label = QLabel(field.label)
             if field.help:
+                # Hover tooltip AND an always-visible clickable (i) icon — hover tooltips are
+                # easy to miss (esp. on macOS), so the icon makes the help discoverable.
                 label.setToolTip(field.help)
                 widget.setToolTip(field.help)
-            form.addRow(label, widget)
+                form.addRow(label, self._field_row(widget, field.help))
+            else:
+                form.addRow(label, widget)
         outer.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -64,6 +73,30 @@ class PluginConfigDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
+
+    @staticmethod
+    def _field_row(widget: QWidget, help_text: str) -> QWidget:
+        """Wrap ``widget`` with a trailing clickable (i) info button showing ``help_text``."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(widget, 1)
+
+        info = QToolButton()
+        info.setText("ⓘ")
+        info.setToolTip(help_text)
+        info.setCursor(Qt.CursorShape.PointingHandCursor)
+        info.setAutoRaise(True)
+        info.setAccessibleName("Field help")
+        # Click → show the help right at the icon (independent of the hover-tooltip delay).
+        info.clicked.connect(
+            lambda _=False, b=info, t=help_text: QToolTip.showText(
+                b.mapToGlobal(QPoint(0, b.height())), t, b
+            )
+        )
+        layout.addWidget(info, 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
 
     @staticmethod
     def _make_widget(field: ConfigField, value: Any) -> QWidget:
