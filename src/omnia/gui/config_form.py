@@ -7,6 +7,7 @@ feature gets a settings panel without a bespoke dialog — declare fields, get a
 
 from __future__ import annotations
 
+import html as _html
 from typing import TYPE_CHECKING, Any
 
 from aqt.qt import (
@@ -119,16 +120,29 @@ class PluginConfigDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        # Wrap the help as width-limited HTML so a long tooltip wraps onto several readable
+        # lines instead of one screen-wide strip.
+        rich = (
+            "<div style='max-width:320px; font-size:13px; line-height:1.45;'>"
+            f"{_html.escape(help_text)}</div>"
+        )
+
         info = QToolButton()
         info.setIcon(_info_icon())
-        info.setIconSize(QSize(15, 15))
-        info.setToolTip(help_text)
+        info.setIconSize(QSize(16, 16))
+        info.setToolTip(rich)
         info.setCursor(Qt.CursorShape.PointingHandCursor)
         info.setAutoRaise(True)
+        info.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Flat, borderless — just the circular icon, no square button frame.
+        info.setStyleSheet(
+            "QToolButton{border:none;background:transparent;padding:0;margin:0;}"
+            "QToolButton:hover,QToolButton:pressed{border:none;background:transparent;}"
+        )
         info.setAccessibleName("Field help")
         # Click → show the help right at the icon (independent of the hover-tooltip delay).
         info.clicked.connect(
-            lambda _=False, b=info, t=help_text: QToolTip.showText(
+            lambda _=False, b=info, t=rich: QToolTip.showText(
                 b.mapToGlobal(QPoint(0, b.height())), t, b
             )
         )
