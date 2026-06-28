@@ -20,6 +20,19 @@ def fake_aqt_errors(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
         errors.calls.append(exception)  # type: ignore[attr-defined]
 
     errors.show_exception = show_exception  # type: ignore[attr-defined]
+
+    class ErrorHandler:
+        """Mirror of Anki's stderr-buffering error handler (pool + onTimeout)."""
+
+        def __init__(self) -> None:
+            self.pool = ""
+            self.timed_out = False
+
+        def onTimeout(self):  # mirrors Anki's method name
+            self.timed_out = True
+            self.pool = ""
+
+    errors.ErrorHandler = ErrorHandler  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "aqt", types.ModuleType("aqt"))
     monkeypatch.setitem(sys.modules, "aqt.errors", errors)
     return errors
@@ -80,6 +93,21 @@ class TestInstallCrashLogger:
             assert prior_called == [True]  # the previous hook still ran
         finally:
             sys.excepthook = sys.__excepthook__
+
+    def test_errorhandler_pool_is_logged(
+        self, fake_aqt_errors: types.ModuleType
+    ) -> None:
+        # Anki's generic add-on error dialog goes through ErrorHandler.onTimeout, NOT
+        # show_exception — the crash logger must capture its accumulated traceback pool.
+        logger = _ListLogger()
+        install_crash_logger(logger)
+        handler = fake_aqt_errors.ErrorHandler()  # type: ignore[attr-defined]
+        handler.pool = 'Traceback (most recent call last):\n  ...\nKeyError: "boom"'
+        handler.onTimeout()
+        joined = "\n".join(logger.messages)
+        assert "Anki error handler captured" in joined
+        assert 'KeyError: "boom"' in joined
+        assert handler.timed_out  # original onTimeout still ran
 
     def test_no_aqt_is_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Simulate a fully headless environment with no aqt importable.
