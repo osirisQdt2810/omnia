@@ -193,9 +193,7 @@ from omnia.gui.config_form import PluginConfigDialog  # noqa: E402
 def open_generic_config(pid):
     plugin = next(p for p in mgr.plugins() if p.id == pid)
     s = repo.feature_settings(pid)
-    PluginConfigDialog(
-        plugin.name, plugin.config_schema(), s.model_dump() if s else {}, None
-    )
+    PluginConfigDialog(plugin.name, plugin.config_schema(), s.dict() if s else {}, None)
 
 
 for _pid in ("auto_flip", "typed_accuracy", "overdue_guard"):
@@ -288,7 +286,7 @@ step(
 step(
     "AutoFlipDeckDialog (per-deck options)",
     lambda: __import__(
-        "omnia.features.auto_flip.deck_options", fromlist=["AutoFlipDeckDialog"]
+        "omnia.plugins.auto_flip.deck_options", fromlist=["AutoFlipDeckDialog"]
     ).AutoFlipDeckDialog(deck_id, repo.feature_settings("auto_flip"), None),
 )
 step(

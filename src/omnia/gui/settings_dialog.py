@@ -87,7 +87,7 @@ class SettingsDialog(WebDialog):
                 self._manager.reload(plugin.id)
             return
         settings = self._manager.config.feature_settings(plugin.id)
-        current = settings.model_dump() if settings is not None else {}
+        current = settings.dict() if settings is not None else {}
         dialog = PluginConfigDialog(
             plugin.name or plugin.id, plugin.config_schema(), current, self
         )

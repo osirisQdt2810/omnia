@@ -274,7 +274,7 @@ class PromptDialog(QDialog):
         hub = self._repo_hub()
         if hub is None:
             return
-        from omnia.features.smart_notes.logic import GenerationService
+        from omnia.plugins.smart_notes.logic import GenerationService
 
         service = GenerationService(hub)
         self._test_button.setEnabled(False)

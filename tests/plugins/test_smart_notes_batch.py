@@ -16,8 +16,8 @@ from omnia.core.config.models import (
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
-from omnia.features.smart_notes.batch import BatchGenerator
-from omnia.features.smart_notes.logic import GenerationService
+from omnia.plugins.smart_notes.batch import BatchGenerator
+from omnia.plugins.smart_notes.logic import GenerationService
 
 
 def _note_type_config(note_type="Basic", *, enabled=True):
@@ -121,7 +121,7 @@ class _FakeCompat:
 
 
 def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
-    import omnia.features.smart_notes.batch as batch
+    import omnia.plugins.smart_notes.batch as batch
 
     for name in (
         "get_note",

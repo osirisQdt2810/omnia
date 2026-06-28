@@ -29,12 +29,12 @@ from typing import Any, Optional
 from omnia.core import anki_compat
 from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
 from omnia.core.registry import register
-from omnia.features.auto_flip.countdown import (
+from omnia.plugins.auto_flip.countdown import (
     build_countdown_js,
     clear_countdown_js,
     mark_countdown_cancelled_js,
 )
-from omnia.features.auto_flip.logic import (
+from omnia.plugins.auto_flip.logic import (
     effective_delays,
     parse_mpv_range_extra_seconds,
 )
@@ -295,7 +295,7 @@ class AutoFlipPlugin(FeaturePlugin):
         # Add the per-deck "Omnia: Auto-Flip…" action to the deck's options menu. The
         # deck_options module is imported lazily: it subclasses QDialog (needs aqt.qt), so
         # importing it at module top would break the headless import of this feature.
-        from omnia.features.auto_flip.deck_options import add_deck_menu_action
+        from omnia.plugins.auto_flip.deck_options import add_deck_menu_action
 
         if self._ctx is not None:
             add_deck_menu_action(menu, deck_id, self._ctx)

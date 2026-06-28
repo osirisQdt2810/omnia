@@ -35,7 +35,7 @@ class ConfigLoader:
     def load(self) -> OmniaConfig:
         """Read defaults + user overrides, merge, and validate into an :class:`OmniaConfig`."""
         merged = self._deep_merge(self._load_defaults(), self.read_overrides())
-        return OmniaConfig.model_validate(merged)
+        return OmniaConfig.parse_obj(merged)
 
     def read_overrides(self) -> dict[str, Any]:
         """Return the user's override layer (``user_files/omnia.toml``), or ``{}``."""

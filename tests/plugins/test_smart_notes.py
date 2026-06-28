@@ -32,7 +32,7 @@ from omnia.core.config.models import (
     TTSSettings,
 )
 from omnia.core.providers import ProviderError, ProviderHub
-from omnia.features.smart_notes.auto_smart import (
+from omnia.plugins.smart_notes.auto_smart import (
     AutoSmartField,
     apply_auto_smart,
     build_auto_smart_prompt,
@@ -40,8 +40,8 @@ from omnia.features.smart_notes.auto_smart import (
     generate_auto_smart,
     parse_auto_smart_response,
 )
-from omnia.features.smart_notes.dag import SmartNotesCycleError, order_rules
-from omnia.features.smart_notes.logic import (
+from omnia.plugins.smart_notes.dag import SmartNotesCycleError, order_rules
+from omnia.plugins.smart_notes.logic import (
     GenerationService,
     chunk,
     compile_note_type_rules,
@@ -50,7 +50,7 @@ from omnia.features.smart_notes.logic import (
     interpolate,
     should_skip_rule,
 )
-from omnia.features.smart_notes.markdown import convert_markdown_to_html
+from omnia.plugins.smart_notes.markdown import convert_markdown_to_html
 
 # ---------------------------------------------------------------------------
 # Mocked / offline tests
@@ -89,7 +89,7 @@ class TestSmartNotesModel:
             ],
         )
         settings = SmartNotesSettings(note_types=[config])
-        rebuilt = SmartNotesSettings(**settings.model_dump())
+        rebuilt = SmartNotesSettings(**settings.dict())
         assert rebuilt == settings
         assert rebuilt.note_type_config("Basic").base_field == "Word"
 
@@ -720,7 +720,7 @@ class TestSmartNotesPlugin:
         import types
 
         from omnia.core.config.models import SmartNotesSettings
-        from omnia.features.smart_notes import SmartNotesPlugin
+        from omnia.plugins.smart_notes import SmartNotesPlugin
 
         ctx = types.SimpleNamespace(settings=SmartNotesSettings(), providers=_hub())
         plugin = SmartNotesPlugin()
@@ -732,18 +732,18 @@ class TestSmartNotesPlugin:
 
 class TestBatchSummary:
     def test_message_reports_each_count(self):
-        from omnia.features.smart_notes.batch import BatchSummary
+        from omnia.plugins.smart_notes.batch import BatchSummary
 
         summary = BatchSummary(processed=3, failed=1, skipped=2)
         assert summary.message() == "Processed 3 note(s), 1 failed, 2 skipped."
 
     def test_message_omits_zero_counts(self):
-        from omnia.features.smart_notes.batch import BatchSummary
+        from omnia.plugins.smart_notes.batch import BatchSummary
 
         assert BatchSummary(processed=2).message() == "Processed 2 note(s)."
 
     def test_cancelled_message_is_prefixed(self):
-        from omnia.features.smart_notes.batch import BatchSummary
+        from omnia.plugins.smart_notes.batch import BatchSummary
 
         summary = BatchSummary(processed=1, cancelled=True)
         assert summary.message().startswith("Cancelled — ")
@@ -755,7 +755,7 @@ class TestSmartNotesSettingsDefaults:
 
     def test_generate_at_review_round_trips(self):
         settings = SmartNotesSettings(generate_at_review=True)
-        rebuilt = SmartNotesSettings(**settings.model_dump())
+        rebuilt = SmartNotesSettings(**settings.dict())
         assert rebuilt.generate_at_review is True
 
 

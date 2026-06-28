@@ -73,9 +73,7 @@ class TestConfigModels:
             TypedAccuracySettings(threshold=1.5)
 
     def test_omnia_config_ignores_unknown_top_level_key(self):
-        cfg = OmniaConfig.model_validate(
-            {"unknown_future_key": 123, "log_level": "DEBUG"}
-        )
+        cfg = OmniaConfig.parse_obj({"unknown_future_key": 123, "log_level": "DEBUG"})
         assert cfg.log_level == "DEBUG"
 
 

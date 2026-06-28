@@ -25,9 +25,9 @@ from omnia.core import anki_compat
 from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.core.reviewer.web_injector import WebAsset
-from omnia.features.typed_accuracy.logic import decide_ease, result_code
-from omnia.features.typed_accuracy.stats_injector import StatsInjector
-from omnia.features.typed_accuracy.store import SessionTracker, TypedAnswerLog
+from omnia.plugins.typed_accuracy.logic import decide_ease, result_code
+from omnia.plugins.typed_accuracy.stats_injector import StatsInjector
+from omnia.plugins.typed_accuracy.store import SessionTracker, TypedAnswerLog
 
 _PRIORITY = 100  # before overdue_guard (200), which may then cap this grade
 

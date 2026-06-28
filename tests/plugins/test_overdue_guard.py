@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from omnia.features.overdue_guard import OverdueGuardPlugin
-from omnia.features.overdue_guard.logic import OverdueRule
+from omnia.plugins.overdue_guard import OverdueGuardPlugin
+from omnia.plugins.overdue_guard.logic import OverdueRule
 
 
 class TestOverdueRule:

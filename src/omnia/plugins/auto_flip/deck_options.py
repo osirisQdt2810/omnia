@@ -171,7 +171,7 @@ def _open_deck_dialog(deck_id: int, ctx: PluginContext) -> None:
         return
 
     # Merge into the existing per_deck map (dump models to plain dicts for persistence).
-    per_deck = {key: value.model_dump() for key, value in settings.per_deck.items()}
+    per_deck = {key: value.dict() for key, value in settings.per_deck.items()}
     per_deck[str(deck_id)] = dialog.override_values()
     ctx.config.update_section("auto_flip", {"per_deck": per_deck})
     ctx.reload_self()

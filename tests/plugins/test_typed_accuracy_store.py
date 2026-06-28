@@ -7,8 +7,8 @@ import sqlite3
 
 import pytest
 
-from omnia.features.typed_accuracy import store as store_mod
-from omnia.features.typed_accuracy.store import (
+from omnia.plugins.typed_accuracy import store as store_mod
+from omnia.plugins.typed_accuracy.store import (
     RESULT_BAD,
     RESULT_EMPTY,
     RESULT_GOOD,

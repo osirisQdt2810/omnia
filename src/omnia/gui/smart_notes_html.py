@@ -59,7 +59,7 @@ def rows_for_note_type(
             continue
         existing = saved.get(name)
         rows.append(
-            existing.model_copy()
+            existing.copy()
             if existing is not None
             else SmartNotesFieldConfig(field=name)
         )

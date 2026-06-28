@@ -14,8 +14,8 @@ from omnia.core.config.models import (
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
-from omnia.features.smart_notes.logic import GenerationService
-from omnia.features.smart_notes.review_evaluator import ReviewTimeEvaluator
+from omnia.plugins.smart_notes.logic import GenerationService
+from omnia.plugins.smart_notes.review_evaluator import ReviewTimeEvaluator
 
 
 class _FakeNote:
@@ -91,7 +91,7 @@ class _FakeCompat:
 
 
 def _patch(monkeypatch, fake):
-    import omnia.features.smart_notes.review_evaluator as rev
+    import omnia.plugins.smart_notes.review_evaluator as rev
 
     for name in (
         "get_note",

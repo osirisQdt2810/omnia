@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from omnia.core.providers.errors import ProviderError
-from omnia.features.smart_notes.dag import order_rules
-from omnia.features.smart_notes.markdown import convert_markdown_to_html
+from omnia.plugins.smart_notes.dag import order_rules
+from omnia.plugins.smart_notes.markdown import convert_markdown_to_html
 
 if TYPE_CHECKING:
     from omnia.core.config.models import (
@@ -216,7 +216,7 @@ class GenerationService:
 
         The note type's generatable fields are compiled into rules
         (:func:`compile_note_type_rules`), topologically ordered
-        (:func:`~omnia.features.smart_notes.dag.order_rules`) so a field that references
+        (:func:`~omnia.plugins.smart_notes.dag.order_rules`) so a field that references
         another generated field runs after it, and each text result is written back into a
         working copy of ``fields`` so the dependent field interpolates the freshly generated
         value. The base field is never generated. Fields whose sources are all blank, or
@@ -238,7 +238,7 @@ class GenerationService:
         """
         rules = compile_note_type_rules(config)
         if force_overwrite:
-            rules = [rule.model_copy(update={"overwrite": True}) for rule in rules]
+            rules = [rule.copy(update={"overwrite": True}) for rule in rules]
         working = dict(fields)
         results: list[tuple[SmartNotesFieldRule, GenerationResult]] = []
         for rule in order_rules(rules):

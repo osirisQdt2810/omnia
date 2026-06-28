@@ -8,7 +8,7 @@ from typing import Any, Optional
 from omnia.core import anki_compat
 from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
 from omnia.core.registry import register
-from omnia.features.overdue_guard.logic import OverdueRule
+from omnia.plugins.overdue_guard.logic import OverdueRule
 
 # Runs after typed_accuracy (priority 100) so it can cap an over-generous typed grade.
 _PRIORITY = 200

@@ -127,7 +127,7 @@ def card_side_av_text(card: Any, side: str) -> str:
     The reference auto-flip add-on scans the rendered question/answer HTML for its external
     "myview.mpv" clip-player command (which carries a ``--range=`` clip duration). We
     replicate that by returning the rendered side text; the pure
-    :func:`~omnia.features.auto_flip.logic.parse_mpv_range_extra_seconds` parses it.
+    :func:`~omnia.plugins.auto_flip.logic.parse_mpv_range_extra_seconds` parses it.
     """
     method = getattr(card, side, None)  # card.question() / card.answer()
     if not callable(method):

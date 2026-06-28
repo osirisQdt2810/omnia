@@ -8,8 +8,8 @@ from conftest import FakeCard
 
 from omnia.core import anki_compat
 from omnia.core.reviewer.ease_pipeline import EasePipeline
-from omnia.features.display_interval import DisplayIntervalPlugin
-from omnia.features.display_interval.logic import format_interval
+from omnia.plugins.display_interval import DisplayIntervalPlugin
+from omnia.plugins.display_interval.logic import format_interval
 
 
 class TestFormatInterval:
