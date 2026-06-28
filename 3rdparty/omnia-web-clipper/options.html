@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Omnia Web Clipper - Options</title>
+    <style>
+      :root {
+        --accent: #2d6cdf;
+        --ok: #1f8a4c;
+        --err: #c0392b;
+      }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 24px;
+        max-width: 640px;
+        color: #1c1f23;
+        background: #fafbfc;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 4px;
+      }
+      p.sub {
+        margin: 0 0 20px;
+        color: #5a636e;
+        font-size: 13px;
+      }
+      fieldset {
+        border: 1px solid #d9dee3;
+        border-radius: 8px;
+        margin: 0 0 18px;
+        padding: 16px;
+        background: #fff;
+      }
+      legend {
+        font-weight: 600;
+        font-size: 13px;
+        padding: 0 6px;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        margin: 10px 0 4px;
+        font-weight: 500;
+      }
+      input[type="text"],
+      input[type="password"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 9px;
+        font-size: 13px;
+        border: 1px solid #cfd6dd;
+        border-radius: 5px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        align-items: center;
+        gap: 10px;
+        margin: 8px 0;
+      }
+      .row label {
+        margin: 0;
+      }
+      .row .hint {
+        grid-column: 2;
+        font-size: 11px;
+        color: #7a828c;
+        margin-top: -2px;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 12px 0 0;
+        font-size: 13px;
+      }
+      button {
+        font-size: 13px;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid transparent;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #fff;
+      }
+      button.secondary {
+        background: #eef1f5;
+        color: #1c1f23;
+        border-color: #cfd6dd;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 8px;
+      }
+      #status {
+        font-size: 13px;
+        margin-left: 4px;
+      }
+      #status.ok {
+        color: var(--ok);
+      }
+      #status.err {
+        color: var(--err);
+      }
+      #testOutput {
+        white-space: pre-wrap;
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 12px;
+        background: #f3f5f8;
+        border: 1px solid #e2e7ec;
+        border-radius: 6px;
+        padding: 10px;
+        margin-top: 10px;
+        max-height: 220px;
+        overflow: auto;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Omnia Web Clipper</h1>
+    <p class="sub">
+      Configure how captured selections are sent to Anki via AnkiConnect. After saving, use
+      "Test connection" to verify Anki is reachable and to list your note type's fields.
+    </p>
+
+    <fieldset>
+      <legend>AnkiConnect</legend>
+      <label for="ankiConnectUrl">AnkiConnect URL</label>
+      <input type="text" id="ankiConnectUrl" placeholder="http://127.0.0.1:8765" />
+      <label for="apiKey">API key (leave blank if AnkiConnect apiKey is null)</label>
+      <input type="password" id="apiKey" placeholder="(none)" />
+    </fieldset>
+
+    <fieldset>
+      <legend>Target deck &amp; note type</legend>
+      <label for="deckName">Deck name (created if missing)</label>
+      <input type="text" id="deckName" placeholder="Omnia Capture" />
+      <label for="modelName">Note type (model)</label>
+      <input type="text" id="modelName" placeholder="Basic" />
+      <div class="checkbox-row">
+        <input type="checkbox" id="allowDuplicate" />
+        <label for="allowDuplicate" style="margin: 0">Allow duplicate notes</label>
+      </div>
+      <label for="tags">Tags (comma separated)</label>
+      <input type="text" id="tags" placeholder="omnia-web-clipper" />
+    </fieldset>
+
+    <fieldset>
+      <legend>Field mapping (capture &rarr; note field)</legend>
+      <p class="sub" style="margin-bottom: 8px">
+        Type the exact note-field name each captured value should fill. Leave a box blank to
+        skip that value. The <strong>selection</strong> should map to your Omnia
+        <strong>base field</strong> (the word or phrase).
+      </p>
+      <div class="row">
+        <label for="f_selection">selection</label>
+        <input type="text" id="f_selection" placeholder="Front" />
+        <div class="hint">The word OR phrase. Maps to the Omnia base field.</div>
+      </div>
+      <div class="row">
+        <label for="f_sentence">sentence</label>
+        <input type="text" id="f_sentence" placeholder="Sentence" />
+        <div class="hint">The sentence containing the selection.</div>
+      </div>
+      <div class="row">
+        <label for="f_context">context</label>
+        <input type="text" id="f_context" placeholder="Context" />
+        <div class="hint">The surrounding paragraph/block.</div>
+      </div>
+      <div class="row">
+        <label for="f_url">url</label>
+        <input type="text" id="f_url" placeholder="Source" />
+        <div class="hint">The page URL.</div>
+      </div>
+      <div class="row">
+        <label for="f_pageTitle">pageTitle</label>
+        <input type="text" id="f_pageTitle" placeholder="Title" />
+        <div class="hint">The page title.</div>
+      </div>
+    </fieldset>
+
+    <div class="actions">
+      <button class="primary" id="saveBtn">Save</button>
+      <button class="secondary" id="testBtn">Test connection</button>
+      <span id="status"></span>
+    </div>
+    <div id="testOutput"></div>
+
+    <script src="shared.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>
