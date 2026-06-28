@@ -6,7 +6,7 @@ in chunks so a long run can be cancelled mid-flight and the provider isn't hit a
 Per-note generation goes through :meth:`GenerationService.generate_note`, so chained fields,
 skip rules, and Markdown conversion all apply. Results are written back on the main thread.
 
-The pure planning/selection logic lives in ``logic.py``; this module is the Anki glue tying
+The pure planning/selection logic lives in ``engine``; this module is the Anki glue tying
 that to the threading + progress + media-write seams in ``core/anki_compat``.
 """
 
@@ -18,9 +18,10 @@ from typing import TYPE_CHECKING, Any
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.plugins.smart_notes.logic import (
+from omnia.plugins.smart_notes.engine import (
     GenerationResult,
     GenerationService,
+    applies_to_deck,
     chunk,
     dedupe_preserving_order,
 )
@@ -98,9 +99,9 @@ class BatchGenerator:
             note_ids: The notes to process (deduped here; cards of one note collapse to it).
             on_done: Main-thread callback receiving the :class:`BatchSummary`.
         """
-        plans = self._build_plans(dedupe_preserving_order(note_ids))
+        plans, deck_skipped = self._build_plans(dedupe_preserving_order(note_ids))
         if not plans:
-            on_done(BatchSummary())
+            on_done(BatchSummary(skipped=deck_skipped))
             return
 
         total = len(plans)
@@ -115,6 +116,7 @@ class BatchGenerator:
         def on_success(result: tuple[list[_NoteOutcome], bool]) -> None:
             outcomes, cancelled = result
             summary = self._apply(outcomes)
+            summary.skipped += deck_skipped
             summary.cancelled = cancelled
             anki_compat.progress_finish()
             on_done(summary)
@@ -126,16 +128,28 @@ class BatchGenerator:
 
         anki_compat.run_in_background(op, on_success=on_success, on_failure=on_failure)
 
-    def _build_plans(self, note_ids: list[int]) -> list[_NotePlan]:
+    def _build_plans(self, note_ids: list[int]) -> tuple[list[_NotePlan], int]:
+        """Select the generatable plans; return ``(plans, deck_skipped)``.
+
+        A note with no config / no generatable field is dropped silently. A note whose config
+        is deck-scoped and matches NONE of the note's card decks is counted as skipped (it is
+        configured + generatable, just out of this config's deck scope).
+        """
         plans: list[_NotePlan] = []
+        deck_skipped = 0
         for nid in note_ids:
             note = anki_compat.get_note(nid)
             config = self._settings.note_type_config(_note_type_name(note))
             if config is None or not config.generatable_fields():
                 continue
+            if config.decks and not any(
+                applies_to_deck(config, did) for did in anki_compat.note_deck_ids(note)
+            ):
+                deck_skipped += 1
+                continue
             fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
             plans.append(_NotePlan(nid, config, fields))
-        return plans
+        return plans, deck_skipped
 
     def _generate(
         self, plans: list[_NotePlan], total: int, *, force_overwrite: bool

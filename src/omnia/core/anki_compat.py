@@ -277,6 +277,13 @@ def get_note(nid: int, col: Optional[Any] = None) -> Any:
     return col.get_note(nid)
 
 
+def note_deck_ids(note: Any, col: Optional[Any] = None) -> list[int]:
+    """Return the deck ids of a note's cards (for deck-scoped batch generation)."""
+    if col is None:
+        col = main_window().col
+    return [int(c.did) for c in note.cards()]
+
+
 def random_note_of_type(
     note_type: str, deck_id: Optional[int] = None, col: Optional[Any] = None
 ) -> Any:
