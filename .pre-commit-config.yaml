@@ -1,0 +1,43 @@
+# Pre-commit hooks — run on STAGED files at every `git commit` (see .claude/WORKFLOW.md).
+# Install once:  pre-commit install
+# Run manually:  pre-commit run             # staged files
+#                pre-commit run --all-files  # whole repo
+
+# Never touch vendored deps or the read-only reference add-on snapshots.
+exclude: '^(src/omnia/vendor/|references/)'
+
+repos:
+  # General hygiene + config validators (end-of-file-fixer is intentionally NOT used).
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace          # strip invisible trailing whitespace
+      - id: check-yaml                    # valid YAML syntax
+      - id: check-json                    # valid JSON syntax
+      - id: check-added-large-files       # block accidental >5MB blobs
+        args: ["--maxkb=5120"]
+
+  # Import sorting — standalone isort (NOT ruff's "I" rule), profile=black (pyproject).
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+
+  # Formatter.
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+
+  # Linter (autofix). Import-sorting (I) is delegated to isort above.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+
+  # NOTE: mypy is intentionally NOT a pre-commit gate yet. The strict config lives in
+  # pyproject.toml ([tool.mypy]); the package is not fully typed for `strict = true` (it
+  # would block every commit), so run it manually / in CI while typing is added gradually:
+  #     mypy src/omnia
+
