@@ -34,10 +34,14 @@ from omnia.features.smart_notes.dag import SmartNotesCycleError, order_rules
 from omnia.features.smart_notes.logic import (
     GenerationService,
     build_generation_plan,
+    chunk,
+    dedupe_preserving_order,
     extract_field_refs,
     interpolate,
     rows_to_rules,
+    rules_for_field,
     rules_to_rows,
+    select_rules_for_note,
     should_skip_rule,
 )
 from omnia.features.smart_notes.markdown import convert_markdown_to_html
@@ -137,6 +141,52 @@ class TestSmartNotesPlanBuilding:
         rule = SmartNotesFieldRule(target_field="Def", source_field="Word")
         plan = build_generation_plan(fields, "Basic", [rule])
         assert plan == [(rule, fields)]
+
+
+class TestSelectRulesForNote:
+    def test_matches_note_type_and_existing_fields(self):
+        basic = SmartNotesFieldRule(note_type="Basic", target_field="Def")
+        other = SmartNotesFieldRule(note_type="Cloze", target_field="Def")
+        missing = SmartNotesFieldRule(note_type="Basic", target_field="Nope")
+        selected = select_rules_for_note(
+            [basic, other, missing], "Basic", ["Word", "Def"]
+        )
+        assert selected == [basic]
+
+    def test_empty_note_type_matches_any(self):
+        rule = SmartNotesFieldRule(target_field="Def")
+        assert select_rules_for_note([rule], "Whatever", ["Def"]) == [rule]
+
+    def test_enabled_only_drops_disabled_rules(self):
+        on = SmartNotesFieldRule(target_field="A", enabled=True)
+        off = SmartNotesFieldRule(target_field="B", enabled=False)
+        assert select_rules_for_note([on, off], "X", ["A", "B"]) == [on, off]
+        assert select_rules_for_note([on, off], "X", ["A", "B"], enabled_only=True) == [
+            on
+        ]
+
+
+class TestRulesForField:
+    def test_returns_rules_targeting_the_field_regardless_of_enabled(self):
+        a = SmartNotesFieldRule(note_type="Basic", target_field="Def", enabled=False)
+        b = SmartNotesFieldRule(note_type="Basic", target_field="Other")
+        assert rules_for_field([a, b], "Basic", "Def") == [a]
+
+    def test_filters_by_note_type(self):
+        rule = SmartNotesFieldRule(note_type="Cloze", target_field="Def")
+        assert rules_for_field([rule], "Basic", "Def") == []
+
+
+class TestBatchPlanningHelpers:
+    def test_dedupe_preserves_first_seen_order(self):
+        assert dedupe_preserving_order([3, 1, 3, 2, 1]) == [3, 1, 2]
+
+    def test_chunk_splits_into_max_size_batches(self):
+        assert chunk([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
+
+    def test_chunk_rejects_non_positive_size(self):
+        with pytest.raises(ValueError):
+            chunk([1, 2], 0)
 
 
 def _route(method, url, body, headers):
@@ -427,7 +477,15 @@ class TestPerFieldOverrides:
 
 
 class TestSmartNotesPlugin:
-    def test_disable_unsubscribes_browser_hook(self, gui_hooks):
+    _HOOKS = (
+        "browser_will_show_context_menu",
+        "browser_sidebar_will_show_context_menu",
+        "editor_did_init_buttons",
+        "editor_will_show_context_menu",
+        "reviewer_did_show_question",
+    )
+
+    def test_enable_subscribes_all_hooks_disable_removes_them(self, gui_hooks):
         import types
 
         from omnia.core.config.models import SmartNotesSettings
@@ -436,9 +494,38 @@ class TestSmartNotesPlugin:
         ctx = types.SimpleNamespace(settings=SmartNotesSettings(), providers=_hub())
         plugin = SmartNotesPlugin()
         plugin.on_enable(ctx)
-        assert gui_hooks.browser_will_show_context_menu.count() == 1
+        assert all(getattr(gui_hooks, name).count() == 1 for name in self._HOOKS)
         plugin.on_disable(ctx)
-        assert gui_hooks.browser_will_show_context_menu.count() == 0
+        assert all(getattr(gui_hooks, name).count() == 0 for name in self._HOOKS)
+
+
+class TestBatchSummary:
+    def test_message_reports_each_count(self):
+        from omnia.features.smart_notes.batch import BatchSummary
+
+        summary = BatchSummary(processed=3, failed=1, skipped=2)
+        assert summary.message() == "Processed 3 note(s), 1 failed, 2 skipped."
+
+    def test_message_omits_zero_counts(self):
+        from omnia.features.smart_notes.batch import BatchSummary
+
+        assert BatchSummary(processed=2).message() == "Processed 2 note(s)."
+
+    def test_cancelled_message_is_prefixed(self):
+        from omnia.features.smart_notes.batch import BatchSummary
+
+        summary = BatchSummary(processed=1, cancelled=True)
+        assert summary.message().startswith("Cancelled — ")
+
+
+class TestSmartNotesSettingsDefaults:
+    def test_generate_at_review_defaults_off(self):
+        assert SmartNotesSettings().generate_at_review is False
+
+    def test_generate_at_review_round_trips(self):
+        settings = SmartNotesSettings(generate_at_review=True)
+        rebuilt = SmartNotesSettings(**settings.model_dump())
+        assert rebuilt.generate_at_review is True
 
 
 # ---------------------------------------------------------------------------
