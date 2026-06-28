@@ -1,0 +1,198 @@
+"""Headless UI smoke test for Omnia.
+
+Drives the add-on the way clicking does — against a REAL ``anki.Collection`` + offscreen Qt +
+real ``aqt.gui_hooks`` and a stand-in ``mw`` — firing every gui_hook Omnia subscribes and
+constructing every dialog, with all plugins enabled. Each step is isolated; the first real
+traceback per step is printed. Exit code is non-zero if any step fails.
+
+Run with Anki's bundled interpreter:
+    QT_QPA_PLATFORM=offscreen "<AnkiProgramFiles>/.venv/bin/python" scripts/ui_smoke.py
+"""
+
+from __future__ import annotations
+
+import sys
+import tempfile
+import traceback
+from pathlib import Path
+from types import SimpleNamespace
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "src"))
+
+import aqt  # noqa: E402
+from aqt.qt import QApplication, QMenu  # noqa: E402
+
+app = QApplication.instance() or QApplication(sys.argv)
+_failures: list[str] = []
+
+
+def step(label, fn):
+    try:
+        fn()
+        print(f"OK   {label}")
+    except Exception:
+        _failures.append(label)
+        print(f"FAIL {label}")
+        traceback.print_exc()
+        print("-" * 72)
+
+
+# --- real collection + a real card ----------------------------------------------------
+from anki.collection import Collection  # noqa: E402
+
+tmp = Path(tempfile.mkdtemp())
+col = Collection(str(tmp / "collection.anki2"))
+note = col.new_note(col.models.by_name("Basic"))
+note["Front"], note["Back"] = "front", "back"
+col.add_note(note, col.decks.id("Default"))
+card = col.get_card(col.find_cards("")[0])
+deck_id = col.decks.id("Default")
+
+js_log: list[str] = []
+web = SimpleNamespace(eval=lambda js: js_log.append(js))
+mw = SimpleNamespace(
+    col=col,
+    reviewer=SimpleNamespace(
+        card=card,
+        state="answer",
+        web=web,
+        _showAnswer=lambda: None,
+        _answerCard=lambda e: None,
+    ),
+    web=web,
+    progress=SimpleNamespace(
+        timer=lambda ms, cb, repeat: SimpleNamespace(stop=lambda: None)
+    ),
+    taskman=SimpleNamespace(run_in_background=lambda *a, **k: None),
+    form=SimpleNamespace(menuTools=QMenu()),
+)
+aqt.mw = mw
+
+# --- build the manager exactly like the entry point -----------------------------------
+from omnia.core.config import ConfigLoader, ConfigRepository  # noqa: E402
+from omnia.core.manager import PluginManager  # noqa: E402
+from omnia.core.plugin import AddonPaths  # noqa: E402
+
+src = REPO / "src" / "omnia"
+paths = AddonPaths(src, src / "web", src / "user_files")
+repo = ConfigRepository(ConfigLoader(src / "config", src / "user_files" / "omnia.toml"))
+mgr = PluginManager(repo, paths)
+step("manager.setup()", mgr.setup)
+step(
+    "enable EVERY plugin (toggles)",
+    lambda: [mgr.set_enabled(p.id, True) for p in mgr.plugins()],
+)
+print("    active plugins:", sorted(mgr._active))
+
+from aqt import gui_hooks  # noqa: E402
+
+# --- fire every gui_hook Omnia subscribes (with all plugins on) -----------------------
+step("reviewer_did_show_question", lambda: gui_hooks.reviewer_did_show_question(card))
+step("reviewer_did_show_answer", lambda: gui_hooks.reviewer_did_show_answer(card))
+step(
+    "reviewer_will_answer_card (filter)",
+    lambda: gui_hooks.reviewer_will_answer_card((3, False), mw.reviewer, card),
+)
+step(
+    "av_player_did_end_playing",
+    lambda: gui_hooks.av_player_did_end_playing(SimpleNamespace()),
+)
+step(
+    "webview_did_receive_js_message (non-omnia)",
+    lambda: gui_hooks.webview_did_receive_js_message(
+        (False, None), "deckbrowser:open", None
+    ),
+)
+step(
+    "webview_did_receive_js_message (typed_accuracy 'rated')",
+    lambda: gui_hooks.webview_did_receive_js_message(
+        (False, None),
+        'omnia:{"plugin":"typed_accuracy","op":"rated","data":{"ratio":0.9}}',
+        None,
+    ),
+)
+
+
+def fire_editor_buttons():
+    buttons: list = []
+    editor = SimpleNamespace(
+        note=note,
+        addButton=lambda **kw: "<button>",
+        loadNote=lambda: None,
+        loadNoteKeepingFocus=lambda: None,
+    )
+    gui_hooks.editor_did_init_buttons(buttons, editor)
+    assert buttons, "smart_notes did not add an editor button"
+
+
+step("editor_did_init_buttons (✨ button)", fire_editor_buttons)
+step(
+    "browser_will_show_context_menu",
+    lambda: gui_hooks.browser_will_show_context_menu(
+        SimpleNamespace(selectedNotes=lambda: [note.id]), QMenu()
+    ),
+)
+step(
+    "deck_browser_will_show_options_menu (gear menu)",
+    lambda: gui_hooks.deck_browser_will_show_options_menu(QMenu(), deck_id),
+)
+
+
+def fire_overview():
+    content = SimpleNamespace(table="<table></table>")
+    gui_hooks.overview_will_render_content(SimpleNamespace(mw=mw), content)
+
+
+step("overview_will_render_content (stats card)", fire_overview)
+
+# --- construct every Configure dialog (clicking "Configure…") -------------------------
+from omnia.gui.config_form import PluginConfigDialog  # noqa: E402
+
+
+def open_generic_config(pid):
+    plugin = next(p for p in mgr.plugins() if p.id == pid)
+    s = repo.feature_settings(pid)
+    PluginConfigDialog(
+        plugin.name, plugin.config_schema(), s.model_dump() if s else {}, None
+    )
+
+
+for _pid in ("auto_flip", "typed_accuracy", "overdue_guard"):
+    step(
+        f"PluginConfigDialog[{_pid}] (generic Configure form)",
+        lambda pid=_pid: open_generic_config(pid),
+    )
+
+step(
+    "SmartNotesDialog (custom Configure)",
+    lambda: __import__(
+        "omnia.gui.smart_notes_dialog", fromlist=["SmartNotesDialog"]
+    ).SmartNotesDialog(repo, None),
+)
+step(
+    "AutoFlipDeckDialog (per-deck options)",
+    lambda: __import__(
+        "omnia.features.auto_flip.deck_options", fromlist=["AutoFlipDeckDialog"]
+    ).AutoFlipDeckDialog(deck_id, repo.feature_settings("auto_flip"), None),
+)
+step(
+    "SettingsDialog (Tools -> Omnia)",
+    lambda: __import__(
+        "omnia.gui.settings_dialog", fromlist=["SettingsDialog"]
+    ).SettingsDialog(mgr, None),
+)
+
+# --- disable everything (untick) ------------------------------------------------------
+step(
+    "disable EVERY plugin (untick)",
+    lambda: [mgr.set_enabled(p.id, False) for p in mgr.plugins()],
+)
+
+col.close()
+print(
+    f"\n{'='*72}\n{len(_failures)} FAILED step(s): {_failures}"
+    if _failures
+    else f"\n{'='*72}\nALL UI SMOKE STEPS PASSED ({len(js_log)} JS evals captured)"
+)
+sys.exit(1 if _failures else 0)
