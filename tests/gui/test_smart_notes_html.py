@@ -14,7 +14,7 @@ from omnia.gui.smart_notes.html import (
     row_to_payload,
     rows_for_note_type,
 )
-from omnia.plugins.smart_notes.auto_smart import AutoSmartField, apply_auto_smart
+from omnia.plugins.smart_notes.authoring import AutoSmartField, apply_auto_smart
 from omnia.plugins.smart_notes.config import (
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
@@ -37,6 +37,7 @@ def _row(field: str, **kw) -> dict:
         "provider": "",
         "model": "",
         "voice": "",
+        "language": "",
         "overwrite": False,
     }
     base.update(kw)
@@ -199,6 +200,37 @@ class TestLoadPayload:
         assert payload["all_fields"] == ["Word", "Meaning"]
         assert [r["field"] for r in payload["rows"]] == ["Meaning"]
 
+    def test_includes_decks_and_all_decks(self):
+        config = _config("Word").copy(update={"decks": [1, 2]})
+        payload = load_payload(
+            "Vocab",
+            config,
+            ["Word", "Meaning"],
+            ["gemini"],
+            all_decks=[{"id": 1, "name": "Default"}],
+        )
+        assert payload["decks"] == [1, 2]
+        assert payload["all_decks"] == [{"id": 1, "name": "Default"}]
+
+    def test_decks_and_all_decks_default_empty(self):
+        payload = load_payload("Vocab", None, ["Word", "Meaning"], ["gemini"])
+        assert payload["decks"] == []
+        assert payload["all_decks"] == []
+
+
+class TestNoteTypeConfigDecks:
+    def test_decks_passed_through(self):
+        config = note_type_config_from_payload(
+            "Vocab", "Word", [_row("Meaning", enabled=True)], [1, 2]
+        )
+        assert config.decks == [1, 2]
+
+    def test_decks_default_empty(self):
+        config = note_type_config_from_payload(
+            "Vocab", "Word", [_row("Meaning", enabled=True)]
+        )
+        assert config.decks == []
+
 
 class TestMergeNoteTypeInto:
     def test_replaces_same_name(self):
@@ -284,3 +316,39 @@ class TestBuildSmartNotesHtml:
     def test_auto_result_hook_exposed(self):
         # Auto-smart's off-thread result is pushed via this global hook.
         assert "window.__snAutoResult" in build_smart_notes_html(dark=False)
+
+    def test_generate_lock_and_preview_columns_present(self):
+        html = build_smart_notes_html(dark=False)
+        for col in (">Generate<", ">Lock<", ">Preview<", ">Model<"):
+            assert col in html
+
+    def test_catalog_is_baked_with_providers(self):
+        html = build_smart_notes_html(dark=False)
+        assert "window.__SN_CATALOG" in html
+        # The curated provider names land in the baked catalog JSON.
+        assert "gemini" in html and "edge_tts" in html
+
+    def test_new_ops_wired_in_js(self):
+        html = build_smart_notes_html(dark=False)
+        for op in ("improve_prompt", "improve_all", "preview"):
+            assert op in html
+
+    def test_voice_language_columns_and_languages_baked(self):
+        html = build_smart_notes_html(dark=False)
+        assert ">Voice<" in html and ">Language<" in html
+        assert "sn-col-voice" in html and "sn-col-language" in html
+        assert "sn-has-sound" in html  # the conditional-column mechanism
+        assert "Auto-detect" in html  # the languages list is baked in
+
+    def test_prompt_editor_and_improve_hooks_present(self):
+        html = build_smart_notes_html(dark=False)
+        assert "sn-modal" in html  # the popup prompt editor
+        assert "window.__snImproveResult" in html
+        assert "window.__snImproveAllResult" in html
+        assert "window.__snPreviewResult" in html
+
+    def test_decks_picker_present(self):
+        html = build_smart_notes_html(dark=False)
+        assert "sn-decks" in html  # the deck-scope picker markup
+        assert "sn-decks-panel" in html
+        assert "selectedDeckIds" in html  # the JS helper read into the payloads

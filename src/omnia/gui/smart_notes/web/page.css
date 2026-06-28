@@ -12,7 +12,7 @@ body.omnia-light {
   --row: rgba(255,255,255,0.7); --row-alt: rgba(240,243,250,0.7);
   --input-bg: #ffffff; --input-border: rgba(20,30,60,0.18);
   --shadow: rgba(20,30,60,0.12); --head: rgba(91,110,245,0.10); --fail: #c0392b;
-  --head-bg: #e7eaf6;
+  --head-bg: #e7eaf6; --overlay: rgba(20,30,60,0.34);
 }
 body.omnia-dark {
   --bg-top: #1b1e27; --bg-bottom: #14161d; --fg: #e7e9f0; --muted: #9aa3b2;
@@ -21,7 +21,7 @@ body.omnia-dark {
   --row: rgba(46,51,66,0.45); --row-alt: rgba(36,40,52,0.45);
   --input-bg: rgba(20,22,30,0.7); --input-border: rgba(255,255,255,0.16);
   --shadow: rgba(0,0,0,0.45); --head: rgba(124,140,255,0.16); --fail: #ff6b6b;
-  --head-bg: #2a2f40;
+  --head-bg: #2a2f40; --overlay: rgba(0,0,0,0.55);
 }
 body {
   color: var(--fg);
@@ -50,10 +50,34 @@ select, input[type="text"], textarea {
   border-radius: 8px; padding: 6px 8px; outline: none;
 }
 select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+select:disabled { opacity: 0.7; }
 #sn-note-type, #sn-base-field { min-width: 200px; }
+#sn-decks-btn { min-width: 200px; text-align: left; }
+
+/* Decks picker: a button under the toolbar label that toggles an absolutely-positioned
+   dropdown panel — an "All decks" master checkbox plus a scrollable per-deck checkbox list.
+   The owning .sn-field is position:relative so the panel anchors to it. */
+.sn-field { position: relative; }
+.sn-decks-panel {
+  position: absolute; top: 100%; left: 0; z-index: 40; margin-top: 4px;
+  width: 280px; max-width: 360px; padding: 8px;
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  border: 1px solid var(--card-border); border-radius: 12px;
+  box-shadow: 0 14px 40px var(--shadow);
+}
+.sn-decks-panel[hidden] { display: none; }
+.sn-decks-list { max-height: 220px; overflow: auto; margin-top: 4px; }
+.sn-decks-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 5px 6px; border-radius: 8px;
+}
+.sn-decks-row:hover { background: var(--head); }
+.sn-decks-all {
+  font-weight: 700; border-bottom: 1px solid var(--card-border); padding-bottom: 7px;
+}
 /* No inner `overflow:auto` flex-scroller: that compositing layer blanks the whole page on
-   QtWebEngine/macOS Metal (the cause of the blank Smart Notes dialog). The page scrolls via
-   the webview's own scrollbar instead; the header + footer below are sticky to stay in view. */
+   QtWebEngine/macOS Metal. The page scrolls via the webview's own scrollbar instead; the
+   header + footer are sticky to stay in view. */
 .sn-table-wrap {
   border-radius: 12px;
   border: 1px solid var(--card-border); box-shadow: 0 1px 3px var(--shadow);
@@ -65,17 +89,44 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
   font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.5px; color: var(--muted);
   /* Opaque header bg (NOT backdrop-filter: blur — that blanks the whole page on
-     QtWebEngine/macOS Metal, the cause of the "blank Smart Notes dialog" bug). */
+     QtWebEngine/macOS Metal). */
   padding: 9px 8px; background: var(--head-bg);
   border-bottom: 1px solid var(--card-border);
 }
 .sn-table tbody tr { border-bottom: 1px solid var(--card-border); }
 .sn-table tbody tr:nth-child(odd) { background: var(--row); }
 .sn-table tbody tr:nth-child(even) { background: var(--row-alt); }
-.sn-table td { padding: 7px 8px; vertical-align: top; }
-.sn-fieldname { font-weight: 650; padding-top: 8px; }
-.sn-prompt { width: 100%; min-width: 220px; min-height: 38px; resize: vertical; line-height: 1.4; }
-.sn-prompt-cell { display: flex; gap: 6px; align-items: flex-start; }
+.sn-table td { padding: 7px 8px; vertical-align: middle; }
+.sn-fieldname { font-weight: 650; }
+
+/* Cells that can be frozen (by Lock) or made not-applicable (e.g. Voice/Language on a
+   non-sound row) animate smoothly between states. */
+.sn-lockable { transition: filter 0.25s ease, opacity 0.25s ease, transform 0.25s ease; }
+/* When a row is locked its generation settings are frozen + blurred; the Generate switch and
+   the Lock toggle stay crisp + clickable so the user can still toggle generation / unlock. */
+.sn-row-locked .sn-lockable {
+  filter: blur(1.4px) grayscale(0.45); opacity: 0.4; pointer-events: none;
+}
+/* "Not applicable for this kind" (Model on a sound row; Voice/Language on a non-sound row):
+   a softer, gradient-masked fade than the lock blur, so it reads as "disabled here" not
+   "frozen". */
+.sn-na {
+  filter: blur(1px) saturate(0.5); opacity: 0.32; pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.45));
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.45));
+}
+
+/* Prompt cell: a clickable summary that opens the popup editor (never edited inline). */
+.sn-prompt-cell { cursor: pointer; min-width: 220px; }
+.sn-prompt-summary {
+  border: 1px dashed var(--input-border); border-radius: 8px; padding: 6px 8px;
+  min-height: 30px; line-height: 1.4; color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.sn-prompt-cell:hover .sn-prompt-summary { border-color: var(--accent); background: var(--head); }
+.sn-prompt-summary.sn-prompt-empty { color: var(--muted); font-style: italic; }
+
 .sn-lock {
   cursor: pointer; border: 1px solid var(--input-border); border-radius: 8px;
   background: var(--input-bg); font-size: 14px; padding: 5px 8px; line-height: 1;
@@ -84,19 +135,49 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
 .sn-lock:hover { border-color: var(--accent); }
 .sn-lock:active { transform: scale(0.94); }
 .sn-lock.sn-locked { border-color: var(--accent); background: var(--head); }
-.sn-provider, .sn-model { min-width: 110px; }
+
+.sn-iconbtn {
+  cursor: pointer; border: 1px solid var(--input-border); border-radius: 8px;
+  background: var(--input-bg); font-size: 13px; padding: 5px 9px; line-height: 1;
+  color: var(--fg); transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.sn-iconbtn:hover { border-color: var(--accent); }
+.sn-iconbtn:active { transform: scale(0.94); }
+.sn-iconbtn:disabled { opacity: 0.5; cursor: default; }
+
+.sn-provider, .sn-model, .sn-voice, .sn-language { min-width: 120px; max-width: 180px; }
+/* The Voice + Language columns only appear once at least one row is a sound field. */
+.sn-table:not(.sn-has-sound) .sn-col-voice,
+.sn-table:not(.sn-has-sound) .sn-col-language { display: none; }
 .sn-check { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
+/* The "Generate" switch: a checkbox styled into an on/off pill with a sliding knob. */
+.sn-toggle {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none;
+  width: 38px; height: 21px; border-radius: 999px; cursor: pointer; outline: none;
+  border: 1px solid var(--input-border); background: var(--input-bg);
+  position: relative; transition: background 0.18s ease, border-color 0.18s ease;
+  vertical-align: middle;
+}
+.sn-toggle::before {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 15px; height: 15px; border-radius: 50%; background: var(--muted);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.sn-toggle:checked {
+  border-color: transparent;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.sn-toggle:checked::before { transform: translateX(17px); background: #fff; }
+.sn-toggle:hover { border-color: var(--accent); }
+.sn-toggle:disabled { opacity: 0.5; cursor: default; }
 .sn-center { text-align: center; }
 .sn-empty { padding: 22px; text-align: center; color: var(--muted); }
 .sn-footer {
   display: flex; justify-content: space-between; align-items: center;
   gap: 12px; padding: 12px 0 4px; flex-wrap: wrap;
-  /* Sticks to the viewport bottom as the page scrolls, so Save/Cancel stay reachable.
-     Opaque bg so it reads over scrolled rows. (Plain sticky paints fine; it's overflow-
-     scroll containers that blanked the page.) */
   position: sticky; bottom: 0; z-index: 3; background: var(--bg-bottom);
 }
-.sn-footer-left, .sn-footer-right { display: flex; gap: 10px; align-items: center; }
+.sn-footer-left, .sn-footer-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .sn-btn {
   border: 1px solid var(--card-border); border-radius: 9px; cursor: pointer;
   padding: 7px 14px; font-size: 13px; color: var(--fg); background: var(--card-top);
@@ -118,3 +199,35 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
   vertical-align: -2px; animation: sn-rot 0.7s linear infinite;
 }
 @keyframes sn-rot { to { transform: rotate(360deg); } }
+
+/* Prompt editor popup — a plain in-page overlay (NOT a nested webview), so it composites
+   fine on QtWebEngine. */
+.sn-modal {
+  position: fixed; inset: 0; z-index: 50; display: flex;
+  align-items: center; justify-content: center; padding: 24px;
+  background: var(--overlay);
+}
+.sn-modal[hidden] { display: none; }
+.sn-modal-card {
+  width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 10px;
+  background: linear-gradient(150deg, var(--bg-top), var(--bg-bottom));
+  border: 1px solid var(--card-border); border-radius: 14px;
+  box-shadow: 0 14px 40px var(--shadow); padding: 16px;
+}
+.sn-modal-head { display: flex; align-items: center; justify-content: space-between; }
+.sn-modal-title { font-size: 15px; font-weight: 700; }
+.sn-modal-prompt {
+  width: 100%; min-height: 150px; resize: vertical; line-height: 1.5; font-size: 13px;
+}
+.sn-modal-fields { color: var(--muted); font-size: 12px; word-break: break-word; }
+.sn-modal-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sn-modal-result {
+  max-height: 200px; overflow: auto; font-size: 13px; line-height: 1.5;
+  color: var(--fg); white-space: pre-wrap; word-break: break-word;
+}
+.sn-modal-result:not(:empty) {
+  border: 1px solid var(--card-border); border-radius: 8px; padding: 8px 10px;
+  background: var(--input-bg);
+}
+.sn-modal-result.sn-err { color: var(--fail); }
+.sn-modal-foot { display: flex; justify-content: flex-end; gap: 10px; }

@@ -43,7 +43,7 @@ def _info_icon() -> QIcon:
     global _INFO_ICON
     if _INFO_ICON is not None:
         return _INFO_ICON
-    px = 40  # draw big, display small → crisp on retina
+    px = 44  # draw big, display small → crisp on retina
     pm = QPixmap(px, px)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -51,10 +51,12 @@ def _info_icon() -> QIcon:
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor("#5b6ef5"))
     p.drawEllipse(1, 1, px - 2, px - 2)
+    # Pure-white, extra-bold, larger glyph so the "i" reads clearly even at the 16px display
+    # size (the previous thin glyph was hard to make out).
     p.setPen(QColor("#ffffff"))
     font = QFont()
-    font.setPixelSize(int(px * 0.66))
-    font.setBold(True)
+    font.setPixelSize(int(px * 0.74))
+    font.setWeight(QFont.Weight.Black)
     p.setFont(font)
     p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "i")
     p.end()

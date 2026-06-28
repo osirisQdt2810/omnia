@@ -1,8 +1,9 @@
 /**
- * @fileoverview Smart Notes config page — part 1 of 4 of the page IIFE.
- * This fragment OPENS the IIFE; load order matters (01-bridge, 02-render, 03-handlers,
- * 04-init are concatenated with "\n" by gui/smart_notes/html.py). It declares the shared
- * element handles and the bridge/select helpers used by the later parts.
+ * @fileoverview Smart Notes config page — part 1 of 6 of the page IIFE.
+ * This fragment OPENS the IIFE; load order matters (01-bridge, 02-catalog, 03-render,
+ * 04-modal, 05-handlers, 06-init are concatenated with "\n" by gui/smart_notes/html.py). It
+ * declares the shared element handles, the baked catalog, and the bridge/select helpers used
+ * by the later parts.
  */
 
 (function () {
@@ -12,8 +13,39 @@
   const emptyEl = document.getElementById("sn-empty");
   const msgEl = document.getElementById("sn-msg");
   const autoBtn = document.getElementById("sn-auto");
+  const improveAllBtn = document.getElementById("sn-improve-all");
   const saveBtn = document.getElementById("sn-save");
-  let providers = [];
+
+  // Decks picker handles (a note-type-level scope: which decks this config applies to).
+  const decksBtn = document.getElementById("sn-decks-btn");
+  const decksPanel = document.getElementById("sn-decks-panel");
+  const decksAll = document.getElementById("sn-decks-all");
+  const decksList = document.getElementById("sn-decks-list");
+
+  // The full deck list ([{id, name}, ...]) + the selected subset (deck ids; [] = all decks),
+  // both seeded from the load response and read back into the save/auto/improve/preview payloads.
+  let allDecks = [];
+  let selectedDecks = [];
+
+  // Prompt-editor popup handles.
+  const modal = document.getElementById("sn-modal");
+  const modalTitle = document.getElementById("sn-modal-title");
+  const modalPrompt = document.getElementById("sn-modal-prompt");
+  const modalFields = document.getElementById("sn-modal-fields");
+  const modalMsg = document.getElementById("sn-modal-msg");
+  const modalResult = document.getElementById("sn-modal-result");
+  const modalImprove = document.getElementById("sn-modal-improve");
+  const modalPreview = document.getElementById("sn-modal-preview");
+  const modalSave = document.getElementById("sn-modal-save");
+  const modalCancel = document.getElementById("sn-modal-cancel");
+  const modalClose = document.getElementById("sn-modal-close");
+
+  // Provider / model / voice catalog baked into the page (see core/providers/catalog.py).
+  const CATALOG = window.__SN_CATALOG || {};
+
+  // Display labels for the Type dropdown ("tts" reads as "sound" in the UI; the stored value
+  // stays "tts" so the config model / engine are unchanged).
+  const TYPE_LABELS = {text: "text", image: "image", tts: "sound"};
 
   /**
    * Post an Omnia envelope to Python via the WebDialog bridge.
@@ -26,13 +58,28 @@
   }
 
   /**
-   * Set the status message line.
+   * Set the footer status message line.
    * @param {string} text HTML message to show (empty clears it).
    * @param {boolean} isErr Whether to render it as an error.
    */
   function setMsg(text, isErr) {
     msgEl.className = "sn-msg" + (isErr ? " sn-err" : "");
     msgEl.innerHTML = text || "";
+  }
+
+  /**
+   * Find the table row for a field name (defensive iteration; no selector escaping needed).
+   * @param {string} field The field name.
+   * @return {?HTMLTableRowElement}
+   */
+  function rowByField(field) {
+    let found = null;
+    Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
+      if (tr.dataset.field === field) {
+        found = tr;
+      }
+    });
+    return found;
   }
 
   /**
@@ -80,6 +127,20 @@
   }
 
   /**
+   * Build an on/off toggle switch (a checkbox styled as a sliding pill).
+   * @param {string} cls Extra class name.
+   * @param {boolean} checked Initial checked state.
+   * @return {!HTMLInputElement}
+   */
+  function makeToggle(cls, checked) {
+    const c = document.createElement("input");
+    c.type = "checkbox";
+    c.className = "sn-toggle " + cls;
+    c.checked = !!checked;
+    return c;
+  }
+
+  /**
    * Build a <select> from values; an empty value renders as "(inherit)".
    * @param {string} cls The select's class name.
    * @param {!Array<string>} values The option values.
@@ -96,19 +157,14 @@
   }
 
   /**
-   * Build a text input.
-   * @param {string} cls The input's class name.
-   * @param {string} value Initial value.
-   * @param {string} placeholder Placeholder text.
-   * @return {!HTMLInputElement}
+   * Build an empty table cell.
+   * @param {string=} cls Optional class name.
+   * @return {!HTMLTableCellElement}
    */
-  function makeInput(cls, value, placeholder) {
-    const i = document.createElement("input");
-    i.type = "text";
-    i.className = cls;
-    i.value = value || "";
-    if (placeholder) {
-      i.placeholder = placeholder;
+  function cell(cls) {
+    const td = document.createElement("td");
+    if (cls) {
+      td.className = cls;
     }
-    return i;
+    return td;
   }
