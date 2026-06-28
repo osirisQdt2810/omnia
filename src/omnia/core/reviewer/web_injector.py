@@ -191,16 +191,23 @@ class WebInjector:
         return "\n".join(chunks)
 
     def _eval(self, side: str, card: Any) -> None:
-        js = "\n".join(
-            filter(None, (self.collect_js(side), self._dynamic_js(side, card)))
-        )
-        if not js:
-            return
-        from omnia.core.anki_compat import main_window
+        # Resilience: a bug in any plugin's JS/dynamic provider must NOT crash the reviewer
+        # (this fires on every show-question/answer). Log it and move on.
+        try:
+            js = "\n".join(
+                filter(None, (self.collect_js(side), self._dynamic_js(side, card)))
+            )
+            if not js:
+                return
+            from omnia.core.anki_compat import main_window
 
-        web = getattr(main_window().reviewer, "web", None)
-        if web is not None:
-            web.eval(js)
+            web = getattr(main_window().reviewer, "web", None)
+            if web is not None:
+                web.eval(js)
+        except Exception:
+            from omnia.core.logging import get_logger
+
+            get_logger().exception("web injector: %s-side eval failed", side)
 
     def _on_show_question(self, card: Any) -> None:
         self._eval("question", card)
@@ -211,7 +218,15 @@ class WebInjector:
     def _on_js_message(
         self, handled: tuple[bool, Any], message: str, context: Any
     ) -> tuple[bool, Any]:
-        ours, result = self._router.dispatch(message, context)
+        # This filter fires on EVERY pycmd from any webview — a handler bug here would break
+        # every click. Isolate failures: log and pass the message through untouched.
+        try:
+            ours, result = self._router.dispatch(message, context)
+        except Exception:
+            from omnia.core.logging import get_logger
+
+            get_logger().exception("web injector: pycmd dispatch failed (%r)", message)
+            return handled
         return (True, result) if ours else handled
 
 
