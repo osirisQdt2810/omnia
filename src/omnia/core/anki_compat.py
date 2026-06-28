@@ -208,6 +208,129 @@ def update_note(note: Any, col: Optional[Any] = None) -> None:
     col.update_note(note)
 
 
+# --- collection reads (note types, decks, notes) ---------------------------------------
+def note_type_names(col: Optional[Any] = None) -> list[str]:
+    """Return every note-type (model) name in the collection."""
+    if col is None:
+        col = main_window().col
+    return [model["name"] for model in col.models.all()]
+
+
+def note_type_field_names(note_type: str, col: Optional[Any] = None) -> list[str]:
+    """Return the field names of ``note_type`` (empty if the note type is unknown)."""
+    if col is None:
+        col = main_window().col
+    model = col.models.by_name(note_type)
+    if model is None:
+        return []
+    return [field["name"] for field in model["flds"]]
+
+
+def deck_names(col: Optional[Any] = None) -> list[tuple[int, str]]:
+    """Return ``(deck_id, deck_name)`` pairs for every deck (for the deck picker)."""
+    if col is None:
+        col = main_window().col
+    return [(int(deck.id), deck.name) for deck in col.decks.all_names_and_ids()]
+
+
+def find_note_ids(query: str, col: Optional[Any] = None) -> list[int]:
+    """Return the note ids matching a search ``query`` (e.g. ``'note:"Basic"'``)."""
+    if col is None:
+        col = main_window().col
+    return [int(nid) for nid in col.find_notes(query)]
+
+
+def find_card_note_ids(query: str, col: Optional[Any] = None) -> list[int]:
+    """Return the note ids of the cards matching a search ``query``."""
+    if col is None:
+        col = main_window().col
+    return [int(col.get_card(cid).nid) for cid in col.find_cards(query)]
+
+
+def get_note(nid: int, col: Optional[Any] = None) -> Any:
+    """Return the note with id ``nid``."""
+    if col is None:
+        col = main_window().col
+    return col.get_note(nid)
+
+
+def random_note_of_type(
+    note_type: str, deck_id: Optional[int] = None, col: Optional[Any] = None
+) -> Any:
+    """Return a note of ``note_type`` (optionally within ``deck_id``), or None if none exist.
+
+    Used by the prompt dialog's "Test With Random Note" — it just needs any real note of the
+    rule's note type to interpolate the prompt against.
+    """
+    if col is None:
+        col = main_window().col
+    query = f'note:"{note_type}"'
+    if deck_id is not None:
+        deck_name = col.decks.name(deck_id)
+        if deck_name:
+            query = f'{query} (deck:"{deck_name}" or deck:"{deck_name}::*")'
+    note_ids = col.find_notes(query)
+    return col.get_note(note_ids[0]) if note_ids else None
+
+
+def play_audio(data: bytes, ext: str) -> None:
+    """Play raw audio ``data`` through Anki's av player (writes a temp clip first).
+
+    Used by the prompt/custom dialogs to preview a generated TTS clip without saving a rule.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from aqt.sound import av_player
+
+    tmp = Path(tempfile.gettempdir()) / f"omnia-preview.{ext or 'mp3'}"
+    tmp.write_bytes(data)
+    av_player.play_file(str(tmp))
+
+
+def redraw_reviewer_current_card() -> None:
+    """Re-render the reviewer's current card (best-effort; no-op if not reviewing).
+
+    Used by review-time generation to refresh a card whose fields were just filled in the
+    background. The private ``_redraw_current_card`` exists across the 25.09 line; falls back
+    to re-showing the question.
+    """
+    reviewer = getattr(main_window(), "reviewer", None)
+    if reviewer is None:
+        return
+    for attr in ("_redraw_current_card", "_showQuestion"):
+        method = getattr(reviewer, attr, None)
+        if callable(method):
+            method()
+            return
+
+
+# --- progress dialog (cancellable counted batch) ---------------------------------------
+def progress_start(label: str, maximum: int) -> None:
+    """Open Anki's progress dialog with a cancel button (call on the main thread)."""
+    main_window().progress.start(label=label, min=0, max=maximum, immediate=True)
+
+
+def progress_update(label: str, value: int, maximum: int) -> None:
+    """Update the progress dialog's label/value (call on the main thread)."""
+    main_window().progress.update(label=label, value=value, max=maximum)
+
+
+def progress_finish() -> None:
+    """Close the progress dialog (call on the main thread)."""
+    main_window().progress.finish()
+
+
+def progress_was_cancelled() -> bool:
+    """Return whether the user clicked Cancel in the progress dialog."""
+    return bool(main_window().progress.want_cancel())
+
+
+def run_on_main(callback: Callable[[], None]) -> None:
+    """Schedule ``callback`` to run on the Qt main thread (from a background thread)."""
+    main_window().taskman.run_on_main(callback)
+
+
 # --- hook subscription (so features stay free of direct gui_hooks access) --------------
 # Filter hooks must RETURN a value (the threaded result); we never wrap those — their handlers
 # are trivial and return-critical. Every other (notify) hook callback is wrapped in a logging

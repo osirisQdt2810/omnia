@@ -77,8 +77,10 @@ def _install_anki_stubs() -> None:
         reviewer_will_play_answer_sounds=FakeHook(),
         av_player_did_end_playing=FakeHook(),
         browser_will_show_context_menu=FakeHook(),
+        browser_sidebar_will_show_context_menu=FakeHook(),
         # Bespoke per-feature UIs (smart_notes editor, typed_accuracy stats, auto_flip decks).
         editor_did_init_buttons=FakeHook(),
+        editor_will_show_context_menu=FakeHook(),
         editor_did_load_note=FakeHook(),
         overview_will_render_content=FakeHook(),
         deck_browser_will_show_options_menu=FakeHook(),

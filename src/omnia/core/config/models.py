@@ -297,6 +297,8 @@ class SmartNotesSettings(_Strict):
     regenerate_when_batching: bool = True
     # Skip a rule whose target_field is already non-empty unless this is True.
     overwrite: bool = False
+    # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
+    generate_at_review: bool = False
 
 
 # --- top-level --------------------------------------------------------------------------

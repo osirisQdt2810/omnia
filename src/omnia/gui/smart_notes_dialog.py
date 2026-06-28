@@ -1,9 +1,10 @@
-"""The smart_notes field-mapping dialog — a table of generation rules.
+"""The smart_notes settings dialog — a list of generation rules + advanced toggles.
 
-Each row maps (Note Type, Source Field, Target Field, Kind, Prompt) to one generation rule.
-The dialog reads the current rules from the :class:`ConfigRepository`, lets the user edit/add/
-remove rows, validates them by constructing :class:`SmartNotesSettings`, and persists on OK.
-Pure Qt glue — only loaded inside Anki; row↔rule normalisation lives in ``logic.py``.
+Each rule is added/edited via the rich per-rule :class:`PromptDialog`; this outer dialog lists
+the configured rules with Add/Edit/Remove and the 💬/🔈/🖼️ new-rule affordances (text/tts/
+image), plus the advanced toggles (Allow-empty-fields, Regenerate-when-batching, Overwrite,
+Generate-at-review). It reads/writes the rules through the :class:`ConfigRepository`, building
+a validated :class:`SmartNotesSettings` on OK. Pure Qt glue — only loaded inside Anki.
 """
 
 from __future__ import annotations
@@ -11,75 +12,80 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from aqt.qt import (
-    QComboBox,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
 )
 
-from omnia.features.smart_notes.logic import rows_to_rules, rules_to_rows
-
 if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
+    from omnia.core.config.models import SmartNotesFieldRule
 
-_KINDS = ("text", "image", "tts")
-_COLUMNS = ("Note Type", "Source Field", "Target Field", "Kind", "Prompt")
-# Column index of the per-row Kind combo box; the others are plain text cells.
-_KIND_COL = 3
-# Maps each table column to its rule-dict key (Kind is handled separately via the combo).
-_TEXT_KEYS = {0: "note_type", 1: "source_field", 2: "target_field", 4: "prompt"}
+_KIND_ICON = {"text": "💬", "image": "🖼️", "tts": "🔈"}
 
 
 class SmartNotesDialog(QDialog):
-    """Edit the smart_notes field-generation rules as a table, persisting via the repo."""
+    """Edit the smart_notes field-generation rules as a list, persisting via the repo."""
 
     def __init__(self, repo: ConfigRepository, parent: Any = None) -> None:
         super().__init__(parent)
         self._repo = repo
-        self.setWindowTitle("Smart Notes — field mapping")
-        self.setMinimumWidth(720)
-        self.setMinimumHeight(420)
-        self._build()
+        settings = repo.feature_settings("smart_notes")
+        # A working copy of the rules; mutated by the per-rule dialog, persisted on OK.
+        self._rules: list[SmartNotesFieldRule] = (
+            [rule.model_copy() for rule in settings.fields] if settings else []
+        )
+        self.setWindowTitle("Smart Notes ✨")
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(480)
+        self._build(settings)
+        self._refresh_list()
 
-    def _build(self) -> None:
+    def _build(self, settings: Any) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(8)
 
-        intro = QLabel(
-            "Map a source field to a target field per note type. Kind picks how the "
-            "target is filled; Prompt may reference fields as {{FieldName}}."
+        outer.addWidget(
+            QLabel("<h3>✨ Smart Fields — generate text, audio, and images</h3>")
         )
-        intro.setWordWrap(True)
-        outer.addWidget(intro)
 
-        self._table = QTableWidget(0, len(_COLUMNS))
-        self._table.setHorizontalHeaderLabels(list(_COLUMNS))
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._table.verticalHeader().setVisible(False)
-        outer.addWidget(self._table, 1)
+        self._list = QListWidget()
+        self._list.itemDoubleClicked.connect(lambda _i: self._edit_selected())
+        outer.addWidget(self._list, 1)
 
-        settings = self._repo.feature_settings("smart_notes")
-        for row in rules_to_rows(list(settings.fields) if settings else []):
-            self._append_row(row)
-
-        row_buttons = QHBoxLayout()
-        add = QPushButton("Add row")
-        add.clicked.connect(lambda: self._append_row({}))
-        remove = QPushButton("Remove selected")
+        row = QHBoxLayout()
+        edit = QPushButton("Edit")
+        edit.clicked.connect(self._edit_selected)
+        remove = QPushButton("Remove")
         remove.clicked.connect(self._remove_selected)
-        row_buttons.addWidget(add)
-        row_buttons.addWidget(remove)
-        row_buttons.addStretch(1)
-        outer.addLayout(row_buttons)
+        row.addWidget(edit)
+        row.addWidget(remove)
+        row.addStretch(1)
+        for kind in ("text", "tts", "image"):
+            label = {"text": "New Text", "tts": "New TTS", "image": "New Image"}[kind]
+            add = QPushButton(f"{_KIND_ICON[kind]} {label}")
+            add.clicked.connect(lambda _c=False, k=kind: self._add(k))
+            row.addWidget(add)
+        outer.addLayout(row)
+
+        self._allow_empty = QCheckBox("Allow empty source fields (generate anyway)")
+        self._regen = QCheckBox("Regenerate already-filled fields when batching")
+        self._overwrite = QCheckBox("Overwrite existing target fields")
+        self._at_review = QCheckBox("Generate empty smart fields at review time")
+        if settings is not None:
+            self._allow_empty.setChecked(settings.allow_empty_fields)
+            self._regen.setChecked(settings.regenerate_when_batching)
+            self._overwrite.setChecked(settings.overwrite)
+            self._at_review.setChecked(settings.generate_at_review)
+        for box in (self._allow_empty, self._regen, self._overwrite, self._at_review):
+            outer.addWidget(box)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -88,48 +94,76 @@ class SmartNotesDialog(QDialog):
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
 
-    def _append_row(self, values: dict[str, str]) -> None:
-        row = self._table.rowCount()
-        self._table.insertRow(row)
-        for col, key in _TEXT_KEYS.items():
-            self._table.setItem(row, col, QTableWidgetItem(str(values.get(key, ""))))
-        combo = QComboBox()
-        combo.addItems(list(_KINDS))
-        kind = values.get("kind", "text")
-        combo.setCurrentText(kind if kind in _KINDS else "text")
-        self._table.setCellWidget(row, _KIND_COL, combo)
+    # --- rule list -------------------------------------------------------------------
+    def _refresh_list(self) -> None:
+        self._list.clear()
+        for rule in self._rules:
+            self._list.addItem(QListWidgetItem(_describe_rule(rule)))
+
+    def _selected_index(self) -> int:
+        return self._list.currentRow()
+
+    def _add(self, kind: str) -> None:
+        from omnia.core.config.models import SmartNotesFieldRule
+
+        rule = SmartNotesFieldRule(kind=kind)
+        self._open_prompt_dialog(rule, lambda saved: self._append(saved))
+
+    def _edit_selected(self) -> None:
+        index = self._selected_index()
+        if index < 0:
+            return
+        self._open_prompt_dialog(
+            self._rules[index].model_copy(),
+            lambda saved, i=index: self._replace(i, saved),
+        )
 
     def _remove_selected(self) -> None:
-        # Delete from the bottom up so earlier row indices stay valid.
-        rows = sorted(
-            {index.row() for index in self._table.selectedIndexes()}, reverse=True
-        )
-        for row in rows:
-            self._table.removeRow(row)
+        index = self._selected_index()
+        if index < 0:
+            return
+        del self._rules[index]
+        self._refresh_list()
 
-    def _collect_rows(self) -> list[dict[str, str]]:
-        rows: list[dict[str, str]] = []
-        for row in range(self._table.rowCount()):
-            entry: dict[str, str] = {}
-            for col, key in _TEXT_KEYS.items():
-                item = self._table.item(row, col)
-                entry[key] = item.text() if item is not None else ""
-            combo = self._table.cellWidget(row, _KIND_COL)
-            entry["kind"] = combo.currentText() if combo is not None else "text"
-            rows.append(entry)
-        return rows
+    def _append(self, rule: SmartNotesFieldRule) -> None:
+        self._rules.append(rule)
+        self._refresh_list()
 
+    def _replace(self, index: int, rule: SmartNotesFieldRule) -> None:
+        self._rules[index] = rule
+        self._refresh_list()
+
+    def _open_prompt_dialog(self, rule: Any, on_save: Any) -> None:
+        from omnia.gui.smart_notes_prompt_dialog import PromptDialog
+
+        PromptDialog(self._repo, rule, on_save, self).exec()
+
+    # --- persist ---------------------------------------------------------------------
     def _on_accept(self) -> None:
         from aqt.utils import showWarning
         from pydantic import ValidationError
 
         from omnia.core.config.models import SmartNotesSettings
 
-        rows = rows_to_rules(self._collect_rows())
         try:
-            SmartNotesSettings(fields=rows)
+            settings = SmartNotesSettings(
+                fields=[rule.model_dump() for rule in self._rules],
+                allow_empty_fields=self._allow_empty.isChecked(),
+                regenerate_when_batching=self._regen.isChecked(),
+                overwrite=self._overwrite.isChecked(),
+                generate_at_review=self._at_review.isChecked(),
+            )
         except ValidationError as exc:
             showWarning(f"Omnia: invalid field rules — fix and try again.\n\n{exc}")
-            return  # keep the dialog open so the user can correct the rows
-        self._repo.update_section("smart_notes", {"fields": rows})
+            return  # keep the dialog open so the user can correct the rules
+        self._repo.update_section("smart_notes", settings.model_dump())
         self.accept()
+
+
+def _describe_rule(rule: SmartNotesFieldRule) -> str:
+    """A one-line summary of a rule for the list (icon, type → field, enabled state)."""
+    icon = _KIND_ICON.get(rule.kind, "✨")
+    note_type = rule.note_type or "Any note type"
+    state = "" if rule.enabled else "  (disabled)"
+    deck = "" if rule.deck_id is None else "  [deck-scoped]"
+    return f"{icon}  {note_type} → {rule.target_field or '?'}{deck}{state}"

@@ -103,6 +103,60 @@ def rows_to_rules(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     return cleaned
 
 
+def rule_matches_note_type(rule: SmartNotesFieldRule, note_type: str) -> bool:
+    """Return whether ``rule`` applies to a note of ``note_type`` (empty matches any)."""
+    return not rule.note_type or rule.note_type == note_type
+
+
+def select_rules_for_note(
+    rules: list[SmartNotesFieldRule],
+    note_type: str,
+    field_names: list[str],
+    *,
+    enabled_only: bool = False,
+) -> list[SmartNotesFieldRule]:
+    """Return the rules that apply to one note (its ``note_type`` + existing ``field_names``).
+
+    A rule applies when its (optional) ``note_type`` matches and its ``target_field`` is one of
+    the note's fields. ``enabled_only`` keeps only rules flagged for automatic batching — the
+    Browser/sidebar batch passes it so a disabled rule is skipped there, while the editor button
+    and the per-field context-menu action run disabled rules too (mirroring the reference, where
+    a disabled field is still manually generatable).
+
+    Args:
+        rules: All configured field rules.
+        note_type: The note's note-type name.
+        field_names: The note's field names.
+        enabled_only: Drop rules whose ``enabled`` flag is False.
+
+    Returns:
+        The matching rules, in their configured order.
+    """
+    present = set(field_names)
+    return [
+        rule
+        for rule in rules
+        if rule_matches_note_type(rule, note_type)
+        and rule.target_field in present
+        and (rule.enabled or not enabled_only)
+    ]
+
+
+def rules_for_field(
+    rules: list[SmartNotesFieldRule], note_type: str, field: str
+) -> list[SmartNotesFieldRule]:
+    """Return the rules of ``note_type`` whose ``target_field`` is ``field`` (any enabled state).
+
+    Used by the field context-menu "Generate this field" action, which runs a single field's
+    rule(s) on demand even when they are disabled for automatic batching.
+    """
+    return [
+        rule
+        for rule in rules
+        if rule_matches_note_type(rule, note_type) and rule.target_field == field
+    ]
+
+
 def build_generation_plan(
     fields: dict[str, str], note_type: str, rules: list[SmartNotesFieldRule]
 ) -> list[tuple[SmartNotesFieldRule, dict[str, str]]]:
@@ -115,9 +169,34 @@ def build_generation_plan(
     return [
         (rule, fields)
         for rule in rules
-        if (not rule.note_type or rule.note_type == note_type)
-        and rule.target_field in fields
+        if rule_matches_note_type(rule, note_type) and rule.target_field in fields
     ]
+
+
+def dedupe_preserving_order(ids: list[int]) -> list[int]:
+    """Return ``ids`` with duplicates removed, keeping first-seen order.
+
+    A batch over a deck/note-type or a multi-card selection can list the same NOTE twice (two
+    cards of one note); generation is per note, so the batch runner de-dupes note ids first.
+    """
+    seen: set[int] = set()
+    ordered: list[int] = []
+    for value in ids:
+        if value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
+
+
+def chunk(items: list[int], size: int) -> list[list[int]]:
+    """Split ``items`` into consecutive batches of at most ``size`` (``size`` >= 1).
+
+    The batch runner generates in chunks so it can update progress / honour a cancel between
+    chunks instead of hammering the provider with the whole selection at once.
+    """
+    if size < 1:
+        raise ValueError("chunk size must be >= 1")
+    return [items[start : start + size] for start in range(0, len(items), size)]
 
 
 @dataclass

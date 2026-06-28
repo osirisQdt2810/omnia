@@ -62,19 +62,26 @@ mw = SimpleNamespace(
     ),
     web=web,
     progress=SimpleNamespace(
-        timer=lambda ms, cb, repeat: SimpleNamespace(stop=lambda: None)
+        timer=lambda ms, cb, repeat: SimpleNamespace(stop=lambda: None),
+        start=lambda **k: None,
+        update=lambda **k: None,
+        finish=lambda: None,
+        want_cancel=lambda: False,
     ),
-    taskman=SimpleNamespace(run_in_background=lambda *a, **k: None),
+    taskman=SimpleNamespace(
+        run_in_background=lambda *a, **k: None,
+        run_on_main=lambda cb: cb(),
+    ),
     form=SimpleNamespace(menuTools=QMenu()),
 )
 aqt.mw = mw
+
+import shutil  # noqa: E402
 
 # --- build the manager exactly like the entry point -----------------------------------
 from omnia.core.config import ConfigLoader, ConfigRepository  # noqa: E402
 from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
-
-import shutil  # noqa: E402
 
 src = REPO / "src" / "omnia"
 # Toggling plugins persists overrides — copy the real config into the temp dir so the smoke
@@ -122,23 +129,48 @@ step(
 )
 
 
-def fire_editor_buttons():
-    buttons: list = []
-    editor = SimpleNamespace(
+def _editor_stub():
+    return SimpleNamespace(
         note=note,
+        web=web,
+        currentField=0,
+        parentWindow=None,
         addButton=lambda **kw: "<button>",
         loadNote=lambda: None,
         loadNoteKeepingFocus=lambda: None,
     )
-    gui_hooks.editor_did_init_buttons(buttons, editor)
+
+
+def fire_editor_buttons():
+    buttons: list = []
+    gui_hooks.editor_did_init_buttons(buttons, _editor_stub())
     assert buttons, "smart_notes did not add an editor button"
 
 
 step("editor_did_init_buttons (✨ button)", fire_editor_buttons)
 step(
+    "editor_will_show_context_menu (field menu)",
+    lambda: gui_hooks.editor_will_show_context_menu(
+        SimpleNamespace(editor=_editor_stub()), QMenu()
+    ),
+)
+step(
     "browser_will_show_context_menu",
     lambda: gui_hooks.browser_will_show_context_menu(
         SimpleNamespace(selectedNotes=lambda: [note.id]), QMenu()
+    ),
+)
+step(
+    "browser_sidebar_will_show_context_menu (deck batch)",
+    lambda: gui_hooks.browser_sidebar_will_show_context_menu(
+        SimpleNamespace(),
+        QMenu(),
+        SimpleNamespace(
+            item_type=SimpleNamespace(name="DECK"),
+            full_name="Default",
+            name="Default",
+        ),
+        0,
     ),
 )
 step(
@@ -177,6 +209,31 @@ step(
     lambda: __import__(
         "omnia.gui.smart_notes_dialog", fromlist=["SmartNotesDialog"]
     ).SmartNotesDialog(repo, None),
+)
+
+
+def build_prompt_dialog():
+    from omnia.core.config.models import SmartNotesFieldRule
+    from omnia.gui.smart_notes_prompt_dialog import PromptDialog
+
+    rule = SmartNotesFieldRule(note_type="Basic", target_field="Back", kind="text")
+    PromptDialog(repo, rule, lambda _saved: None, None)
+
+
+step("PromptDialog (add/edit one rule)", build_prompt_dialog)
+step(
+    "CustomPromptDialog (one-off custom text)",
+    lambda: __import__(
+        "omnia.gui.smart_notes_custom_prompt", fromlist=["CustomPromptDialog"]
+    ).CustomPromptDialog(
+        repo,
+        kind="text",
+        note_type="Basic",
+        field_names=["Front", "Back"],
+        target_field="Back",
+        on_save=lambda _v: None,
+        parent=None,
+    ),
 )
 step(
     "AutoFlipDeckDialog (per-deck options)",
