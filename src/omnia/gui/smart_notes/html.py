@@ -12,19 +12,29 @@ generated, and one table row per other field describing how to generate it. It t
 Python through the WebDialog bridge with these ops:
 
 * ``list_note_types`` → ``[name, ...]``
-* ``load`` ``{note_type}`` → the note type's base field, all fields, rows, and providers
+* ``load`` ``{note_type}`` → the note type's base field, all fields, rows, providers, decks
 * ``set_base_field`` ``{note_type, base_field}`` → re-rendered rows for the new base
 * ``create_field`` ``{note_type, field_name}`` → the note type's updated field names
-* ``auto_smart`` ``{note_type, base_field, rows}`` → rows with prompts/types filled in
-* ``save`` ``{note_type, base_field, rows}`` → ``{ok: true}`` once persisted
+* ``auto_smart`` ``{note_type, base_field, rows, decks}`` → rows with prompts/types filled in
+* ``improve_prompt`` ``{note_type, base_field, field, prompt}`` → a polished prompt (pushed)
+* ``improve_all`` ``{note_type, base_field, rows, decks}`` → ``{improved: {field: prompt}}`` (pushed)
+* ``preview`` ``{note_type, base_field, field, type, prompt, provider, model, voice}`` → a
+  generated sample for a random note (pushed)
+* ``save`` ``{note_type, base_field, rows, decks}`` → ``{ok: true}`` once persisted
 
-This module imports nothing from ``aqt``/``anki``; it only knows the config models.
+The Provider/Model/Voice dropdowns are driven by a catalog baked into ``window.__SN_CATALOG``
+(see :func:`~omnia.core.providers.catalog.catalog_payload`); the ``load`` response's
+``providers`` list is kept for back-compat but the page no longer needs it.
+
+This module imports only pure data (the config models + the provider catalog); nothing from
+``aqt``/``anki``.
 """
 
 from __future__ import annotations
 
 import json
 
+from omnia.core.providers.catalog import catalog_payload
 from omnia.gui.assets import read_asset, read_assets
 from omnia.plugins.smart_notes.config import (
     SmartNotesFieldConfig,
@@ -34,12 +44,14 @@ from omnia.plugins.smart_notes.config import (
 _FIELD_TYPES = ("text", "tts", "image")
 
 # The page script is split into cohesive pieces under ``web/``; they are concatenated in this
-# exact order to reproduce the original single ``page.js`` byte-for-byte.
+# exact order (a single IIFE opened by 01 and closed by 06).
 _PAGE_JS_PARTS = [
     "01-bridge.js",
-    "02-render.js",
-    "03-handlers.js",
-    "04-init.js",
+    "02-catalog.js",
+    "03-render.js",
+    "04-modal.js",
+    "05-handlers.js",
+    "06-init.js",
 ]
 
 
@@ -93,9 +105,9 @@ def field_configs_from_payload(
     """Build :class:`SmartNotesFieldConfig`s from the JS-posted row dicts (one per non-base field).
 
     Each dict carries the row's editable state (``field``, ``enabled``, ``type``, ``prompt``,
-    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``overwrite``). A row with no
-    ``field`` name is skipped; an invalid ``type`` falls back to ``"text"`` so a malformed
-    payload can't raise during validation.
+    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``language``, ``overwrite``). A row
+    with no ``field`` name is skipped; an invalid ``type`` falls back to ``"text"`` so a
+    malformed payload can't raise during validation.
 
     Args:
         rows: The row dicts posted from the page.
@@ -121,6 +133,7 @@ def field_configs_from_payload(
                 provider=str(row.get("provider", "")),
                 model=str(row.get("model", "")),
                 voice=str(row.get("voice", "")),
+                language=str(row.get("language", "")),
                 overwrite=bool(row.get("overwrite", False)),
             )
         )
@@ -128,13 +141,17 @@ def field_configs_from_payload(
 
 
 def note_type_config_from_payload(
-    note_type: str, base_field: str, rows: list[dict[str, object]]
+    note_type: str,
+    base_field: str,
+    rows: list[dict[str, object]],
+    decks: list[int] | None = None,
 ) -> SmartNotesNoteTypeConfig:
-    """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, and rows."""
+    """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, rows, decks."""
     return SmartNotesNoteTypeConfig(
         note_type=note_type,
         base_field=base_field,
         fields=field_configs_from_payload(rows),
+        decks=[int(d) for d in (decks or [])],
     )
 
 
@@ -162,6 +179,7 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
         "provider": row.provider,
         "model": row.model,
         "voice": row.voice,
+        "language": row.language,
         "overwrite": row.overwrite,
     }
 
@@ -171,8 +189,13 @@ def load_payload(
     config: SmartNotesNoteTypeConfig | None,
     all_fields: list[str],
     providers: list[str],
+    all_decks: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    """Build the ``load`` op's response: base field, fields, rows, and providers."""
+    """Build the ``load`` op's response: base field, fields, rows, providers, and decks.
+
+    ``all_decks`` is the full ``[{id, name}, ...]`` deck list for the picker; ``decks`` is the
+    config's selected deck-id subset ([] = all decks).
+    """
     base_field = resolve_base_field(config, all_fields)
     rows = rows_for_note_type(config, all_fields, base_field)
     return {
@@ -181,10 +204,17 @@ def load_payload(
         "all_fields": all_fields,
         "rows": [row_to_payload(row) for row in rows],
         "providers": providers,
+        "decks": list(config.decks) if config else [],
+        "all_decks": all_decks or [],
     }
 
 
-def build_smart_notes_html(*, dark: bool, init: dict[str, object] | None = None) -> str:
+def build_smart_notes_html(
+    *,
+    dark: bool,
+    init: dict[str, object] | None = None,
+    catalog: dict[str, object] | None = None,
+) -> str:
     """Build the full Smart Notes config page HTML, with the initial data baked in.
 
     The selectors + first note type's rows are seeded from ``init`` (``window.__SN_INIT``) so
@@ -192,12 +222,15 @@ def build_smart_notes_html(*, dark: bool, init: dict[str, object] | None = None)
     callback channel isn't ready the instant the page's inline script runs, so an init
     ``list_note_types``/``load`` round-trip is dropped and the dialog comes up blank. User
     actions (change note type, set base, create field, auto-smart, save) happen later, when the
-    bridge is ready, so they keep using ``pycmd``.
+    bridge is ready, so they keep using ``pycmd``. The provider/model/voice catalog is baked
+    into ``window.__SN_CATALOG`` so the kind-aware dropdowns work without a callback too.
 
     Args:
         dark: Render the dark palette (Anki night mode) when True, else the light palette.
         init: ``{note_types, note_type, base_field, all_fields, rows, providers}`` for the
             initially-selected note type. None/empty falls back to a JS ``list_note_types``.
+        catalog: The provider/model/voice catalog (``window.__SN_CATALOG``). Defaults to the
+            real :func:`~omnia.core.providers.catalog.catalog_payload`.
 
     Returns:
         A complete, self-contained HTML document string.
@@ -207,6 +240,7 @@ def build_smart_notes_html(*, dark: bool, init: dict[str, object] | None = None)
         css=read_asset(__file__, "web", "page.css"),
         types_json=json.dumps(_FIELD_TYPES),
         init_json=json.dumps(init) if init else "null",
+        catalog_json=json.dumps(catalog if catalog is not None else catalog_payload()),
         js=read_assets(__file__, "web", names=_PAGE_JS_PARTS),
     )
 

@@ -19,17 +19,32 @@
       <span class="sn-label" title="The always-present INPUT field (a single word OR a phrase). It is never generated.">Base field</span>
       <select id="sn-base-field"></select>
     </label>
+    <label class="sn-field">
+      <span class="sn-label" title="Limit this note type's generation to specific decks (none ticked = all decks).">Decks</span>
+      <button id="sn-decks-btn" class="sn-btn" type="button">All decks</button>
+      <div id="sn-decks-panel" class="sn-decks-panel" hidden>
+        <label class="sn-decks-row sn-decks-all">
+          <input type="checkbox" id="sn-decks-all" class="sn-check" checked>
+          <span>All decks</span>
+        </label>
+        <div id="sn-decks-list" class="sn-decks-list"></div>
+      </div>
+    </label>
   </div>
   <div class="sn-table-wrap">
     <table class="sn-table">
       <thead>
         <tr>
           <th>Field</th>
-          <th title="Generate this field?">On</th>
+          <th title="Generate this field in batches / Auto-smart / Editor ✨">Generate</th>
+          <th title="Lock this field — freeze its settings and skip it in Auto-smart / Improve">Lock</th>
           <th>Type</th>
-          <th>Prompt — reference fields as {{{{Base}}}}</th>
+          <th>Prompt</th>
           <th title="Inherit the central provider when blank">Provider</th>
-          <th title="Inherit the central model when blank">Model</th>
+          <th title="Model for text/image fields">Model</th>
+          <th class="sn-col-voice" title="Voice for a sound field (blank = the provider's default for the language)">Voice</th>
+          <th class="sn-col-language" title="Language for a sound field — Auto-detect or pick">Language</th>
+          <th title="Test this field's prompt on a random note">Preview</th>
           <th title="Overwrite the field even if it already has content">Overwrite</th>
         </tr>
       </thead>
@@ -41,6 +56,7 @@
     <div class="sn-footer-left">
       <button id="sn-create" class="sn-btn">+ Create field</button>
       <button id="sn-auto" class="sn-btn sn-btn-magic">✨ Auto-smart</button>
+      <button id="sn-improve-all" class="sn-btn sn-btn-magic">✦ Improve all prompts</button>
       <span id="sn-msg" class="sn-msg"></span>
     </div>
     <div class="sn-footer-right">
@@ -49,8 +65,32 @@
     </div>
   </footer>
 </div>
+
+<div id="sn-modal" class="sn-modal" hidden>
+  <div class="sn-modal-card">
+    <div class="sn-modal-head">
+      <div class="sn-modal-title" id="sn-modal-title">Edit prompt</div>
+      <button id="sn-modal-close" class="sn-iconbtn" title="Close">✕</button>
+    </div>
+    <textarea id="sn-modal-prompt" class="sn-modal-prompt"
+      placeholder="Describe what to generate — reference fields as {{{{Field}}}}. Rough is fine; ✨ Improve turns it into a polished prompt."></textarea>
+    <div id="sn-modal-fields" class="sn-modal-fields"></div>
+    <div class="sn-modal-actions">
+      <button id="sn-modal-improve" class="sn-btn sn-btn-magic">✨ Improve</button>
+      <button id="sn-modal-preview" class="sn-btn">▶ Preview</button>
+      <span id="sn-modal-msg" class="sn-msg"></span>
+    </div>
+    <div id="sn-modal-result" class="sn-modal-result"></div>
+    <div class="sn-modal-foot">
+      <button id="sn-modal-cancel" class="sn-btn">Cancel</button>
+      <button id="sn-modal-save" class="sn-btn sn-btn-primary">Save prompt</button>
+    </div>
+  </div>
+</div>
+
 <script>var SN_TYPES = {types_json};</script>
 <script>window.__SN_INIT = {init_json};</script>
+<script>window.__SN_CATALOG = {catalog_json};</script>
 <script>{js}</script>
 </body>
 </html>
