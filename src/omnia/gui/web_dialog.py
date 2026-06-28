@@ -80,6 +80,14 @@ class WebDialog(QDialog):
         """
         QWebEngineView.setHtml(self._web, html)
 
+    def eval_js(self, js: str) -> None:
+        """Evaluate ``js`` in the hosted webview.
+
+        For pushing a result the page can't receive through the synchronous ``pycmd`` callback
+        (e.g. an op whose work runs off the Qt main thread and reports back later).
+        """
+        self._web.eval(js)
+
     def _on_cmd(self, message: str) -> Any:
         """Bridge entry point: route an ``omnia:`` envelope to its ``op`` handler.
 

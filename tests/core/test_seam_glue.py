@@ -66,6 +66,52 @@ class TestWebInjectorGlue:
         inj.uninstall()
 
 
+class _FakeModels:
+    """A minimal ``col.models`` stand-in for the note-type-field seam tests."""
+
+    def __init__(self, models: dict[str, dict]) -> None:
+        self._models = models
+        self.updated: list[str] = []
+
+    def by_name(self, name: str):
+        return self._models.get(name)
+
+    def new_field(self, name: str) -> dict:
+        return {"name": name}
+
+    def add_field(self, model: dict, field: dict) -> None:
+        model["flds"].append(field)
+
+    def update_dict(self, model: dict) -> None:
+        self.updated.append(model["name"])
+
+
+def _fake_col_with_models(models: dict[str, dict]):
+    return types.SimpleNamespace(models=_FakeModels(models))
+
+
+class TestAddNoteTypeField:
+    def test_adds_a_new_field_and_saves(self):
+        col = _fake_col_with_models(
+            {"Vocab": {"name": "Vocab", "flds": [{"name": "Word"}]}}
+        )
+        result = anki_compat.add_note_type_field("Vocab", "Meaning", col=col)
+        assert result == ["Word", "Meaning"]
+        assert col.models.updated == ["Vocab"]
+
+    def test_existing_field_is_a_noop(self):
+        col = _fake_col_with_models(
+            {"Vocab": {"name": "Vocab", "flds": [{"name": "Word"}]}}
+        )
+        result = anki_compat.add_note_type_field("Vocab", "Word", col=col)
+        assert result == ["Word"]
+        assert col.models.updated == []  # never saved when nothing changed
+
+    def test_unknown_note_type_returns_empty(self):
+        col = _fake_col_with_models({})
+        assert anki_compat.add_note_type_field("Gone", "X", col=col) == []
+
+
 class TestRunInBackground:
     def test_run_in_background_success(self, fake_mw):
         results = []

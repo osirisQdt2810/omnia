@@ -1,13 +1,14 @@
 """Smart Notes feature: generate note fields (text/image) and audio via an AI provider.
 
-Entry points share one generation core: a Browser context-menu action (over the selected
-notes), a deck/note-type sidebar batch, an editor ✨ button (over the open note), a per-field
-right-click menu (one field, on demand, plus one-off custom prompts), and optional review-time
-pre-generation. All generation runs through :meth:`GenerationService.generate_note` so chained
-fields, skip rules, and Markdown conversion apply uniformly. Network runs off the Qt main
-thread via the threading seam; results are written back to notes + media on the main thread.
-The pure logic lives in ``logic.py``; this module + ``batch.py`` + ``review_evaluator.py`` are
-the Anki glue.
+Config is PER NOTE TYPE: each note type designates one BASE (input) field that is never
+generated, and every other field has a per-field generation config (type + prompt template
+referencing the base and other fields). Entry points share one generation core — a Browser
+context-menu action, a deck/note-type sidebar batch, an editor ✨ button, a per-field
+right-click menu, and optional review-time pre-generation — all running through
+:meth:`GenerationService.generate_note` so chained fields, skip rules, and Markdown conversion
+apply uniformly. Network runs off the Qt main thread via the threading seam; results are
+written back to notes + media on the main thread. The pure logic lives in ``logic.py`` /
+``auto_smart.py``; this module + ``batch.py`` + ``review_evaluator.py`` are the Anki glue.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ from omnia.features.smart_notes.editor import (
 from omnia.features.smart_notes.logic import (
     GenerationResult,
     GenerationService,
-    select_rules_for_note,
 )
 from omnia.features.smart_notes.review_evaluator import ReviewTimeEvaluator
 
@@ -75,6 +75,7 @@ class SmartNotesPlugin(FeaturePlugin):
 
     # --- bespoke settings dialog -----------------------------------------------------
     def custom_config_dialog(self, repo: Any, parent: Any) -> Optional[Any]:
+        # The per-note-type field table (base field + per-field generation config + ✨ auto-smart).
         from omnia.gui.smart_notes_dialog import SmartNotesDialog
 
         return SmartNotesDialog(repo, parent)
@@ -91,8 +92,10 @@ class SmartNotesPlugin(FeaturePlugin):
     def _generate_for_browser(self, browser: Any) -> None:
         from aqt.utils import tooltip
 
-        if not self._settings().fields:
-            tooltip("Omnia: configure smart_notes field rules first (Tools → Omnia).")
+        if not self._settings().note_types:
+            tooltip(
+                "Omnia: configure smart_notes for a note type first (Tools → Omnia)."
+            )
             return
         self._run_batch(list(browser.selectedNotes()))
 
@@ -117,8 +120,8 @@ class SmartNotesPlugin(FeaturePlugin):
 
         service = self._service
         settings = self._settings()
-        if service is None or not settings.fields or not note_ids:
-            tooltip("Omnia: no matching field rules for the selection.")
+        if service is None or not settings.note_types or not note_ids:
+            tooltip("Omnia: no smart_notes config for the selection.")
             return
         BatchGenerator(service, settings).run(
             [int(nid) for nid in note_ids], self._on_batch_done
@@ -138,24 +141,15 @@ class SmartNotesPlugin(FeaturePlugin):
         from aqt.utils import tooltip
 
         note = getattr(editor, "note", None)
-        if note is None or not self._settings().fields:
-            tooltip(
-                "Omnia: open a note and configure field rules first (Tools → Omnia)."
-            )
-            return
-        rules = select_rules_for_note(
-            list(self._settings().fields),
-            _note_type_name(note),
-            list(note.keys()),
-        )
-        if not rules:
-            tooltip("Omnia: no matching field rules for this note.")
+        config = self._config_for_note(note)
+        if note is None or config is None or not config.generatable_fields():
+            tooltip("Omnia: open a note with smart_notes configured (Tools → Omnia).")
             return
         set_button_enabled(editor, False)
-        self._generate_into_note(editor, note, rules)
+        self._generate_into_note(editor, note, config)
 
-    def _generate_into_note(self, editor: Any, note: Any, rules: list[Any]) -> None:
-        """Generate ``rules`` for ``note`` off-thread, then write + reload the editor."""
+    def _generate_into_note(self, editor: Any, note: Any, config: Any) -> None:
+        """Generate ``config``'s fields for ``note`` off-thread, then write + reload the editor."""
         service = self._service
         assert service is not None
         settings = self._settings()
@@ -163,10 +157,9 @@ class SmartNotesPlugin(FeaturePlugin):
 
         def op() -> list[tuple[Any, GenerationResult]]:
             return service.generate_note(
-                rules,
+                config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
-                overwrite=settings.overwrite,
             )
 
         anki_compat.run_in_background(
@@ -220,21 +213,18 @@ class SmartNotesPlugin(FeaturePlugin):
         build_field_menu(self._ctx, editor, menu, self._generate_field)
 
     def _generate_field(self, editor: Any, field: str) -> None:
-        """Generate just the rule(s) targeting ``field`` for the editor's note (disabled too)."""
+        """Generate just ``field`` for the editor's note, on demand (even if disabled)."""
         from aqt.utils import tooltip
 
-        from omnia.features.smart_notes.logic import rules_for_field
+        from omnia.features.smart_notes.field_menu import single_field_config
 
         note = getattr(editor, "note", None)
-        if note is None:
+        config = self._config_for_note(note)
+        one = single_field_config(config, field) if config else None
+        if one is None:
+            tooltip("Omnia: no smart_notes config targets this field.")
             return
-        rules = rules_for_field(
-            list(self._settings().fields), _note_type_name(note), field
-        )
-        if not rules:
-            tooltip("Omnia: no rule targets this field.")
-            return
-        self._generate_into_note(editor, note, rules)
+        self._generate_into_note(editor, note, one)
 
     # --- review-time pre-generation --------------------------------------------------
     def _on_review_question(self, card: Any) -> None:
@@ -244,6 +234,13 @@ class SmartNotesPlugin(FeaturePlugin):
     # --- shared helpers --------------------------------------------------------------
     def _settings(self) -> Any:
         return self._ctx.settings if self._ctx else None
+
+    def _config_for_note(self, note: Any) -> Any:
+        """Return the note's note-type smart-notes config, or None."""
+        settings = self._settings()
+        if note is None or settings is None:
+            return None
+        return settings.note_type_config(_note_type_name(note))
 
     @staticmethod
     def _reload_editor(editor: Any) -> None:

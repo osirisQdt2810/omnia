@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from conftest import FakeLLMProvider
 
-from omnia.core.config.models import SmartNotesFieldRule, SmartNotesSettings
+from omnia.core.config.models import (
+    SmartNotesFieldConfig,
+    SmartNotesNoteTypeConfig,
+    SmartNotesSettings,
+)
 from omnia.features.smart_notes.logic import GenerationService
 from omnia.features.smart_notes.review_evaluator import ReviewTimeEvaluator
 
@@ -104,9 +108,15 @@ def _service():
     return GenerationService(_StubHub(FakeLLMProvider(text="generated")))
 
 
-def _rule():
-    return SmartNotesFieldRule(
-        note_type="Basic", target_field="Def", kind="text", prompt="define {{Word}}"
+def _note_type_config():
+    return SmartNotesNoteTypeConfig(
+        note_type="Basic",
+        base_field="Word",
+        fields=[
+            SmartNotesFieldConfig(
+                field="Def", enabled=True, type="text", prompt="define {{Word}}"
+            )
+        ],
     )
 
 
@@ -116,7 +126,7 @@ class TestReviewTimeEvaluator:
         fake = _FakeCompat({1: note}, current=_FakeCard(note))
         _patch(monkeypatch, fake)
         settings = SmartNotesSettings(
-            fields=[_rule()]
+            note_types=[_note_type_config()]
         )  # generate_at_review defaults off
         ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
         assert fake.updated == []
@@ -126,7 +136,9 @@ class TestReviewTimeEvaluator:
         card = _FakeCard(note)
         fake = _FakeCompat({1: note}, current=card)
         _patch(monkeypatch, fake)
-        settings = SmartNotesSettings(fields=[_rule()], generate_at_review=True)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()], generate_at_review=True
+        )
         ReviewTimeEvaluator(_service(), settings).on_card_shown(card)
         assert fake.updated == [1]
         assert note["Def"] == "generated"
@@ -136,7 +148,9 @@ class TestReviewTimeEvaluator:
         note = _FakeNote(1, "Basic", {"Word": "cat", "Def": "filled"})
         fake = _FakeCompat({1: note}, current=_FakeCard(note))
         _patch(monkeypatch, fake)
-        settings = SmartNotesSettings(fields=[_rule()], generate_at_review=True)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()], generate_at_review=True
+        )
         ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
         assert fake.updated == []
 
@@ -146,7 +160,9 @@ class TestReviewTimeEvaluator:
         # The reviewer has moved on to note 2 by the time generation completes.
         fake = _FakeCompat({1: note}, current=_FakeCard(other))
         _patch(monkeypatch, fake)
-        settings = SmartNotesSettings(fields=[_rule()], generate_at_review=True)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()], generate_at_review=True
+        )
         ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
         assert fake.updated == [1]
         assert fake.redraws == 0
@@ -160,6 +176,8 @@ class TestReviewTimeEvaluator:
 
         fake.run_in_background = explode
         _patch(monkeypatch, fake)
-        settings = SmartNotesSettings(fields=[_rule()], generate_at_review=True)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()], generate_at_review=True
+        )
         # on_card_shown wraps everything: a thrown scheduling error must not propagate.
         ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))

@@ -21,7 +21,6 @@ from omnia.features.smart_notes.batch import materialize
 from omnia.features.smart_notes.logic import (
     GenerationResult,
     GenerationService,
-    select_rules_for_note,
 )
 
 if TYPE_CHECKING:
@@ -59,16 +58,17 @@ class ReviewTimeEvaluator:
         if nid in self._in_flight:
             return
         note = card.note()
-        field_names = list(note.keys())
-        fields = {name: note[name] for name in field_names}
-        rules = select_rules_for_note(
-            list(self._settings.fields),
-            _note_type_name(note),
-            field_names,
-            enabled_only=True,
-        )
-        # Only act when a rule's target is still empty — otherwise there is nothing to fill.
-        if not any(not str(fields.get(r.target_field, "")).strip() for r in rules):
+        fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
+        config = self._settings.note_type_config(_note_type_name(note))
+        if config is None:
+            return
+        # Only act when a generatable field's target is still empty — else nothing to fill.
+        empty_targets = [
+            f
+            for f in config.generatable_fields()
+            if not str(fields.get(f.field, "")).strip()
+        ]
+        if not empty_targets:
             return
 
         self._in_flight.add(nid)
@@ -77,10 +77,9 @@ class ReviewTimeEvaluator:
 
         def op() -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
             return service.generate_note(
-                rules,
+                config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
-                overwrite=False,
             )
 
         anki_compat.run_in_background(

@@ -226,6 +226,29 @@ def note_type_field_names(note_type: str, col: Optional[Any] = None) -> list[str
     return [field["name"] for field in model["flds"]]
 
 
+def add_note_type_field(
+    note_type: str, field_name: str, col: Optional[Any] = None
+) -> list[str]:
+    """Add ``field_name`` to ``note_type``'s schema and save it; return its field names.
+
+    Used by the Smart Notes config UI's "Create field" action. A no-op (returns the existing
+    names) when the note type is unknown or the field already exists. Must run on the main
+    thread — it mutates the collection's note-type schema.
+    """
+    if col is None:
+        col = main_window().col
+    model = col.models.by_name(note_type)
+    if model is None:
+        return []
+    existing = [field["name"] for field in model["flds"]]
+    if field_name in existing:
+        return existing
+    field = col.models.new_field(field_name)
+    col.models.add_field(model, field)
+    col.models.update_dict(model)
+    return [field["name"] for field in model["flds"]]
+
+
 def deck_names(col: Optional[Any] = None) -> list[tuple[int, str]]:
     """Return ``(deck_id, deck_name)`` pairs for every deck (for the deck picker)."""
     if col is None:

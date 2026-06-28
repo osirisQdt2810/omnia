@@ -1,30 +1,32 @@
 """Pure smart-notes logic: prompt interpolation + the provider-backed generation service.
 
-No Anki imports. The :class:`GenerationService` depends on the injected
-:class:`~omnia.core.providers.ProviderHub` (DIP), so it's tested with a fake hub.
+No Anki imports. The data model is note-type-centric: a :class:`SmartNotesNoteTypeConfig`
+names one base (input) field and configures how every OTHER field is generated. The engine
+compiles a note type's enabled, generatable fields into self-contained
+:class:`~omnia.core.config.models.SmartNotesFieldRule` units, orders them via the DAG
+(``dag.py``), and runs each through the injected
+:class:`~omnia.core.providers.ProviderHub` (DIP, so it's tested with a fake hub).
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 from omnia.core.providers.errors import ProviderError
 from omnia.features.smart_notes.dag import order_rules
 from omnia.features.smart_notes.markdown import convert_markdown_to_html
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import SmartNotesFieldRule
+    from omnia.core.config.models import (
+        SmartNotesFieldRule,
+        SmartNotesNoteTypeConfig,
+    )
     from omnia.core.providers import ProviderHub
 
 # {{FieldName}} placeholders, but NOT Anki cloze deletions ({{c1::...}}).
 _FIELD_RE = re.compile(r"\{\{(?!c\d+::)([^{}]+?)\}\}")
-
-# The valid generation kinds; rows with anything else collapse to the default.
-_VALID_KINDS = ("text", "image", "tts")
-# The fields the dialog rows carry, in column order.
-_ROW_KEYS = ("note_type", "source_field", "target_field", "kind", "prompt")
 
 
 def extract_field_refs(prompt: str) -> list[str]:
@@ -40,6 +42,8 @@ def interpolate(prompt: str, fields: dict[str, str]) -> str:
 def _rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
     """Return the field names a rule reads (prompt refs, or its source_field)."""
     if rule.kind == "tts":
+        if rule.prompt:
+            return extract_field_refs(rule.prompt)
         return [rule.source_field] if rule.source_field else []
     if rule.prompt:
         return extract_field_refs(rule.prompt)
@@ -51,28 +55,26 @@ def should_skip_rule(
     fields: dict[str, str],
     *,
     allow_empty_fields: bool,
-    overwrite: bool,
 ) -> bool:
     """Return whether ``rule`` should be skipped for a note with ``fields``.
 
-    Mirrors the reference add-on's two skip conditions:
+    Two skip conditions:
 
-    * **empty sources** — like ``prompt_helpers.interpolate_prompt`` returning ``None``: skip
-      when the rule references fields but they are ALL blank, unless ``allow_empty_fields``.
-      (A rule that references no field is never skipped on this account.)
-    * **already filled** — skip when ``target_field`` already holds a value, unless
-      ``overwrite`` is set.
+    * **empty sources** — skip when the rule references fields but they are ALL blank,
+      unless ``allow_empty_fields``. (A rule that references no field is never skipped on
+      this account.)
+    * **already filled** — skip when ``target_field`` already holds a value, unless the
+      rule's own ``overwrite`` flag is set.
 
     Args:
-        rule: The generation rule under consideration.
+        rule: The compiled generation rule under consideration.
         fields: The note's current field values (including any freshly chained values).
         allow_empty_fields: Generate even when all referenced source fields are blank.
-        overwrite: Regenerate even when the target field is already non-empty.
 
     Returns:
         ``True`` if the rule must be skipped, ``False`` to generate it.
     """
-    if not overwrite and str(fields.get(rule.target_field, "")).strip():
+    if not rule.overwrite and str(fields.get(rule.target_field, "")).strip():
         return True
     sources = _rule_source_fields(rule)
     if sources and not allow_empty_fields:
@@ -80,97 +82,47 @@ def should_skip_rule(
     return False
 
 
-def rules_to_rows(rules: list[SmartNotesFieldRule]) -> list[dict[str, str]]:
-    """Project field rules into plain dict rows for the field-mapping dialog table."""
-    return [{key: getattr(rule, key) for key in _ROW_KEYS} for rule in rules]
-
-
-def rows_to_rules(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Normalise dialog rows into rule dicts, dropping blank rows.
-
-    Whitespace is stripped from each cell; a row is dropped if every cell is empty after
-    stripping. An unrecognised ``kind`` falls back to ``"text"`` so a stray combo value can't
-    fail validation; real validation happens when the dialog builds ``SmartNotesSettings``.
-    """
-    cleaned: list[dict[str, str]] = []
-    for row in rows:
-        values = {key: str(row.get(key, "") or "").strip() for key in _ROW_KEYS}
-        if not any(values.values()):
-            continue  # a fully blank row is the table's "add another" affordance
-        if values["kind"] not in _VALID_KINDS:
-            values["kind"] = "text"
-        cleaned.append(values)
-    return cleaned
-
-
-def rule_matches_note_type(rule: SmartNotesFieldRule, note_type: str) -> bool:
-    """Return whether ``rule`` applies to a note of ``note_type`` (empty matches any)."""
-    return not rule.note_type or rule.note_type == note_type
-
-
-def select_rules_for_note(
-    rules: list[SmartNotesFieldRule],
-    note_type: str,
-    field_names: list[str],
-    *,
-    enabled_only: bool = False,
+def compile_note_type_rules(
+    config: SmartNotesNoteTypeConfig,
 ) -> list[SmartNotesFieldRule]:
-    """Return the rules that apply to one note (its ``note_type`` + existing ``field_names``).
+    """Compile a note type's enabled, generatable fields into self-contained rules.
 
-    A rule applies when its (optional) ``note_type`` matches and its ``target_field`` is one of
-    the note's fields. ``enabled_only`` keeps only rules flagged for automatic batching — the
-    Browser/sidebar batch passes it so a disabled rule is skipped there, while the editor button
-    and the per-field context-menu action run disabled rules too (mirroring the reference, where
-    a disabled field is still manually generatable).
+    The base field is never compiled (it is the input). Each
+    :class:`~omnia.core.config.models.SmartNotesFieldConfig` becomes one
+    :class:`~omnia.core.config.models.SmartNotesFieldRule` the engine can run:
+
+    * ``field`` → ``target_field`` and ``type`` → ``kind``.
+    * The ``prompt`` template is carried through; for a text/image field with no prompt the
+      base field is used as the implicit prompt source (``source_field``), so a bare field
+      still generates from the base.
+    * For a tts field the prompt is the spoken-text template (it may reference ``{{Base}}``);
+      with no prompt the base field is spoken directly via ``source_field``.
 
     Args:
-        rules: All configured field rules.
-        note_type: The note's note-type name.
-        field_names: The note's field names.
-        enabled_only: Drop rules whose ``enabled`` flag is False.
+        config: The note type's smart-notes config.
 
     Returns:
-        The matching rules, in their configured order.
+        One rule per generatable field, in their configured order.
     """
-    present = set(field_names)
-    return [
-        rule
-        for rule in rules
-        if rule_matches_note_type(rule, note_type)
-        and rule.target_field in present
-        and (rule.enabled or not enabled_only)
-    ]
+    from omnia.core.config.models import SmartNotesFieldRule
 
-
-def rules_for_field(
-    rules: list[SmartNotesFieldRule], note_type: str, field: str
-) -> list[SmartNotesFieldRule]:
-    """Return the rules of ``note_type`` whose ``target_field`` is ``field`` (any enabled state).
-
-    Used by the field context-menu "Generate this field" action, which runs a single field's
-    rule(s) on demand even when they are disabled for automatic batching.
-    """
-    return [
-        rule
-        for rule in rules
-        if rule_matches_note_type(rule, note_type) and rule.target_field == field
-    ]
-
-
-def build_generation_plan(
-    fields: dict[str, str], note_type: str, rules: list[SmartNotesFieldRule]
-) -> list[tuple[SmartNotesFieldRule, dict[str, str]]]:
-    """Select the rules that apply to one note's ``fields`` of type ``note_type``.
-
-    A rule applies when its (optional) ``note_type`` matches and its ``target_field`` exists
-    on the note. Pure so both the Browser menu and the editor button share the same selection
-    logic; each pairs the rule with the note's current field values for generation.
-    """
-    return [
-        (rule, fields)
-        for rule in rules
-        if rule_matches_note_type(rule, note_type) and rule.target_field in fields
-    ]
+    base = config.base_field
+    rules: list[SmartNotesFieldRule] = []
+    for field in config.generatable_fields():
+        rules.append(
+            SmartNotesFieldRule(
+                note_type=config.note_type,
+                source_field="" if field.prompt else base,
+                target_field=field.field,
+                kind=field.type,
+                prompt=field.prompt,
+                provider=field.provider,
+                model=field.model,
+                voice=field.voice,
+                overwrite=field.overwrite,
+            )
+        )
+    return rules
 
 
 def dedupe_preserving_order(ids: list[int]) -> list[int]:
@@ -212,10 +164,11 @@ class GenerationResult:
 class GenerationService:
     """Runs field-generation rules against the configured providers.
 
-    :meth:`generate` runs one rule; :meth:`generate_note` runs all of a note's rules in
+    :meth:`generate` runs one rule; :meth:`generate_note` compiles a
+    :class:`~omnia.core.config.models.SmartNotesNoteTypeConfig` into rules and runs them in
     dependency order, chaining each text result into the field map so a downstream rule sees
-    the freshly generated value (mirroring the reference add-on's DAG processing). Per-rule
-    ``model``/``voice`` overrides layer on top of the central provider config.
+    the freshly generated value. Per-rule ``model``/``voice`` overrides layer on top of the
+    central provider config.
     """
 
     def __init__(self, providers: ProviderHub) -> None:
@@ -228,8 +181,9 @@ class GenerationService:
 
         A per-rule ``provider``/``model`` selects a provider INSTANCE configured with that
         model (the model is fixed at construction, never threaded per call); for TTS the
-        source field is interpolated like a text prompt and ``voice`` overrides the configured
-        voice. Text results are rendered from Markdown to HTML for display in the card.
+        spoken text is the interpolated prompt (or the interpolated source field when no
+        prompt is given) and ``voice`` overrides the configured voice. Text results are
+        rendered from Markdown to HTML for display in the card.
 
         Raises:
             ProviderError: On bad config or a provider/network failure.
@@ -244,56 +198,56 @@ class GenerationService:
             return GenerationResult("image", data=data, ext="png")
         if rule.kind == "tts":
             provider = self._providers.tts()
-            # Read the source field's value, then interpolate any {{Field}} refs it carries
-            # (so a templated source resolves the same way a text prompt does).
-            source = interpolate(fields.get(rule.source_field, ""), fields)
-            data = provider.synthesize(source, voice=rule.voice or None)
+            data = provider.synthesize(
+                self._tts_text(rule, fields), voice=rule.voice or None
+            )
             return GenerationResult("tts", data=data, ext=provider.audio_ext)
         raise ProviderError(f"Unknown generation kind: {rule.kind!r}")
 
     def generate_note(
         self,
-        rules: list[SmartNotesFieldRule],
+        config: SmartNotesNoteTypeConfig,
         fields: dict[str, str],
         *,
         allow_empty_fields: bool = False,
-        overwrite: bool = False,
+        force_overwrite: bool = False,
     ) -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
-        """Generate every applicable rule for one note, in dependency order, with chaining.
+        """Generate a note type's enabled fields, in dependency order, with chaining.
 
-        Rules are topologically ordered (:func:`~omnia.features.smart_notes.dag.order_rules`)
-        so a rule that references another rule's ``target_field`` runs after it; each text
-        result is written back into a working copy of ``fields`` so the dependent rule
-        interpolates the freshly generated value. Rules whose sources are all blank or whose
-        target is already filled are skipped per :func:`should_skip_rule`.
+        The note type's generatable fields are compiled into rules
+        (:func:`compile_note_type_rules`), topologically ordered
+        (:func:`~omnia.features.smart_notes.dag.order_rules`) so a field that references
+        another generated field runs after it, and each text result is written back into a
+        working copy of ``fields`` so the dependent field interpolates the freshly generated
+        value. The base field is never generated. Fields whose sources are all blank, or
+        whose target is already filled, are skipped per :func:`should_skip_rule`.
 
         Args:
-            rules: The rules selected for this note (e.g. via :func:`build_generation_plan`).
+            config: The note type's smart-notes config (its base field + per-field rows).
             fields: The note's current field values (not mutated).
             allow_empty_fields: Generate even when all referenced source fields are blank.
-            overwrite: Regenerate even when the target field is already non-empty.
+            force_overwrite: Regenerate every field even if its target is already non-empty
+                (the batch "regenerate when batching" path), ignoring per-field ``overwrite``.
 
         Returns:
-            ``(rule, result)`` pairs for the rules that actually generated, in run order.
+            ``(rule, result)`` pairs for the fields that actually generated, in run order.
 
         Raises:
-            SmartNotesCycleError: If the rules form a cycle or a rule references itself.
+            SmartNotesCycleError: If the fields reference each other in a cycle.
             ProviderError: On bad config or a provider/network failure.
         """
+        rules = compile_note_type_rules(config)
+        if force_overwrite:
+            rules = [rule.model_copy(update={"overwrite": True}) for rule in rules]
         working = dict(fields)
         results: list[tuple[SmartNotesFieldRule, GenerationResult]] = []
         for rule in order_rules(rules):
-            if should_skip_rule(
-                rule,
-                working,
-                allow_empty_fields=allow_empty_fields,
-                overwrite=overwrite,
-            ):
+            if should_skip_rule(rule, working, allow_empty_fields=allow_empty_fields):
                 continue
             result = self.generate(rule, working)
             results.append((rule, result))
             # Only text feeds downstream prompts; media (image/tts) becomes an embed ref a
-            # later prompt shouldn't consume, matching the reference's field-type rules.
+            # later prompt shouldn't consume.
             if result.kind == "text" and result.text is not None:
                 working[rule.target_field] = result.text
         return results
@@ -304,3 +258,10 @@ class GenerationService:
         if rule.prompt:
             return interpolate(rule.prompt, fields)
         return fields.get(rule.source_field, "")
+
+    @staticmethod
+    def _tts_text(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
+        """The text a tts rule speaks: the interpolated prompt, else the source field value."""
+        if rule.prompt:
+            return interpolate(rule.prompt, fields)
+        return interpolate(fields.get(rule.source_field, ""), fields)
