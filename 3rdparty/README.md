@@ -1,10 +1,18 @@
 # Omnia Web Clipper (Chrome extension)
 
-A small Chrome extension that lets you highlight a **word or phrase** on any web page,
-click a floating **"+"** button, and have that selection — together with the sentence and
-paragraph around it — sent straight into your running Anki as a new note. The
-[Omnia](../README.md) add-on's **Smart Notes** feature then fills in the rest of the card
-(definition, example, audio, etc.) automatically.
+A small Chrome extension that lets you capture a **word or phrase** from any web page and
+send it — together with the sentence and paragraph around it — straight into your running
+Anki as a new note. There are two capture paths:
+
+- **Double-click a word** → a floating **"+"** appears next to it; click it to send.
+- **Right-click a phrase** → choose **"Send to Anki (Omnia)"** from the context menu.
+
+You first pick **which deck and note type** captures land in on the options page (real
+dropdowns loaded from AnkiConnect). The [Omnia](../README.md) add-on's **Smart Notes**
+feature then fills in the rest of the card (definition, example, audio, etc.) automatically.
+
+An **Enabled** master toggle (in the toolbar popup and on the options page) turns both
+capture paths on/off at once.
 
 This folder (`3rdparty/`) contains the **browser** side. It is intentionally **not** part of
 the Python add-on — it talks to Anki over the network through the
@@ -21,16 +29,17 @@ the Python add-on — it talks to Anki over the network through the
  ┌─────────────────────────────────────────────────────────────────────────┐
  │  Your web browser (Chrome / Edge / Brave - any Chromium browser)          │
  │                                                                           │
- │   1. You select "break the ice" on a web page                            │
+ │   1a. Double-click "break" → content.js shows a floating "+" near it      │
+ │   1b. Right-click "break the ice" → "Send to Anki (Omnia)" context menu   │
  │      │                                                                    │
  │      ▼                                                                    │
- │   content.js  ──shows──►  floating "+" tooltip near the selection         │
+ │   content.js  ──builds──►  capture for the current selection              │
  │      │                                                                    │
- │      │ 2. you click "+"                                                   │
+ │      │ 2. click "+"  (or pick the menu item)                              │
  │      ▼                                                                    │
  │   capture = { selection, sentence, context, pageTitle, url }              │
  │      │                                                                    │
- │      │ 3. chrome.runtime.sendMessage                                      │
+ │      │ 3. chrome.runtime.sendMessage / contextMenus.onClicked             │
  │      ▼                                                                    │
  │   background.js (service worker)                                          │
  │      │  reads your settings (deck, note type, field mapping)              │
@@ -84,12 +93,12 @@ Omnia generates a card for the whole idiom — not just the last word.
 3rdparty/
 ├── README.md                      ← this file
 └── omnia-web-clipper/             ← load THIS folder as an unpacked extension
-    ├── manifest.json              ← extension definition (Manifest V3)
-    ├── background.js              ← service worker: talks to AnkiConnect
-    ├── content.js                 ← runs on pages: selection → "+" tooltip → capture
+    ├── manifest.json              ← extension definition (Manifest V3); contextMenus permission
+    ├── background.js              ← service worker: context menu + addNote via AnkiConnect
+    ├── content.js                 ← runs on pages: "+" tooltip, surrounding-text capture, toasts
     ├── shared.js                  ← shared defaults + AnkiConnect HTTP client
-    ├── options.html / options.js  ← settings page (URL, deck, note type, field mapping, Test connection)
-    ├── popup.html / popup.js       ← toolbar popup: AnkiConnect reachable? + link to options
+    ├── options.html / options.js  ← settings page: Test connection → deck/note-type/field dropdowns, toggles
+    ├── popup.html / popup.js       ← toolbar quick-options: Enabled toggle, deck/note type, reachability
     └── icons/
         ├── icon.svg               ← source artwork
         ├── icon16.png             ← toolbar icon
@@ -195,16 +204,23 @@ the rest. To wire that up:
    (`generate_at_review`). With this on, when a freshly captured card first comes up for
    review, Omnia notices the empty generated fields and fills them from the base field (and
    the captured sentence/context) using your configured LLM/TTS providers.
-4. Back in the extension's **options page** (toolbar popup → "Open options"), set the
-   **field mapping** so:
-   - `selection` → your base field name (e.g. `Word`),
-   - `sentence` → your sentence field (e.g. `Sentence`),
-   - `context` → your context field (e.g. `Context`),
-   - `url`/`pageTitle` → optional source fields, or leave blank.
+4. Back in the extension's **options page** (toolbar popup → "Options"):
+   1. Click **Test connection**. It calls AnkiConnect `version` (showing
+      **Ankiconnect — Connected ✓** or **Not Connected ✗**), then loads `deckNames` and
+      `modelNames` into the **Deck** and **Note type** dropdowns.
+   2. Pick your **Deck** and **Note type** from the dropdowns (no typing — they are the
+      real names from your collection; the deck is created automatically if missing).
+   3. Choosing a note type calls `modelFieldNames` for it and fills the **field-mapping**
+      dropdowns with that note type's real field names. Map:
+      - `selection` → your base field (e.g. `Word`) — this is the important one,
+      - `sentence` → your sentence field (e.g. `Sentence`),
+      - `context` → your context field (e.g. `Context`),
+      - `url`/`pageTitle` → optional source fields, or `(skip)`.
+   4. Click **Save**.
 
-   Use **Test connection** on the options page: it calls AnkiConnect `version`, lists your
-   note types (`modelNames`), and prints the **exact field names** of your chosen note type
-   (`modelFieldNames`) so you can copy them into the mapping without guessing.
+   The **General** section has two green On/Off pill toggles: **Enabled** (the master
+   switch for both capture paths) and **Double-click "+"** (show the floating "+" on
+   selection). Flipping a pill is saved immediately.
 
 > **Phrase support:** because the base field accepts a word *or* a phrase, you can clip
 > `give the cold shoulder` and Omnia will generate the card for the whole expression.
@@ -213,15 +229,18 @@ the rest. To wire that up:
 
 ## 6. Daily use
 
-1. Make sure **Anki is running**.
-2. On any normal web page, **select a word or phrase** (or double-click a word).
-3. A small blue **"+"** appears next to your selection. Click it.
-4. A toast confirms **"Added to Anki: …"** (or shows a clear error).
-5. The new note lands in your **Omnia Capture** deck (created automatically if missing).
-   Review it in Anki, and Omnia fills in the generated fields on first review.
+1. Make sure **Anki is running** and the extension's **Enabled** toggle is on (toolbar
+   popup or options page).
+2. Capture, two ways:
+   - **A word:** double-click it. A small blue **"+"** appears next to it — click it.
+   - **A phrase:** select it, **right-click**, and choose **"Send to Anki (Omnia)"**.
+3. A toast confirms **"Added to Anki: …"** (or shows a clear error).
+4. The new note lands in your chosen deck (created automatically if missing). Review it in
+   Anki, and Omnia fills in the generated fields on first review.
 
-Click the toolbar icon any time to see whether AnkiConnect is reachable and to open the
-options page.
+Click the toolbar icon any time for **Quick options**: the **Enabled** toggle, the
+currently-selected **Deck** and **Note type**, AnkiConnect reachability, and an **Options**
+button. When **Enabled** is off, neither the "+" nor the right-click action does anything.
 
 ---
 
@@ -232,8 +251,9 @@ options page.
 | "Could not reach AnkiConnect …"                   | Anki not running, AnkiConnect not installed, or the `chrome-extension://<id>` origin is missing from `webCorsOriginList`. Re-check section 4 and **restart Anki**. |
 | "model was not found" / "deck was not found"      | The note type name in options doesn't match Anki exactly. Use **Test connection** to see the real names; note type and field names are case-sensitive. |
 | "cannot create note because it is a duplicate"    | Turn on **Allow duplicate notes** in options, or change the existing note. |
-| No "+" appears                                    | Some pages block content scripts (e.g. `chrome://` pages, the Web Store). Try a normal article page. Reload the extension after editing files. |
-| Wrong field got the text                          | Fix the **field mapping** in options — the left column is the capture key, the box is the Anki field name. |
+| No "+" appears                                    | Check **Enabled** and **Double-click "+"** are on (popup/options). Some pages block content scripts (e.g. `chrome://` pages, the Web Store). Try a normal article page. Reload the extension after editing files. |
+| No "Send to Anki (Omnia)" in the right-click menu | The menu only shows when text is **selected**. If it still does nothing, check **Enabled** is on and that the page allows content scripts (so the surrounding sentence/context can be read). |
+| Wrong field got the text                          | Fix the **field mapping** in options — pick the right note-type field from the dropdown for each capture key. |
 
 ---
 
