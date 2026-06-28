@@ -42,12 +42,11 @@ def install(copy: bool) -> None:
     target = anki_addons_dir() / ADDON_FOLDER_NAME
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    if target.is_symlink() or target.exists():
-        if target.is_symlink() or target.is_dir():
-            if target.is_symlink():
-                target.unlink()
-            else:
-                shutil.rmtree(target)
+    # Remove any prior link/dir so re-running is idempotent.
+    if target.is_symlink():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
 
     if copy:
         shutil.copytree(ADDON_DIR, target)

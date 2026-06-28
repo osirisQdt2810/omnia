@@ -90,7 +90,14 @@ class EasePipeline:
         def _answerCard(reviewer: Any, ease: int) -> Any:  # noqa: N802
             card = getattr(reviewer, "card", None)
             if card is not None and pipeline._entries:
-                ease = pipeline.compute_ease(card, ease)
+                # Resilience: a buggy transformer must NOT break grading — log and fall back
+                # to the user's requested ease, then always call the original answer flow.
+                try:
+                    ease = pipeline.compute_ease(card, ease)
+                except Exception:
+                    from omnia.core.logging import get_logger
+
+                    get_logger().exception("ease pipeline: compute_ease failed")
             return orig(reviewer, ease)
 
         Reviewer._answerCard = _answerCard  # type: ignore[method-assign]

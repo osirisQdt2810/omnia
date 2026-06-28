@@ -74,9 +74,17 @@ from omnia.core.config import ConfigLoader, ConfigRepository  # noqa: E402
 from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
 
+import shutil  # noqa: E402
+
 src = REPO / "src" / "omnia"
-paths = AddonPaths(src, src / "web", src / "user_files")
-repo = ConfigRepository(ConfigLoader(src / "config", src / "user_files" / "omnia.toml"))
+# Toggling plugins persists overrides — copy the real config into the temp dir so the smoke
+# test reads the real creds but NEVER mutates the user's actual user_files/omnia.toml.
+tmp_override = tmp / "omnia.toml"
+real_override = src / "user_files" / "omnia.toml"
+if real_override.exists():
+    shutil.copy(real_override, tmp_override)
+paths = AddonPaths(src, src / "web", tmp)
+repo = ConfigRepository(ConfigLoader(src / "config", tmp_override))
 mgr = PluginManager(repo, paths)
 step("manager.setup()", mgr.setup)
 step(

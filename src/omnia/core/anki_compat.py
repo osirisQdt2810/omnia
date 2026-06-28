@@ -159,15 +159,44 @@ def update_note(note: Any, col: Optional[Any] = None) -> None:
 
 
 # --- hook subscription (so features stay free of direct gui_hooks access) --------------
+# Filter hooks must RETURN a value (the threaded result); we never wrap those — their handlers
+# are trivial and return-critical. Every other (notify) hook callback is wrapped in a logging
+# guard so a single feature's bug logs to omnia.log instead of crashing Anki's UI on a click.
+_FILTER_HOOKS = frozenset(
+    {"reviewer_will_answer_card", "webview_did_receive_js_message"}
+)
+# (hook_name, original_callback) -> guarded wrapper actually registered, for clean removal.
+_GUARDED: dict[tuple[str, Any], Callable[..., Any]] = {}
+
+
+def _guard(hook_name: str, callback: Callable[..., Any]) -> Callable[..., Any]:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # A notify-hook bug must not break Anki's UI — log it and continue.
+        try:
+            return callback(*args, **kwargs)
+        except Exception:
+            from omnia.core.logging import get_logger
+
+            get_logger().exception("hook %s callback failed", hook_name)
+            return None
+
+    return wrapper
+
+
 def subscribe_hook(hook_name: str, callback: Callable[..., Any]) -> None:
-    """Append ``callback`` to ``aqt.gui_hooks.<hook_name>``."""
-    getattr(gui_hooks(), hook_name).append(callback)
+    """Append ``callback`` to ``aqt.gui_hooks.<hook_name>`` (guarded unless it's a filter hook)."""
+    registered = callback
+    if hook_name not in _FILTER_HOOKS:
+        registered = _guard(hook_name, callback)
+        _GUARDED[(hook_name, callback)] = registered
+    getattr(gui_hooks(), hook_name).append(registered)
 
 
 def unsubscribe_hook(hook_name: str, callback: Callable[..., Any]) -> None:
     """Remove ``callback`` from ``aqt.gui_hooks.<hook_name>`` (safe if already gone)."""
     import contextlib
 
+    registered = _GUARDED.pop((hook_name, callback), callback)
     hook = getattr(gui_hooks(), hook_name)
     with contextlib.suppress(ValueError):
-        hook.remove(callback)
+        hook.remove(registered)
