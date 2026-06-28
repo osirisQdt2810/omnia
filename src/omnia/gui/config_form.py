@@ -11,15 +11,21 @@ from typing import TYPE_CHECKING, Any
 
 from aqt.qt import (
     QCheckBox,
+    QColor,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFont,
     QFormLayout,
     QHBoxLayout,
+    QIcon,
     QLabel,
     QLineEdit,
+    QPainter,
+    QPixmap,
     QPoint,
+    QSize,
     QSpinBox,
     Qt,
     QToolButton,
@@ -27,6 +33,33 @@ from aqt.qt import (
     QVBoxLayout,
     QWidget,
 )
+
+_INFO_ICON: QIcon | None = None
+
+
+def _info_icon() -> QIcon:
+    """A small filled-circle 'i' info icon (drawn once; cached). Accent blue reads on both themes."""
+    global _INFO_ICON
+    if _INFO_ICON is not None:
+        return _INFO_ICON
+    px = 40  # draw big, display small → crisp on retina
+    pm = QPixmap(px, px)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#5b6ef5"))
+    p.drawEllipse(1, 1, px - 2, px - 2)
+    p.setPen(QColor("#ffffff"))
+    font = QFont()
+    font.setPixelSize(int(px * 0.66))
+    font.setBold(True)
+    p.setFont(font)
+    p.drawText(pm.rect(), Qt.AlignmentFlag.AlignCenter, "i")
+    p.end()
+    _INFO_ICON = QIcon(pm)
+    return _INFO_ICON
+
 
 if TYPE_CHECKING:
     from omnia.core.plugin import ConfigField
@@ -76,15 +109,19 @@ class PluginConfigDialog(QDialog):
 
     @staticmethod
     def _field_row(widget: QWidget, help_text: str) -> QWidget:
-        """Wrap ``widget`` with a trailing clickable (i) info button showing ``help_text``."""
+        """Field cell: a clickable (i) info button, then the value control.
+
+        The icon sits at the start of the value column (right after the label, before the
+        value) so the icons line up in a column; a gap separates it from both.
+        """
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        layout.addWidget(widget, 1)
+        layout.setSpacing(0)
 
         info = QToolButton()
-        info.setText("ⓘ")
+        info.setIcon(_info_icon())
+        info.setIconSize(QSize(15, 15))
         info.setToolTip(help_text)
         info.setCursor(Qt.CursorShape.PointingHandCursor)
         info.setAutoRaise(True)
@@ -96,6 +133,8 @@ class PluginConfigDialog(QDialog):
             )
         )
         layout.addWidget(info, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addSpacing(10)  # gap between the icon and the value
+        layout.addWidget(widget, 1)
         return row
 
     @staticmethod
