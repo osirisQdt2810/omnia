@@ -89,7 +89,19 @@ Format for each entry:
   guards the classification. **Moved real API keys out of tracked `providers.toml` into the
   gitignored `user_files/omnia.toml`.** Full run: **149 passed / 26 skipped / 2 xfailed**
   (gemini AI-Studio free-tier quota); live pass for gemini_vertex + openrouter + google_cloud TTS.
-- **First git commit** (`main`): the whole project (no secrets — `user_files/` gitignored).
+- **Meaningful real-provider tests** (per user demand): every real test now VERIFIES the output
+  satisfies the prompt, not just non-emptiness — LLM battery (factual / arithmetic / yes-no /
+  exact item-count / conditional / JSON / Vietnamese translation, partial-match), TTS asserts
+  VALID audio (magic bytes per `audio_ext` + real size), smart_notes asserts generated content
+  matches the rule. Wiring tests are **config-driven** (built from the real `[llm.<p>]`/`[tts.<p>]`
+  model + credentials with a FakeHttpClient injected — offline, no fabricated `g`/`k`/`secret`).
+  Provider `requires_api` classification drives per-provider markers. Calibrated live: **30 real
+  pass / 11 xfail (gemini free-tier quota) / 0 fail**; offline **151 pass**.
+- **Git history**: re-split the over-stuffed initial commit into **9 focused per-feature-group
+  commits** (scaffold, plugin system, reviewer seams, config, providers, features, gui, vendor,
+  tests); verified the re-split tree is byte-identical (no content change). No secrets committed
+  (`user_files/` gitignored).
+- **Pending**: bespoke per-feature UIs (a PluginContext seam WIP is stashed as `wip-bespoke-ui-seam`).
 
 ### Decisions made
 - Project name: **Omnia** (package `omnia`). See ADR-001..004.
