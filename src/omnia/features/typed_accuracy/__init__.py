@@ -247,6 +247,11 @@ class TypedAccuracyPlugin(FeaturePlugin):
                 "Pass threshold (accuracy 0–1)",
                 "float",
                 0.7,
+                help=(
+                    "Fraction of the typed answer that must be correct to count as a pass. "
+                    "0.7 = 70% of characters right. At/above this → the pass ease below; "
+                    "below → Hard."
+                ),
                 minimum=0.0,
                 maximum=1.0,
             ),
@@ -263,6 +268,10 @@ class TypedAccuracyPlugin(FeaturePlugin):
                 "Show the accuracy panel on the Statistics screen",
                 "bool",
                 True,
+                help=(
+                    "Add the interactive typed-accuracy donut + Good/Bad/Miss/Empty "
+                    "breakdown to Anki's Statistics screen."
+                ),
             ),
         ]
 
