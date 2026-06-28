@@ -7,6 +7,7 @@ feature plugins (pure class definitions). All Anki work happens inside hook call
 
 from __future__ import annotations
 
+import platform
 import sys
 from pathlib import Path
 from typing import Optional
@@ -19,11 +20,51 @@ _ADDON_DIR = Path(__file__).resolve().parent
 # install folder name. (In dev the folder IS "omnia", so this is a harmless no-op.)
 sys.modules.setdefault("omnia", sys.modules[__name__])
 
-# Make vendored deps importable. APPEND (not insert) so Anki's own packages win for any
-# overlap (e.g. typing_extensions) and vendor only fills gaps (pydantic, yaml, tomli_w, ...).
-_VENDOR_DIR = _ADDON_DIR / "vendor"
-if _VENDOR_DIR.is_dir() and str(_VENDOR_DIR) not in sys.path:
-    sys.path.append(str(_VENDOR_DIR))
+
+def _platform_vendor_subdir() -> Optional[str]:
+    """Return the per-OS vendor subdir holding the right compiled binaries, or None.
+
+    ``pydantic_core`` ships a Rust binary that differs per OS/arch. mac arm64 and mac x86_64
+    binaries share the same filename (``…-darwin.so``) so they cannot coexist in one folder —
+    hence one subdir per platform, and only the matching one is added to ``sys.path``.
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Windows":
+        return "win_x64"  # Anki ships 64-bit Python on Windows
+    if system == "Darwin":
+        return "mac_arm64" if machine in ("arm64", "aarch64") else "mac_x64"
+    if system == "Linux":
+        return "linux_x64"
+    return None
+
+
+def _add_vendor_paths() -> None:
+    """Make vendored deps importable: the pure-Python ``universal`` dir + this platform's
+    binary dir.
+
+    APPEND (not insert) so Anki's own packages win for any overlap and vendor only fills gaps
+    (pydantic, pydantic_core, yaml, tomli_w, …). The platform dir is appended *before*
+    ``universal`` so the correct ``pydantic_core`` binary is found ahead of anything else.
+    """
+    vendor = _ADDON_DIR / "vendor"
+    if not vendor.is_dir():
+        return
+    subdir = _platform_vendor_subdir()
+    candidates = []
+    if subdir:
+        candidates.append(vendor / subdir)
+    candidates.append(vendor / "universal")
+    # Back-compat: if the vendor dir was not split into universal/<os> (older layout), fall
+    # back to adding it flat so the add-on still imports.
+    if not (vendor / "universal").is_dir():
+        candidates = [vendor]
+    for path in candidates:
+        if path.is_dir() and str(path) not in sys.path:
+            sys.path.append(str(path))
+
+
+_add_vendor_paths()
 
 # Importing the features package runs each plugin's @register at load time.
 from omnia import features  # noqa: E402  (import for side effects: registration)
