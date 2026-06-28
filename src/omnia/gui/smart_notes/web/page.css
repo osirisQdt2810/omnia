@@ -12,6 +12,7 @@ body.omnia-light {
   --row: rgba(255,255,255,0.7); --row-alt: rgba(240,243,250,0.7);
   --input-bg: #ffffff; --input-border: rgba(20,30,60,0.18);
   --shadow: rgba(20,30,60,0.12); --head: rgba(91,110,245,0.10); --fail: #c0392b;
+  --head-bg: #e7eaf6;
 }
 body.omnia-dark {
   --bg-top: #1b1e27; --bg-bottom: #14161d; --fg: #e7e9f0; --muted: #9aa3b2;
@@ -20,6 +21,7 @@ body.omnia-dark {
   --row: rgba(46,51,66,0.45); --row-alt: rgba(36,40,52,0.45);
   --input-bg: rgba(20,22,30,0.7); --input-border: rgba(255,255,255,0.16);
   --shadow: rgba(0,0,0,0.45); --head: rgba(124,140,255,0.16); --fail: #ff6b6b;
+  --head-bg: #2a2f40;
 }
 body {
   color: var(--fg);
@@ -59,7 +61,9 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
   position: sticky; top: 0; z-index: 2; text-align: left;
   font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.5px; color: var(--muted);
-  padding: 9px 8px; background: var(--head); backdrop-filter: blur(4px);
+  /* Opaque header bg (NOT backdrop-filter: blur — that blanks the whole page on
+     QtWebEngine/macOS Metal, the cause of the "blank Smart Notes dialog" bug). */
+  padding: 9px 8px; background: var(--head-bg);
   border-bottom: 1px solid var(--card-border);
 }
 .sn-table tbody tr { border-bottom: 1px solid var(--card-border); }
