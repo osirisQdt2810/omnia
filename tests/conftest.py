@@ -79,6 +79,7 @@ def _install_anki_stubs() -> None:
         overview_will_render_content=FakeHook(),
         deck_browser_will_show_options_menu=FakeHook(),
         state_did_change=FakeHook(),
+        webview_did_inject_style_into_page=FakeHook(),
     )
 
     aqt = types.ModuleType("aqt")

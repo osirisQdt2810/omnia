@@ -22,7 +22,10 @@ OUTPUT = DIST_DIR / "omnia.ankiaddon"
 # Patterns never shipped inside the add-on.
 EXCLUDE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache"}
 EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
-EXCLUDE_NAMES = {".DS_Store", "meta.json"}  # meta.json is created by Anki at install time
+EXCLUDE_NAMES = {
+    ".DS_Store",
+    "meta.json",
+}  # meta.json is created by Anki at install time
 
 
 def _should_skip(path: Path) -> bool:

@@ -9,7 +9,8 @@ show_timer = true              # show a small countdown in the reviewer
 
 [typed_accuracy]
 threshold = 0.7                # accuracy ratio (0-1) at/above which the answer is a "pass"
-pass_ease = "good"             # ease used on a pass: "good" or "easy" (a fail uses Hard)
+pass_ease = "good"             # auto-answer on a pass: "good", "easy", or "no" (a fail always uses Hard)
+show_stats = true              # show the interactive accuracy panel on the Statistics screen
 
 [overdue_guard]
 ratio = 0.8                    # lateness / interval at/above which a card counts as overdue

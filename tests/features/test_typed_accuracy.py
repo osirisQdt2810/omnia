@@ -1,8 +1,9 @@
-"""Tests for the typed_accuracy feature (pure logic + an end-to-end seam test)."""
+"""Tests for the typed_accuracy feature (pure logic + the reviewer/bridge seam)."""
 
 from __future__ import annotations
 
 import logging
+import sqlite3
 import tempfile
 import types
 from pathlib import Path
@@ -15,18 +16,41 @@ from omnia.core.providers import ProviderHub
 from omnia.core.reviewer.ease_pipeline import EasePipeline
 from omnia.core.reviewer.web_injector import WebInjector, build_message
 from omnia.features.typed_accuracy import TypedAccuracyPlugin
-from omnia.features.typed_accuracy.logic import accuracy_ratio, decide_ease
-from omnia.features.typed_accuracy.stats import (
-    StatsStore,
-    TypedResult,
-    donut_svg,
-    stats_card_html,
-    summarize,
+from omnia.features.typed_accuracy.logic import (
+    accuracy_ratio,
+    decide_ease,
+    result_code,
+)
+from omnia.features.typed_accuracy.store import (
+    RESULT_BAD,
+    RESULT_EMPTY,
+    RESULT_GOOD,
+    RESULT_MISS,
+)
+
+# The feature's web assets live next to the package; the StatsInjector reads from web_dir.
+_WEB_DIR = (
+    Path(__file__).resolve().parent.parent.parent
+    / "src"
+    / "omnia"
+    / "features"
+    / "typed_accuracy"
+    / "web"
 )
 
 
-def _result(ratio: float, passed: bool, *, ts: float = 0.0, deck_id=None):
-    return TypedResult(ts=ts, ratio=ratio, passed=passed, deck_id=deck_id)
+class _DbAdapter:
+    """Wrap a ``sqlite3`` connection to expose Anki's ``.execute`` / ``.scalar`` surface."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+        return self._conn.execute(sql, args)
+
+    def scalar(self, sql: str, *args: object):
+        row = self._conn.execute(sql, args).fetchone()
+        return row[0] if row else None
 
 
 class TestAccuracyLogic:
@@ -39,10 +63,18 @@ class TestAccuracyLogic:
         assert decide_ease(0.9, 0.7, "easy") == 4
         assert decide_ease(0.5, 0.7, "good") == 2  # fail -> Hard
 
+    def test_decide_ease_no_stages_nothing_on_pass_but_hard_on_fail(self):
+        assert decide_ease(0.9, 0.7, "no") is None  # pass -> stage nothing
+        assert decide_ease(0.0, 0.7, "no") == 2  # fail still forces Hard
+
+    def test_result_code_precedence(self):
+        assert result_code(True, True, True) == RESULT_MISS  # miss wins
+        assert result_code(True, True, False) == RESULT_BAD  # bad over good
+        assert result_code(True, False, False) == RESULT_GOOD
+        assert result_code(False, False, False) == RESULT_EMPTY
+
 
 def _context(settings, user_files: Path | None = None):
-    # The plugin's stats store writes under user_files_dir, so it must be a real, writable
-    # directory; default to a throwaway temp dir for tests that don't assert on the file.
     uf = user_files or Path(tempfile.mkdtemp())
     return PluginContext(
         plugin_id="typed_accuracy",
@@ -51,251 +83,240 @@ def _context(settings, user_files: Path | None = None):
         ease=EasePipeline(),
         web=WebInjector(),
         providers=ProviderHub(),
-        paths=AddonPaths(uf, uf / "web", uf),
-        config=None,  # not exercised by this seam test
+        paths=AddonPaths(uf, _WEB_DIR, uf),
+        config=None,  # not exercised by these seam tests
         reload_self=lambda: None,
     )
 
 
 @pytest.fixture
-def current_card(monkeypatch):
+def fake_mw(monkeypatch):
+    """A fake ``mw`` with an in-memory collection DB + a reviewer holding one card."""
     import aqt
 
     card = FakeCard(id=42)
-    monkeypatch.setattr(
-        aqt, "mw", types.SimpleNamespace(reviewer=types.SimpleNamespace(card=card))
+    card.did = 7
+    conn = sqlite3.connect(":memory:")
+    db = _DbAdapter(conn)
+    decks = types.SimpleNamespace(
+        get_current_id=lambda: 7,
+        all=lambda: [{"id": 7, "name": "Spanish"}],
     )
-    return card
+    col = types.SimpleNamespace(db=db, decks=decks)
+    mw = types.SimpleNamespace(reviewer=types.SimpleNamespace(card=card), col=col)
+    monkeypatch.setattr(aqt, "mw", mw)
+    return types.SimpleNamespace(mw=mw, card=card, conn=conn, db=db)
+
+
+def _logged_rows(conn: sqlite3.Connection):
+    return conn.execute(
+        "SELECT cid, did, card_did, result FROM typed_answer_log ORDER BY id"
+    ).fetchall()
 
 
 class TestTypedAccuracyPlugin:
-    def test_pass_grades_good_via_pipeline(self, current_card):
+    def test_pass_grades_good_via_pipeline_and_logs(self, fake_mw):
         from omnia.core.config.models import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
         plugin = TypedAccuracyPlugin()
         plugin.on_enable(ctx)
 
-        handled, _ = ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.95}), None
+        handled, result = ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.95, "hasGood": True, "hasBad": False, "hasMiss": False},
+            ),
+            None,
         )
-        assert handled is True
+        assert handled is True and result["ok"] is True
         assert (
-            ctx.ease.compute_ease(current_card, 1) == 3
-        )  # staged Good overrides the request
+            ctx.ease.compute_ease(fake_mw.card, 1) == 3
+        )  # staged Good overrides request
+        # The result was logged with the study deck and the card's deck.
+        assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_GOOD)]
 
-    def test_fail_grades_hard(self, current_card):
+    def test_fail_grades_hard(self, fake_mw):
         from omnia.core.config.models import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="easy"))
-        plugin = TypedAccuracyPlugin()
-        plugin.on_enable(ctx)
+        TypedAccuracyPlugin().on_enable(ctx)
         ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.4}), None
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.4, "hasGood": True, "hasBad": True, "hasMiss": False},
+            ),
+            None,
         )
-        assert ctx.ease.compute_ease(current_card, 3) == 2  # Hard
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 2  # Hard
+        assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_BAD)]
 
-    def test_other_card_not_affected(self, current_card):
+    def test_empty_no_markup_forces_hard_and_logs_empty(self, fake_mw):
+        from omnia.core.config.models import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
+        TypedAccuracyPlugin().on_enable(ctx)
+        # ratio 0 with no markup spans (the JS empty case).
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.0, "hasGood": False, "hasBad": False, "hasMiss": False},
+            ),
+            None,
+        )
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 2  # forced Hard
+        assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_EMPTY)]
+
+    def test_auto_answer_no_stages_nothing_but_logs(self, fake_mw):
+        from omnia.core.config.models import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="no"))
+        TypedAccuracyPlugin().on_enable(ctx)
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.95, "hasGood": True, "hasBad": False, "hasMiss": False},
+            ),
+            None,
+        )
+        # Pass with auto_answer=no: nothing staged, the user's press stands.
+        assert ctx.ease.compute_ease(fake_mw.card, 4) == 4
+        # But the result is still logged.
+        assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_GOOD)]
+
+    def test_other_card_not_affected(self, fake_mw):
         from omnia.core.config.models import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         TypedAccuracyPlugin().on_enable(ctx)
         ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.95}), None
+            build_message("typed_accuracy", "rated", {"ratio": 0.95, "hasGood": True}),
+            None,
         )
         other = FakeCard(id=999)
         assert ctx.ease.compute_ease(other, 3) == 3  # no pending ease for this card
 
-    def test_question_clears_stale_pending(self, current_card):
+    def test_question_clears_stale_pending(self, fake_mw):
         from omnia.core.config.models import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         plugin = TypedAccuracyPlugin()
         plugin.on_enable(ctx)
         ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.95}), None
+            build_message("typed_accuracy", "rated", {"ratio": 0.95, "hasGood": True}),
+            None,
         )
-        plugin._on_question(current_card)  # showing the question wipes staged ease
-        assert ctx.ease.compute_ease(current_card, 3) == 3
+        plugin._on_question(fake_mw.card)  # showing the question wipes staged ease
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 3
 
-    def test_disable_fully_tears_down(self, current_card, gui_hooks):
+    def test_query_op_returns_attempts_and_unique(self, fake_mw):
+        from omnia.core.config.models import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings())
+        TypedAccuracyPlugin().on_enable(ctx)
+        # Log two attempts for the same card; unique_last should collapse to the latest.
+        for ratio, good, bad in ((0.4, True, True), (0.95, True, False)):
+            ctx.web._router.dispatch(
+                build_message(
+                    "typed_accuracy",
+                    "rated",
+                    {"ratio": ratio, "hasGood": good, "hasBad": bad, "hasMiss": False},
+                ),
+                None,
+            )
+
+        _, res = ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "query",
+                {"did": 7, "includeSubdecks": False, "startMs": 0, "endMs": 10**18},
+            ),
+            None,
+        )
+        assert res["ok"] is True
+        assert res["data"]["attempts"]["total"] == 2
+        assert res["data"]["unique_last"]["total"] == 1
+        assert res["data"]["unique_last"]["good"] == 1  # latest was good
+
+    def test_get_current_did_op(self, fake_mw):
+        from omnia.core.config.models import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings())
+        TypedAccuracyPlugin().on_enable(ctx)
+        _, res = ctx.web._router.dispatch(
+            build_message("typed_accuracy", "get_current_did", {}), None
+        )
+        assert res == {"ok": True, "did": 7}
+
+    def test_session_open_ms_recorded_on_state_change(self, fake_mw):
+        from omnia.core.config.models import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings())
+        plugin = TypedAccuracyPlugin()
+        plugin.on_enable(ctx)
+        # No session yet.
+        _, before = ctx.web._router.dispatch(
+            build_message("typed_accuracy", "get_session_open_ms", {"did": 7}), None
+        )
+        assert before == {"ok": True, "openMs": 0}
+        # Entering review records the open time.
+        plugin._on_state_change("review", "deckBrowser")
+        _, after = ctx.web._router.dispatch(
+            build_message("typed_accuracy", "get_session_open_ms", {"did": 7}), None
+        )
+        assert after["ok"] is True and after["openMs"] > 0
+
+    def test_disable_fully_tears_down(self, fake_mw, gui_hooks):
         from omnia.core.config.models import TypedAccuracySettings
 
         ctx = _context(TypedAccuracySettings())
         plugin = TypedAccuracyPlugin()
         plugin.on_enable(ctx)
         ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.95}), None
+            build_message("typed_accuracy", "rated", {"ratio": 0.95, "hasGood": True}),
+            None,
         )
         assert plugin._pending  # staged
         plugin.on_disable(ctx)
-        assert ctx.ease.compute_ease(current_card, 3) == 3  # transformer removed
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 3  # transformer removed
         assert not plugin._pending  # cleared
         assert ctx.web.collect_js("answer") == ""  # asset removed
-        assert gui_hooks.reviewer_did_show_question.count() == 0  # hook removed
-        assert (
-            gui_hooks.overview_will_render_content.count() == 0
-        )  # overview hook removed
+        # Every handler op removed.
+        for op in (
+            "rated",
+            "query",
+            "get_current_did",
+            "get_session_open_ms",
+            "dbg",
+        ):
+            handled, _ = ctx.web._router.dispatch(
+                build_message("typed_accuracy", op, {}), None
+            )
+            assert handled is False
+        assert gui_hooks.reviewer_did_show_question.count() == 0
+        assert gui_hooks.state_did_change.count() == 0
+        assert gui_hooks.webview_did_inject_style_into_page.count() == 0
 
 
-class TestStatsSummary:
-    def test_summarize_mixed(self):
-        results = [_result(0.9, True) for _ in range(8)]
-        results += [_result(0.3, False) for _ in range(2)]
-        summary = summarize(results)
-        assert summary.total == 10
-        assert summary.passed == 8
-        assert summary.failed == 2
-        assert summary.pass_rate == pytest.approx(0.8)
-        assert summary.avg_ratio == pytest.approx((0.9 * 8 + 0.3 * 2) / 10)
+class TestStatsInjector:
+    def test_inject_evals_assets_into_webview(self, tmp_path):
+        from omnia.features.typed_accuracy.stats_injector import StatsInjector
 
-    def test_summarize_empty_is_zeros(self):
-        summary = summarize([])
-        assert summary.total == 0
-        assert summary.passed == 0
-        assert summary.failed == 0
-        assert summary.pass_rate == 0.0
-        assert summary.avg_ratio == 0.0
+        evals: list[str] = []
+        webview = types.SimpleNamespace(eval=evals.append)
+        StatsInjector(_WEB_DIR, logging.getLogger("omnia.test")).inject(webview)
+        joined = "\n".join(evals)
+        assert "__TA_HTML_TEMPLATE" in joined  # template stashed
+        assert "ta-card" in joined  # html template content present
+        assert "__TA_BOOTED" in joined  # panel JS ran
 
+    def test_missing_assets_logged_not_raised(self, tmp_path):
+        from omnia.features.typed_accuracy.stats_injector import StatsInjector
 
-class TestDonutSvg:
-    def test_renders_svg_with_percent(self):
-        svg = donut_svg(summarize([_result(1.0, True), _result(1.0, True)]))
-        assert svg.startswith("<svg")
-        assert svg.rstrip().endswith("</svg>")
-        assert "100%" in svg
-        # CSP-safe: no external references.
-        assert "http://" not in svg.replace('xmlns="http://www.w3.org/2000/svg"', "")
-        assert "<script" not in svg
-
-    def test_handles_zero_total(self):
-        svg = donut_svg(summarize([]))
-        assert svg.startswith("<svg")
-        assert "0%" in svg
-
-
-class TestStatsCardHtml:
-    def test_card_embeds_donut_and_numbers(self):
-        results = [_result(0.9, True) for _ in range(8)]
-        results += [_result(0.3, False) for _ in range(2)]
-        html = stats_card_html(summarize(results))
-        assert "<svg" in html  # the donut is embedded
-        assert "10 reviews" in html
-        assert "Pass rate: 80%" in html
-        assert "Avg accuracy:" in html
-
-
-class TestStatsStore:
-    def test_record_then_results_round_trips(self, tmp_path):
-        store = StatsStore(tmp_path / "stats.json")
-        store.record(0.9, 0.7, deck_id=1, now=100.0)
-        store.record(0.4, 0.7, deck_id=1, now=200.0)
-        results = store.results()
-        assert [(r.ts, r.passed, r.deck_id) for r in results] == [
-            (100.0, True, 1),
-            (200.0, False, 1),
-        ]
-        # A fresh store over the same file reads the persisted history.
-        assert len(StatsStore(tmp_path / "stats.json").results()) == 2
-
-    def test_results_filter_by_deck(self, tmp_path):
-        store = StatsStore(tmp_path / "stats.json")
-        store.record(0.9, 0.7, deck_id=1, now=1.0)
-        store.record(0.9, 0.7, deck_id=2, now=2.0)
-        store.record(0.9, 0.7, deck_id=1, now=3.0)
-        assert len(store.results(1)) == 2
-        assert len(store.results(2)) == 1
-        assert len(store.results()) == 3
-
-    def test_trims_to_max_records(self, tmp_path):
-        store = StatsStore(tmp_path / "stats.json", max_records=3)
-        for i in range(5):
-            store.record(0.9, 0.7, now=float(i))
-        kept = store.results()
-        assert len(kept) == 3
-        assert [r.ts for r in kept] == [2.0, 3.0, 4.0]  # newest kept
-
-    def test_missing_file_loads_empty(self, tmp_path):
-        assert StatsStore(tmp_path / "absent.json").results() == []
-
-    def test_corrupt_file_loads_empty(self, tmp_path):
-        path = tmp_path / "stats.json"
-        path.write_text("not json{", encoding="utf-8")
-        store = StatsStore(path)
-        assert store.results() == []
-        # A subsequent record overwrites the corrupt file cleanly.
-        store.record(0.9, 0.7, now=1.0)
-        assert len(store.results()) == 1
-
-    def test_clear_empties_history(self, tmp_path):
-        store = StatsStore(tmp_path / "stats.json")
-        store.record(0.9, 0.7, now=1.0)
-        store.clear()
-        assert store.results() == []
-
-
-class TestOverviewStatsCard:
-    def test_records_and_renders_deck_card(self, current_card, gui_hooks, tmp_path):
-        import aqt
-
-        from omnia.core.config.models import TypedAccuracySettings
-
-        current_card.did = 7
-        aqt.mw.col = types.SimpleNamespace(
-            decks=types.SimpleNamespace(get_current_id=lambda: 7)
-        )
-
-        ctx = _context(TypedAccuracySettings(show_stats=True), user_files=tmp_path)
-        plugin = TypedAccuracyPlugin()
-        plugin.on_enable(ctx)
-
-        ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.95}), None
-        )
-
-        content = types.SimpleNamespace(table="<table></table>")
-        aqt.gui_hooks.overview_will_render_content.fire(object(), content)
-        assert "Typing accuracy" in content.table
-        assert "1 reviews" in content.table
-        # The result was persisted under the card's deck id.
-        assert plugin._store is not None
-        assert [r.deck_id for r in plugin._store.results()] == [7]
-
-    def test_falls_back_to_all_decks_when_empty(
-        self, current_card, gui_hooks, tmp_path
-    ):
-        import aqt
-
-        from omnia.core.config.models import TypedAccuracySettings
-
-        # The card under review is deck 7, but recorded history is for deck 99: the
-        # deck-scoped query is empty, so the card falls back to all-decks data.
-        store = StatsStore(tmp_path / "typed_accuracy_stats.json")
-        store.record(0.9, 0.7, deck_id=99, now=1.0)
-        current_card.did = 7
-        aqt.mw.col = types.SimpleNamespace(
-            decks=types.SimpleNamespace(get_current_id=lambda: 7)
-        )
-
-        ctx = _context(TypedAccuracySettings(show_stats=True), user_files=tmp_path)
-        TypedAccuracyPlugin().on_enable(ctx)
-
-        content = types.SimpleNamespace(table="")
-        aqt.gui_hooks.overview_will_render_content.fire(object(), content)
-        assert "1 reviews" in content.table  # the all-decks record showed up
-
-    def test_disabled_when_show_stats_false(self, current_card, gui_hooks, tmp_path):
-        import aqt
-
-        from omnia.core.config.models import TypedAccuracySettings
-
-        ctx = _context(TypedAccuracySettings(show_stats=False), user_files=tmp_path)
-        plugin = TypedAccuracyPlugin()
-        plugin.on_enable(ctx)
-        ctx.web._router.dispatch(
-            build_message("typed_accuracy", "rated", {"ratio": 0.95}), None
-        )
-
-        content = types.SimpleNamespace(table="<table></table>")
-        aqt.gui_hooks.overview_will_render_content.fire(object(), content)
-        assert content.table == "<table></table>"  # nothing appended
+        webview = types.SimpleNamespace(eval=lambda _js: None)
+        # tmp_path has no assets: inject must swallow the OSError.
+        StatsInjector(tmp_path, logging.getLogger("omnia.test")).inject(webview)
