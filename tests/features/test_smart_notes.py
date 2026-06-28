@@ -27,13 +27,17 @@ from omnia.core.config.models import (
     LLMSettings,
     OpenAICompatibleLLMSettings,
     SmartNotesFieldRule,
+    SmartNotesSettings,
     TTSSettings,
 )
 from omnia.core.providers import ProviderError, ProviderHub
 from omnia.features.smart_notes.logic import (
     GenerationService,
+    build_generation_plan,
     extract_field_refs,
     interpolate,
+    rows_to_rules,
+    rules_to_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,6 +54,87 @@ class TestPromptInterpolation:
         out = interpolate("{{c1::x}} define {{Word}}", {"Word": "cat"})
         assert out == "{{c1::x}} define cat"
         assert interpolate("{{Missing}}!", {}) == "!"
+
+
+class TestSmartNotesRowMapping:
+    def test_rules_to_rows_projects_every_field(self):
+        rule = SmartNotesFieldRule(
+            note_type="Basic",
+            source_field="Word",
+            target_field="Def",
+            kind="text",
+            prompt="Define {{Word}}",
+        )
+        rows = rules_to_rows([rule])
+        assert rows == [
+            {
+                "note_type": "Basic",
+                "source_field": "Word",
+                "target_field": "Def",
+                "kind": "text",
+                "prompt": "Define {{Word}}",
+            }
+        ]
+
+    def test_round_trip_through_settings_preserves_rules(self):
+        rules = [
+            SmartNotesFieldRule(
+                note_type="Basic",
+                source_field="Word",
+                target_field="Def",
+                kind="text",
+                prompt="Define {{Word}}",
+            ),
+            SmartNotesFieldRule(source_field="Word", target_field="Audio", kind="tts"),
+        ]
+        rebuilt = SmartNotesSettings(fields=rows_to_rules(rules_to_rows(rules))).fields
+        assert rebuilt == rules
+
+    def test_rows_to_rules_drops_fully_blank_rows(self):
+        rows = [
+            {"note_type": "  ", "source_field": "", "target_field": "  ", "prompt": ""},
+            {"target_field": "Def", "kind": "text"},
+        ]
+        out = rows_to_rules(rows)
+        assert len(out) == 1
+        assert out[0]["target_field"] == "Def"
+
+    def test_rows_to_rules_strips_whitespace(self):
+        out = rows_to_rules([{"target_field": "  Def  ", "source_field": " Word "}])
+        assert out[0]["target_field"] == "Def"
+        assert out[0]["source_field"] == "Word"
+
+    def test_rows_to_rules_defaults_unknown_kind_to_text(self):
+        out = rows_to_rules([{"target_field": "Def", "kind": "video"}])
+        assert out[0]["kind"] == "text"
+
+    def test_rows_to_rules_keeps_valid_kind(self):
+        out = rows_to_rules([{"target_field": "Audio", "kind": "tts"}])
+        assert out[0]["kind"] == "tts"
+
+
+class TestSmartNotesPlanBuilding:
+    def test_filters_by_note_type(self):
+        basic = SmartNotesFieldRule(note_type="Basic", target_field="Def")
+        cloze = SmartNotesFieldRule(note_type="Cloze", target_field="Def")
+        plan = build_generation_plan({"Def": ""}, "Basic", [basic, cloze])
+        assert [rule for rule, _ in plan] == [basic]
+
+    def test_empty_note_type_matches_any(self):
+        rule = SmartNotesFieldRule(note_type="", target_field="Def")
+        plan = build_generation_plan({"Def": ""}, "Whatever", [rule])
+        assert [r for r, _ in plan] == [rule]
+
+    def test_skips_rule_whose_target_field_is_absent(self):
+        rule = SmartNotesFieldRule(target_field="Missing")
+        plan = build_generation_plan({"Def": ""}, "Basic", [rule])
+        assert plan == []
+
+    def test_pairs_each_rule_with_the_note_fields(self):
+        fields = {"Word": "cat", "Def": ""}
+        rule = SmartNotesFieldRule(target_field="Def", source_field="Word")
+        plan = build_generation_plan(fields, "Basic", [rule])
+        assert plan == [(rule, fields)]
 
 
 def _route(method, url, body, headers):
