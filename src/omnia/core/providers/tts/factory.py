@@ -65,7 +65,7 @@ def _build_edge(config: dict[str, Any], _http: Optional[HttpClient]) -> TTSProvi
 
 
 def _build_piper(config: dict[str, Any], _http: Optional[HttpClient]) -> TTSProvider:
-    return PiperTTS(model=config.get("model", ""), binary=config.get("binary", "piper"))
+    return PiperTTS(model=config.get("model", ""))
 
 
 def _DEFAULT_HTTP() -> HttpClient:  # noqa: N802 - tiny lazy accessor

@@ -7,7 +7,6 @@ by EACH real provider, marked ``llm``/``tts`` and auto-skipping without credenti
 from __future__ import annotations
 
 import base64
-import types
 
 import pytest
 from conftest import (
@@ -31,6 +30,7 @@ from omnia.core.config.models import (
     TTSSettings,
 )
 from omnia.core.providers import ProviderError, ProviderHub
+from omnia.features.smart_notes.dag import SmartNotesCycleError, order_rules
 from omnia.features.smart_notes.logic import (
     GenerationService,
     build_generation_plan,
@@ -38,7 +38,9 @@ from omnia.features.smart_notes.logic import (
     interpolate,
     rows_to_rules,
     rules_to_rows,
+    should_skip_rule,
 )
+from omnia.features.smart_notes.markdown import convert_markdown_to_html
 
 # ---------------------------------------------------------------------------
 # Mocked / offline tests
@@ -186,6 +188,244 @@ class TestGenerationService:
         assert result.ext == "mp3"
 
 
+class TestMarkdownConversion:
+    def test_bold_and_italic(self):
+        assert convert_markdown_to_html("**b** and *i*") == (
+            "<strong>b</strong> and <em>i</em>"
+        )
+
+    def test_underscores_render_as_emphasis(self):
+        assert convert_markdown_to_html("__b__ _i_") == (
+            "<strong>b</strong> <em>i</em>"
+        )
+
+    def test_headers_convert_by_level(self):
+        assert convert_markdown_to_html("# Title\n") == "<h1>Title</h1><br>"
+        assert convert_markdown_to_html("### Sub\n") == "<h3>Sub</h3><br>"
+
+    def test_newlines_become_br(self):
+        assert convert_markdown_to_html("a\nb") == "a<br>b"
+
+    def test_leading_whitespace_becomes_nbsp(self):
+        assert convert_markdown_to_html("  hi") == "&nbsp;&nbsp;hi"
+
+    def test_plain_text_passes_through(self):
+        assert convert_markdown_to_html("a feline") == "a feline"
+
+
+def _rule(target, *, prompt="", source="", kind="text"):
+    return SmartNotesFieldRule(
+        target_field=target, prompt=prompt, source_field=source, kind=kind
+    )
+
+
+class TestOrderRules:
+    def test_linear_chain_orders_dependency_first(self):
+        a = _rule("A", source="Word")
+        b = _rule("B", prompt="from {{A}}")
+        c = _rule("C", prompt="from {{B}}")
+        ordered = order_rules([c, b, a])
+        targets = [r.target_field for r in ordered]
+        assert targets.index("A") < targets.index("B") < targets.index("C")
+
+    def test_diamond_orders_root_before_both_branches_before_join(self):
+        root = _rule("Root", source="Word")
+        left = _rule("Left", prompt="{{Root}}")
+        right = _rule("Right", prompt="{{Root}}")
+        join = _rule("Join", prompt="{{Left}} {{Right}}")
+        ordered = [r.target_field for r in order_rules([join, left, right, root])]
+        assert ordered.index("Root") < ordered.index("Left")
+        assert ordered.index("Root") < ordered.index("Right")
+        assert ordered.index("Left") < ordered.index("Join")
+        assert ordered.index("Right") < ordered.index("Join")
+
+    def test_independent_rules_keep_input_order(self):
+        a = _rule("A", source="W")
+        b = _rule("B", source="W")
+        assert order_rules([a, b]) == [a, b]
+
+    def test_cycle_raises(self):
+        a = _rule("A", prompt="{{B}}")
+        b = _rule("B", prompt="{{A}}")
+        with pytest.raises(SmartNotesCycleError):
+            order_rules([a, b])
+
+    def test_self_reference_raises(self):
+        with pytest.raises(SmartNotesCycleError):
+            order_rules([_rule("A", prompt="{{A}}")])
+
+    def test_field_matching_is_case_insensitive(self):
+        producer = _rule("Def", source="Word")
+        consumer = _rule("Usage", prompt="uses {{def}}")
+        ordered = [r.target_field for r in order_rules([consumer, producer])]
+        assert ordered.index("Def") < ordered.index("Usage")
+
+    def test_tts_source_field_creates_a_dependency(self):
+        producer = _rule("Reading", source="Word")
+        tts = _rule("Audio", source="Reading", kind="tts")
+        ordered = [r.target_field for r in order_rules([tts, producer])]
+        assert ordered.index("Reading") < ordered.index("Audio")
+
+
+class TestShouldSkipRule:
+    def test_skips_when_all_sources_blank(self):
+        rule = _rule("Def", prompt="define {{Word}}")
+        assert should_skip_rule(
+            rule, {"Word": ""}, allow_empty_fields=False, overwrite=True
+        )
+
+    def test_generates_when_allow_empty_fields(self):
+        rule = _rule("Def", prompt="define {{Word}}")
+        assert not should_skip_rule(
+            rule, {"Word": ""}, allow_empty_fields=True, overwrite=True
+        )
+
+    def test_generates_when_any_source_has_a_value(self):
+        rule = _rule("Def", prompt="{{A}} {{B}}")
+        assert not should_skip_rule(
+            rule, {"A": "", "B": "x"}, allow_empty_fields=False, overwrite=True
+        )
+
+    def test_skips_when_target_already_filled(self):
+        rule = _rule("Def", prompt="define {{Word}}")
+        fields = {"Word": "cat", "Def": "already here"}
+        assert should_skip_rule(rule, fields, allow_empty_fields=False, overwrite=False)
+
+    def test_overwrites_when_overwrite_set(self):
+        rule = _rule("Def", prompt="define {{Word}}")
+        fields = {"Word": "cat", "Def": "already here"}
+        assert not should_skip_rule(
+            rule, fields, allow_empty_fields=False, overwrite=True
+        )
+
+    def test_rule_with_no_source_refs_is_not_skipped_for_emptiness(self):
+        rule = _rule("Def", prompt="a static prompt")
+        assert not should_skip_rule(rule, {}, allow_empty_fields=False, overwrite=True)
+
+
+class _RecordingLLM(FakeLLMProvider):
+    """Fake LLM that echoes per-field text (the model is fixed at construction, not per call)."""
+
+    def __init__(self, by_target=None):
+        super().__init__()
+        self._by_target = by_target or {}
+
+    def generate_text(self, prompt, *, system=None, temperature=0.7, max_tokens=None):
+        return self._by_target.get(prompt, f"generated:{prompt}")
+
+    def generate_image(self, prompt, *, size="1024x1024"):
+        return b"IMG"
+
+
+class _RecordingTTS(FakeTTSProvider):
+    """Fake TTS that records the voice + text it is asked to synthesize."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls: list = []
+
+    def synthesize(self, text, *, lang=None, voice=None):
+        self.calls.append((text, voice))
+        return b"AUDIO"
+
+
+class TestGenerateNote:
+    def test_chains_text_output_into_a_downstream_prompt(self):
+        llm = _RecordingLLM(by_target={"define cat": "a feline"})
+        service = GenerationService(_stub_hub(llm=llm))
+        define = SmartNotesFieldRule(
+            kind="text", prompt="define {{Word}}", target_field="Def"
+        )
+        usage = SmartNotesFieldRule(
+            kind="text", prompt="use {{Def}} in a sentence", target_field="Usage"
+        )
+        results = service.generate_note(
+            [usage, define], {"Word": "cat", "Def": "", "Usage": ""}
+        )
+        targets = [rule.target_field for rule, _ in results]
+        assert targets == ["Def", "Usage"]
+        # The downstream prompt saw the freshly generated value, not the blank field.
+        usage_result = dict((r.target_field, res) for r, res in results)["Usage"]
+        assert usage_result.text == "generated:use a feline in a sentence"
+
+    def test_skips_already_filled_target_without_overwrite(self):
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        rule = SmartNotesFieldRule(
+            kind="text", prompt="define {{Word}}", target_field="Def"
+        )
+        results = service.generate_note([rule], {"Word": "cat", "Def": "filled"})
+        assert results == []
+
+    def test_skips_rule_with_all_blank_sources(self):
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        rule = SmartNotesFieldRule(
+            kind="text", prompt="define {{Word}}", target_field="Def"
+        )
+        results = service.generate_note([rule], {"Word": "", "Def": ""})
+        assert results == []
+
+    def test_cycle_raises(self):
+        service = GenerationService(_stub_hub(llm=_RecordingLLM()))
+        a = SmartNotesFieldRule(kind="text", prompt="{{B}}", target_field="A")
+        b = SmartNotesFieldRule(kind="text", prompt="{{A}}", target_field="B")
+        with pytest.raises(SmartNotesCycleError):
+            service.generate_note([a, b], {"A": "", "B": ""}, overwrite=True)
+
+
+class TestPerFieldOverrides:
+    def test_text_rule_model_override_selects_a_provider_instance(self):
+        hub = _stub_hub(llm=_RecordingLLM())
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(
+            kind="text",
+            prompt="hi {{Word}}",
+            target_field="Def",
+            model="rule-model",
+            provider="gemini",
+        )
+        service.generate(rule, {"Word": "x"})
+        # The model is fixed at construction: the service asks the hub for a provider INSTANCE
+        # configured with that (provider, model), never threading model into generate_text.
+        assert hub.llm_overrides == [("gemini", "rule-model")]
+
+    def test_text_rule_without_override_uses_the_active_provider(self):
+        hub = _stub_hub(llm=_RecordingLLM())
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(
+            kind="text", prompt="hi {{Word}}", target_field="Def"
+        )
+        service.generate(rule, {"Word": "x"})
+        # An empty override means "use the configured active provider".
+        assert hub.llm_overrides == [("", "")]
+
+    def test_image_rule_model_override_selects_a_provider_instance(self):
+        hub = _stub_hub(llm=_RecordingLLM())
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(
+            kind="image", prompt="a {{Word}}", target_field="Pic", model="img-model"
+        )
+        service.generate(rule, {"Word": "cat"})
+        assert hub.llm_overrides == [("", "img-model")]
+
+    def test_tts_rule_voice_override_and_interpolated_source(self):
+        tts = _RecordingTTS()
+        service = GenerationService(_stub_hub(tts=tts))
+        rule = SmartNotesFieldRule(
+            kind="tts", source_field="Reading", target_field="Audio", voice="en-US-X"
+        )
+        service.generate(rule, {"Reading": "hello {{Word}}", "Word": "cat"})
+        assert tts.calls == [("hello cat", "en-US-X")]
+
+    def test_text_result_is_markdown_converted(self):
+        llm = _RecordingLLM(by_target={"go": "**bold**"})
+        service = GenerationService(_stub_hub(llm=llm))
+        rule = SmartNotesFieldRule(kind="text", prompt="go", target_field="Def")
+        result = service.generate(rule, {})
+        assert result.text == "<strong>bold</strong>"
+
+
 class TestSmartNotesPlugin:
     def test_disable_unsubscribes_browser_hook(self, gui_hooks):
         import types
@@ -219,9 +459,29 @@ class TestSmartNotesPlugin:
 # ---------------------------------------------------------------------------
 
 
+class _StubHub:
+    """A minimal ProviderHub-shaped stub exposing ``llm(model=, provider=)`` / ``tts()``.
+
+    Records the per-rule ``(provider, model)`` overrides the service asks for, since the model
+    is now selected by picking a provider INSTANCE (never a per-call kwarg).
+    """
+
+    def __init__(self, *, llm=None, tts=None):
+        self._llm = llm
+        self._tts = tts
+        self.llm_overrides: list = []
+
+    def llm(self, *, model: str = "", provider: str = ""):
+        self.llm_overrides.append((provider, model))
+        return self._llm
+
+    def tts(self):
+        return self._tts
+
+
 def _stub_hub(*, llm=None, tts=None):
-    """A minimal ProviderHub-shaped stub exposing just ``llm()`` / ``tts()``."""
-    return types.SimpleNamespace(llm=lambda: llm, tts=lambda: tts)
+    """A minimal ProviderHub-shaped stub exposing ``llm(model=, provider=)`` / ``tts()``."""
+    return _StubHub(llm=llm, tts=tts)
 
 
 class _SmartNotesLLMGenContract:

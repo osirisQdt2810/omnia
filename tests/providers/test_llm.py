@@ -16,6 +16,7 @@ provider without credentials, and ``xfail`` on a quota/token/transient limit.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 
@@ -100,6 +101,82 @@ class TestLLMFactoryErrors:
         assert {"openai_compatible", "gemini", "gemini_vertex"} <= set(
             available_llm_providers()
         )
+
+
+# --- 1b. Gemini image generation (offline, mocked HTTP) --------------------------------
+class TestGeminiImageGeneration:
+    """``GeminiProvider.generate_image`` over a mocked ``:generateContent`` response.
+
+    The Gemini image model returns the picture as an inline base64 ``inlineData`` part; these
+    assert the provider targets the configured image model and decodes that data — never
+    hitting a real API.
+    """
+
+    def test_generate_image_decodes_inline_data_and_targets_image_model(self):
+        png = b"\x89PNG\r\n\x1a\n-fake-bytes"
+        http = FakeHttpClient(
+            json={
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"text": "here is your image"},
+                                {
+                                    "inlineData": {
+                                        "mimeType": "image/png",
+                                        "data": base64.b64encode(png).decode(),
+                                    }
+                                },
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+        provider = create_llm_provider(
+            {
+                "provider": "gemini",
+                "api_key": "k",
+                "model": "gemini-2.0-flash",
+                "image_model": "gemini-2.5-flash-image",
+            },
+            http=http,
+        )
+        data = provider.generate_image("a red apple")
+        # The inline base64 part was decoded to the raw image bytes.
+        assert data == png
+        _method, url, body, _headers = http.calls[-1]
+        # The request targeted the configured IMAGE model, not the text model.
+        assert "gemini-2.5-flash-image:generateContent" in url
+        # And it asked for the IMAGE modality (vio-ai's wire shape) — without this the model
+        # returns text only and emits no picture.
+        assert body["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
+        # The prompt rides the same user-part envelope as a text request.
+        assert body["contents"][0]["parts"][0]["text"] == "a red apple"
+
+    def test_generate_image_without_image_model_raises(self):
+        provider = create_llm_provider(
+            {"provider": "gemini", "api_key": "k", "model": "gemini-2.0-flash"}
+        )
+        with pytest.raises(ProviderError):
+            provider.generate_image("a red apple")
+
+    def test_generate_image_rejects_a_response_with_no_inline_data(self):
+        http = FakeHttpClient(
+            json={
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": "no picture"}]},
+                        "finishReason": "STOP",
+                    }
+                ]
+            }
+        )
+        provider = create_llm_provider(
+            {"provider": "gemini", "api_key": "k", "image_model": "img"}, http=http
+        )
+        with pytest.raises(ProviderError):
+            provider.generate_image("a red apple")
 
 
 # --- 2. wiring, built from the REAL config (fake transport, offline) -------------------

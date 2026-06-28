@@ -15,9 +15,8 @@ provider = "gemini_vertex"
 [llm.gemini_vertex]
 project = ""                # GCP project id, e.g. "vio-ai-500116"
 location = "global"         # "global" for Gemini 3.x; a region like "us-central1" otherwise
-# Auth — set exactly ONE of these three:
+# Auth — set exactly ONE of these two (the add-on never shells out to the gcloud CLI):
 credentials_path = ""       # service-account JSON path (abs, or relative to the add-on dir)
-use_gcloud = false          # true -> shell out to `gcloud auth print-access-token`
 access_token = ""           # paste a short-lived OAuth token directly
 # Model ids:
 text_model = "gemini-2.5-flash"
@@ -101,7 +100,7 @@ speaking_rate = 1.0
 lang = "en"
 voice = ""             # e.g. "vi-VN-HoaiMyNeural"
 
-# Offline; needs the `piper` binary + a `model` (.onnx) voice path.
+# Offline; needs a vendored native runner injected (the add-on never shells out) + a `model`
+# (.onnx) voice path. Out of the box piper raises a clear error — prefer google_translate/edge_tts.
 [tts.piper]
 model = ""             # piper .onnx voice path
-binary = "piper"       # CLI binary name/path

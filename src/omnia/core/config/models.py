@@ -98,16 +98,15 @@ class LLMModelSettings(_Strict):
 class GeminiVertexLLMSettings(LLMModelSettings):
     """``gemini_vertex``: Google Cloud auth (project + one credential strategy) + model ids.
 
-    Auth — set exactly one strategy: ``credentials_path`` (a service-account JSON key),
-    ``use_gcloud`` (shell out to ``gcloud auth print-access-token``), or a pasted short-lived
-    ``access_token``. This is also the Google auth reused by the ``google_cloud`` TTS provider.
+    Auth — set exactly one strategy: ``credentials_path`` (a service-account JSON key) or a
+    pasted short-lived ``access_token``. The add-on never shells out to the ``gcloud`` CLI.
+    This is also the Google auth reused by the ``google_cloud`` TTS provider.
     """
 
     # --- Google auth (also reused by the google_cloud TTS provider) ---
     project: str = ""
     location: str = "global"
     credentials_path: str = ""
-    use_gcloud: bool = False
     access_token: str = ""
     text_model: str = "gemini-2.5-flash"
 
@@ -117,7 +116,6 @@ class GeminiVertexLLMSettings(LLMModelSettings):
         "project",
         "location",
         "credentials_path",
-        "use_gcloud",
         "access_token",
     )
 
@@ -214,10 +212,13 @@ class EdgeTTSSettings(_Strict):
 
 
 class PiperTTSSettings(_Strict):
-    """``piper`` — offline; needs the ``piper`` binary + a ``model`` (.onnx) voice path."""
+    """``piper`` — offline; needs an injected vendored native runner + a ``model`` (.onnx) path.
+
+    The add-on never shells out to a ``piper`` CLI; out of the box the provider raises a clear
+    error, so prefer ``google_translate``/``edge_tts`` unless a native runner is injected.
+    """
 
     model: str = ""  # .onnx voice path
-    binary: str = "piper"  # CLI binary name/path
 
 
 class TTSSettings(_Strict):
@@ -256,13 +257,27 @@ class TTSSettings(_Strict):
 
 
 class SmartNotesFieldRule(_Strict):
-    """One generation rule: read ``source_field``, write ``target_field`` via ``kind``."""
+    """One generation rule: read ``source_field``, write ``target_field`` via ``kind``.
+
+    Provider selection stays central (``[llm]`` / ``[tts]`` + the ProviderHub); the
+    ``provider``/``model``/``voice`` fields here are optional per-rule OVERRIDES that layer
+    on top — empty means "inherit the active central provider". ``deck_id`` scopes a rule to
+    one deck (``None`` = every deck); ``enabled`` toggles the rule for automatic batching.
+
+    Every new field has a default, so configs written before they existed still load.
+    """
 
     note_type: str = ""
     source_field: str = ""
     target_field: str = ""
     kind: str = Field("text")  # text | image | tts
     prompt: str = ""
+    deck_id: Optional[int] = None  # None = applies to all decks
+    enabled: bool = True  # per-rule automatic-generation toggle
+    # Per-field provider overrides (empty = inherit the central [llm]/[tts] config).
+    provider: str = ""
+    model: str = ""
+    voice: str = ""
 
     @field_validator("kind")
     @classmethod
@@ -276,6 +291,12 @@ class SmartNotesSettings(_Strict):
     """smart_notes feature settings (provider config is shared, at the top level)."""
 
     fields: list[SmartNotesFieldRule] = Field(default_factory=list)
+    # Skip a rule whose referenced source fields are ALL blank unless this is True.
+    allow_empty_fields: bool = False
+    # Whether automatic batch generation regenerates fields it already filled.
+    regenerate_when_batching: bool = True
+    # Skip a rule whose target_field is already non-empty unless this is True.
+    overwrite: bool = False
 
 
 # --- top-level --------------------------------------------------------------------------

@@ -36,6 +36,9 @@ class LLMProvider(ABC):
     ) -> str:
         """Return the model's text completion for ``prompt``.
 
+        The text model is fixed at construction (``__init__``); to use a different model,
+        build a provider configured with it (see ``ProviderHub.llm``).
+
         Args:
             prompt: The user prompt.
             system: Optional system / instruction message.
@@ -47,7 +50,14 @@ class LLMProvider(ABC):
         """
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
-        """Return PNG/JPEG bytes for ``prompt``. Optional; not all providers support it."""
+        """Return PNG/JPEG bytes for ``prompt``. Optional; not all providers support it.
+
+        The image model is fixed at construction (``__init__``).
+
+        Args:
+            prompt: The image prompt.
+            size: Requested image size (provider-specific; ignored where unsupported).
+        """
         raise ProviderError(
             f"{self.name or type(self).__name__} does not support images"
         )

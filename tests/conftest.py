@@ -306,9 +306,7 @@ def llm_sub_has_credentials(provider: str, sub) -> bool:
     if sub is None:
         return False
     if provider == "gemini_vertex":
-        return bool(sub.project) and bool(
-            sub.access_token or sub.use_gcloud or sub.credentials_path
-        )
+        return bool(sub.project) and bool(sub.access_token or sub.credentials_path)
     return bool(getattr(sub, "api_key", ""))
 
 
@@ -415,16 +413,9 @@ def _tts_unavailable_reason(provider: str, repo, user_file) -> Optional[str]:
             else "edge-tts package not installed"
         )
     if provider == "piper":
-        import shutil
-
-        sub = getattr(repo.tts_settings(), provider, None)
-        if not (sub and sub.model):
-            return "no piper model (.onnx) configured"
-        return (
-            None
-            if shutil.which(sub.binary)
-            else f"piper binary {sub.binary!r} not found"
-        )
+        # The add-on never shells out to piper and ships no native runner, so the real sweep
+        # can't synthesize through it out of the box — always skip the live piper case.
+        return "piper has no out-of-the-box runner (needs a vendored native binary injected)"
     return f"unknown TTS provider {provider!r}"
 
 

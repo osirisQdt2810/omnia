@@ -7,7 +7,6 @@ from conftest import FakeHttpClient
 
 from omnia.core.providers import ProviderError
 from omnia.core.providers.token_source import (
-    GcloudTokenSource,
     ServiceAccountSigner,
     StaticTokenSource,
     resolve_token_source,
@@ -41,18 +40,11 @@ class TestResolveTokenSource:
         with pytest.raises(ProviderError):
             resolve_token_source({}, FakeHttpClient())
 
-    def test_resolve_gcloud_source(self, monkeypatch):
-        import subprocess
-        import types
-
-        monkeypatch.setattr(
-            subprocess,
-            "run",
-            lambda *a, **k: types.SimpleNamespace(stdout="ya29.tok\n"),
-        )
-        src = resolve_token_source({"use_gcloud": True}, FakeHttpClient())
-        assert isinstance(src, GcloudTokenSource)
-        assert src.token() == "ya29.tok"
+    def test_resolve_use_gcloud_without_creds_raises_no_shell_out(self):
+        # The gcloud CLI fallback was removed (the add-on never shells out): a config that only
+        # asks for gcloud now raises the clear "needs credentials" error instead of running a CLI.
+        with pytest.raises(ProviderError):
+            resolve_token_source({"use_gcloud": True}, FakeHttpClient())
 
 
 def _sa_config():

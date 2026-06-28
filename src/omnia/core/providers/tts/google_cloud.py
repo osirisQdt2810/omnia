@@ -1,7 +1,7 @@
 """Google Cloud Text-to-Speech provider (REST).
 
 High-quality neural voices. Authenticates with a :class:`TokenSource` — the *same* Google
-service-account / gcloud / token auth as gemini_vertex — so a user already set up for Vertex
+service-account / access-token auth as gemini_vertex — so a user already set up for Vertex
 gets Cloud TTS for free. Stdlib HTTP only (no google-cloud SDK): POSTs ``text:synthesize``
 and decodes the base64 ``audioContent``.
 """
