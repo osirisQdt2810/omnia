@@ -22,6 +22,13 @@ build/
 .DS_Store
 *.swp
 
+# AI agent / assistant working folders — local tooling, never shipped or pushed
+.claude/
+.codex/
+.codx/
+.cursor/
+.aider*
+
 # Anki add-on local state created at runtime (do NOT ship)
 src/omnia/meta.json
 src/omnia/user_files/
