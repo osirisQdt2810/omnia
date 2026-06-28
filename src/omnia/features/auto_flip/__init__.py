@@ -114,6 +114,10 @@ class AutoFlipPlugin(FeaturePlugin):
                 "Delay before flipping to answer (s)",
                 "float",
                 3.0,
+                help=(
+                    "How long the question side is shown before Omnia auto-flips to the "
+                    "answer. Per-deck overrides take precedence (gear menu → Auto-Flip…)."
+                ),
                 minimum=0,
                 maximum=120,
             ),
@@ -122,6 +126,10 @@ class AutoFlipPlugin(FeaturePlugin):
                 "Delay before auto-grading (s)",
                 "float",
                 3.0,
+                help=(
+                    "How long the answer side is shown before Omnia auto-grades Good and "
+                    "moves to the next card. Press a key first to take over manually."
+                ),
                 minimum=0,
                 maximum=120,
             ),
@@ -130,8 +138,18 @@ class AutoFlipPlugin(FeaturePlugin):
                 "Start the delay only after audio finishes",
                 "bool",
                 True,
+                help=(
+                    "When on, the countdown begins only once the card's audio has finished "
+                    "playing, so a card never flips before you've heard it."
+                ),
             ),
-            ConfigField("show_timer", "Show a countdown in the reviewer", "bool", True),
+            ConfigField(
+                "show_timer",
+                "Show a countdown in the reviewer",
+                "bool",
+                True,
+                help="Show the shrinking countdown ring in the corner while a flip is pending.",
+            ),
         ]
 
     # --- scheduling -----------------------------------------------------------------
