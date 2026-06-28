@@ -13,15 +13,17 @@ failure logs and is swallowed rather than propagating into Anki's reviewer.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.plugins.smart_notes.batch import materialize
-from omnia.plugins.smart_notes.logic import (
+from omnia.plugins.smart_notes.engine import (
     GenerationResult,
     GenerationService,
+    applies_to_deck,
 )
+from omnia.plugins.smart_notes.integration.batch import materialize
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule, SmartNotesSettings
@@ -31,10 +33,13 @@ class ReviewTimeEvaluator:
     """Generates the shown card's empty smart fields in the background, then redraws it."""
 
     def __init__(
-        self, service: GenerationService, settings: SmartNotesSettings
+        self,
+        service: GenerationService,
+        settings_provider: Callable[[], Optional[SmartNotesSettings]],
     ) -> None:
         self._service = service
-        self._settings = settings
+        # Settings are read FRESH each card (via the provider) so edits made mid-review apply.
+        self._settings_provider = settings_provider
         self._log = get_logger("smart_notes")
         # Note ids currently being generated, so a re-show of the same card mid-flight doesn't
         # kick off a duplicate background wave.
@@ -46,21 +51,22 @@ class ReviewTimeEvaluator:
         Defensive by contract — any failure is logged and swallowed so the reviewer never
         crashes because of smart_notes. A no-op unless ``generate_at_review`` is enabled.
         """
-        if not self._settings.generate_at_review or card is None:
+        settings = self._settings_provider()
+        if settings is None or not settings.generate_at_review or card is None:
             return
         try:
-            self._maybe_generate(card)
+            self._maybe_generate(card, settings)
         except Exception:  # the reviewer must never crash because of this feature
             self._log.exception("smart_notes: review-time generation failed")
 
-    def _maybe_generate(self, card: Any) -> None:
+    def _maybe_generate(self, card: Any, settings: SmartNotesSettings) -> None:
         nid = int(card.nid)
         if nid in self._in_flight:
             return
         note = card.note()
         fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
-        config = self._settings.note_type_config(_note_type_name(note))
-        if config is None:
+        config = settings.note_type_config(_note_type_name(note))
+        if config is None or not applies_to_deck(config, int(card.did)):
             return
         # Only act when a generatable field's target is still empty — else nothing to fill.
         empty_targets = [
@@ -73,7 +79,6 @@ class ReviewTimeEvaluator:
 
         self._in_flight.add(nid)
         service = self._service
-        settings = self._settings
 
         def op() -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
             return service.generate_note(

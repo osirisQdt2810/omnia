@@ -1,0 +1,36 @@
+"""Anki glue for smart-notes: batch, editor button, field menu, and review-time generation.
+
+Re-exports the integration public surface so the plugin imports from
+``smart_notes.integration`` rather than its submodules. These modules MAY import ``aqt``/
+``anki`` (directly or lazily) — they are the impure glue around the pure ``engine``.
+"""
+
+from __future__ import annotations
+
+from omnia.plugins.smart_notes.integration.batch import (
+    BatchGenerator,
+    BatchSummary,
+    materialize,
+)
+from omnia.plugins.smart_notes.integration.editor import (
+    add_generate_button,
+    set_button_enabled,
+)
+from omnia.plugins.smart_notes.integration.field_menu import (
+    build_field_menu,
+    single_field_config,
+)
+from omnia.plugins.smart_notes.integration.review import ReviewTimeEvaluator
+from omnia.plugins.smart_notes.integration.store import SmartNotesStore
+
+__all__ = [
+    "BatchGenerator",
+    "BatchSummary",
+    "ReviewTimeEvaluator",
+    "SmartNotesStore",
+    "add_generate_button",
+    "build_field_menu",
+    "materialize",
+    "set_button_enabled",
+    "single_field_config",
+]

@@ -7,8 +7,8 @@ context-menu action, a deck/note-type sidebar batch, an editor ✨ button, a per
 right-click menu, and optional review-time pre-generation — all running through
 :meth:`GenerationService.generate_note` so chained fields, skip rules, and Markdown conversion
 apply uniformly. Network runs off the Qt main thread via the threading seam; results are
-written back to notes + media on the main thread. The pure logic lives in ``logic.py`` /
-``auto_smart.py``; this module + ``batch.py`` + ``review_evaluator.py`` are the Anki glue.
+written back to notes + media on the main thread. The pure logic lives in the ``engine`` /
+``authoring`` subpackages; this module + the ``integration`` subpackage are the Anki glue.
 """
 
 from __future__ import annotations
@@ -19,17 +19,20 @@ from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
-from omnia.plugins.smart_notes.batch import BatchGenerator, BatchSummary, materialize
 from omnia.plugins.smart_notes.config import SmartNotesSettings
-from omnia.plugins.smart_notes.editor import (
-    add_generate_button,
-    set_button_enabled,
-)
-from omnia.plugins.smart_notes.logic import (
+from omnia.plugins.smart_notes.engine import (
     GenerationResult,
     GenerationService,
 )
-from omnia.plugins.smart_notes.review_evaluator import ReviewTimeEvaluator
+from omnia.plugins.smart_notes.integration import (
+    BatchGenerator,
+    BatchSummary,
+    ReviewTimeEvaluator,
+    SmartNotesStore,
+    add_generate_button,
+    materialize,
+    set_button_enabled,
+)
 
 _BROWSER_HOOK = "browser_will_show_context_menu"
 _SIDEBAR_HOOK = "browser_sidebar_will_show_context_menu"
@@ -54,11 +57,14 @@ class SmartNotesPlugin(FeaturePlugin):
         self._ctx: Optional[PluginContext] = None
         self._service: Optional[GenerationService] = None
         self._review: Optional[ReviewTimeEvaluator] = None
+        self._store: Optional[SmartNotesStore] = None
 
     def on_enable(self, ctx: PluginContext) -> None:
         self._ctx = ctx
         self._service = GenerationService(ctx.providers)
-        self._review = ReviewTimeEvaluator(self._service, ctx.settings)
+        # Rules persist in the collection (synced), read fresh each card via self._settings.
+        self._store = SmartNotesStore()
+        self._review = ReviewTimeEvaluator(self._service, self._settings)
         anki_compat.subscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
         anki_compat.subscribe_hook(_SIDEBAR_HOOK, self._on_sidebar_menu)
         anki_compat.subscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
@@ -74,6 +80,7 @@ class SmartNotesPlugin(FeaturePlugin):
         self._ctx = None
         self._service = None
         self._review = None
+        self._store = None
 
     # --- bespoke settings dialog -----------------------------------------------------
     def custom_config_dialog(self, repo: Any, parent: Any) -> Optional[Any]:
@@ -209,7 +216,7 @@ class SmartNotesPlugin(FeaturePlugin):
 
     # --- editor field right-click menu -----------------------------------------------
     def _on_editor_context_menu(self, editor_webview: Any, menu: Any) -> None:
-        from omnia.plugins.smart_notes.field_menu import build_field_menu
+        from omnia.plugins.smart_notes.integration.field_menu import build_field_menu
 
         editor = getattr(editor_webview, "editor", editor_webview)
         build_field_menu(self._ctx, editor, menu, self._generate_field)
@@ -218,7 +225,9 @@ class SmartNotesPlugin(FeaturePlugin):
         """Generate just ``field`` for the editor's note, on demand (even if disabled)."""
         from aqt.utils import tooltip
 
-        from omnia.plugins.smart_notes.field_menu import single_field_config
+        from omnia.plugins.smart_notes.integration.field_menu import (
+            single_field_config,
+        )
 
         note = getattr(editor, "note", None)
         config = self._config_for_note(note)
@@ -235,7 +244,8 @@ class SmartNotesPlugin(FeaturePlugin):
 
     # --- shared helpers --------------------------------------------------------------
     def _settings(self) -> Any:
-        return self._ctx.settings if self._ctx else None
+        # Per-note-type rules live in the collection (synced); read fresh on each access.
+        return self._store.load() if self._store else None
 
     def _config_for_note(self, note: Any) -> Any:
         """Return the note's note-type smart-notes config, or None."""
