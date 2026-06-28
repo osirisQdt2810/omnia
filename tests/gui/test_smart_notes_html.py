@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from omnia.gui.smart_notes_html import (
+from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
     field_configs_from_payload,
     load_payload,

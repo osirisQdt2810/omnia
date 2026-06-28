@@ -21,65 +21,30 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+import omnia.gui.typed_accuracy.stats_injector as _ta_gui
 from omnia.core import anki_compat
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.core.reviewer.web_injector import WebAsset
+from omnia.gui.assets import read_asset
+from omnia.gui.typed_accuracy.stats_injector import StatsInjector
 from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 from omnia.plugins.typed_accuracy.logic import decide_ease, result_code
-from omnia.plugins.typed_accuracy.stats_injector import StatsInjector
 from omnia.plugins.typed_accuracy.store import SessionTracker, TypedAnswerLog
 
 _PRIORITY = 100  # before overdue_guard (200), which may then cap this grade
 
-# The panel's web assets ship next to this module (read directly, not via web-export).
-_WEB_DIR = Path(__file__).resolve().parent / "web"
+# The panel's web assets now live with the feature's GUI package (``gui/typed_accuracy/``) and
+# are read directly off disk (module-relative paths, not web-export), so they resolve in both
+# the dev symlink and the packaged zip.
+_WEB_DIR = Path(_ta_gui.__file__).resolve().parent
 
 # Measures Anki's typed-answer comparison on the answer side and reports BOTH the accuracy
 # ratio and a 4-way result code. It polls up to 40 times at ~50ms for late-rendered markup,
 # then reports anyway: a type-answer card with no markup is an EMPTY answer (ratio 0 -> Hard).
-# Non-type-answer cards (no #typeans) report nothing, so they are unaffected.
-_ANSWER_JS = """
-(function () {
-  function send(op, data) {
-    try {
-      pycmd("omnia:" + JSON.stringify({ plugin: "typed_accuracy", op: op, data: data }));
-    } catch (e) {}
-  }
-  function textLen(root, selector) {
-    var n = 0, els = root.querySelectorAll(selector);
-    for (var i = 0; i < els.length; i++) n += (els[i].textContent || "").length;
-    return n;
-  }
-  var tries = 0;
-  function run() {
-    tries++;
-    var el = document.getElementById("typeans");
-    if (!el) return;  // not a type-answer card
-
-    var hasGood = el.querySelector(".typeGood") != null;
-    var hasBad = el.querySelector(".typeBad") != null;
-    var hasMiss = el.querySelector(".typeMissed") != null;
-    var hadMarkup = hasGood || hasBad || hasMiss;
-
-    if (hadMarkup) {
-      var goodLen = textLen(el, ".typeGood");
-      var badLen = textLen(el, ".typeBad");
-      var missLen = textLen(el, ".typeMissed");
-      var denom = goodLen + badLen + missLen;
-      var ratio = denom ? goodLen / denom : 0.0;
-      send("rated", { ratio: ratio, hasGood: hasGood, hasBad: hasBad, hasMiss: hasMiss });
-      return;
-    }
-
-    if (tries < 40) { setTimeout(run, 50); return; }
-
-    // No markup after polling: an empty typed answer. ratio 0 forces Hard.
-    send("rated", { ratio: 0.0, hasGood: false, hasBad: false, hasMiss: false });
-  }
-  run();
-})();
-""".strip()
+# Non-type-answer cards (no #typeans) report nothing, so they are unaffected. The script body
+# lives next to the GUI package in ``answer.js``.
+_ANSWER_JS = read_asset(_ta_gui.__file__, "answer.js").strip()
 
 
 @register("typed_accuracy")
