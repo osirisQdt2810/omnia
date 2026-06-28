@@ -49,6 +49,8 @@ class SmartNotesFieldRule(_Strict):
     provider: str = ""
     model: str = ""
     voice: str = ""
+    # TTS language code (e.g. "vi"); empty = auto-detect the spoken text's language.
+    language: str = ""
     # Per-rule overwrite (the note-type config carries the real overwrite flag; the engine
     # threads it onto the compiled rule so skip logic can read it per field).
     overwrite: bool = False
@@ -80,6 +82,8 @@ class SmartNotesFieldConfig(_Strict):
     provider: str = ""
     model: str = ""
     voice: str = ""
+    # TTS language code (e.g. "vi"); empty = auto-detect the spoken text's language.
+    language: str = ""
     overwrite: bool = False
 
     @validator("type")
@@ -95,12 +99,16 @@ class SmartNotesNoteTypeConfig(_Strict):
     ``base_field`` is the always-present input (e.g. "Word" — a single word OR a phrase) and is
     never generated. ``fields`` holds one :class:`SmartNotesFieldConfig` per other field the
     user configured. A field's prompt may reference the base field and other generated fields,
-    forming a DAG resolved at generation time.
+    forming a DAG resolved at generation time. ``decks`` scopes this config to a subset of decks
+    (by deck id); an empty list means it applies to ALL decks.
     """
 
     note_type: str
     base_field: str = ""
     fields: list[SmartNotesFieldConfig] = Field(default_factory=list)
+    decks: list[int] = Field(
+        default_factory=list
+    )  # deck ids this config applies to; [] = all decks
 
     def generatable_fields(self) -> list[SmartNotesFieldConfig]:
         """Return the fields eligible for generation: enabled and not the base field."""
