@@ -45,6 +45,7 @@ class SmartNotesPlugin(FeaturePlugin):
     description = (
         "Generate note fields (text/image) and audio (TTS) with an AI provider."
     )
+    group = "AI"
     order = 50
 
     def __init__(self) -> None:

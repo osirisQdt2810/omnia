@@ -24,6 +24,13 @@ class OverdueGuardPlugin(FeaturePlugin):
     description = (
         "Force very overdue cards to Hard/Again regardless of the pressed button."
     )
+    group = "Grading"
+    tooltip = (
+        "Caps the grade for very overdue cards (forces Hard/Again). "
+        "Cooperates with Typing Accuracy: Typing Accuracy sets the grade first, "
+        "then Overdue Guard caps it when a card is overdue. Both can be on together — "
+        "they run in order through the shared ease pipeline, not against each other."
+    )
     order = 40
 
     def on_enable(self, ctx: PluginContext) -> None:

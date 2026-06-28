@@ -12,6 +12,7 @@ boundary referenced in CONVENTIONS Part 1 (Error Handling).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Optional
 
 from omnia.core.config import ConfigRepository
@@ -149,3 +150,46 @@ class PluginManager:
             self._deactivate(plugin_id)
         self._ease.uninstall()
         self._web.uninstall()
+
+
+# Preferred display order of the settings-UI sections. Groups not listed here keep their
+# first-seen order after these, so an unknown/new group still renders (just at the end).
+_GROUP_ORDER = ("Reviewing", "Grading", "AI")
+
+
+def group_plugins(
+    plugins: Iterable[FeaturePlugin],
+) -> list[tuple[str, list[FeaturePlugin]]]:
+    """Group plugins by :attr:`FeaturePlugin.group` for the settings UI.
+
+    Sections are ordered by :data:`_GROUP_ORDER` (Reviewing, Grading, AI), with any other
+    group appended in first-seen order. Plugins within a section are sorted by ``order`` then
+    ``name``. Pure — no Anki/Qt — so it unit-tests headless.
+
+    Args:
+        plugins: The feature-plugin instances to group.
+
+    Returns:
+        ``[(group_name, [plugins])]`` in display order.
+    """
+    by_group: dict[str, list[FeaturePlugin]] = {}
+    for plugin in plugins:
+        by_group.setdefault(plugin.group, []).append(plugin)
+
+    def _group_rank(name: str) -> tuple[int, int]:
+        # Known groups sort by their index in _GROUP_ORDER; unknown groups sort after, by
+        # first-seen position (stable) so the list is deterministic.
+        if name in _GROUP_ORDER:
+            return (0, _GROUP_ORDER.index(name))
+        return (1, list(by_group).index(name))
+
+    ordered: list[tuple[str, list[FeaturePlugin]]] = []
+    for name in sorted(by_group, key=_group_rank):
+        members = sorted(by_group[name], key=lambda p: (p.order, p.name))
+        ordered.append((name, members))
+    return ordered
+
+
+def grouped_plugins(manager: PluginManager) -> list[tuple[str, list[FeaturePlugin]]]:
+    """Return the manager's plugins grouped for display (see :func:`group_plugins`)."""
+    return group_plugins(manager.plugins())

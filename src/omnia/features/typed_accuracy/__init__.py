@@ -90,6 +90,13 @@ class TypedAccuracyPlugin(FeaturePlugin):
         "Grade typed cards again/hard/good/easy from how accurately you typed, "
         "and show an interactive accuracy panel on the Statistics screen."
     )
+    group = "Grading"
+    tooltip = (
+        "Sets the grade from how accurately you typed the answer. "
+        "Cooperates with Overdue Guard: Typing Accuracy decides the grade first, "
+        "then Overdue Guard may cap it for very overdue cards. Both can be on at once — "
+        "they do not conflict and need not be mutually exclusive."
+    )
     order = 20
 
     def __init__(self) -> None:

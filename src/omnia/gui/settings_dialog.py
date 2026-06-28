@@ -1,126 +1,82 @@
-"""The Omnia settings dialog — a clean, card-based list of feature plugins with toggles.
+"""The Omnia settings dialog — a grouped, animated webview list of feature plugins.
 
-Each registered plugin is shown as a card with its name, description, and an enable switch.
-Toggling a switch applies immediately through the :class:`~omnia.core.manager.PluginManager`
-(activate/deactivate + persist). Pure Qt glue — only loaded inside Anki.
+Built on the reusable :class:`~omnia.gui.web_dialog.WebDialog` seam: the whole UI is HTML/CSS/
+JS rendered inside an ``AnkiWebView`` (gradients, animated toggle switches, hover lift, and
+tooltips — beyond what raw Qt stylesheets allow). The page is built by the pure
+``settings_html`` module; this class is the thin Qt glue that supplies the view-model and
+handles the two ``pycmd`` ops (``toggle`` / ``configure``). Only loaded inside Anki.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from aqt.qt import (
-    QCheckBox,
-    QDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    Qt,
-    QVBoxLayout,
-    QWidget,
-)
+from aqt.theme import theme_manager
 
+from omnia.core.manager import grouped_plugins
 from omnia.gui.config_form import PluginConfigDialog
+from omnia.gui.settings_html import PluginCardModel, build_settings_html, status_text
+from omnia.gui.web_dialog import WebDialog
 
 if TYPE_CHECKING:
     from omnia.core.manager import PluginManager
     from omnia.core.plugin import FeaturePlugin
 
-_STYLE = """
-#omniaHeader { font-size: 20px; font-weight: 700; }
-#omniaSub { color: palette(mid); }
-QFrame#card {
-    border: 1px solid palette(mid);
-    border-radius: 10px;
-    padding: 10px 12px;
-    background: palette(base);
-}
-QFrame#card:hover { border-color: palette(highlight); }
-#cardTitle { font-size: 14px; font-weight: 600; }
-#cardDesc { color: palette(mid); }
-#cardStatus { color: palette(mid); font-size: 11px; }
-"""
 
+class SettingsDialog(WebDialog):
+    """Lists every feature plugin, grouped, with a live toggle and a Configure button."""
 
-class SettingsDialog(QDialog):
-    """Lists every feature plugin with a toggle that enables/disables it live."""
-
-    def __init__(self, manager: PluginManager, parent: object | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self, manager: PluginManager, parent: Any = None) -> None:
         self._manager = manager
-        self.setWindowTitle("Omnia — All-in-One Toolkit")
-        self.setMinimumWidth(540)
-        self.setMinimumHeight(520)
-        self.setStyleSheet(_STYLE)
-        self._build()
-
-    def _build(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 18, 18, 18)
-        outer.setSpacing(6)
-
-        header = QLabel("Omnia")
-        header.setObjectName("omniaHeader")
-        outer.addWidget(header)
-
-        subtitle = QLabel("Tick a feature to turn it on — changes apply immediately.")
-        subtitle.setObjectName("omniaSub")
-        outer.addWidget(subtitle)
-        outer.addSpacing(8)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        container = QWidget()
-        self._list = QVBoxLayout(container)
-        self._list.setSpacing(10)
-        self._list.setContentsMargins(0, 0, 6, 0)
-        for plugin in self._manager.plugins():
-            self._list.addWidget(self._plugin_card(plugin))
-        self._list.addStretch(1)
-        scroll.setWidget(container)
-        outer.addWidget(scroll, 1)
-
-    def _plugin_card(self, plugin: FeaturePlugin) -> QFrame:
-        card = QFrame()
-        card.setObjectName("card")
-        row = QHBoxLayout(card)
-        row.setSpacing(12)
-
-        text_col = QVBoxLayout()
-        text_col.setSpacing(2)
-        title = QLabel(plugin.name or plugin.id)
-        title.setObjectName("cardTitle")
-        desc = QLabel(plugin.description)
-        desc.setObjectName("cardDesc")
-        desc.setWordWrap(True)
-        status = QLabel(self._status_text(plugin.id))
-        status.setObjectName("cardStatus")
-        text_col.addWidget(title)
-        text_col.addWidget(desc)
-        text_col.addWidget(status)
-        row.addLayout(text_col, 1)
-
-        # A "Configure" button appears when the plugin declares options OR provides a bespoke
-        # config dialog (e.g. smart_notes' field-mapping editor).
-        if plugin.config_schema() or plugin.has_custom_config_dialog():
-            configure = QPushButton("Configure…")
-            configure.setCursor(Qt.CursorShape.PointingHandCursor)
-            configure.clicked.connect(lambda _=False, p=plugin: self._configure(p))
-            row.addWidget(configure, 0, Qt.AlignmentFlag.AlignTop)
-
-        toggle = QCheckBox()
-        toggle.setChecked(self._manager.config.is_enabled(plugin.id))
-        toggle.setCursor(Qt.CursorShape.PointingHandCursor)
-        toggle.toggled.connect(
-            lambda checked, pid=plugin.id, lbl=status: self._on_toggle(
-                pid, checked, lbl
-            )
+        super().__init__(
+            parent,
+            title="Omnia — All-in-One Toolkit",
+            html=self._render(),
+            handlers={"toggle": self._on_toggle, "configure": self._on_configure},
+            width=620,
+            height=580,
         )
-        row.addWidget(toggle, 0, Qt.AlignmentFlag.AlignTop)
-        return card
+
+    def _render(self) -> str:
+        groups = [
+            (name, [self._card(plugin) for plugin in plugins])
+            for name, plugins in grouped_plugins(self._manager)
+        ]
+        return build_settings_html(groups, dark=theme_manager.night_mode)
+
+    def _card(self, plugin: FeaturePlugin) -> PluginCardModel:
+        return PluginCardModel(
+            id=plugin.id,
+            name=plugin.name or plugin.id,
+            description=plugin.description,
+            tooltip=plugin.tooltip or plugin.description,
+            enabled=self._manager.config.is_enabled(plugin.id),
+            active=self._manager.is_active(plugin.id),
+            configurable=bool(
+                plugin.config_schema() or plugin.has_custom_config_dialog()
+            ),
+        )
+
+    # --- pycmd handlers -------------------------------------------------------------
+    def _on_toggle(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Apply a switch toggle; return the resulting active state for the JS to reflect."""
+        plugin_id = str(data.get("id", ""))
+        enabled = bool(data.get("enabled"))
+        try:
+            active = self._manager.set_enabled(plugin_id, enabled)
+        except KeyError:
+            return {"active": False, "status": "unknown plugin"}
+        return {
+            "active": active,
+            "status": status_text(enabled=enabled, active=active),
+        }
+
+    def _on_configure(self, data: dict[str, Any]) -> None:
+        """Open the plugin's config dialog (custom first, else the generic form), then reload."""
+        plugin_id = str(data.get("id", ""))
+        plugin = next((p for p in self._manager.plugins() if p.id == plugin_id), None)
+        if plugin is not None:
+            self._configure(plugin)
 
     def _configure(self, plugin: FeaturePlugin) -> None:
         # A bespoke dialog (it owns its own persistence via the repo) takes precedence over the
@@ -138,17 +94,3 @@ class SettingsDialog(QDialog):
         if dialog.exec():
             self._manager.config.update_section(plugin.id, dialog.values())
             self._manager.reload(plugin.id)  # re-apply with the new settings if active
-
-    def _status_text(self, plugin_id: str) -> str:
-        return "● active" if self._manager.is_active(plugin_id) else "○ off"
-
-    def _on_toggle(self, plugin_id: str, checked: bool, status_label: QLabel) -> None:
-        try:
-            active = self._manager.set_enabled(plugin_id, checked)
-        except KeyError:
-            status_label.setText("⚠ unknown plugin")
-            return
-        if checked and not active:
-            status_label.setText("⚠ failed to enable — see logs")
-        else:
-            status_label.setText(self._status_text(plugin_id))
