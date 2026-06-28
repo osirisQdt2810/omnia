@@ -2,18 +2,17 @@
 # sys.path at add-on startup. Anki does NOT pip-install for you, so anything here is
 # bundled with the add-on.
 #
-# RULE: prefer pure-Python, cross-platform deps. The provider HTTP layer is stdlib-only;
-# these deps exist for the typed-config layer and the gemini_vertex auth path.
+# RULE: everything here is pure-Python and cross-platform — no compiled wheels (they break
+# on the other OS). The provider HTTP layer is stdlib-only; these deps exist for the
+# typed-config layer and the gemini_vertex auth path.
 
-# --- Typed config (Pydantic v2 + TOML) ------------------------------------------------
-pydantic>=2.9          # typed/validated config models
-tomli-w>=1.0           # write config TOML (reading uses stdlib tomllib on 3.11+)
-
-# NOTE: pydantic depends on `pydantic_core`, which is a COMPILED (Rust) wheel — the one
-# exception to the pure-Python rule. It must be vendored as the wheel matching the target
-# Anki's interpreter + platform, i.e. ABI tag `cp313` (Anki 25.09+/26.x ships CPython 3.13)
-# for macOS (arm64 + x86_64) and Windows (amd64). `scripts/vendor_deps.py --abi cp313`
-# fetches the right wheels; ship one per platform and the startup loader picks by os/arch.
+# --- Typed config (Pydantic v1 + TOML) ------------------------------------------------
+# Pydantic v1, not v2: v2 depends on the compiled (Rust) `pydantic_core` wheel, which is
+# not pure-Python and cannot ship in one cross-platform .ankiaddon. v1 has a pure-Python
+# core, so `scripts/vendor_deps.py` installs it with `--no-binary pydantic` to force the
+# pure-Python build.
+pydantic>=1.10,<2     # typed/validated config models (pure-Python)
+tomli-w>=1.0          # write config TOML (reading uses stdlib tomllib on 3.11+)
 
 # --- gemini_vertex service-account auth (RS256 JWT) -----------------------------------
 rsa>=4.9               # RS256 signing of the JWT assertion (pure-Python)

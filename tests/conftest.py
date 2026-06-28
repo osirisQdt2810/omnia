@@ -391,7 +391,7 @@ def real_llm_provider_for_or_skip(provider: str, *, http=None):
             f"no credentials for LLM provider {provider!r} (skip in real sweep)"
         )
     return ProviderHub(
-        llm.model_copy(update={"provider": provider}), repo.tts_settings(), http=http
+        llm.copy(update={"provider": provider}), repo.tts_settings(), http=http
     ).llm()
 
 
@@ -481,7 +481,7 @@ def real_tts_provider_for_or_skip(provider: str, *, http=None):
         pytest.skip(f"{reason} (skip in real TTS sweep)")
     return ProviderHub(
         repo.llm_settings(),
-        repo.tts_settings().model_copy(update={"provider": provider}),
+        repo.tts_settings().copy(update={"provider": provider}),
         http=http,
     ).tts()
 

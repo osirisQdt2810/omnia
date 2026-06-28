@@ -19,16 +19,16 @@ from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
-from omnia.features.smart_notes.batch import BatchGenerator, BatchSummary, materialize
-from omnia.features.smart_notes.editor import (
+from omnia.plugins.smart_notes.batch import BatchGenerator, BatchSummary, materialize
+from omnia.plugins.smart_notes.editor import (
     add_generate_button,
     set_button_enabled,
 )
-from omnia.features.smart_notes.logic import (
+from omnia.plugins.smart_notes.logic import (
     GenerationResult,
     GenerationService,
 )
-from omnia.features.smart_notes.review_evaluator import ReviewTimeEvaluator
+from omnia.plugins.smart_notes.review_evaluator import ReviewTimeEvaluator
 
 _BROWSER_HOOK = "browser_will_show_context_menu"
 _SIDEBAR_HOOK = "browser_sidebar_will_show_context_menu"
@@ -207,7 +207,7 @@ class SmartNotesPlugin(FeaturePlugin):
 
     # --- editor field right-click menu -----------------------------------------------
     def _on_editor_context_menu(self, editor_webview: Any, menu: Any) -> None:
-        from omnia.features.smart_notes.field_menu import build_field_menu
+        from omnia.plugins.smart_notes.field_menu import build_field_menu
 
         editor = getattr(editor_webview, "editor", editor_webview)
         build_field_menu(self._ctx, editor, menu, self._generate_field)
@@ -216,7 +216,7 @@ class SmartNotesPlugin(FeaturePlugin):
         """Generate just ``field`` for the editor's note, on demand (even if disabled)."""
         from aqt.utils import tooltip
 
-        from omnia.features.smart_notes.field_menu import single_field_config
+        from omnia.plugins.smart_notes.field_menu import single_field_config
 
         note = getattr(editor, "note", None)
         config = self._config_for_note(note)

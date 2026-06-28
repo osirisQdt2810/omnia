@@ -32,7 +32,7 @@ def _source_fields(rule: SmartNotesFieldRule) -> list[str]:
     dependency graph and the skip logic can never drift apart. Imported lazily to avoid a
     circular import (``logic`` imports :func:`order_rules` from this module).
     """
-    from omnia.features.smart_notes.logic import _rule_source_fields
+    from omnia.plugins.smart_notes.logic import _rule_source_fields
 
     return [name.strip().lower() for name in _rule_source_fields(rule)]
 

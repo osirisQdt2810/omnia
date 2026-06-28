@@ -15,13 +15,13 @@ from omnia.core.plugin import AddonPaths, PluginContext
 from omnia.core.providers import ProviderHub
 from omnia.core.reviewer.ease_pipeline import EasePipeline
 from omnia.core.reviewer.web_injector import WebInjector, build_message
-from omnia.features.typed_accuracy import TypedAccuracyPlugin
-from omnia.features.typed_accuracy.logic import (
+from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
+from omnia.plugins.typed_accuracy.logic import (
     accuracy_ratio,
     decide_ease,
     result_code,
 )
-from omnia.features.typed_accuracy.store import (
+from omnia.plugins.typed_accuracy.store import (
     RESULT_BAD,
     RESULT_EMPTY,
     RESULT_GOOD,
@@ -33,7 +33,7 @@ _WEB_DIR = (
     Path(__file__).resolve().parent.parent.parent
     / "src"
     / "omnia"
-    / "features"
+    / "plugins"
     / "typed_accuracy"
     / "web"
 )
@@ -304,7 +304,7 @@ class TestTypedAccuracyPlugin:
 
 class TestStatsInjector:
     def test_inject_evals_assets_into_webview(self, tmp_path):
-        from omnia.features.typed_accuracy.stats_injector import StatsInjector
+        from omnia.plugins.typed_accuracy.stats_injector import StatsInjector
 
         evals: list[str] = []
         webview = types.SimpleNamespace(eval=evals.append)
@@ -315,7 +315,7 @@ class TestStatsInjector:
         assert "__TA_BOOTED" in joined  # panel JS ran
 
     def test_missing_assets_logged_not_raised(self, tmp_path):
-        from omnia.features.typed_accuracy.stats_injector import StatsInjector
+        from omnia.plugins.typed_accuracy.stats_injector import StatsInjector
 
         webview = types.SimpleNamespace(eval=lambda _js: None)
         # tmp_path has no assets: inject must swallow the OSError.

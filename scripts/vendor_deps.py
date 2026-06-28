@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
-"""Vendor ``requirements/requirements-vendor.txt`` into ``src/omnia/vendor`` (per-OS layout).
+"""Vendor ``requirements/requirements-vendor.txt`` into ``src/omnia/vendor/universal``.
 
 Anki does not pip-install for users, so runtime deps are bundled with the add-on and added
-to ``sys.path`` at startup. Most deps are pure-Python and go in ``vendor/universal/``. The
-one exception is ``pydantic_core`` — a compiled (Rust) wheel — which differs per OS/arch and
-**cannot** share a folder across macOS arm64 vs x86_64 (same ``…-darwin.so`` filename). So
-each platform gets its own ``vendor/<os_arch>/pydantic_core/`` and the startup loader in
-``omnia/__init__.py`` adds only the matching one. Shipping all of them keeps a single
-cross-platform ``.ankiaddon``.
+to ``sys.path`` at startup. Every vendored dep is **pure-Python and cross-platform** so a
+single ``.ankiaddon`` works on both macOS and Windows — there is no per-OS binary anymore.
+
+Pydantic v1 has a pure-Python core, but pip prefers its compiled wheel when one exists, so
+this installs it with ``--no-binary pydantic`` to force the pure-Python build. After the
+install, any stray ``*.so``/``*.pyd`` and ``__pycache__`` are stripped as a safety net.
 
 Usage:
-    python scripts/vendor_deps.py                 # cp313, all 4 platforms (Anki 25.09+/26.x)
-    python scripts/vendor_deps.py --abi cp312      # a different interpreter ABI
+    python scripts/vendor_deps.py
 """
 
 from __future__ import annotations
 
-import argparse
 import shutil
 import subprocess
 import sys
-import tempfile
-import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,16 +25,8 @@ VENDOR_DIR = REPO_ROOT / "src" / "omnia" / "vendor"
 UNIVERSAL_DIR = VENDOR_DIR / "universal"
 REQ_FILE = REPO_ROOT / "requirements" / "requirements-vendor.txt"
 
-# Packages that ship a compiled binary → vendored per-platform, not in universal/.
-BINARY_PACKAGES = ("pydantic_core",)
-
-# (vendor subdir, pip --platform tag). Anki ships 64-bit CPython on every desktop OS.
-PLATFORMS = {
-    "mac_arm64": "macosx_11_0_arm64",
-    "mac_x64": "macosx_10_12_x86_64",
-    "win_x64": "win_amd64",
-    "linux_x64": "manylinux2014_x86_64",
-}
+# Packages forced to their pure-Python build (pip otherwise prefers a compiled wheel).
+PURE_PYTHON_ONLY = ("pydantic",)
 
 
 def _has_real_requirements() -> bool:
@@ -56,70 +44,42 @@ def _pip(*args: str) -> None:
     subprocess.run(cmd, check=True)
 
 
-def _installed_version(package: str) -> str:
-    """Read a package's version from its dist-info in ``universal/`` (e.g. pydantic_core)."""
-    for info in UNIVERSAL_DIR.glob(f"{package}-*.dist-info"):
-        return info.name.removesuffix(".dist-info").split("-")[-1]
-    raise SystemExit(f"Could not determine vendored {package} version from {UNIVERSAL_DIR}")
-
-
-def _strip_native_from_universal() -> None:
-    """Remove any compiled artifacts from universal/ (must be pure-Python + cross-platform)."""
+def _strip_native(root: Path) -> None:
+    """Remove any compiled artifacts + bytecode caches (must stay pure-Python)."""
     for pattern in ("*.so", "*.pyd"):
-        for binary in UNIVERSAL_DIR.rglob(pattern):
+        for binary in root.rglob(pattern):
             binary.unlink()
-    for package in BINARY_PACKAGES:
-        shutil.rmtree(UNIVERSAL_DIR / package, ignore_errors=True)
-        for info in UNIVERSAL_DIR.glob(f"{package}-*.dist-info"):
-            shutil.rmtree(info, ignore_errors=True)
+    for cache in root.rglob("__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
 
 
-def _vendor_binary_per_platform(package: str, version: str, abi: str) -> None:
-    """Download ``package``'s wheel for each target platform and extract its package dir."""
-    for subdir, plat_tag in PLATFORMS.items():
-        dest = VENDOR_DIR / subdir
-        shutil.rmtree(dest / package, ignore_errors=True)
-        dest.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory() as tmp:
-            _pip(
-                "download", "--no-deps", "--only-binary=:all:",
-                "--python-version", abi.removeprefix("cp"),
-                "--platform", plat_tag,
-                "-d", tmp, f"{package}=={version}",
-            )
-            wheel = next(Path(tmp).glob(f"{package}-*.whl"), None)
-            if wheel is None:
-                raise SystemExit(f"No {package} wheel for {plat_tag} (abi {abi})")
-            extract = Path(tmp) / "x"
-            with zipfile.ZipFile(wheel) as zf:
-                zf.extractall(extract)
-            shutil.copytree(extract / package, dest / package)
-            print(f"  {subdir} <- {wheel.name}")
-
-
-def vendor(abi: str) -> None:
+def vendor() -> None:
     if not _has_real_requirements():
         print("requirements-vendor.txt has no packages — nothing to vendor.")
         return
 
+    # Start clean so removed deps don't linger.
+    shutil.rmtree(UNIVERSAL_DIR, ignore_errors=True)
     UNIVERSAL_DIR.mkdir(parents=True, exist_ok=True)
     _pip(
-        "install", "--no-compile", "--upgrade",
-        "--target", str(UNIVERSAL_DIR), "-r", str(REQ_FILE),
+        "install",
+        "--no-compile",
+        "--upgrade",
+        "--no-binary",
+        ",".join(PURE_PYTHON_ONLY),
+        "--target",
+        str(UNIVERSAL_DIR),
+        "-r",
+        str(REQ_FILE),
     )
-    versions = {pkg: _installed_version(pkg) for pkg in BINARY_PACKAGES}
-    _strip_native_from_universal()
-    for package, version in versions.items():
-        print(f"Vendoring {package}=={version} per platform (abi {abi})…")
-        _vendor_binary_per_platform(package, version, abi)
-    print(f"Vendored into {VENDOR_DIR} (universal + {', '.join(PLATFORMS)})")
+    _strip_native(UNIVERSAL_DIR)
+    leftover = [
+        str(p) for pattern in ("*.so", "*.pyd") for p in UNIVERSAL_DIR.rglob(pattern)
+    ]
+    if leftover:
+        raise SystemExit(f"Binary artifacts remain after strip: {leftover}")
+    print(f"Vendored pure-Python deps into {UNIVERSAL_DIR}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--abi",
-        default="cp313",
-        help="CPython ABI tag of the target Anki interpreter (default cp313 = Anki 25.09+).",
-    )
-    vendor(parser.parse_args().abi)
+    vendor()

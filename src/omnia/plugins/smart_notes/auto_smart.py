@@ -149,13 +149,13 @@ def apply_auto_smart(
             and field.field != config.base_field
         ):
             updated.append(
-                field.model_copy(
+                field.copy(
                     update={"type": suggestion.type, "prompt": suggestion.prompt}
                 )
             )
         else:
-            updated.append(field.model_copy())
-    return config.model_copy(update={"fields": updated})
+            updated.append(field.copy())
+    return config.copy(update={"fields": updated})
 
 
 def candidate_fields(config: SmartNotesNoteTypeConfig) -> list[str]:

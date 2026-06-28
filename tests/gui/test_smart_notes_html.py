@@ -8,7 +8,6 @@ from omnia.core.config.models import (
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
-from omnia.features.smart_notes.auto_smart import AutoSmartField, apply_auto_smart
 from omnia.gui.smart_notes_html import (
     build_smart_notes_html,
     field_configs_from_payload,
@@ -19,6 +18,7 @@ from omnia.gui.smart_notes_html import (
     row_to_payload,
     rows_for_note_type,
 )
+from omnia.plugins.smart_notes.auto_smart import AutoSmartField, apply_auto_smart
 
 
 def _config(base: str = "Word", fields=None) -> SmartNotesNoteTypeConfig:
@@ -203,14 +203,10 @@ class TestLoadPayload:
 class TestMergeNoteTypeInto:
     def test_replaces_same_name(self):
         existing = [
-            _config("Word").model_copy(
-                update={"note_type": "Vocab", "base_field": "A"}
-            ),
-            _config("Word").model_copy(update={"note_type": "Other"}),
+            _config("Word").copy(update={"note_type": "Vocab", "base_field": "A"}),
+            _config("Word").copy(update={"note_type": "Other"}),
         ]
-        updated = _config("Word").model_copy(
-            update={"note_type": "Vocab", "base_field": "B"}
-        )
+        updated = _config("Word").copy(update={"note_type": "Vocab", "base_field": "B"})
         merged = merge_note_type_into(existing, updated)
         by_name = {nt.note_type: nt for nt in merged}
         assert len(merged) == 2

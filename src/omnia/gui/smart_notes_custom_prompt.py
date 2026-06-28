@@ -110,7 +110,7 @@ class CustomPromptDialog(QDialog):
         from aqt.utils import showWarning
 
         from omnia.core.config.models import SmartNotesFieldRule
-        from omnia.features.smart_notes.logic import GenerationService
+        from omnia.plugins.smart_notes.logic import GenerationService
 
         prompt = self._prompt_edit.toPlainText().strip()
         if not prompt:
@@ -172,7 +172,7 @@ class CustomPromptDialog(QDialog):
         if self._result is None:
             self.reject()
             return
-        from omnia.features.smart_notes.batch import materialize
+        from omnia.plugins.smart_notes.batch import materialize
 
         # nid 0 is fine: media filenames are namespaced by field, and a one-off has no note id.
         value = materialize(0, _Target(self._target_field), self._result)
