@@ -28,7 +28,7 @@ _EASE_GOOD = 3
 
 def _overlay_section(name: str) -> str:
     """Return the body of the ``// ===<name>===`` section of ``overlay.js``, trimmed."""
-    text = read_asset(_di_gui.__file__, "overlay.js")
+    text = read_asset(_di_gui.__file__, "web", "overlay.js")
     for block in text.split("// ===")[1:]:
         header, _, body = block.partition("\n")
         if header.strip() == f"{name}===":
