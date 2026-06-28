@@ -84,14 +84,15 @@ from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
 
 src = REPO / "src" / "omnia"
-# Toggling plugins persists overrides — copy the real config into the temp dir so the smoke
-# test reads the real creds but NEVER mutates the user's actual user_files/omnia.toml.
-tmp_override = tmp / "omnia.toml"
-real_override = src / "user_files" / "omnia.toml"
-if real_override.exists():
-    shutil.copy(real_override, tmp_override)
+# Toggling plugins / saving persists to the live config files — copy the real config (live
+# AND example) into a temp config dir so the smoke reads the real creds but NEVER mutates the
+# user's actual config/*.toml files.
+tmp_cfg = tmp / "config"
+tmp_cfg.mkdir(parents=True, exist_ok=True)
+for _toml in (src / "config").glob("*.toml"):
+    shutil.copy(_toml, tmp_cfg / _toml.name)
 paths = AddonPaths(src, src / "web", tmp)
-repo = ConfigRepository(ConfigLoader(src / "config", tmp_override))
+repo = ConfigRepository(ConfigLoader(tmp_cfg))
 mgr = PluginManager(repo, paths)
 step("manager.setup()", mgr.setup)
 step(
@@ -207,8 +208,9 @@ def build_smart_notes_dialog():
     """Construct the SmartNotes WebDialog and drive its synchronous pycmd ops via the bridge.
 
     Auto-smart is deliberately NOT fired here: it runs a real LLM off-thread and needs creds +
-    network, so the smoke only exercises the offline ops (list/load/set_base_field/create/save)
-    through the same ``_on_cmd`` envelope the webview uses.
+    network, so the smoke only exercises the offline ops (list/load/set_base_field/create/save,
+    plus improve_prompt/improve_all/preview in their no-network branches) through the same
+    ``_on_cmd`` envelope the webview uses.
     """
     from omnia.core.reviewer.web_injector import build_message
     from omnia.gui.smart_notes.dialog import SmartNotesDialog
@@ -250,11 +252,35 @@ def build_smart_notes_dialog():
         },
     )
     assert saved == {"ok": True}, saved
-    # The save must round-trip back through the repo into the typed config.
-    reloaded = ConfigRepository(ConfigLoader(src / "config", tmp_override))
-    nt = reloaded.feature_settings("smart_notes").note_type_config("Basic")
+    # Rules now persist in the COLLECTION (synced), so the round-trip reads back through the
+    # store (mw.col is the real Collection set above), not a fresh ConfigRepository.
+    from omnia.plugins.smart_notes.integration import SmartNotesStore
+
+    nt = SmartNotesStore().load().note_type_config("Basic")
     assert nt is not None and nt.base_field == "Front", nt
     assert {f.field for f in nt.generatable_fields()} == {"Back", "Example"}, nt
+
+    # New ops (offline-safe): improve_prompt with a blank prompt + improve_all with no rows
+    # push a synchronous error through the page hook; preview builds the rule/hub then
+    # schedules off-thread (a no-op in this harness, so no provider is hit). None may raise.
+    op(
+        "improve_prompt",
+        {"note_type": "Basic", "base_field": "Front", "field": "Back", "prompt": ""},
+    )
+    op("improve_all", {"note_type": "Basic", "base_field": "Front", "rows": []})
+    op(
+        "preview",
+        {
+            "note_type": "Basic",
+            "base_field": "Front",
+            "field": "Back",
+            "type": "text",
+            "prompt": "Define {{Front}}",
+            "provider": "",
+            "model": "",
+            "voice": "",
+        },
+    )
 
 
 step("SmartNotesDialog (custom Configure + pycmd ops)", build_smart_notes_dialog)
