@@ -20,6 +20,7 @@ from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.plugins.smart_notes.batch import BatchGenerator, BatchSummary, materialize
+from omnia.plugins.smart_notes.config import SmartNotesSettings
 from omnia.plugins.smart_notes.editor import (
     add_generate_button,
     set_button_enabled,
@@ -47,6 +48,7 @@ class SmartNotesPlugin(FeaturePlugin):
     )
     group = "AI"
     order = 50
+    config_model = SmartNotesSettings
 
     def __init__(self) -> None:
         self._ctx: Optional[PluginContext] = None

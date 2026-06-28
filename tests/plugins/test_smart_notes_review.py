@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from conftest import FakeLLMProvider
 
-from omnia.core.config.models import (
+from omnia.plugins.smart_notes.config import (
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,

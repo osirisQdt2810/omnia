@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import types
 
-from omnia.core.config.models import AutoFlipDeckOverride, AutoFlipSettings
 from omnia.plugins.auto_flip import AutoFlipPlugin
+from omnia.plugins.auto_flip.config import AutoFlipDeckOverride, AutoFlipSettings
 from omnia.plugins.auto_flip.countdown import (
     build_countdown_js,
     clear_countdown_js,
@@ -158,7 +158,7 @@ class _FakeTimer:
 
 
 def _settings(**kw):
-    from omnia.core.config.models import AutoFlipSettings
+    from omnia.plugins.auto_flip.config import AutoFlipSettings
 
     return AutoFlipSettings(**kw)
 

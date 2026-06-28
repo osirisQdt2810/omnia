@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from omnia.core import anki_compat
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import SmartNotesNoteTypeConfig
     from omnia.core.plugin import PluginContext
+    from omnia.plugins.smart_notes.config import SmartNotesNoteTypeConfig
 
 _KINDS = ("text", "tts", "image")
 _CUSTOM_LABELS = {

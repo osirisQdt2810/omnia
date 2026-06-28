@@ -1,5 +1,5 @@
 # Default per-feature settings (TOML — one table per feature, split from the high-level
-# omnia.yaml). Validated by the Pydantic models in omnia/core/config/models.py.
+# omnia.yaml). Validated by each plugin's Pydantic model in plugins/<plugin>/config.py.
 
 [auto_flip]
 delay_question_seconds = 3.0   # seconds to wait before flipping question -> answer

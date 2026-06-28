@@ -8,19 +8,17 @@ from __future__ import annotations
 
 import pytest
 
-from omnia.core.config.models import (
-    AutoFlipSettings,
-    OverdueGuardSettings,
-    TypedAccuracySettings,
-)
 from omnia.core.plugin import FIELD_KINDS
 from omnia.plugins.auto_flip import AutoFlipPlugin
+from omnia.plugins.auto_flip.config import AutoFlipSettings
 from omnia.plugins.overdue_guard import OverdueGuardPlugin
+from omnia.plugins.overdue_guard.config import OverdueGuardSettings
 from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
+from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
 _CASES = [
     (AutoFlipPlugin, AutoFlipSettings),
-    (TypedAccuracyPlugin, OverdueGuardSettings if False else TypedAccuracySettings),
+    (TypedAccuracyPlugin, TypedAccuracySettings),
     (OverdueGuardPlugin, OverdueGuardSettings),
 ]
 
