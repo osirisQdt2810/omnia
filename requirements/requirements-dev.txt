@@ -1,0 +1,26 @@
+# Host / CI development tooling for Omnia (an Anki add-on).
+# These are NOT shipped with the add-on — they only run tests + linters on the host.
+# The add-on itself ships pure-Python code + whatever lives in src/omnia/vendor/.
+
+# Test runner
+pytest==8.3.4
+pytest-mock==3.14.0
+
+# Formatters / linters / types — pinned to match .pre-commit-config.yaml
+black==24.10.0
+ruff==0.8.0
+isort==5.13.2
+mypy==1.13.0
+
+# Git hook runner
+pre-commit==4.0.1
+
+# Config stack (also vendored into the add-on — see requirements-vendor.txt). Installed on
+# the host so the test suite runs the real validation/parsing code.
+pydantic>=2.9
+PyYAML>=6.0
+tomli-w>=1.0
+types-PyYAML>=6.0      # mypy stubs
+rsa>=4.9               # gemini_vertex service-account signing (also vendored)
+pyasn1>=0.6            # PKCS#8 unwrap for the above
+

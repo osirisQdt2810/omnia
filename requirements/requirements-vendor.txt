@@ -1,0 +1,25 @@
+# Third-party runtime dependencies vendored into src/omnia/vendor/ and added to
+# sys.path at add-on startup. Anki does NOT pip-install for you, so anything here is
+# bundled with the add-on.
+#
+# RULE: prefer pure-Python, cross-platform deps. The provider HTTP layer is stdlib-only;
+# these deps exist for the typed-config layer and the gemini_vertex auth path.
+
+# --- Typed config (Pydantic v2 + YAML/TOML) -------------------------------------------
+pydantic>=2.9          # typed/validated config models
+PyYAML>=6.0            # parse config/omnia.yaml (use the pure-Python loader, not libyaml)
+tomli-w>=1.0           # write user_files/omnia.toml (TOML reading uses stdlib tomllib on 3.11+)
+
+# NOTE: pydantic depends on `pydantic_core`, which is a COMPILED (Rust) wheel — the one
+# exception to the pure-Python rule. It must be vendored as the wheel matching the target
+# Anki's interpreter + platform, i.e. ABI tag `cp313` (Anki 25.09+/26.x ships CPython 3.13)
+# for macOS (arm64 + x86_64) and Windows (amd64). `scripts/vendor_deps.py --abi cp313`
+# fetches the right wheels; ship one per platform and the startup loader picks by os/arch.
+
+# --- gemini_vertex service-account auth (RS256 JWT) -----------------------------------
+rsa>=4.9               # RS256 signing of the JWT assertion (pure-Python)
+pyasn1>=0.6            # unwrap the PKCS#8 service-account private key to PKCS#1 (pure-Python)
+# (Only needed for gemini_vertex with credentials_path/credentials_json; the access_token
+#  and use_gcloud strategies need nothing vendored.)
+#
+# After editing this file run:  python scripts/vendor_deps.py

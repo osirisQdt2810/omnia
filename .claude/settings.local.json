@@ -1,0 +1,37 @@
+{
+  "skipDangerousModePermissionPrompt": true,
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash(docker exec *)",
+      "Bash(osascript -e 'tell application \"FortiClient\" to quit')",
+      "Bash(killall -TERM FortiClientAgent)",
+      "Bash(killall -TERM FortiTray)",
+      "Bash(bash /private/tmp/claude-501/-Users-phucnp-workspace-freelance-vio-vio-ai/a59af781-6a4d-4ea9-a27c-990e8176662f/scratchpad/watch_reconnect.sh)",
+      "Bash(docker top *)",
+      "Bash(sort -k2 -rn)",
+      "Bash(mkdir -p ~/workspace/freelance/vio/vio-ai/.vscode)",
+      "Bash(osascript -e 'tell application \"System Events\" to name of first application process whose frontmost is true')",
+      "Bash(osascript -e 'id of app \"Visual Studio Code\"')",
+      "Bash(osascript -e 'id of app \"Cursor\"')",
+      "Bash(docker stats *)",
+      "Skill(update-config)",
+      "Skill(update-config:*)"
+    ],
+    "additionalDirectories": [
+      "/Users/phucnp/workspace/freelance/vio/vio-ai"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/setup/check_conflicts.py\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

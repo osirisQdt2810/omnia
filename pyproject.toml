@@ -1,0 +1,64 @@
+# Omnia — pluginized Anki add-on. Tooling config only (the add-on is not pip-packaged;
+# it ships as a folder / .ankiaddon built by scripts/build_addon.py).
+
+# Python target tracks the latest Anki's bundled interpreter (Anki 25.09+/26.x ships
+# CPython 3.13; minimum supported is 3.10). Keep code 3.10+-compatible.
+[tool.black]
+line-length = 88
+target-version = ["py313"]
+# Never format vendored deps or the read-only reference add-ons.
+extend-exclude = '''
+/(
+    src/omnia/vendor
+  | references
+)/
+'''
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+extend-exclude = ["src/omnia/vendor", "references"]
+
+[tool.ruff.lint]
+# Import sorting (I) is intentionally delegated to standalone isort, not ruff.
+select = ["E", "F", "W", "N", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is owned by black (which won't split long strings/comments)
+    "RUF001", # ambiguous unicode in strings — user-facing UI strings may be non-ASCII
+    "RUF002", # ambiguous unicode in docstrings
+    "RUF003", # ambiguous unicode in comments
+    "UP007",  # tolerate Optional[X] alongside X | None (readability preference)
+    "UP045",  # ditto — keep Optional[X] (ruff split the Optional case out of UP007)
+    # PEP 695 generic syntax (`def f[T]()`, `class C[T]`) is a SyntaxError on Python 3.10/
+    # 3.11 — Anki's minimum supported Python — so keep TypeVar/Generic even though we run
+    # on 3.13. Disable the modernizers that would emit it.
+    "UP046",  # non-pep695-generic-class
+    "UP047",  # non-pep695-generic-function
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]   # re-exports / registration-side-effect imports are intentional
+# Tests: fakes legitimately mirror Anki's camelCase API names (N802/N803/N806) and use
+# loose patterns; relax accordingly.
+"tests/**" = ["RUF012", "SIM115", "E741", "SIM117", "F403", "F405", "N802", "N803", "N806"]
+
+[tool.isort]
+profile = "black"
+skip_glob = ["src/omnia/vendor/*", "references/*"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+# Anki (anki, aqt, PyQt6) and any vendored libs ship no stubs for strict mode — don't fail
+# on their missing types.
+ignore_missing_imports = true
+exclude = '(^|/)(src/omnia/vendor|references)/'
+# Do NOT set `files = [...]` — run mypy explicitly on changed paths (touch-it-fix-it).
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that hit a real provider API (run `-m 'not integration'` to stay free/offline)",
+    "llm: marks tests that call a REAL LLM provider (consumes LLM quota; auto-skip without creds; xfail on quota/token limits)",
+    "tts: marks tests that call a REAL cloud/keyed TTS provider (network/quota; auto-skip without creds; xfail on limits). Keyless/offline TTS (google_translate, edge_tts, piper) is UNMARKED so it always runs.",
+]
