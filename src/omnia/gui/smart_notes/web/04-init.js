@@ -1,8 +1,14 @@
 
+  /**
+   * Smart Notes config page — part 4 of 4 of the page IIFE (load order matters).
+   * This fragment CLOSES the IIFE. It seeds the page from the server-baked initial state and
+   * falls back to a live `list_note_types` only when nothing was baked.
+   */
+
   // Initial state is baked into window.__SN_INIT (server-side) so the page renders populated
   // without an init pycmd callback — Anki's bridge callback channel isn't ready the instant
   // this inline script runs. Fall back to a live list_note_types only if nothing was baked.
-  var INIT = window.__SN_INIT || null;
+  const INIT = window.__SN_INIT || null;
   if (INIT && INIT.note_types && INIT.note_types.length) {
     fill(noteTypeSel, INIT.note_types, INIT.note_type || INIT.note_types[0] || "");
     applyLoad(INIT);
