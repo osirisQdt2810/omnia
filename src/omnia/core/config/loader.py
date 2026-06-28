@@ -1,17 +1,15 @@
-"""Load + merge the YAML/TOML config files into a validated :class:`OmniaConfig`.
+"""Load + merge the TOML config files into a validated :class:`OmniaConfig`.
 
-Layering: bundled defaults (``omnia.yaml`` + ``features.toml`` + ``providers.toml``) are
-deep-merged with the user's overrides (``user_files/omnia.toml``), then validated by
-Pydantic. TOML is read with the stdlib ``tomllib`` (Python 3.11+) and written with
-``tomli_w``; YAML with PyYAML's safe loader.
+Layering: bundled defaults (``omnia.toml`` + ``features.toml`` + ``providers.toml``, one
+domain per file) are deep-merged with the user's overrides (``user_files/omnia.toml``), then
+validated by Pydantic. TOML is read with the stdlib ``tomllib`` (Python 3.11+) and written
+with ``tomli_w``.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 try:  # stdlib on the add-on's Python 3.13; tomli is the fallback for <3.11
     import tomllib
@@ -54,18 +52,11 @@ class ConfigLoader:
     # --- internals ------------------------------------------------------------------
     def _load_defaults(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
-        data.update(self._read_yaml(self._config_dir / "omnia.yaml"))
+        data.update(self._read_toml(self._config_dir / "omnia.toml"))
         data.update(self._read_toml(self._config_dir / "features.toml"))
         # providers.toml carries [llm] (with one [llm.<provider>] subsection each) + [tts].
         data.update(self._read_toml(self._config_dir / "providers.toml"))
         return data
-
-    @staticmethod
-    def _read_yaml(path: Path) -> dict[str, Any]:
-        if not path.exists():
-            return {}
-        with open(path, encoding="utf-8") as handle:
-            return yaml.safe_load(handle) or {}
 
     @staticmethod
     def _read_toml(path: Path) -> dict[str, Any]:
