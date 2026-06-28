@@ -52,6 +52,7 @@ _manager: Optional[PluginManager] = None
 
 
 def _user_files_dir() -> Path:
+    # Runtime state Anki preserves across updates: logs + per-plugin state files (NOT config).
     path = _ADDON_DIR / "user_files"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -64,12 +65,14 @@ def _bootstrap() -> None:
         return
 
     user_files = _user_files_dir()
+    config_dir = _ADDON_DIR / "config"
+    (_ADDON_DIR / "secrets").mkdir(parents=True, exist_ok=True)
     paths = AddonPaths(
         addon_dir=_ADDON_DIR,
         web_dir=_ADDON_DIR / "web",
         user_files_dir=user_files,
     )
-    loader = ConfigLoader(_ADDON_DIR / "config", user_files / "omnia.toml")
+    loader = ConfigLoader(config_dir)
     repository = ConfigRepository(loader)
     setup_logging(user_files)
     # Tee any displayed/uncaught exception's full traceback into omnia.log — Anki's error
