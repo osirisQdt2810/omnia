@@ -4,23 +4,112 @@
     <meta charset="utf-8" />
     <title>Omnia Web Clipper</title>
     <style>
+      :root {
+        --ok: #1f8a4c;
+        --err: #c0392b;
+        --pill-on: #1f8a4c;
+        --pill-off: #b6bcc3;
+      }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        width: 260px;
+        width: 270px;
         margin: 0;
         padding: 14px 16px;
         color: #1c1f23;
       }
       h1 {
         font-size: 15px;
-        margin: 0 0 10px;
+        margin: 0 0 12px;
+      }
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 12px;
+      }
+      .toggle-row .toggle-label {
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .pill {
+        position: relative;
+        flex: 0 0 auto;
+        width: 56px;
+        height: 28px;
+        border: none;
+        border-radius: 999px;
+        background: var(--pill-off);
+        cursor: pointer;
+        transition: background 0.15s ease;
+        padding: 0;
+      }
+      .pill[aria-checked="true"] {
+        background: var(--pill-on);
+      }
+      .pill .knob {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+        transition: left 0.15s ease;
+      }
+      .pill[aria-checked="true"] .knob {
+        left: 31px;
+      }
+      .pill .pill-text {
+        position: absolute;
+        top: 0;
+        font-size: 10px;
+        font-weight: 700;
+        color: #fff;
+        line-height: 28px;
+      }
+      .pill .pill-text.on {
+        left: 9px;
+        display: none;
+      }
+      .pill .pill-text.off {
+        right: 8px;
+      }
+      .pill[aria-checked="true"] .pill-text.on {
+        display: block;
+      }
+      .pill[aria-checked="true"] .pill-text.off {
+        display: none;
+      }
+      .fields {
+        border: 1px solid #e2e7ec;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 0 0 12px;
+        background: #fafbfc;
+      }
+      .field {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+        margin: 3px 0;
+      }
+      .field .k {
+        color: #7a828c;
+      }
+      .field .v {
+        font-weight: 600;
+        text-align: right;
+        word-break: break-word;
       }
       .status {
         display: flex;
         align-items: center;
         gap: 8px;
         font-size: 13px;
-        margin: 10px 0;
+        margin: 0 0 10px;
       }
       .dot {
         width: 10px;
@@ -30,10 +119,10 @@
         flex: 0 0 auto;
       }
       .dot.ok {
-        background: #1f8a4c;
+        background: var(--ok);
       }
       .dot.err {
-        background: #c0392b;
+        background: var(--err);
       }
       .detail {
         font-size: 11px;
@@ -41,7 +130,7 @@
         margin: 0 0 12px;
         line-height: 1.4;
       }
-      button {
+      button.action {
         font-size: 13px;
         padding: 8px 12px;
         border-radius: 6px;
@@ -60,14 +149,31 @@
   </head>
   <body>
     <h1>Omnia Web Clipper</h1>
+
+    <div class="toggle-row">
+      <span class="toggle-label">Enabled</span>
+      <button class="pill" id="enabledToggle" role="switch" aria-checked="true" aria-label="Enabled">
+        <span class="pill-text on">ON</span>
+        <span class="pill-text off">OFF</span>
+        <span class="knob"></span>
+      </button>
+    </div>
+
+    <div class="fields">
+      <div class="field"><span class="k">Deck</span><span class="v" id="deckVal">—</span></div>
+      <div class="field"><span class="k">Note type</span><span class="v" id="modelVal">—</span></div>
+    </div>
+
     <div class="status">
       <span class="dot" id="dot"></span>
       <span id="statusText">Checking AnkiConnect…</span>
     </div>
     <p class="detail" id="detail"></p>
-    <button id="optionsBtn">Open options</button>
+
+    <button class="action" id="optionsBtn">Options</button>
     <p class="tip">
-      Select a word or phrase on any page, then click the floating "+" to add it to Anki.
+      Double-click a word for the floating "+", or right-click a phrase and choose
+      "Send to Anki (Omnia)".
     </p>
 
     <script src="shared.js"></script>

@@ -3,7 +3,7 @@
   "name": "Omnia Web Clipper",
   "version": "0.1.0",
   "description": "Capture a word or phrase plus its sentence/context from any web page and send it to Anki via AnkiConnect, where Omnia Smart Notes auto-generates the rest of the card.",
-  "permissions": ["activeTab", "scripting", "storage"],
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus"],
   "host_permissions": [
     "http://127.0.0.1:8765/*",
     "http://localhost:8765/*"

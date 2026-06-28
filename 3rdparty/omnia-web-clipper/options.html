@@ -9,6 +9,8 @@
         --accent: #2d6cdf;
         --ok: #1f8a4c;
         --err: #c0392b;
+        --pill-on: #1f8a4c;
+        --pill-off: #b6bcc3;
       }
       body {
         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -46,13 +48,15 @@
         font-weight: 500;
       }
       input[type="text"],
-      input[type="password"] {
+      input[type="password"],
+      select {
         width: 100%;
         box-sizing: border-box;
         padding: 7px 9px;
         font-size: 13px;
         border: 1px solid #cfd6dd;
         border-radius: 5px;
+        background: #fff;
       }
       .row {
         display: grid;
@@ -69,6 +73,73 @@
         font-size: 11px;
         color: #7a828c;
         margin-top: -2px;
+      }
+      /* Green On/Off pill toggle, styled like the Dictionary Helper screenshots. */
+      .toggle-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 10px 0;
+      }
+      .toggle-row .toggle-label {
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .toggle-row .toggle-sub {
+        font-size: 11px;
+        color: #7a828c;
+        margin-top: 2px;
+      }
+      .pill {
+        position: relative;
+        flex: 0 0 auto;
+        width: 56px;
+        height: 28px;
+        border: none;
+        border-radius: 999px;
+        background: var(--pill-off);
+        cursor: pointer;
+        transition: background 0.15s ease;
+        padding: 0;
+      }
+      .pill[aria-checked="true"] {
+        background: var(--pill-on);
+      }
+      .pill .knob {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+        transition: left 0.15s ease;
+      }
+      .pill[aria-checked="true"] .knob {
+        left: 31px;
+      }
+      .pill .pill-text {
+        position: absolute;
+        top: 0;
+        font-size: 10px;
+        font-weight: 700;
+        color: #fff;
+        line-height: 28px;
+      }
+      .pill .pill-text.on {
+        left: 9px;
+        display: none;
+      }
+      .pill .pill-text.off {
+        right: 8px;
+      }
+      .pill[aria-checked="true"] .pill-text.on {
+        display: block;
+      }
+      .pill[aria-checked="true"] .pill-text.off {
+        display: none;
       }
       .checkbox-row {
         display: flex;
@@ -99,6 +170,26 @@
         align-items: center;
         margin-top: 8px;
       }
+      .conn-status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        margin: 4px 0 12px;
+      }
+      .conn-status .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #b6bcc3;
+        flex: 0 0 auto;
+      }
+      .conn-status .dot.ok {
+        background: var(--ok);
+      }
+      .conn-status .dot.err {
+        background: var(--err);
+      }
       #status {
         font-size: 13px;
         margin-left: 4px;
@@ -127,24 +218,56 @@
   <body>
     <h1>Omnia Web Clipper</h1>
     <p class="sub">
-      Configure how captured selections are sent to Anki via AnkiConnect. After saving, use
-      "Test connection" to verify Anki is reachable and to list your note type's fields.
+      Configure which deck and note type captured words land in. Use "Test connection" to
+      verify Anki is reachable and to load your decks, note types, and fields.
     </p>
 
     <fieldset>
-      <legend>AnkiConnect</legend>
+      <legend>General</legend>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Enabled</div>
+          <div class="toggle-sub">Master on/off. When off, no "+" and no right-click action.</div>
+        </div>
+        <button class="pill" id="enabledToggle" role="switch" aria-checked="true" aria-label="Enabled">
+          <span class="pill-text on">ON</span>
+          <span class="pill-text off">OFF</span>
+          <span class="knob"></span>
+        </button>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Double-click "+"</div>
+          <div class="toggle-sub">Show the floating "+" when you select / double-click a word.</div>
+        </div>
+        <button class="pill" id="mouseToggle" role="switch" aria-checked="true" aria-label="Double-click +">
+          <span class="pill-text on">ON</span>
+          <span class="pill-text off">OFF</span>
+          <span class="knob"></span>
+        </button>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Anki connection</legend>
       <label for="ankiConnectUrl">AnkiConnect URL</label>
       <input type="text" id="ankiConnectUrl" placeholder="http://127.0.0.1:8765" />
       <label for="apiKey">API key (leave blank if AnkiConnect apiKey is null)</label>
       <input type="password" id="apiKey" placeholder="(none)" />
-    </fieldset>
 
-    <fieldset>
-      <legend>Target deck &amp; note type</legend>
-      <label for="deckName">Deck name (created if missing)</label>
-      <input type="text" id="deckName" placeholder="Omnia Capture" />
+      <div class="actions" style="margin-top: 12px">
+        <button class="secondary" id="testBtn">Test connection</button>
+      </div>
+      <div class="conn-status">
+        <span class="dot" id="connDot"></span>
+        <span id="connText">Ankiconnect — not tested yet</span>
+      </div>
+
+      <label for="deckName">Deck (created if missing)</label>
+      <select id="deckName"></select>
       <label for="modelName">Note type (model)</label>
-      <input type="text" id="modelName" placeholder="Basic" />
+      <select id="modelName"></select>
+
       <div class="checkbox-row">
         <input type="checkbox" id="allowDuplicate" />
         <label for="allowDuplicate" style="margin: 0">Allow duplicate notes</label>
@@ -156,40 +279,39 @@
     <fieldset>
       <legend>Field mapping (capture &rarr; note field)</legend>
       <p class="sub" style="margin-bottom: 8px">
-        Type the exact note-field name each captured value should fill. Leave a box blank to
-        skip that value. The <strong>selection</strong> should map to your Omnia
+        Map each captured value to one of the chosen note type's fields. Pick "(skip)" to
+        leave a value out. The <strong>selection</strong> should map to your Omnia
         <strong>base field</strong> (the word or phrase).
       </p>
       <div class="row">
         <label for="f_selection">selection</label>
-        <input type="text" id="f_selection" placeholder="Front" />
+        <select id="f_selection"></select>
         <div class="hint">The word OR phrase. Maps to the Omnia base field.</div>
       </div>
       <div class="row">
         <label for="f_sentence">sentence</label>
-        <input type="text" id="f_sentence" placeholder="Sentence" />
+        <select id="f_sentence"></select>
         <div class="hint">The sentence containing the selection.</div>
       </div>
       <div class="row">
         <label for="f_context">context</label>
-        <input type="text" id="f_context" placeholder="Context" />
+        <select id="f_context"></select>
         <div class="hint">The surrounding paragraph/block.</div>
       </div>
       <div class="row">
         <label for="f_url">url</label>
-        <input type="text" id="f_url" placeholder="Source" />
+        <select id="f_url"></select>
         <div class="hint">The page URL.</div>
       </div>
       <div class="row">
         <label for="f_pageTitle">pageTitle</label>
-        <input type="text" id="f_pageTitle" placeholder="Title" />
+        <select id="f_pageTitle"></select>
         <div class="hint">The page title.</div>
       </div>
     </fieldset>
 
     <div class="actions">
       <button class="primary" id="saveBtn">Save</button>
-      <button class="secondary" id="testBtn">Test connection</button>
       <span id="status"></span>
     </div>
     <div id="testOutput"></div>

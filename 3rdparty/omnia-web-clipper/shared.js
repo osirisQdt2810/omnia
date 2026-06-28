@@ -1,5 +1,5 @@
-/*
- * Omnia Web Clipper - shared settings + AnkiConnect client.
+/**
+ * @fileoverview Omnia Web Clipper - shared settings + AnkiConnect client.
  *
  * Loaded by both the service worker (via importScripts) and the options/popup
  * pages (via <script>). It must NOT touch the DOM. Everything is attached to a
@@ -7,30 +7,35 @@
  */
 
 (function (root) {
-  "use strict";
+  'use strict';
 
   // Default settings. The field mapping maps a CAPTURE KEY to an Anki note FIELD
   // NAME. The defaults assume an Omnia-friendly note type with these fields; the
   // user can remap any of them on the options page. A blank target means "do not
   // send this capture key".
   const DEFAULTS = {
-    ankiConnectUrl: "http://127.0.0.1:8765",
-    apiKey: "", // AnkiConnect "apiKey" option; empty when AnkiConnect apiKey is null.
-    deckName: "Omnia Capture",
-    modelName: "Basic",
+    ankiConnectUrl: 'http://127.0.0.1:8765',
+    apiKey: '', // AnkiConnect "apiKey" option; empty when AnkiConnect apiKey is null.
+    enabled: true, // Master on/off. When false, no "+" and no context-menu action.
+    mouseEnabled: true, // Double-click "+" tooltip on/off (the right-click menu is unaffected).
+    deckName: 'Omnia Capture',
+    modelName: 'Basic',
     allowDuplicate: true,
-    tags: ["omnia-web-clipper"],
+    tags: ['omnia-web-clipper'],
     // capture key -> Anki note field name
     fieldMap: {
-      selection: "Front", // the base field (the word OR phrase Omnia generates from)
-      sentence: "", // e.g. "Sentence" or "Context"
-      context: "", // e.g. "Context"
-      url: "", // e.g. "Source"
-      pageTitle: "", // e.g. "Title"
+      selection: 'Front', // the base field (the word OR phrase Omnia generates from)
+      sentence: '', // e.g. "Sentence" or "Context"
+      context: '', // e.g. "Context"
+      url: '', // e.g. "Source"
+      pageTitle: '', // e.g. "Title"
     },
   };
 
-  /** Read settings from chrome.storage.sync, merged over DEFAULTS. */
+  /**
+   * Read settings from chrome.storage.sync, merged over DEFAULTS.
+   * @return {!Promise<!Object>} The merged settings object.
+   */
   function loadSettings() {
     return new Promise((resolve) => {
       chrome.storage.sync.get(DEFAULTS, (stored) => {
@@ -42,7 +47,11 @@
     });
   }
 
-  /** Persist a settings object to chrome.storage.sync. */
+  /**
+   * Persist a settings object to chrome.storage.sync.
+   * @param {!Object} settings The (possibly partial) settings to store.
+   * @return {!Promise<void>} Resolves once the write completes.
+   */
   function saveSettings(settings) {
     return new Promise((resolve) => {
       chrome.storage.sync.set(settings, () => resolve());
@@ -52,9 +61,14 @@
   /**
    * Low-level AnkiConnect call. Returns the `result` field or throws an Error
    * carrying AnkiConnect's `error` string or a transport/CORS explanation.
+   * @param {string} url The AnkiConnect endpoint URL.
+   * @param {string} action The AnkiConnect action name.
+   * @param {?Object=} params The action params (defaults to {}).
+   * @param {string=} apiKey Optional AnkiConnect API key.
+   * @return {!Promise<*>} The AnkiConnect `result` value.
    */
   async function ankiConnect(url, action, params, apiKey) {
-    const body = { action: action, version: 6, params: params || {} };
+    const body = {action: action, version: 6, params: params || {}};
     if (apiKey) {
       body.key = apiKey;
     }
@@ -62,8 +76,8 @@
     let response;
     try {
       response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -71,24 +85,24 @@
       // AnkiConnect add-on not installed, or a CORS rejection (the extension's
       // origin is not in webCorsOriginList).
       throw new Error(
-        "Could not reach AnkiConnect at " +
+        'Could not reach AnkiConnect at ' +
           url +
-          ". Make sure Anki is running with the AnkiConnect add-on, and that this " +
+          '. Make sure Anki is running with the AnkiConnect add-on, and that this ' +
           "extension's origin is allowed in AnkiConnect's webCorsOriginList " +
-          "(see the README). Underlying error: " +
-          (err && err.message ? err.message : String(err))
+          '(see the README). Underlying error: ' +
+          (err && err.message ? err.message : String(err)),
       );
     }
 
     if (!response.ok) {
-      throw new Error("AnkiConnect HTTP " + response.status + " " + response.statusText);
+      throw new Error('AnkiConnect HTTP ' + response.status + ' ' + response.statusText);
     }
 
     let data;
     try {
       data = await response.json();
     } catch (err) {
-      throw new Error("AnkiConnect returned a non-JSON response.");
+      throw new Error('AnkiConnect returned a non-JSON response.');
     }
 
     // AnkiConnect v6 always returns {result, error}; error is non-null on failure.
@@ -104,4 +118,4 @@
     saveSettings: saveSettings,
     ankiConnect: ankiConnect,
   };
-})(typeof self !== "undefined" ? self : this);
+})(typeof self !== 'undefined' ? self : this);
