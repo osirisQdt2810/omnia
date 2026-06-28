@@ -304,3 +304,57 @@ roughly in order of effort:
 upgrade — it reuses Omnia's existing generation engine and the tag the clipper already
 sends, with no new protocol. This section is documented design only; nothing here is
 implemented in this wave.
+
+## 10. Distribution — installing on another machine (without "Load unpacked" each time)
+
+**Short answer:** publish it once to the **Chrome Web Store as an _Unlisted_ item**, then on
+any other computer you just open the store link (or sign into Chrome with the same Google
+account and **Chrome Sync** installs it automatically). "Unlisted" means it is NOT searchable
+or public — only people with the link can install it, which is what you want for a personal
+tool.
+
+### Package it for upload
+```bash
+bash 3rdparty/omnia-web-clipper/package.sh   # → 3rdparty/omnia-web-clipper-0.1.0.zip
+```
+The zip has `manifest.json` at its root (a Web Store requirement).
+
+### Publish (one-time)
+1. Go to the **Chrome Web Store Developer Dashboard**: https://chrome.google.com/webstore/devconsole — pay the **one-time $5** registration fee.
+2. **New item → upload** `omnia-web-clipper-<version>.zip`.
+3. Fill the listing: name, a short description, the 128px icon (already in the zip), and 1+
+   screenshot. Under **Privacy practices**, declare honestly: the extension stores its
+   settings locally (`chrome.storage`) and sends captured text **only to your own local
+   AnkiConnect** (`127.0.0.1`) — it collects/transmits no data to any remote server. The
+   broad host/`<all_urls>` access is "to read the selected text on the page you clip from".
+4. Set **Visibility → Unlisted**, then **Submit for review** (usually hours, sometimes a few
+   days). Once approved you get a permanent install link; open it on any machine to install,
+   and Chrome Sync mirrors it to your other signed-in machines.
+
+### Important: keep the extension id STABLE (so AnkiConnect CORS is set once)
+AnkiConnect must allow the extension's `chrome-extension://<id>` origin (README §4). The id
+differs between an unpacked load (random, per machine) and the published item (stable). To
+make the id identical EVERYWHERE — unpacked dev installs and the published store item — pin
+it with a manifest `key`:
+```bash
+# generate a private key + derive the manifest "key" (public key, base64)
+openssl genrsa 2048 > omnia-clipper.pem
+KEY=$(openssl rsa -in omnia-clipper.pem -pubout -outform DER 2>/dev/null | openssl base64 -A)
+# add  "key": "<KEY>"  to manifest.json (keep omnia-clipper.pem private, OUT of git)
+```
+With a pinned `key`, the id is the same on every machine, so you add the
+`chrome-extension://<id>` origin to AnkiConnect's `webCorsOriginList` **once**.
+
+### Free alternative (no store, no review): GitHub + Load unpacked
+This whole folder already lives in the repo under `3rdparty/omnia-web-clipper/`. On another
+machine: clone/pull the repo (or download a release zip), then `chrome://extensions →
+Developer mode → Load unpacked → pick the folder` (README §3). Without a pinned `key` the id
+is random per machine, so either pin the `key` (above) or re-add that machine's
+`chrome-extension://<id>` to AnkiConnect's CORS list.
+
+### Why not just host a `.crx` file to click-install?
+Chrome deliberately **blocks installing `.crx` files from outside the Web Store** for normal
+users (a security measure; off-store installs need enterprise policy). So a self-hosted
+`.crx` is not a practical "click to install" path — use the Web Store (Unlisted) or Load
+unpacked. (Edge can install Chrome extensions and has its own store; Firefox is the one
+browser that allows self-hosting a signed add-on, but this extension is MV3/Chrome-targeted.)

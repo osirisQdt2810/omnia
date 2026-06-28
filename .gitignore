@@ -36,3 +36,5 @@ src/omnia/user_files/
 # NOTE: src/omnia/vendor/ is intentionally NOT ignored — vendored pure-Python deps are
 # committed so the shipped add-on works without a build step. (It's empty today.)
 references/
+# Chrome extension build artifact
+3rdparty/*.zip
