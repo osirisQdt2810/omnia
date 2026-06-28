@@ -14,47 +14,36 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+import omnia.gui.display_interval as _di_gui
 from omnia.core import anki_compat
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.core.reviewer.web_injector import WebAsset
+from omnia.gui.assets import read_asset
 from omnia.plugins.display_interval.config import DisplayIntervalSettings
 from omnia.plugins.display_interval.logic import format_interval
 
 _EASE_GOOD = 3
 
-# Styling is applied imperatively in JS (mirroring the reference) so it can switch on Anki's
-# night-mode class at render time: white + shadow at night, red (#c62828) in day, bold, fixed
-# bottom-right, and pointer-events:none so it never intercepts clicks.
-_HIDE_JS = (
-    "(function(){var d=document.getElementById('__TA_NEXT_IVL');"
-    "if(d){d.style.display='none';}})();"
-)
+
+def _overlay_section(name: str) -> str:
+    """Return the body of the ``// ===<name>===`` section of ``overlay.js``, trimmed."""
+    text = read_asset(_di_gui.__file__, "overlay.js")
+    for block in text.split("// ===")[1:]:
+        header, _, body = block.partition("\n")
+        if header.strip() == f"{name}===":
+            return body.strip()
+    raise KeyError(f"overlay.js section not found: {name}")
+
+
+# Static "hide the label" snippet, shown on the question side.
+_HIDE_JS = _overlay_section("HIDE")
 
 
 def _render_js(text: str) -> str:
-    payload = json.dumps(text)
-    return (
-        "(function(){"
-        "function night(){try{"
-        "var s=(location&&location.hash?String(location.hash):'').toLowerCase();"
-        "if(s.indexOf('night')>=0)return true;}catch(e){}"
-        "try{var b=document.body;if(b&&(b.className||'').toLowerCase().indexOf('night')>=0)"
-        "return true;}catch(e){}"
-        "try{var de=document.documentElement;"
-        "if(de&&(de.className||'').toLowerCase().indexOf('night')>=0)return true;}catch(e){}"
-        "return false;}"
-        "var el=document.getElementById('__TA_NEXT_IVL');"
-        "if(!el){el=document.createElement('div');el.id='__TA_NEXT_IVL';"
-        "el.style.position='fixed';el.style.right='14px';el.style.bottom='4px';"
-        "el.style.zIndex='999999';el.style.fontSize='12px';el.style.fontWeight='800';"
-        "el.style.pointerEvents='none';el.style.userSelect='none';"
-        "el.style.whiteSpace='nowrap';document.body.appendChild(el);}"
-        "if(night()){el.style.color='#ffffff';el.style.opacity='0.85';"
-        "el.style.textShadow='0 1px 2px rgba(0,0,0,0.55)';}"
-        "else{el.style.color='#c62828';el.style.opacity='0.90';el.style.textShadow='none';}"
-        "el.textContent=" + payload + ";el.style.display='block';})();"
-    )
+    # The JS body lives in overlay.js; only the JSON-encoded label is injected here, so the
+    # dynamic part stays in Python while the markup lives on disk.
+    return _overlay_section("RENDER").replace("__TEXT__", json.dumps(text))
 
 
 @register("display_interval")
