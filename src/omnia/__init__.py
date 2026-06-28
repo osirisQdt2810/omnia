@@ -97,6 +97,13 @@ def _bootstrap() -> None:
     loader = ConfigLoader(_ADDON_DIR / "config", user_files / "omnia.toml")
     repository = ConfigRepository(loader)
     setup_logging(user_files)
+    # Tee any displayed/uncaught exception's full traceback into omnia.log — Anki's error
+    # dialog only exposes the version + add-on list, not the traceback, so this is what makes
+    # a user-reported crash diagnosable from the log alone.
+    from omnia.core.diagnostics import install_crash_logger
+    from omnia.core.logging import get_logger
+
+    install_crash_logger(get_logger())
     _manager = PluginManager(repository, paths)
     _manager.setup()
     _install_menu()
