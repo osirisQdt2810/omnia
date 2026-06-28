@@ -101,7 +101,11 @@ class FeaturePlugin:
     id: str = ""
     name: str = ""
     description: str = ""
-    # Lower sorts earlier in the settings list.
+    # Which settings-UI section this feature belongs to (e.g. "Reviewing", "Grading", "AI").
+    group: str = "General"
+    # A longer hover hint for the settings UI; falls back to ``description`` when empty.
+    tooltip: str = ""
+    # Lower sorts earlier in the settings list (within its group).
     order: int = 100
 
     def on_enable(self, ctx: PluginContext) -> None:

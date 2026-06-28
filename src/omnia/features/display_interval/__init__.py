@@ -62,6 +62,7 @@ class DisplayIntervalPlugin(FeaturePlugin):
 
     name = "Display Interval"
     description = "Show the predicted next interval on the answer side."
+    group = "Reviewing"
     order = 30
 
     def on_enable(self, ctx: PluginContext) -> None:

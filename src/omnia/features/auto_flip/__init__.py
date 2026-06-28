@@ -51,6 +51,7 @@ class AutoFlipPlugin(FeaturePlugin):
 
     name = "Auto Flip"
     description = "Auto-advance question -> answer -> grade after a configurable delay."
+    group = "Reviewing"
     order = 10
 
     def __init__(self) -> None:
