@@ -14,8 +14,8 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
-from omnia.plugins.smart_notes.logic import GenerationService
-from omnia.plugins.smart_notes.review_evaluator import ReviewTimeEvaluator
+from omnia.plugins.smart_notes.engine import GenerationService
+from omnia.plugins.smart_notes.integration.review import ReviewTimeEvaluator
 
 
 class _FakeNote:
@@ -41,9 +41,10 @@ class _FakeNote:
 
 
 class _FakeCard:
-    def __init__(self, note):
+    def __init__(self, note, did=1):
         self._note = note
         self.nid = note.id
+        self.did = did
 
     def note(self):
         return self._note
@@ -91,7 +92,7 @@ class _FakeCompat:
 
 
 def _patch(monkeypatch, fake):
-    import omnia.plugins.smart_notes.review_evaluator as rev
+    import omnia.plugins.smart_notes.integration.review as rev
 
     for name in (
         "get_note",
@@ -128,7 +129,7 @@ class TestReviewTimeEvaluator:
         settings = SmartNotesSettings(
             note_types=[_note_type_config()]
         )  # generate_at_review defaults off
-        ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(_FakeCard(note))
         assert fake.updated == []
 
     def test_generates_and_redraws_current_card(self, monkeypatch):
@@ -139,7 +140,7 @@ class TestReviewTimeEvaluator:
         settings = SmartNotesSettings(
             note_types=[_note_type_config()], generate_at_review=True
         )
-        ReviewTimeEvaluator(_service(), settings).on_card_shown(card)
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(card)
         assert fake.updated == [1]
         assert note["Def"] == "generated"
         assert fake.redraws == 1
@@ -151,7 +152,7 @@ class TestReviewTimeEvaluator:
         settings = SmartNotesSettings(
             note_types=[_note_type_config()], generate_at_review=True
         )
-        ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(_FakeCard(note))
         assert fake.updated == []
 
     def test_no_redraw_when_card_moved_on(self, monkeypatch):
@@ -163,7 +164,7 @@ class TestReviewTimeEvaluator:
         settings = SmartNotesSettings(
             note_types=[_note_type_config()], generate_at_review=True
         )
-        ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(_FakeCard(note))
         assert fake.updated == [1]
         assert fake.redraws == 0
 
@@ -180,4 +181,25 @@ class TestReviewTimeEvaluator:
             note_types=[_note_type_config()], generate_at_review=True
         )
         # on_card_shown wraps everything: a thrown scheduling error must not propagate.
-        ReviewTimeEvaluator(_service(), settings).on_card_shown(_FakeCard(note))
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(_FakeCard(note))
+
+    def test_card_out_of_deck_scope_is_not_generated(self, monkeypatch):
+        note = _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})
+        # The card lives in deck 9, but the config is scoped to deck 1 only.
+        card = _FakeCard(note, did=9)
+        fake = _FakeCompat({1: note}, current=card)
+        _patch(monkeypatch, fake)
+        config = _note_type_config().copy(update={"decks": [1]})
+        settings = SmartNotesSettings(note_types=[config], generate_at_review=True)
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(card)
+        assert fake.updated == []
+
+    def test_card_in_deck_scope_is_generated(self, monkeypatch):
+        note = _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})
+        card = _FakeCard(note, did=1)
+        fake = _FakeCompat({1: note}, current=card)
+        _patch(monkeypatch, fake)
+        config = _note_type_config().copy(update={"decks": [1]})
+        settings = SmartNotesSettings(note_types=[config], generate_at_review=True)
+        ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(card)
+        assert fake.updated == [1]

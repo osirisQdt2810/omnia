@@ -11,16 +11,16 @@ from __future__ import annotations
 
 from conftest import FakeLLMProvider
 
-from omnia.plugins.smart_notes.batch import BatchGenerator
 from omnia.plugins.smart_notes.config import (
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
-from omnia.plugins.smart_notes.logic import GenerationService
+from omnia.plugins.smart_notes.engine import GenerationService
+from omnia.plugins.smart_notes.integration.batch import BatchGenerator
 
 
-def _note_type_config(note_type="Basic", *, enabled=True):
+def _note_type_config(note_type="Basic", *, enabled=True, decks=None):
     """A Basic note type whose 'Def' field is generated from the 'Word' base field."""
     return SmartNotesNoteTypeConfig(
         note_type=note_type,
@@ -30,16 +30,25 @@ def _note_type_config(note_type="Basic", *, enabled=True):
                 field="Def", enabled=enabled, type="text", prompt="define {{Word}}"
             )
         ],
+        decks=list(decks or []),
     )
 
 
-class _FakeNote:
-    """A dict-like note exposing ``keys()`` + ``note_type()`` like Anki's Note."""
+class _FakeCard:
+    def __init__(self, did: int) -> None:
+        self.did = did
 
-    def __init__(self, nid: int, note_type: str, fields: dict[str, str]) -> None:
+
+class _FakeNote:
+    """A dict-like note exposing ``keys()`` + ``note_type()`` + ``cards()`` like Anki's Note."""
+
+    def __init__(
+        self, nid: int, note_type: str, fields: dict[str, str], decks=(1,)
+    ) -> None:
         self.id = nid
         self._note_type = note_type
         self._fields = dict(fields)
+        self._decks = list(decks)
 
     def keys(self):
         return list(self._fields.keys())
@@ -55,6 +64,9 @@ class _FakeNote:
 
     def note_type(self) -> dict[str, str]:
         return {"name": self._note_type}
+
+    def cards(self):
+        return [_FakeCard(did) for did in self._decks]
 
 
 class _StubHub:
@@ -83,6 +95,9 @@ class _FakeCompat:
     # collection
     def get_note(self, nid, col=None):
         return self._notes[nid]
+
+    def note_deck_ids(self, note, col=None):
+        return [int(c.did) for c in note.cards()]
 
     def update_note(self, note, col=None):
         self.updated.append(note.id)
@@ -121,10 +136,11 @@ class _FakeCompat:
 
 
 def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
-    import omnia.plugins.smart_notes.batch as batch
+    import omnia.plugins.smart_notes.integration.batch as batch
 
     for name in (
         "get_note",
+        "note_deck_ids",
         "update_note",
         "add_media_file",
         "progress_start",
@@ -236,3 +252,47 @@ class TestBatchGeneratorDisabledRules:
         # No enabled, generatable field → empty plan → nothing happens.
         assert summaries[0].processed == 0
         assert fake.progress == []
+
+
+class TestBatchGeneratorDeckScope:
+    def test_note_outside_deck_scope_is_skipped(self, monkeypatch):
+        # The note's only card is in deck 9, but the config is scoped to deck 1.
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""}, decks=(9,))}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config(decks=[1])],
+            regenerate_when_batching=False,
+        )
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run([1], summaries.append)
+        assert summaries[0].processed == 0
+        assert summaries[0].skipped == 1
+        assert fake.updated == []
+        assert fake.progress == []  # no plan → progress never opened
+
+    def test_note_inside_deck_scope_is_processed(self, monkeypatch):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""}, decks=(1,))}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config(decks=[1])],
+            regenerate_when_batching=False,
+        )
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run([1], summaries.append)
+        assert summaries[0].processed == 1
+        assert fake.updated == [1]
+
+    def test_empty_decks_processes_any_deck(self, monkeypatch):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""}, decks=(42,))}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config(decks=[])],
+            regenerate_when_batching=False,
+        )
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run([1], summaries.append)
+        assert summaries[0].processed == 1
+        assert fake.updated == [1]
