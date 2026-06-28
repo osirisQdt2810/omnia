@@ -25,10 +25,16 @@ def clean_registry():
 
 @pytest.fixture
 def make_manager(tmp_path):
-    """Factory: build a PluginManager over a fresh repository (temp user-override file)."""
+    """Factory: build a PluginManager over a fresh repository (isolated tmp config dir)."""
+    import shutil
+
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    for template in _CONFIG_DIR.glob("*.example.toml"):
+        shutil.copy(template, cfg_dir / template.name)
 
     def _make():
-        repo = ConfigRepository(ConfigLoader(_CONFIG_DIR, tmp_path / "omnia.toml"))
+        repo = ConfigRepository(ConfigLoader(cfg_dir))
         paths = AddonPaths(tmp_path, tmp_path / "web", tmp_path / "uf")
         return PluginManager(repo, paths), repo
 
