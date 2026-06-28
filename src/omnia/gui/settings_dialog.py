@@ -103,8 +103,9 @@ class SettingsDialog(QDialog):
         text_col.addWidget(status)
         row.addLayout(text_col, 1)
 
-        # A "Configure" button appears only when the plugin declares options.
-        if plugin.config_schema():
+        # A "Configure" button appears when the plugin declares options OR provides a bespoke
+        # config dialog (e.g. smart_notes' field-mapping editor).
+        if plugin.config_schema() or plugin.has_custom_config_dialog():
             configure = QPushButton("Configure…")
             configure.setCursor(Qt.CursorShape.PointingHandCursor)
             configure.clicked.connect(lambda _=False, p=plugin: self._configure(p))
@@ -122,6 +123,13 @@ class SettingsDialog(QDialog):
         return card
 
     def _configure(self, plugin: FeaturePlugin) -> None:
+        # A bespoke dialog (it owns its own persistence via the repo) takes precedence over the
+        # generic ConfigField form; reload the plugin afterwards so changes apply if active.
+        if plugin.has_custom_config_dialog():
+            dialog = plugin.custom_config_dialog(self._manager.config, self)
+            if dialog is not None and dialog.exec():
+                self._manager.reload(plugin.id)
+            return
         settings = self._manager.config.feature_settings(plugin.id)
         current = settings.model_dump() if settings is not None else {}
         dialog = PluginConfigDialog(

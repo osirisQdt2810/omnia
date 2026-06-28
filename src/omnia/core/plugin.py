@@ -7,6 +7,7 @@ under ``TYPE_CHECKING`` so feature logic stays unit-testable headless.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
     from pydantic import BaseModel
 
+    from omnia.core.config import ConfigRepository
     from omnia.core.providers import ProviderHub
     from omnia.core.reviewer.ease_pipeline import EasePipeline
     from omnia.core.reviewer.web_injector import WebInjector
@@ -80,6 +82,10 @@ class PluginContext:
     web: WebInjector
     providers: ProviderHub
     paths: AddonPaths
+    # The config facade + a "reload me" callback, so a plugin can persist user choices made in
+    # its OWN in-Anki UI (e.g. a deck-options menu) and re-apply itself with the new settings.
+    config: ConfigRepository
+    reload_self: Callable[[], None]
 
 
 class FeaturePlugin:
@@ -109,3 +115,17 @@ class FeaturePlugin:
     def config_schema(self) -> list[ConfigField]:
         """Return the configurable options for the settings GUI (default: none)."""
         return []
+
+    def custom_config_dialog(self, repo: ConfigRepository, parent: Any) -> Optional[Any]:
+        """Return a bespoke settings ``QDialog`` for this plugin, or None for the generic form.
+
+        Override when the plugin's config can't be expressed as flat :class:`ConfigField`s (e.g.
+        a list of rules). The dialog reads/writes via ``repo`` and persists on accept; the
+        settings dialog reloads the plugin afterwards. ``parent`` is the Qt parent. Returns
+        ``Any``/None so this base stays free of ``aqt`` imports (the override imports Qt lazily).
+        """
+        return None
+
+    def has_custom_config_dialog(self) -> bool:
+        """True if this plugin overrides :meth:`custom_config_dialog` (cheap, no Qt build)."""
+        return type(self).custom_config_dialog is not FeaturePlugin.custom_config_dialog
