@@ -1,6 +1,6 @@
 """Thin loader/formatter for the auto-flip reviewer countdown overlay JS.
 
-The countdown JS body lives in ``gui/auto_flip/countdown.js`` (three ``// ===NAME===``
+The countdown JS body lives in ``gui/auto_flip/web/countdown.js`` (three ``// ===NAME===``
 sections); these functions load it once, slice out the section they need, and substitute the
 ``__TOKEN__`` placeholders with JSON-encoded values. They return self-contained, CSP-safe
 JavaScript (no external libraries) that the glue pushes into the reviewer webview via
@@ -37,7 +37,7 @@ _CANCELLED_COLOR = "#3b82f6"
 
 def _section(name: str) -> str:
     """Return the body of the ``// ===<name>===`` section of ``countdown.js``, trimmed."""
-    text = read_asset(_autoflip_gui.__file__, "countdown.js")
+    text = read_asset(_autoflip_gui.__file__, "web", "countdown.js")
     blocks = text.split("// ===")
     for block in blocks[1:]:
         header, _, body = block.partition("\n")

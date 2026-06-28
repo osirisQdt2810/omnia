@@ -34,17 +34,17 @@ from omnia.plugins.typed_accuracy.store import SessionTracker, TypedAnswerLog
 
 _PRIORITY = 100  # before overdue_guard (200), which may then cap this grade
 
-# The panel's web assets now live with the feature's GUI package (``gui/typed_accuracy/``) and
-# are read directly off disk (module-relative paths, not web-export), so they resolve in both
-# the dev symlink and the packaged zip.
-_WEB_DIR = Path(_ta_gui.__file__).resolve().parent
+# The panel's web assets now live in the feature GUI package's ``web/`` folder
+# (``gui/typed_accuracy/web/``) and are read directly off disk (module-relative paths, not
+# web-export), so they resolve in both the dev symlink and the packaged zip.
+_WEB_DIR = Path(_ta_gui.__file__).resolve().parent / "web"
 
 # Measures Anki's typed-answer comparison on the answer side and reports BOTH the accuracy
 # ratio and a 4-way result code. It polls up to 40 times at ~50ms for late-rendered markup,
 # then reports anyway: a type-answer card with no markup is an EMPTY answer (ratio 0 -> Hard).
 # Non-type-answer cards (no #typeans) report nothing, so they are unaffected. The script body
-# lives next to the GUI package in ``answer.js``.
-_ANSWER_JS = read_asset(_ta_gui.__file__, "answer.js").strip()
+# lives in the GUI package's ``web/answer.js``.
+_ANSWER_JS = read_asset(_ta_gui.__file__, "web", "answer.js").strip()
 
 
 @register("typed_accuracy")

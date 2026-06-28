@@ -1,8 +1,9 @@
 """Pure HTML/CSS/JS builder for the Omnia settings page.
 
 The settings dialog (``settings_dialog.py``) is thin Qt/webview glue; all of the page's
-markup lives in sibling asset files (``settings.html`` / ``settings.css`` / ``settings.js``)
-and is assembled here by a pure, unit-testable function. Everything is inlined into one
+markup lives in asset files under the sibling ``web/`` folder (``web/settings.html`` /
+``web/settings.css`` / ``web/settings.js``) and is assembled here by a pure, unit-testable
+function. Everything is inlined into one
 document (no external <link>/<script src>) because the host webview applies a strict CSP.
 The page talks back to Python via the shared :class:`~omnia.gui.web_dialog.WebDialog` bridge
 with two ops:
@@ -55,11 +56,11 @@ def build_settings_html(
         A complete, self-contained HTML document string.
     """
     sections = "\n".join(_section_html(name, cards) for name, cards in groups)
-    return read_asset(__file__, "settings.html").format(
+    return read_asset(__file__, "web", "settings.html").format(
         theme_class="omnia-dark" if dark else "omnia-light",
-        css=read_asset(__file__, "settings.css"),
+        css=read_asset(__file__, "web", "settings.css"),
         sections=sections,
-        js=read_asset(__file__, "settings.js"),
+        js=read_asset(__file__, "web", "settings.js"),
     )
 
 

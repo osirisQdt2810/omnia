@@ -1,8 +1,9 @@
 """Pure HTML/CSS/JS builder + row↔config mapping for the Smart Notes config page.
 
 The Smart Notes dialog (``dialog.py``) is thin Qt/webview glue; this module assembles the
-page from sibling asset files (``page.html`` / ``page.css`` / ``page.js``) and holds the pure
-mapping between the note-type config model and the table rows, so both unit-test headless.
+page from asset files under the sibling ``web/`` folder (``web/page.html`` / ``web/page.css``
+and the ordered ``web/0N-*.js`` script pieces) and holds the pure mapping between the
+note-type config model and the table rows, so both unit-test headless.
 Everything is inlined into one document (no external <link>/<script src>) because the host
 :class:`~omnia.gui.web_dialog.WebDialog` applies a strict CSP.
 
@@ -24,13 +25,22 @@ from __future__ import annotations
 
 import json
 
-from omnia.gui.assets import read_asset
+from omnia.gui.assets import read_asset, read_assets
 from omnia.plugins.smart_notes.config import (
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
 
 _FIELD_TYPES = ("text", "tts", "image")
+
+# The page script is split into cohesive pieces under ``web/``; they are concatenated in this
+# exact order to reproduce the original single ``page.js`` byte-for-byte.
+_PAGE_JS_PARTS = [
+    "01-bridge.js",
+    "02-render.js",
+    "03-handlers.js",
+    "04-init.js",
+]
 
 
 def rows_for_note_type(
@@ -192,12 +202,12 @@ def build_smart_notes_html(*, dark: bool, init: dict[str, object] | None = None)
     Returns:
         A complete, self-contained HTML document string.
     """
-    return read_asset(__file__, "page.html").format(
+    return read_asset(__file__, "web", "page.html").format(
         theme_class="omnia-dark" if dark else "omnia-light",
-        css=read_asset(__file__, "page.css"),
+        css=read_asset(__file__, "web", "page.css"),
         types_json=json.dumps(_FIELD_TYPES),
         init_json=json.dumps(init) if init else "null",
-        js=read_asset(__file__, "page.js"),
+        js=read_assets(__file__, "web", names=_PAGE_JS_PARTS),
     )
 
 
