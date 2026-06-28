@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omnia.core.providers.errors import ProviderError
+from omnia.plugins.smart_notes.engine.rules import rule_source_fields
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
@@ -29,12 +30,9 @@ def _source_fields(rule: SmartNotesFieldRule) -> list[str]:
     """Return the field names ``rule`` reads, lower-cased (for case-insensitive matching).
 
     Reuses the same "what fields does this rule read" helper the skip predicate uses, so the
-    dependency graph and the skip logic can never drift apart. Imported lazily to avoid a
-    circular import (``logic`` imports :func:`order_rules` from this module).
+    dependency graph and the skip logic can never drift apart.
     """
-    from omnia.plugins.smart_notes.logic import _rule_source_fields
-
-    return [name.strip().lower() for name in _rule_source_fields(rule)]
+    return [name.strip().lower() for name in rule_source_fields(rule)]
 
 
 def order_rules(rules: list[SmartNotesFieldRule]) -> list[SmartNotesFieldRule]:

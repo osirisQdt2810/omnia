@@ -28,12 +28,12 @@ from omnia.core.config.models import (
     TTSSettings,
 )
 from omnia.core.providers import ProviderError, ProviderHub
-from omnia.plugins.smart_notes.auto_smart import (
+from omnia.plugins.smart_notes.authoring import (
     AutoSmartField,
+    PromptAuthor,
     apply_auto_smart,
     build_auto_smart_prompt,
     candidate_fields,
-    generate_auto_smart,
     parse_auto_smart_response,
 )
 from omnia.plugins.smart_notes.config import (
@@ -42,17 +42,19 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
-from omnia.plugins.smart_notes.dag import SmartNotesCycleError, order_rules
-from omnia.plugins.smart_notes.logic import (
+from omnia.plugins.smart_notes.engine import (
     GenerationService,
+    SmartNotesCycleError,
+    applies_to_deck,
     chunk,
     compile_note_type_rules,
+    convert_markdown_to_html,
     dedupe_preserving_order,
     extract_field_refs,
     interpolate,
+    order_rules,
     should_skip_rule,
 )
-from omnia.plugins.smart_notes.markdown import convert_markdown_to_html
 
 # ---------------------------------------------------------------------------
 # Mocked / offline tests
@@ -119,6 +121,29 @@ class TestSmartNotesModel:
             ],
         )
         assert [f.field for f in config.generatable_fields()] == ["Meaning"]
+
+    def test_decks_defaults_empty_and_accepts_ids(self):
+        default = SmartNotesNoteTypeConfig(note_type="Basic", base_field="W")
+        assert default.decks == []
+        scoped = SmartNotesNoteTypeConfig(
+            note_type="Basic", base_field="W", decks=[10, 20]
+        )
+        assert scoped.decks == [10, 20]
+
+
+class TestAppliesToDeck:
+    def test_empty_decks_apply_to_any_deck(self):
+        config = SmartNotesNoteTypeConfig(note_type="Basic", base_field="W")
+        assert applies_to_deck(config, 1) is True
+        assert applies_to_deck(config, 999) is True
+
+    def test_scoped_config_applies_only_to_listed_decks(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic", base_field="W", decks=[1, 2]
+        )
+        assert applies_to_deck(config, 1) is True
+        assert applies_to_deck(config, 2) is True
+        assert applies_to_deck(config, 3) is False
 
 
 class TestCompileNoteTypeRules:
@@ -656,33 +681,31 @@ class _CannedLLM(FakeLLMProvider):
         return self._fixed_text
 
 
+class _RaisingLLM(FakeLLMProvider):
+    """A fake LLM whose ``generate_text`` raises ``exc`` (to prove it is/ isn't called)."""
+
+    def __init__(self, exc):
+        super().__init__()
+        self._exc = exc
+
+    def generate_text(self, prompt, *, system=None, temperature=0.7, max_tokens=None):
+        raise self._exc
+
+
 class TestAutoSmartGenerate:
     def test_calls_llm_and_applies_the_result(self):
-        class _Hub:
-            def llm(self, *, model="", provider=""):
-                return _CannedLLM(
-                    '{"Meaning": {"type": "text", "prompt": "Define {{Word}}"}}'
-                )
-
-            def tts(self):
-                raise AssertionError("no TTS")
-
         config = SmartNotesNoteTypeConfig(
             note_type="Basic",
             base_field="Word",
             fields=[SmartNotesFieldConfig(field="Meaning", enabled=True)],
         )
-        updated = generate_auto_smart(_Hub(), config)
+        author = PromptAuthor(
+            _CannedLLM('{"Meaning": {"type": "text", "prompt": "Define {{Word}}"}}')
+        )
+        updated = author.auto_smart(config)
         assert updated.fields[0].prompt == "Define {{Word}}"
 
     def test_no_candidates_is_a_noop(self):
-        class _Hub:
-            def llm(self, *, model="", provider=""):
-                raise AssertionError("must not call the LLM with no candidates")
-
-            def tts(self):
-                raise AssertionError("no TTS")
-
         config = SmartNotesNoteTypeConfig(
             note_type="Basic",
             base_field="Word",
@@ -690,23 +713,19 @@ class TestAutoSmartGenerate:
                 SmartNotesFieldConfig(field="Locked", enabled=True, prompt_locked=True)
             ],
         )
-        assert generate_auto_smart(_Hub(), config) == config
+        # No candidates → the LLM is never called (its generate_text would assert otherwise).
+        author = PromptAuthor(_RaisingLLM(AssertionError("must not call the LLM")))
+        assert author.auto_smart(config) == config
 
     def test_provider_failure_propagates(self):
-        class _Hub:
-            def llm(self, *, model="", provider=""):
-                raise ProviderError("boom")
-
-            def tts(self):
-                raise AssertionError("no TTS")
-
         config = SmartNotesNoteTypeConfig(
             note_type="Basic",
             base_field="Word",
             fields=[SmartNotesFieldConfig(field="Meaning", enabled=True)],
         )
+        author = PromptAuthor(_RaisingLLM(ProviderError("boom")))
         with pytest.raises(ProviderError):
-            generate_auto_smart(_Hub(), config)
+            author.auto_smart(config)
 
 
 class TestSmartNotesPlugin:
@@ -734,18 +753,18 @@ class TestSmartNotesPlugin:
 
 class TestBatchSummary:
     def test_message_reports_each_count(self):
-        from omnia.plugins.smart_notes.batch import BatchSummary
+        from omnia.plugins.smart_notes.integration.batch import BatchSummary
 
         summary = BatchSummary(processed=3, failed=1, skipped=2)
         assert summary.message() == "Processed 3 note(s), 1 failed, 2 skipped."
 
     def test_message_omits_zero_counts(self):
-        from omnia.plugins.smart_notes.batch import BatchSummary
+        from omnia.plugins.smart_notes.integration.batch import BatchSummary
 
         assert BatchSummary(processed=2).message() == "Processed 2 note(s)."
 
     def test_cancelled_message_is_prefixed(self):
-        from omnia.plugins.smart_notes.batch import BatchSummary
+        from omnia.plugins.smart_notes.integration.batch import BatchSummary
 
         summary = BatchSummary(processed=1, cancelled=True)
         assert summary.message().startswith("Cancelled — ")
