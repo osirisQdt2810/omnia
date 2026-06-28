@@ -56,6 +56,11 @@ class OverdueGuardPlugin(FeaturePlugin):
                 "Overdue ratio (lateness ÷ interval)",
                 "float",
                 0.8,
+                help=(
+                    "How late counts as 'overdue'. A card is overdue when "
+                    "days-late ÷ scheduled-interval ≥ this. 0.8 ≈ 80% past due; "
+                    "1.0 = a full interval late. Higher = more lenient."
+                ),
                 minimum=0.0,
                 maximum=10.0,
             ),
@@ -64,6 +69,11 @@ class OverdueGuardPlugin(FeaturePlugin):
                 "Minimum days late before triggering",
                 "int",
                 2,
+                help=(
+                    "A safety floor: never treat a card as overdue until it is at least "
+                    "this many days late, so short-interval cards aren't punished for being "
+                    "a few hours late."
+                ),
                 minimum=0,
                 maximum=3650,
             ),
@@ -72,6 +82,11 @@ class OverdueGuardPlugin(FeaturePlugin):
                 "Force Again if the Hard interval exceeds N days (0 = off)",
                 "int",
                 7,
+                help=(
+                    "When an overdue card is capped to Hard but Hard would still schedule it "
+                    "more than this many days out, force Again instead so a long-forgotten "
+                    "card truly resets. 0 disables this."
+                ),
                 minimum=0,
                 maximum=3650,
             ),
