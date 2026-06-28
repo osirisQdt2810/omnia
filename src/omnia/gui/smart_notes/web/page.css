@@ -1,6 +1,6 @@
 
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100%; }
+html, body { margin: 0; padding: 0; min-height: 100%; }
 body {
   font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
   font-size: 13px;
@@ -27,7 +27,7 @@ body {
   color: var(--fg);
   background: linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
 }
-.sn-shell { display: flex; flex-direction: column; height: 100%; padding: 0 16px 12px; }
+.sn-shell { display: flex; flex-direction: column; min-height: 100%; padding: 0 16px 12px; }
 .sn-header {
   padding: 18px 4px 10px;
   background: linear-gradient(160deg, var(--bg-top), var(--bg-bottom));
@@ -51,8 +51,11 @@ select, input[type="text"], textarea {
 }
 select:focus, input:focus, textarea:focus { border-color: var(--accent); }
 #sn-note-type, #sn-base-field { min-width: 200px; }
+/* No inner `overflow:auto` flex-scroller: that compositing layer blanks the whole page on
+   QtWebEngine/macOS Metal (the cause of the blank Smart Notes dialog). The page scrolls via
+   the webview's own scrollbar instead; the header + footer below are sticky to stay in view. */
 .sn-table-wrap {
-  flex: 1; min-height: 0; overflow: auto; border-radius: 12px;
+  border-radius: 12px;
   border: 1px solid var(--card-border); box-shadow: 0 1px 3px var(--shadow);
   background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
 }
@@ -87,7 +90,11 @@ select:focus, input:focus, textarea:focus { border-color: var(--accent); }
 .sn-empty { padding: 22px; text-align: center; color: var(--muted); }
 .sn-footer {
   display: flex; justify-content: space-between; align-items: center;
-  gap: 12px; padding-top: 12px; flex-wrap: wrap;
+  gap: 12px; padding: 12px 0 4px; flex-wrap: wrap;
+  /* Sticks to the viewport bottom as the page scrolls, so Save/Cancel stay reachable.
+     Opaque bg so it reads over scrolled rows. (Plain sticky paints fine; it's overflow-
+     scroll containers that blanked the page.) */
+  position: sticky; bottom: 0; z-index: 3; background: var(--bg-bottom);
 }
 .sn-footer-left, .sn-footer-right { display: flex; gap: 10px; align-items: center; }
 .sn-btn {
