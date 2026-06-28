@@ -3,7 +3,7 @@
 No Anki imports. The data model is note-type-centric: a :class:`SmartNotesNoteTypeConfig`
 names one base (input) field and configures how every OTHER field is generated. The engine
 compiles a note type's enabled, generatable fields into self-contained
-:class:`~omnia.core.config.models.SmartNotesFieldRule` units, orders them via the DAG
+:class:`~omnia.plugins.smart_notes.config.SmartNotesFieldRule` units, orders them via the DAG
 (``dag.py``), and runs each through the injected
 :class:`~omnia.core.providers.ProviderHub` (DIP, so it's tested with a fake hub).
 """
@@ -19,11 +19,11 @@ from omnia.plugins.smart_notes.dag import order_rules
 from omnia.plugins.smart_notes.markdown import convert_markdown_to_html
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import (
+    from omnia.core.providers import ProviderHub
+    from omnia.plugins.smart_notes.config import (
         SmartNotesFieldRule,
         SmartNotesNoteTypeConfig,
     )
-    from omnia.core.providers import ProviderHub
 
 # {{FieldName}} placeholders, but NOT Anki cloze deletions ({{c1::...}}).
 _FIELD_RE = re.compile(r"\{\{(?!c\d+::)([^{}]+?)\}\}")
@@ -88,8 +88,8 @@ def compile_note_type_rules(
     """Compile a note type's enabled, generatable fields into self-contained rules.
 
     The base field is never compiled (it is the input). Each
-    :class:`~omnia.core.config.models.SmartNotesFieldConfig` becomes one
-    :class:`~omnia.core.config.models.SmartNotesFieldRule` the engine can run:
+    :class:`~omnia.plugins.smart_notes.config.SmartNotesFieldConfig` becomes one
+    :class:`~omnia.plugins.smart_notes.config.SmartNotesFieldRule` the engine can run:
 
     * ``field`` → ``target_field`` and ``type`` → ``kind``.
     * The ``prompt`` template is carried through; for a text/image field with no prompt the
@@ -104,7 +104,7 @@ def compile_note_type_rules(
     Returns:
         One rule per generatable field, in their configured order.
     """
-    from omnia.core.config.models import SmartNotesFieldRule
+    from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
     base = config.base_field
     rules: list[SmartNotesFieldRule] = []
@@ -165,7 +165,7 @@ class GenerationService:
     """Runs field-generation rules against the configured providers.
 
     :meth:`generate` runs one rule; :meth:`generate_note` compiles a
-    :class:`~omnia.core.config.models.SmartNotesNoteTypeConfig` into rules and runs them in
+    :class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` into rules and runs them in
     dependency order, chaining each text result into the field map so a downstream rule sees
     the freshly generated value. Per-rule ``model``/``voice`` overrides layer on top of the
     central provider config.

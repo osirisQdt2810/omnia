@@ -29,8 +29,8 @@ from typing import TYPE_CHECKING, Any
 from aqt.qt import QDialog
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import AutoFlipSettings
     from omnia.core.plugin import PluginContext
+    from omnia.plugins.auto_flip.config import AutoFlipSettings
 
 
 class AutoFlipDeckDialog(QDialog):
@@ -160,7 +160,7 @@ def add_deck_menu_action(menu: Any, deck_id: int, ctx: PluginContext) -> None:
 def _open_deck_dialog(deck_id: int, ctx: PluginContext) -> None:
     """Open the per-deck dialog; on accept, merge the override and reload the plugin."""
     from omnia.core import anki_compat
-    from omnia.core.config.models import AutoFlipSettings
+    from omnia.plugins.auto_flip.config import AutoFlipSettings
 
     settings = ctx.config.feature_settings("auto_flip")
     if not isinstance(settings, AutoFlipSettings):

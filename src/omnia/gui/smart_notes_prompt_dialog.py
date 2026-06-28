@@ -38,7 +38,7 @@ from omnia.core.logging import get_logger
 
 if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
-    from omnia.core.config.models import SmartNotesFieldRule
+    from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
 _KINDS = ("text", "image", "tts")
 _ALL_DECKS_LABEL = "All decks"
@@ -319,7 +319,7 @@ class PromptDialog(QDialog):
 
     # --- accept ----------------------------------------------------------------------
     def _collect_rule(self) -> SmartNotesFieldRule:
-        from omnia.core.config.models import SmartNotesFieldRule
+        from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
         return SmartNotesFieldRule(
             note_type=self._note_type_combo.currentText(),

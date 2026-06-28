@@ -109,7 +109,7 @@ class CustomPromptDialog(QDialog):
     def _on_generate(self) -> None:
         from aqt.utils import showWarning
 
-        from omnia.core.config.models import SmartNotesFieldRule
+        from omnia.plugins.smart_notes.config import SmartNotesFieldRule
         from omnia.plugins.smart_notes.logic import GenerationService
 
         prompt = self._prompt_edit.toPlainText().strip()

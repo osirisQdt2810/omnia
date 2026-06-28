@@ -18,6 +18,7 @@ from omnia.core import anki_compat
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.core.reviewer.web_injector import WebAsset
+from omnia.plugins.display_interval.config import DisplayIntervalSettings
 from omnia.plugins.display_interval.logic import format_interval
 
 _EASE_GOOD = 3
@@ -64,6 +65,7 @@ class DisplayIntervalPlugin(FeaturePlugin):
     description = "Show the predicted next interval on the answer side."
     group = "Reviewing"
     order = 30
+    config_model = DisplayIntervalSettings
 
     def on_enable(self, ctx: PluginContext) -> None:
         ctx.web.add_asset(self.id, WebAsset())

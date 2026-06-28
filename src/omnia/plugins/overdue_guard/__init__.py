@@ -6,8 +6,9 @@ import time
 from typing import Any, Optional
 
 from omnia.core import anki_compat
-from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
+from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
+from omnia.plugins.overdue_guard.config import OverdueGuardSettings
 from omnia.plugins.overdue_guard.logic import OverdueRule
 
 # Runs after typed_accuracy (priority 100) so it can cap an over-generous typed grade.
@@ -32,6 +33,7 @@ class OverdueGuardPlugin(FeaturePlugin):
         "they run in order through the shared ease pipeline, not against each other."
     )
     order = 40
+    config_model = OverdueGuardSettings
 
     def on_enable(self, ctx: PluginContext) -> None:
         settings = ctx.settings
@@ -48,49 +50,6 @@ class OverdueGuardPlugin(FeaturePlugin):
 
     def on_disable(self, ctx: PluginContext) -> None:
         ctx.ease.remove_transformer(self.id)
-
-    def config_schema(self) -> list[ConfigField]:
-        return [
-            ConfigField(
-                "ratio",
-                "Overdue ratio (lateness ÷ interval)",
-                "float",
-                0.8,
-                help=(
-                    "How late counts as 'overdue'. A card is overdue when "
-                    "days-late ÷ scheduled-interval ≥ this. 0.8 ≈ 80% past due; "
-                    "1.0 = a full interval late. Higher = more lenient."
-                ),
-                minimum=0.0,
-                maximum=10.0,
-            ),
-            ConfigField(
-                "min_days",
-                "Minimum days late before triggering",
-                "int",
-                2,
-                help=(
-                    "A safety floor: never treat a card as overdue until it is at least "
-                    "this many days late, so short-interval cards aren't punished for being "
-                    "a few hours late."
-                ),
-                minimum=0,
-                maximum=3650,
-            ),
-            ConfigField(
-                "force_again_after_days",
-                "Force Again if the Hard interval exceeds N days (0 = off)",
-                "int",
-                7,
-                help=(
-                    "When an overdue card is capped to Hard but Hard would still schedule it "
-                    "more than this many days out, force Again instead so a long-forgotten "
-                    "card truly resets. 0 disables this."
-                ),
-                minimum=0,
-                maximum=3650,
-            ),
-        ]
 
     @staticmethod
     def _forced_ease(rule: OverdueRule, card: Any, ease: int) -> Optional[int]:

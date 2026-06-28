@@ -27,8 +27,9 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 from omnia.core import anki_compat
-from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
+from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
+from omnia.plugins.auto_flip.config import AutoFlipSettings
 from omnia.plugins.auto_flip.countdown import (
     build_countdown_js,
     clear_countdown_js,
@@ -53,6 +54,7 @@ class AutoFlipPlugin(FeaturePlugin):
     description = "Auto-advance question -> answer -> grade after a configurable delay."
     group = "Reviewing"
     order = 10
+    config_model = AutoFlipSettings
 
     def __init__(self) -> None:
         self._ctx: Optional[PluginContext] = None
@@ -106,51 +108,6 @@ class AutoFlipPlugin(FeaturePlugin):
             anki_compat.unsubscribe_hook(hook_name, callback)
         self._subs.clear()
         self._ctx = None
-
-    def config_schema(self) -> list[ConfigField]:
-        return [
-            ConfigField(
-                "delay_question_seconds",
-                "Delay before flipping to answer (s)",
-                "float",
-                3.0,
-                help=(
-                    "How long the question side is shown before Omnia auto-flips to the "
-                    "answer. Per-deck overrides take precedence (gear menu → Auto-Flip…)."
-                ),
-                minimum=0,
-                maximum=120,
-            ),
-            ConfigField(
-                "delay_answer_seconds",
-                "Delay before auto-grading (s)",
-                "float",
-                3.0,
-                help=(
-                    "How long the answer side is shown before Omnia auto-grades Good and "
-                    "moves to the next card. Press a key first to take over manually."
-                ),
-                minimum=0,
-                maximum=120,
-            ),
-            ConfigField(
-                "wait_for_audio",
-                "Start the delay only after audio finishes",
-                "bool",
-                True,
-                help=(
-                    "When on, the countdown begins only once the card's audio has finished "
-                    "playing, so a card never flips before you've heard it."
-                ),
-            ),
-            ConfigField(
-                "show_timer",
-                "Show a countdown in the reviewer",
-                "bool",
-                True,
-                help="Show the shrinking countdown ring in the corner while a flip is pending.",
-            ),
-        ]
 
     # --- scheduling -----------------------------------------------------------------
     def _subscribe(self, hook_name: str, callback: Callable[..., Any]) -> None:

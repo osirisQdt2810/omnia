@@ -252,7 +252,7 @@ def build_smart_notes_dialog():
     assert saved == {"ok": True}, saved
     # The save must round-trip back through the repo into the typed config.
     reloaded = ConfigRepository(ConfigLoader(src / "config", tmp_override))
-    nt = reloaded.config.smart_notes.note_type_config("Basic")
+    nt = reloaded.feature_settings("smart_notes").note_type_config("Basic")
     assert nt is not None and nt.base_field == "Front", nt
     assert {f.field for f in nt.generatable_fields()} == {"Back", "Example"}, nt
 
@@ -261,8 +261,8 @@ step("SmartNotesDialog (custom Configure + pycmd ops)", build_smart_notes_dialog
 
 
 def build_prompt_dialog():
-    from omnia.core.config.models import SmartNotesFieldRule
     from omnia.gui.smart_notes_prompt_dialog import PromptDialog
+    from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
     rule = SmartNotesFieldRule(note_type="Basic", target_field="Back", kind="text")
     PromptDialog(repo, rule, lambda _saved: None, None)

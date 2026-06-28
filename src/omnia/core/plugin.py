@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 if TYPE_CHECKING:
     import logging
@@ -107,6 +107,11 @@ class FeaturePlugin:
     tooltip: str = ""
     # Lower sorts earlier in the settings list (within its group).
     order: int = 100
+    # The plugin's own Pydantic settings model (co-located in ``plugins/<plugin>/config.py``).
+    # The default :meth:`config_schema` derives the generic settings form from it, so a plugin
+    # declares its model once instead of re-listing every field. Typed under TYPE_CHECKING to
+    # keep this base free of a hard ``pydantic`` import.
+    config_model: ClassVar[Optional[type[BaseModel]]] = None
 
     def on_enable(self, ctx: PluginContext) -> None:
         """Activate the feature. Register seams/hooks here. Called when ticked or at startup."""
@@ -117,8 +122,19 @@ class FeaturePlugin:
         raise NotImplementedError
 
     def config_schema(self) -> list[ConfigField]:
-        """Return the configurable options for the settings GUI (default: none)."""
-        return []
+        """Return the configurable options for the settings GUI.
+
+        Derived from :attr:`config_model` (the plugin's Pydantic settings class) — each scalar
+        field becomes a :class:`ConfigField`; complex fields (lists/dicts/nested models) are
+        skipped for the bespoke dialogs. Returns ``[]`` when the plugin declares no model.
+        """
+        if self.config_model is None:
+            return []
+        # Imported lazily so this base module stays free of a hard config/pydantic dependency
+        # (it is referenced only under TYPE_CHECKING above).
+        from omnia.core.config.schema import schema_from_model
+
+        return schema_from_model(self.config_model)
 
     def custom_config_dialog(
         self, repo: ConfigRepository, parent: Any

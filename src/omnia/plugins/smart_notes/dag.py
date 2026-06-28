@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from omnia.core.providers.errors import ProviderError
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import SmartNotesFieldRule
+    from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
 
 class SmartNotesCycleError(ProviderError):

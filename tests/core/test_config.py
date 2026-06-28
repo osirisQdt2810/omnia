@@ -5,18 +5,22 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+import omnia.plugins  # noqa: F401 — registers plugins so feature_settings resolves config_model
 from omnia.core.config import ConfigLoader, ConfigRepository
 from omnia.core.config.loader import ConfigLoader as Loader
-from omnia.core.config.models import OmniaConfig, TypedAccuracySettings
+from omnia.core.config.models import OmniaConfig
+from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
 
 class TestConfigRepository:
     def test_loads_bundled_defaults(self, config_repo):
         cfg = config_repo.config
-        assert cfg.auto_flip.delay_question_seconds == 3.0
-        assert cfg.typed_accuracy.threshold == 0.7
-        assert cfg.typed_accuracy.pass_ease == "good"
-        assert cfg.overdue_guard.min_days == 2
+        # Per-feature settings now come from each plugin's own model (resolved via the
+        # registry), not typed fields on OmniaConfig.
+        assert config_repo.feature_settings("auto_flip").delay_question_seconds == 3.0
+        assert config_repo.feature_settings("typed_accuracy").threshold == 0.7
+        assert config_repo.feature_settings("typed_accuracy").pass_ease == "good"
+        assert config_repo.feature_settings("overdue_guard").min_days == 2
         assert cfg.llm.provider == "gemini_vertex"
         assert cfg.tts.provider == "google_translate"
         # Vertex auth now lives in the per-provider [llm.gemini_vertex] subsection.
@@ -54,13 +58,32 @@ class TestConfigRepository:
     def test_feature_settings_none_for_unknown(self, config_repo):
         assert config_repo.feature_settings("not_a_plugin") is None
 
+    def test_feature_settings_returns_typed_model_from_namespace(self, tmp_path):
+        # The plugin's OWN config_model parses its raw [plugin] namespace from the merged dict.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        user_file = tmp_path / "omnia.toml"
+        user_file.write_text("[typed_accuracy]\nthreshold = 0.42\n", encoding="utf-8")
+        repo = ConfigRepository(ConfigLoader(_config_dir(), user_file))
+        settings = repo.feature_settings("typed_accuracy")
+        assert isinstance(settings, TypedAccuracySettings)
+        assert settings.threshold == 0.42
+
+    def test_feature_settings_rejects_unknown_keys(self, tmp_path):
+        # The plugin model is extra="forbid", so a typo in its namespace must raise.
+        user_file = tmp_path / "omnia.toml"
+        user_file.write_text("[overdue_guard]\nnot_a_real_key = 5\n", encoding="utf-8")
+        repo = ConfigRepository(ConfigLoader(_config_dir(), user_file))
+        with pytest.raises(ValidationError):
+            repo.feature_settings("overdue_guard")
+
     def test_user_override_wins_over_default(self, tmp_path):
         user_file = tmp_path / "omnia.toml"
         user_file.write_text("[typed_accuracy]\nthreshold = 0.9\n", encoding="utf-8")
         repo = ConfigRepository(ConfigLoader(_config_dir(), user_file))
-        assert repo.config.typed_accuracy.threshold == 0.9
+        assert repo.feature_settings("typed_accuracy").threshold == 0.9
         # untouched defaults still present
-        assert repo.config.auto_flip.delay_question_seconds == 3.0
+        assert repo.feature_settings("auto_flip").delay_question_seconds == 3.0
 
 
 class TestConfigModels:
