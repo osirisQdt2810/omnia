@@ -74,11 +74,19 @@ class WebDialog(QDialog):
     def set_html(self, html: str) -> None:
         """Render ``html`` in the webview.
 
-        Renders through the base ``QWebEngineView.setHtml`` (not ``AnkiWebView.setHtml``)
-        because the page is fully self-contained — that path avoids the media server and works
-        the same headless and inside Anki.
+        Prefer ``AnkiWebView.setHtml`` (serves via Anki's media server) — that is the ONLY
+        path that wires the ``pycmd`` *callback* round-trip, so a handler's return value
+        actually reaches the JS ``cb``. A page that populates itself via callbacks
+        (``list_note_types``/``load``) is blank without it. Fall back to the base
+        ``QWebEngineView.setHtml`` only when there's no media server (e.g. the headless test
+        stub), where the page still renders but callbacks are inert.
         """
-        QWebEngineView.setHtml(self._web, html)
+        from aqt import mw
+
+        if getattr(mw, "mediaServer", None) is not None:
+            self._web.setHtml(html)
+        else:
+            QWebEngineView.setHtml(self._web, html)
 
     def eval_js(self, js: str) -> None:
         """Evaluate ``js`` in the hosted webview.
