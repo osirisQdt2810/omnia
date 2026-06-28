@@ -72,11 +72,20 @@ class SettingsDialog(WebDialog):
         }
 
     def _on_configure(self, data: dict[str, Any]) -> None:
-        """Open the plugin's config dialog (custom first, else the generic form), then reload."""
+        """Open the plugin's config dialog (custom first, else the generic form), then reload.
+
+        DEFERRED off this pycmd/bridge callback: opening a (webview) dialog synchronously from
+        inside the settings webview's bridge callback leaves the nested AnkiWebView UNPAINTED
+        (the "blank Smart Notes dialog" — it loads with full content but never composites).
+        A 0ms timer lets this callback return so the child dialog opens on a clean event-loop
+        turn and paints correctly.
+        """
+        from aqt.qt import QTimer
+
         plugin_id = str(data.get("id", ""))
         plugin = next((p for p in self._manager.plugins() if p.id == plugin_id), None)
         if plugin is not None:
-            self._configure(plugin)
+            QTimer.singleShot(0, lambda p=plugin: self._configure(p))
 
     def _configure(self, plugin: FeaturePlugin) -> None:
         # A bespoke dialog (it owns its own persistence via the repo) takes precedence over the
