@@ -1,0 +1,22 @@
+# Omnia — high-level, common configuration (YAML for the human-facing top level).
+#
+# This file holds add-on-wide defaults. Per-feature tunables live in features.toml;
+# provider config in providers.toml (one [llm.<provider>] subsection each) — one domain per file.
+# These are DEFAULTS shipped with the add-on; the user's changes are saved separately to
+# user_files/omnia.toml and layered on top.
+
+log_level: INFO
+
+# Which feature plugins are enabled by default. Ticking a plugin in Tools → Omnia flips
+# its flag here (persisted to user_files/omnia.toml).
+plugins:
+  auto_flip:
+    enabled: false
+  typed_accuracy:
+    enabled: false
+  display_interval:
+    enabled: false
+  overdue_guard:
+    enabled: false
+  smart_notes:
+    enabled: false

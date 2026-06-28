@@ -1,0 +1,19 @@
+# Default per-feature settings (TOML — one table per feature, split from the high-level
+# omnia.yaml). Validated by the Pydantic models in omnia/core/config/models.py.
+
+[auto_flip]
+delay_question_seconds = 3.0   # seconds to wait before flipping question -> answer
+delay_answer_seconds = 3.0     # seconds to wait before auto-grading the answer
+wait_for_audio = true          # start the delay only after the card's audio finishes
+show_timer = true              # show a small countdown in the reviewer
+
+[typed_accuracy]
+threshold = 0.7                # accuracy ratio (0-1) at/above which the answer is a "pass"
+pass_ease = "good"             # ease used on a pass: "good" or "easy" (a fail uses Hard)
+
+[overdue_guard]
+ratio = 0.8                    # lateness / interval at/above which a card counts as overdue
+min_days = 2                   # minimum days late before the guard can trigger
+force_again_after_days = 7     # if the Hard interval would exceed this, force Again (0 = off)
+
+# display_interval has no options.

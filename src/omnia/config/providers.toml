@@ -1,0 +1,107 @@
+# LLM + TTS provider config for the smart_notes feature (and any future AI feature).
+#
+# The [llm] block has ONE subsection per provider ([llm.gemini_vertex], [llm.openai], …):
+# `provider` selects which one is active, so you only fill in the credentials for the
+# provider you actually use. Secrets stay in the active subsection (or, better, in your
+# user override at user_files/omnia.toml so they're not shipped). The free defaults
+# (google_translate TTS) need no key.
+
+[llm]
+# provider: gemini_vertex | gemini | openai | openrouter | openai_compatible
+provider = "gemini_vertex"
+
+# Gemini via Vertex AI (GCP project + a service account) — the provider used in production.
+# Also supplies the Google auth reused by the google_cloud TTS provider below.
+[llm.gemini_vertex]
+project = ""                # GCP project id, e.g. "vio-ai-500116"
+location = "global"         # "global" for Gemini 3.x; a region like "us-central1" otherwise
+# Auth — set exactly ONE of these three:
+credentials_path = ""       # service-account JSON path (abs, or relative to the add-on dir)
+use_gcloud = false          # true -> shell out to `gcloud auth print-access-token`
+access_token = ""           # paste a short-lived OAuth token directly
+# Model ids:
+text_model = "gemini-2.5-flash"
+image_model = ""            # e.g. "gemini-2.5-flash-image"
+embedding_model = ""        # e.g. "gemini-embedding-001"
+
+# Gemini via AI Studio (a GOOGLE_API_KEY instead of a GCP project).
+# NOTE: keep secrets OUT of this tracked file — put api keys in the gitignored
+# user_files/omnia.toml (see below) so they can't be committed.
+[llm.gemini]
+api_key = ""
+text_model = "gemini-2.0-flash"
+image_model = ""
+embedding_model = ""
+
+# OpenAI (api.openai.com).
+[llm.openai]
+api_key = ""
+base_url = "https://api.openai.com/v1"
+text_model = "gpt-4o-mini"
+image_model = "gpt-image-1"
+embedding_model = "text-embedding-3-small"
+
+# OpenRouter (OpenAI-compatible aggregator). Put the api_key in user_files/omnia.toml, not here.
+[llm.openrouter]
+api_key = ""
+base_url = "https://openrouter.ai/api/v1"
+text_model = "openai/gpt-4o-mini"
+image_model = "gpt-image-1"
+embedding_model = "text-embedding-3-small"
+
+# Any other OpenAI-compatible endpoint (set base_url).
+[llm.openai_compatible]
+api_key = ""
+base_url = ""
+text_model = ""
+image_model = ""
+embedding_model = ""
+
+# TTS uses the SAME per-provider shape as [llm]: [tts].provider selects which subsection is
+# active, so you only fill in the fields for the provider you use.
+[tts]
+# provider: google_translate | openai | openrouter | openai_compatible | google_cloud | edge_tts | piper
+provider = "google_translate"
+
+# Free, no key (gTTS-style) — the default.
+[tts.google_translate]
+lang = "en"            # voice language (e.g. en, vi)
+tld = "com"            # domain ("com.vn" nudges a Vietnamese accent)
+
+# OpenAI /audio/speech.
+[tts.openai]
+api_key = ""
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini-tts"
+voice = "alloy"
+
+# OpenRouter (OpenAI-compatible).
+[tts.openrouter]
+api_key = ""
+base_url = "https://openrouter.ai/api/v1"
+model = "gpt-4o-mini-tts"
+voice = "alloy"
+
+# Any other OpenAI-compatible /audio/speech endpoint (set base_url).
+[tts.openai_compatible]
+api_key = ""
+base_url = ""
+model = "gpt-4o-mini-tts"
+voice = "alloy"
+
+# Google Cloud TTS — reuses the [llm.gemini_vertex] Google auth (no extra key).
+[tts.google_cloud]
+lang = "en"
+voice = ""             # e.g. "en-US-Neural2-A"
+language_code = ""     # BCP-47 override, e.g. "vi-VN"
+speaking_rate = 1.0
+
+# Microsoft Edge neural voices; needs the `edge-tts` package installed.
+[tts.edge_tts]
+lang = "en"
+voice = ""             # e.g. "vi-VN-HoaiMyNeural"
+
+# Offline; needs the `piper` binary + a `model` (.onnx) voice path.
+[tts.piper]
+model = ""             # piper .onnx voice path
+binary = "piper"       # CLI binary name/path
