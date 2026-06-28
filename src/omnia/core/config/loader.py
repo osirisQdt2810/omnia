@@ -1,13 +1,17 @@
-"""Load + merge the TOML config files into a validated :class:`OmniaConfig`.
+"""Load + merge the live TOML config files into a validated :class:`OmniaConfig`.
 
-Layering: bundled defaults (``omnia.toml`` + ``features.toml`` + ``providers.toml``, one
-domain per file) are deep-merged with the user's overrides (``user_files/omnia.toml``), then
-validated by Pydantic. TOML is read with the stdlib ``tomllib`` (Python 3.11+) and written
-with ``tomli_w``.
+Model: three live domain files ARE the configuration, edited directly by the user and
+written back to by the add-on — there is NO separate override layer. ``omnia.toml`` owns
+``log_level`` + ``[plugins.*]``; ``features.toml`` owns the per-feature sections; and
+``providers.toml`` owns ``[llm]`` (one ``[llm.<provider>]`` subsection each) + ``[tts]``. On
+a fresh install a missing live file is created by copying its tracked ``*.example.toml``
+template. The files are deep-merged in order (omnia → features → providers) and validated by
+Pydantic. TOML is read with the stdlib ``tomllib`` (Python 3.11+) and written with ``tomli_w``.
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -20,51 +24,57 @@ from omnia.core.config.models import OmniaConfig
 
 
 class ConfigLoader:
-    """Reads and writes Omnia's layered config files."""
+    """Reads and writes Omnia's live domain config files."""
 
-    def __init__(self, config_dir: Path, user_file: Path) -> None:
+    LIVE_FILES = ("omnia.toml", "features.toml", "providers.toml")
+
+    def __init__(self, config_dir: Path) -> None:
         """Initialise the loader.
 
         Args:
-            config_dir: Directory holding the bundled default config files.
-            user_file: Path to the user's TOML overrides (created on first save).
+            config_dir: Directory holding the live domain config files (and the tracked
+                ``*.example.toml`` templates used to seed any missing live file).
         """
         self._config_dir = config_dir
-        self._user_file = user_file
+
+    def ensure_live_files(self) -> None:
+        """Create any missing live file by copying its ``*.example.toml`` template."""
+        for name in self.LIVE_FILES:
+            live = self._config_dir / name
+            template = self._config_dir / name.replace(".toml", ".example.toml")
+            if not live.exists() and template.exists():
+                shutil.copy(template, live)
 
     def load(self) -> OmniaConfig:
-        """Read defaults + user overrides, merge, and validate into an :class:`OmniaConfig`."""
+        """Read + merge the live files and validate into an :class:`OmniaConfig`."""
         return OmniaConfig.parse_obj(self.load_merged())
 
     def load_merged(self) -> dict[str, Any]:
-        """Return the fully merged raw config dict (defaults + user overrides).
+        """Return the fully merged raw config dict (omnia → features → providers).
 
         The repository keeps this so per-plugin sections (``[auto_flip]``, …) — which
         :class:`OmniaConfig` ignores — can be validated by each plugin's own ``config_model``.
         """
-        return self._deep_merge(self._load_defaults(), self.read_overrides())
+        self.ensure_live_files()
+        merged: dict[str, Any] = {}
+        for name in self.LIVE_FILES:
+            merged = self._deep_merge(merged, self._read_toml(self._config_dir / name))
+        return merged
 
-    def read_overrides(self) -> dict[str, Any]:
-        """Return the user's override layer (``user_files/omnia.toml``), or ``{}``."""
-        return self._read_toml(self._user_file)
+    def read_file(self, name: str) -> dict[str, Any]:
+        """Return the parsed contents of one live file, or ``{}`` if it is absent."""
+        return self._read_toml(self._config_dir / name)
 
-    def save_overrides(self, overrides: dict[str, Any]) -> None:
-        """Persist ``overrides`` to the user TOML file (the override layer only)."""
+    def write_file(self, name: str, data: dict[str, Any]) -> None:
+        """Persist ``data`` to the live file ``name`` (the owning domain file)."""
         import tomli_w
 
-        self._user_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._user_file, "wb") as handle:
-            tomli_w.dump(overrides, handle)
+        path = self._config_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as handle:
+            tomli_w.dump(data, handle)
 
     # --- internals ------------------------------------------------------------------
-    def _load_defaults(self) -> dict[str, Any]:
-        data: dict[str, Any] = {}
-        data.update(self._read_toml(self._config_dir / "omnia.toml"))
-        data.update(self._read_toml(self._config_dir / "features.toml"))
-        # providers.toml carries [llm] (with one [llm.<provider>] subsection each) + [tts].
-        data.update(self._read_toml(self._config_dir / "providers.toml"))
-        return data
-
     @staticmethod
     def _read_toml(path: Path) -> dict[str, Any]:
         if not path.exists():

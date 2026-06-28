@@ -41,19 +41,26 @@ class TestConfigRepository:
         ):
             assert config_repo.is_enabled(pid) is False
 
-    def test_set_enabled_persists_and_reloads(self, config_repo, tmp_path):
-        config_repo.set_enabled("auto_flip", True)
-        assert config_repo.is_enabled("auto_flip") is True
-        # A brand-new repository over the same user file sees the persisted override.
-        user_file = tmp_path / "omnia.toml"
-        fresh = ConfigRepository(ConfigLoader(_config_dir(), user_file))
+    def test_set_enabled_persists_and_reloads(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_enabled("auto_flip", True)
+        assert repo.is_enabled("auto_flip") is True
+        # A brand-new repository over the same config dir sees the persisted change
+        # (it now lives in omnia.toml's [plugins.auto_flip] section).
+        fresh = ConfigRepository(ConfigLoader(tmp_cfg))
         assert fresh.is_enabled("auto_flip") is True
 
-    def test_update_section_changes_typed_settings(self, config_repo):
-        config_repo.update_section("auto_flip", {"delay_question_seconds": 5.5})
-        settings = config_repo.feature_settings("auto_flip")
+    def test_update_section_changes_typed_settings(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.update_section("auto_flip", {"delay_question_seconds": 5.5})
+        settings = repo.feature_settings("auto_flip")
         assert settings is not None
         assert settings.delay_question_seconds == 5.5  # type: ignore[attr-defined]
+        # The change persisted to features.toml: a fresh repo reads it back.
+        fresh = ConfigRepository(ConfigLoader(tmp_cfg))
+        assert fresh.feature_settings("auto_flip").delay_question_seconds == 5.5
 
     def test_feature_settings_none_for_unknown(self, config_repo):
         assert config_repo.feature_settings("not_a_plugin") is None
@@ -62,25 +69,25 @@ class TestConfigRepository:
         # The plugin's OWN config_model parses its raw [plugin] namespace from the merged dict.
         from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
-        user_file = tmp_path / "omnia.toml"
-        user_file.write_text("[typed_accuracy]\nthreshold = 0.42\n", encoding="utf-8")
-        repo = ConfigRepository(ConfigLoader(_config_dir(), user_file))
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.update_section("typed_accuracy", {"threshold": 0.42})
         settings = repo.feature_settings("typed_accuracy")
         assert isinstance(settings, TypedAccuracySettings)
         assert settings.threshold == 0.42
 
     def test_feature_settings_rejects_unknown_keys(self, tmp_path):
         # The plugin model is extra="forbid", so a typo in its namespace must raise.
-        user_file = tmp_path / "omnia.toml"
-        user_file.write_text("[overdue_guard]\nnot_a_real_key = 5\n", encoding="utf-8")
-        repo = ConfigRepository(ConfigLoader(_config_dir(), user_file))
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.update_section("overdue_guard", {"not_a_real_key": 5})
         with pytest.raises(ValidationError):
             repo.feature_settings("overdue_guard")
 
-    def test_user_override_wins_over_default(self, tmp_path):
-        user_file = tmp_path / "omnia.toml"
-        user_file.write_text("[typed_accuracy]\nthreshold = 0.9\n", encoding="utf-8")
-        repo = ConfigRepository(ConfigLoader(_config_dir(), user_file))
+    def test_edited_value_wins_over_default(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.update_section("typed_accuracy", {"threshold": 0.9})
         assert repo.feature_settings("typed_accuracy").threshold == 0.9
         # untouched defaults still present
         assert repo.feature_settings("auto_flip").delay_question_seconds == 3.0
@@ -109,7 +116,16 @@ class TestConfigLoader:
         assert base == {"a": {"x": 1, "y": 2}, "b": 1}  # base untouched
 
 
-def _config_dir():
+def _tmp_config(tmp_path):
+    """Seed ``tmp_path`` from the tracked ``*.example.toml`` templates and return it.
+
+    Gives each test an isolated config directory; the loader's ``ensure_live_files`` then
+    creates the live files from these templates, so no real credentials are involved.
+    """
+    import shutil
     from pathlib import Path
 
-    return Path(__file__).resolve().parent.parent.parent / "src" / "omnia" / "config"
+    src = Path(__file__).resolve().parent.parent.parent / "src" / "omnia" / "config"
+    for template in src.glob("*.example.toml"):
+        shutil.copy(template, tmp_path / template.name)
+    return tmp_path

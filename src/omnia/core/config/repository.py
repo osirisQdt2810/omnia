@@ -6,7 +6,9 @@ The core sections (``log_level``/``plugins``/``llm``/``tts``) are validated into
 ``config_model``, resolved through the registry. The repository keeps the raw merged dict so
 it can hand a plugin's namespace to that model — which is how ``core`` stays decoupled from
 ``plugins`` (the registry holds plugin classes but lives in ``core``; plugins import IT).
-Writes update the user override layer (``user_files/omnia.toml``) and re-validate.
+Writes update the owning domain live file (``plugins``→``omnia.toml``, feature sections→
+``features.toml``, ``llm``/``tts``→``providers.toml``) and re-validate; there is no override
+layer.
 """
 
 from __future__ import annotations
@@ -25,11 +27,10 @@ from omnia.core.registry import get_registered
 
 
 class ConfigRepository:
-    """Typed config access + persistence of user overrides."""
+    """Typed config access + persistence to the owning domain live files."""
 
     def __init__(self, loader: ConfigLoader) -> None:
         self._loader = loader
-        self._overrides: dict[str, Any] = loader.read_overrides()
         self._config: OmniaConfig = loader.load()
         # Retained so a plugin's namespace can be validated by its own config_model.
         self._merged: dict[str, Any] = loader.load_merged()
@@ -46,10 +47,13 @@ class ConfigRepository:
         return bool(toggle and toggle.enabled)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> None:
-        """Persist the enabled flag for ``plugin_id`` and reload."""
-        section = self._overrides.setdefault("plugins", {}).setdefault(plugin_id, {})
-        section["enabled"] = bool(enabled)
-        self._persist()
+        """Persist the enabled flag for ``plugin_id`` (in ``omnia.toml``) and reload."""
+        data = self._loader.read_file("omnia.toml")
+        data.setdefault("plugins", {}).setdefault(plugin_id, {})["enabled"] = bool(
+            enabled
+        )
+        self._loader.write_file("omnia.toml", data)
+        self._reload()
 
     # --- typed settings access ------------------------------------------------------
     def feature_settings(self, plugin_id: str) -> Optional[BaseModel]:
@@ -77,15 +81,26 @@ class ConfigRepository:
 
     # --- writes (used by the settings GUI) ------------------------------------------
     def update_section(self, section: str, values: dict[str, Any]) -> None:
-        """Merge ``values`` into the override layer under ``section`` and reload.
+        """Merge ``values`` into ``section`` in its owning live file and reload.
 
-        ``section`` is a top-level key like ``"auto_flip"`` or ``"llm"``.
+        ``section`` is a top-level key like ``"auto_flip"`` or ``"llm"``; the owning file is
+        resolved by :meth:`_file_for`.
         """
-        target = self._overrides.setdefault(section, {})
-        target.update(values)
-        self._persist()
+        fname = self._file_for(section)
+        data = self._loader.read_file(fname)
+        data.setdefault(section, {}).update(values)
+        self._loader.write_file(fname, data)
+        self._reload()
 
-    def _persist(self) -> None:
-        self._loader.save_overrides(self._overrides)
+    @staticmethod
+    def _file_for(section: str) -> str:
+        """Return the live file that owns ``section``."""
+        if section in ("llm", "tts"):
+            return "providers.toml"
+        if section in ("log_level", "plugins"):
+            return "omnia.toml"
+        return "features.toml"
+
+    def _reload(self) -> None:
         self._config = self._loader.load()
         self._merged = self._loader.load_merged()

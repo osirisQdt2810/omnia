@@ -33,6 +33,15 @@ build/
 src/omnia/meta.json
 src/omnia/user_files/
 
+# Live config + secrets live in config/ (the *.example.toml templates are the tracked
+# defaults). The three live domain files are edited directly and hold real credentials —
+# never commit them or any credential file.
+src/omnia/config/omnia.toml
+src/omnia/config/features.toml
+src/omnia/config/providers.toml
+src/omnia/secrets/*
+!src/omnia/secrets/README.md
+
 # NOTE: src/omnia/vendor/ is intentionally NOT ignored — vendored pure-Python deps are
 # committed so the shipped add-on works without a build step. (It's empty today.)
 references/

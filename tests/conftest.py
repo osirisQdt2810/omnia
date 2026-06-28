@@ -184,13 +184,27 @@ def gui_hooks():
     return aqt.gui_hooks
 
 
+def _seed_config_dir(dest: Path) -> Path:
+    """Copy the tracked ``*.example.toml`` templates into ``dest`` and return it.
+
+    Gives each test an isolated config directory: ``ConfigLoader.ensure_live_files`` then
+    creates the live files from these templates, so the fixture is clean and uses NO real
+    credentials.
+    """
+    import shutil
+
+    src = _SRC / "omnia" / "config"
+    for template in src.glob("*.example.toml"):
+        shutil.copy(template, dest / template.name)
+    return dest
+
+
 @pytest.fixture
 def config_repo(tmp_path):
-    """A ConfigRepository over the real bundled defaults + a temp user-override file."""
+    """A ConfigRepository over an isolated config dir seeded from the bundled templates."""
     from omnia.core.config import ConfigLoader, ConfigRepository
 
-    config_dir = _SRC / "omnia" / "config"
-    return ConfigRepository(ConfigLoader(config_dir, tmp_path / "omnia.toml"))
+    return ConfigRepository(ConfigLoader(_seed_config_dir(tmp_path)))
 
 
 class FakeHttpClient:
@@ -318,33 +332,38 @@ def has_llm_credentials(llm_settings) -> bool:
 
 
 def _real_repo_and_override():
-    """A ConfigRepository over the bundled defaults + the UNTRACKED creds override.
+    """A ConfigRepository over the gitignored live config dir holding real credentials.
 
-    Creds come only from ``OMNIA_TEST_CONFIG`` or the gitignored ``user_files/omnia.toml`` —
-    never the tracked ``providers.toml`` — so secrets are never sourced from a committable file.
+    Creds come only from the live ``config/providers.toml`` (gitignored) — or a config
+    directory named by ``OMNIA_TEST_CONFIG`` — never the tracked ``*.example.toml`` templates,
+    so secrets are never sourced from a committable file. The returned path is the live
+    ``providers.toml`` so callers can gate on its existence.
     """
     from omnia.core.config import ConfigLoader, ConfigRepository
 
-    override = os.environ.get("OMNIA_TEST_CONFIG")
-    user_file = (
-        Path(override) if override else _SRC / "omnia" / "user_files" / "omnia.toml"
+    config_dir = (
+        Path(os.environ["OMNIA_TEST_CONFIG"])
+        if "OMNIA_TEST_CONFIG" in os.environ
+        else _real_config_dir()
     )
-    return ConfigRepository(ConfigLoader(_real_config_dir(), user_file)), user_file
+    repo = ConfigRepository(ConfigLoader(config_dir))
+    return repo, config_dir / "providers.toml"
 
 
 def real_llm_provider_or_skip():
     """Build the REAL configured LLM provider, or ``pytest.skip`` if creds are absent.
 
-    Credentials are read from an **untracked** override only — never from the tracked bundled
-    ``providers.toml`` — so a live, billable ``@llm`` run can't be triggered by (or leak) the
-    repo's shipped config:
+    Credentials are read from the gitignored live config only — never from the tracked
+    ``*.example.toml`` templates — so a live, billable ``@llm`` run can't be triggered by (or
+    leak) the repo's shipped config:
 
-    * env ``OMNIA_TEST_CONFIG`` → a TOML file holding your ``[llm.<provider>]`` creds, or
-    * the add-on's gitignored ``src/omnia/user_files/omnia.toml`` (what the running add-on
+    * env ``OMNIA_TEST_CONFIG`` → a config DIRECTORY holding your live ``providers.toml`` with
+      ``[llm.<provider>]`` creds, or
+    * the add-on's gitignored ``src/omnia/config/providers.toml`` (what the running add-on
       writes when you configure providers in Anki).
 
-    The bundled ``providers.toml`` still supplies non-secret defaults (provider, model ids);
-    only the credential override decides whether this runs or skips.
+    The tracked ``providers.example.toml`` still supplies non-secret defaults (provider, model
+    ids); only the live credential file decides whether this runs or skips.
     """
     from omnia.core.providers import ProviderHub
 
@@ -352,9 +371,10 @@ def real_llm_provider_or_skip():
     llm = repo.llm_settings()
     if not (user_file.exists() and has_llm_credentials(llm)):
         pytest.skip(
-            f"no credentials for LLM provider {llm.provider!r}: put them in an untracked "
-            f"override — set OMNIA_TEST_CONFIG to a TOML with [llm.{llm.provider}] creds, or "
-            f"configure providers in Anki (writes user_files/omnia.toml) — to run @llm tests"
+            f"no credentials for LLM provider {llm.provider!r}: put them in the live config — "
+            f"set OMNIA_TEST_CONFIG to a config directory with a providers.toml holding "
+            f"[llm.{llm.provider}] creds, or configure providers in Anki (writes "
+            f"config/providers.toml) — to run @llm tests"
         )
     return ProviderHub(llm, repo.tts_settings()).llm()
 
