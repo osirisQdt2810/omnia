@@ -5,10 +5,9 @@
 # RULE: prefer pure-Python, cross-platform deps. The provider HTTP layer is stdlib-only;
 # these deps exist for the typed-config layer and the gemini_vertex auth path.
 
-# --- Typed config (Pydantic v2 + YAML/TOML) -------------------------------------------
+# --- Typed config (Pydantic v2 + TOML) ------------------------------------------------
 pydantic>=2.9          # typed/validated config models
-PyYAML>=6.0            # parse config/omnia.yaml (use the pure-Python loader, not libyaml)
-tomli-w>=1.0           # write user_files/omnia.toml (TOML reading uses stdlib tomllib on 3.11+)
+tomli-w>=1.0           # write config TOML (reading uses stdlib tomllib on 3.11+)
 
 # NOTE: pydantic depends on `pydantic_core`, which is a COMPILED (Rust) wheel — the one
 # exception to the pure-Python rule. It must be vendored as the wheel matching the target
@@ -20,6 +19,6 @@ tomli-w>=1.0           # write user_files/omnia.toml (TOML reading uses stdlib t
 rsa>=4.9               # RS256 signing of the JWT assertion (pure-Python)
 pyasn1>=0.6            # unwrap the PKCS#8 service-account private key to PKCS#1 (pure-Python)
 # (Only needed for gemini_vertex with credentials_path/credentials_json; the access_token
-#  and use_gcloud strategies need nothing vendored.)
+#  strategy needs nothing vendored.)
 #
 # After editing this file run:  python scripts/vendor_deps.py

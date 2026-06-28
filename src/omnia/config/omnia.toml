@@ -1,0 +1,26 @@
+# Omnia — high-level, add-on-wide defaults (TOML, like the other config files).
+#
+# One domain per file: this file holds add-on-wide defaults; per-feature tunables live in
+# features.toml; provider config in providers.toml (one [llm.<provider>] subsection each).
+# These are DEFAULTS shipped with the add-on; the user's changes are saved separately to
+# user_files/omnia.toml and layered on top (user_files survives add-on updates; this dir
+# does not — Anki overwrites the add-on folder on every update).
+
+log_level = "INFO"
+
+# Which feature plugins are enabled by default. Ticking a plugin in Tools → Omnia flips its
+# flag (persisted to user_files/omnia.toml).
+[plugins.auto_flip]
+enabled = false
+
+[plugins.typed_accuracy]
+enabled = false
+
+[plugins.display_interval]
+enabled = false
+
+[plugins.overdue_guard]
+enabled = false
+
+[plugins.smart_notes]
+enabled = false

@@ -44,7 +44,7 @@ def _add_vendor_paths() -> None:
     binary dir.
 
     APPEND (not insert) so Anki's own packages win for any overlap and vendor only fills gaps
-    (pydantic, pydantic_core, yaml, tomli_w, …). The platform dir is appended *before*
+    (pydantic, pydantic_core, tomli_w, …). The platform dir is appended *before*
     ``universal`` so the correct ``pydantic_core`` binary is found ahead of anything else.
     """
     vendor = _ADDON_DIR / "vendor"

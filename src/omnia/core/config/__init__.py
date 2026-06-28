@@ -1,6 +1,6 @@
-"""Typed configuration layer (Pydantic v2 + YAML/TOML).
+"""Typed configuration layer (Pydantic v2 + TOML).
 
-Defaults ship in ``omnia/config/`` (``omnia.yaml`` high-level, ``features.toml`` /
+Defaults ship in ``omnia/config/`` (``omnia.toml`` high-level, ``features.toml`` /
 ``providers.toml`` per domain — the LLM block holds one subsection per provider); user
 overrides persist to ``user_files/omnia.toml``. The :class:`ConfigLoader` merges + validates
 them into a typed :class:`OmniaConfig`, and the :class:`ConfigRepository` is the read/write
