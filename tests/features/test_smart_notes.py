@@ -1,4 +1,4 @@
-"""Tests for smart_notes (prompt interpolation + the provider-backed GenerationService).
+"""Tests for smart_notes (the note-type-centric model, the engine, and auto-smart).
 
 This file also holds the real-provider feature tests: smart_notes' GenerationService driven
 by EACH real provider, marked ``llm``/``tts`` and auto-skipping without credentials.
@@ -25,23 +25,29 @@ from conftest import (
 from omnia.core.config.models import (
     LLMSettings,
     OpenAICompatibleLLMSettings,
+    SmartNotesFieldConfig,
     SmartNotesFieldRule,
+    SmartNotesNoteTypeConfig,
     SmartNotesSettings,
     TTSSettings,
 )
 from omnia.core.providers import ProviderError, ProviderHub
+from omnia.features.smart_notes.auto_smart import (
+    AutoSmartField,
+    apply_auto_smart,
+    build_auto_smart_prompt,
+    candidate_fields,
+    generate_auto_smart,
+    parse_auto_smart_response,
+)
 from omnia.features.smart_notes.dag import SmartNotesCycleError, order_rules
 from omnia.features.smart_notes.logic import (
     GenerationService,
-    build_generation_plan,
     chunk,
+    compile_note_type_rules,
     dedupe_preserving_order,
     extract_field_refs,
     interpolate,
-    rows_to_rules,
-    rules_for_field,
-    rules_to_rows,
-    select_rules_for_note,
     should_skip_rule,
 )
 from omnia.features.smart_notes.markdown import convert_markdown_to_html
@@ -62,119 +68,112 @@ class TestPromptInterpolation:
         assert interpolate("{{Missing}}!", {}) == "!"
 
 
-class TestSmartNotesRowMapping:
-    def test_rules_to_rows_projects_every_field(self):
-        rule = SmartNotesFieldRule(
+class TestSmartNotesModel:
+    def test_empty_settings_validates(self):
+        # A fresh, empty config must load (smart_notes ships disabled with no note types).
+        settings = SmartNotesSettings()
+        assert settings.note_types == []
+        assert settings.allow_empty_fields is False
+        assert settings.regenerate_when_batching is True
+        assert settings.generate_at_review is False
+
+    def test_populated_settings_round_trips(self):
+        config = SmartNotesNoteTypeConfig(
             note_type="Basic",
-            source_field="Word",
-            target_field="Def",
-            kind="text",
-            prompt="Define {{Word}}",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Meaning", enabled=True, type="text", prompt="Define {{Word}}"
+                ),
+                SmartNotesFieldConfig(field="Audio", enabled=True, type="tts"),
+            ],
         )
-        rows = rules_to_rows([rule])
-        assert rows == [
-            {
-                "note_type": "Basic",
-                "source_field": "Word",
-                "target_field": "Def",
-                "kind": "text",
-                "prompt": "Define {{Word}}",
-            }
-        ]
+        settings = SmartNotesSettings(note_types=[config])
+        rebuilt = SmartNotesSettings(**settings.model_dump())
+        assert rebuilt == settings
+        assert rebuilt.note_type_config("Basic").base_field == "Word"
 
-    def test_round_trip_through_settings_preserves_rules(self):
-        rules = [
-            SmartNotesFieldRule(
-                note_type="Basic",
-                source_field="Word",
-                target_field="Def",
-                kind="text",
-                prompt="Define {{Word}}",
-            ),
-            SmartNotesFieldRule(source_field="Word", target_field="Audio", kind="tts"),
-        ]
-        rebuilt = SmartNotesSettings(fields=rows_to_rules(rules_to_rows(rules))).fields
-        assert rebuilt == rules
+    def test_field_type_is_validated(self):
+        with pytest.raises(ValueError):
+            SmartNotesFieldConfig(field="X", type="video")
 
-    def test_rows_to_rules_drops_fully_blank_rows(self):
-        rows = [
-            {"note_type": "  ", "source_field": "", "target_field": "  ", "prompt": ""},
-            {"target_field": "Def", "kind": "text"},
-        ]
-        out = rows_to_rules(rows)
-        assert len(out) == 1
-        assert out[0]["target_field"] == "Def"
-
-    def test_rows_to_rules_strips_whitespace(self):
-        out = rows_to_rules([{"target_field": "  Def  ", "source_field": " Word "}])
-        assert out[0]["target_field"] == "Def"
-        assert out[0]["source_field"] == "Word"
-
-    def test_rows_to_rules_defaults_unknown_kind_to_text(self):
-        out = rows_to_rules([{"target_field": "Def", "kind": "video"}])
-        assert out[0]["kind"] == "text"
-
-    def test_rows_to_rules_keeps_valid_kind(self):
-        out = rows_to_rules([{"target_field": "Audio", "kind": "tts"}])
-        assert out[0]["kind"] == "tts"
-
-
-class TestSmartNotesPlanBuilding:
-    def test_filters_by_note_type(self):
-        basic = SmartNotesFieldRule(note_type="Basic", target_field="Def")
-        cloze = SmartNotesFieldRule(note_type="Cloze", target_field="Def")
-        plan = build_generation_plan({"Def": ""}, "Basic", [basic, cloze])
-        assert [rule for rule, _ in plan] == [basic]
-
-    def test_empty_note_type_matches_any(self):
-        rule = SmartNotesFieldRule(note_type="", target_field="Def")
-        plan = build_generation_plan({"Def": ""}, "Whatever", [rule])
-        assert [r for r, _ in plan] == [rule]
-
-    def test_skips_rule_whose_target_field_is_absent(self):
-        rule = SmartNotesFieldRule(target_field="Missing")
-        plan = build_generation_plan({"Def": ""}, "Basic", [rule])
-        assert plan == []
-
-    def test_pairs_each_rule_with_the_note_fields(self):
-        fields = {"Word": "cat", "Def": ""}
-        rule = SmartNotesFieldRule(target_field="Def", source_field="Word")
-        plan = build_generation_plan(fields, "Basic", [rule])
-        assert plan == [(rule, fields)]
-
-
-class TestSelectRulesForNote:
-    def test_matches_note_type_and_existing_fields(self):
-        basic = SmartNotesFieldRule(note_type="Basic", target_field="Def")
-        other = SmartNotesFieldRule(note_type="Cloze", target_field="Def")
-        missing = SmartNotesFieldRule(note_type="Basic", target_field="Nope")
-        selected = select_rules_for_note(
-            [basic, other, missing], "Basic", ["Word", "Def"]
+    def test_note_type_config_lookup_returns_none_when_absent(self):
+        settings = SmartNotesSettings(
+            note_types=[SmartNotesNoteTypeConfig(note_type="Basic", base_field="W")]
         )
-        assert selected == [basic]
+        assert settings.note_type_config("Basic") is not None
+        assert settings.note_type_config("Cloze") is None
 
-    def test_empty_note_type_matches_any(self):
-        rule = SmartNotesFieldRule(target_field="Def")
-        assert select_rules_for_note([rule], "Whatever", ["Def"]) == [rule]
+    def test_generatable_fields_excludes_base_and_disabled(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(field="Word", enabled=True),  # base — excluded
+                SmartNotesFieldConfig(field="Meaning", enabled=True),
+                SmartNotesFieldConfig(
+                    field="Off", enabled=False
+                ),  # disabled — excluded
+            ],
+        )
+        assert [f.field for f in config.generatable_fields()] == ["Meaning"]
 
-    def test_enabled_only_drops_disabled_rules(self):
-        on = SmartNotesFieldRule(target_field="A", enabled=True)
-        off = SmartNotesFieldRule(target_field="B", enabled=False)
-        assert select_rules_for_note([on, off], "X", ["A", "B"]) == [on, off]
-        assert select_rules_for_note([on, off], "X", ["A", "B"], enabled_only=True) == [
-            on
-        ]
 
+class TestCompileNoteTypeRules:
+    def test_compiles_one_rule_per_generatable_field(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Meaning", enabled=True, type="text", prompt="Define {{Word}}"
+                ),
+                SmartNotesFieldConfig(field="Audio", enabled=True, type="tts"),
+                SmartNotesFieldConfig(field="Off", enabled=False),
+            ],
+        )
+        rules = compile_note_type_rules(config)
+        assert [r.target_field for r in rules] == ["Meaning", "Audio"]
+        meaning = rules[0]
+        assert meaning.kind == "text"
+        assert meaning.prompt == "Define {{Word}}"
+        # No source_field needed when a prompt is given.
+        assert meaning.source_field == ""
 
-class TestRulesForField:
-    def test_returns_rules_targeting_the_field_regardless_of_enabled(self):
-        a = SmartNotesFieldRule(note_type="Basic", target_field="Def", enabled=False)
-        b = SmartNotesFieldRule(note_type="Basic", target_field="Other")
-        assert rules_for_field([a, b], "Basic", "Def") == [a]
+    def test_bare_field_falls_back_to_base_as_source(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[SmartNotesFieldConfig(field="Echo", enabled=True, type="text")],
+        )
+        rule = compile_note_type_rules(config)[0]
+        assert rule.prompt == ""
+        assert rule.source_field == "Word"
 
-    def test_filters_by_note_type(self):
-        rule = SmartNotesFieldRule(note_type="Cloze", target_field="Def")
-        assert rules_for_field([rule], "Basic", "Def") == []
+    def test_carries_overrides_and_overwrite(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Meaning",
+                    enabled=True,
+                    type="text",
+                    prompt="x",
+                    provider="gemini",
+                    model="m",
+                    voice="v",
+                    overwrite=True,
+                )
+            ],
+        )
+        rule = compile_note_type_rules(config)[0]
+        assert (rule.provider, rule.model, rule.voice, rule.overwrite) == (
+            "gemini",
+            "m",
+            "v",
+            True,
+        )
 
 
 class TestBatchPlanningHelpers:
@@ -227,7 +226,17 @@ class TestGenerationService:
         assert result.data == b"PNG"
         assert result.ext == "png"
 
-    def test_generate_tts_uses_source_field(self):
+    def test_generate_tts_uses_prompt_text(self):
+        service = GenerationService(_hub())
+        rule = SmartNotesFieldRule(
+            kind="tts", prompt="say {{Word}}", target_field="Audio"
+        )
+        result = service.generate(rule, {"Word": "cat"})
+        assert result.kind == "tts"
+        assert result.data == b"MP3"
+        assert result.ext == "mp3"
+
+    def test_generate_tts_falls_back_to_source_field(self):
         service = GenerationService(_hub())
         rule = SmartNotesFieldRule(
             kind="tts", source_field="Word", target_field="Audio"
@@ -235,7 +244,6 @@ class TestGenerationService:
         result = service.generate(rule, {"Word": "cat"})
         assert result.kind == "tts"
         assert result.data == b"MP3"
-        assert result.ext == "mp3"
 
 
 class TestMarkdownConversion:
@@ -310,9 +318,9 @@ class TestOrderRules:
         ordered = [r.target_field for r in order_rules([consumer, producer])]
         assert ordered.index("Def") < ordered.index("Usage")
 
-    def test_tts_source_field_creates_a_dependency(self):
+    def test_tts_prompt_creates_a_dependency(self):
         producer = _rule("Reading", source="Word")
-        tts = _rule("Audio", source="Reading", kind="tts")
+        tts = _rule("Audio", prompt="{{Reading}}", kind="tts")
         ordered = [r.target_field for r in order_rules([tts, producer])]
         assert ordered.index("Reading") < ordered.index("Audio")
 
@@ -320,37 +328,34 @@ class TestOrderRules:
 class TestShouldSkipRule:
     def test_skips_when_all_sources_blank(self):
         rule = _rule("Def", prompt="define {{Word}}")
-        assert should_skip_rule(
-            rule, {"Word": ""}, allow_empty_fields=False, overwrite=True
-        )
+        rule.overwrite = True
+        assert should_skip_rule(rule, {"Word": ""}, allow_empty_fields=False)
 
     def test_generates_when_allow_empty_fields(self):
         rule = _rule("Def", prompt="define {{Word}}")
-        assert not should_skip_rule(
-            rule, {"Word": ""}, allow_empty_fields=True, overwrite=True
-        )
+        rule.overwrite = True
+        assert not should_skip_rule(rule, {"Word": ""}, allow_empty_fields=True)
 
     def test_generates_when_any_source_has_a_value(self):
         rule = _rule("Def", prompt="{{A}} {{B}}")
-        assert not should_skip_rule(
-            rule, {"A": "", "B": "x"}, allow_empty_fields=False, overwrite=True
-        )
+        rule.overwrite = True
+        assert not should_skip_rule(rule, {"A": "", "B": "x"}, allow_empty_fields=False)
 
     def test_skips_when_target_already_filled(self):
         rule = _rule("Def", prompt="define {{Word}}")
         fields = {"Word": "cat", "Def": "already here"}
-        assert should_skip_rule(rule, fields, allow_empty_fields=False, overwrite=False)
+        assert should_skip_rule(rule, fields, allow_empty_fields=False)
 
-    def test_overwrites_when_overwrite_set(self):
+    def test_overwrites_when_rule_overwrite_set(self):
         rule = _rule("Def", prompt="define {{Word}}")
+        rule.overwrite = True
         fields = {"Word": "cat", "Def": "already here"}
-        assert not should_skip_rule(
-            rule, fields, allow_empty_fields=False, overwrite=True
-        )
+        assert not should_skip_rule(rule, fields, allow_empty_fields=False)
 
     def test_rule_with_no_source_refs_is_not_skipped_for_emptiness(self):
         rule = _rule("Def", prompt="a static prompt")
-        assert not should_skip_rule(rule, {}, allow_empty_fields=False, overwrite=True)
+        rule.overwrite = True
+        assert not should_skip_rule(rule, {}, allow_empty_fields=False)
 
 
 class _RecordingLLM(FakeLLMProvider):
@@ -379,49 +384,119 @@ class _RecordingTTS(FakeTTSProvider):
         return b"AUDIO"
 
 
+def _config(base, fields):
+    """Build a SmartNotesNoteTypeConfig from (field, kwargs) tuples."""
+    return SmartNotesNoteTypeConfig(
+        note_type="Basic",
+        base_field=base,
+        fields=[SmartNotesFieldConfig(field=name, **kw) for name, kw in fields],
+    )
+
+
 class TestGenerateNote:
     def test_chains_text_output_into_a_downstream_prompt(self):
         llm = _RecordingLLM(by_target={"define cat": "a feline"})
         service = GenerationService(_stub_hub(llm=llm))
-        define = SmartNotesFieldRule(
-            kind="text", prompt="define {{Word}}", target_field="Def"
+        config = _config(
+            "Word",
+            [
+                ("Def", dict(enabled=True, type="text", prompt="define {{Word}}")),
+                (
+                    "Usage",
+                    dict(enabled=True, type="text", prompt="use {{Def}} in a sentence"),
+                ),
+            ],
         )
-        usage = SmartNotesFieldRule(
-            kind="text", prompt="use {{Def}} in a sentence", target_field="Usage"
-        )
-        results = service.generate_note(
-            [usage, define], {"Word": "cat", "Def": "", "Usage": ""}
-        )
+        results = service.generate_note(config, {"Word": "cat", "Def": "", "Usage": ""})
         targets = [rule.target_field for rule, _ in results]
         assert targets == ["Def", "Usage"]
         # The downstream prompt saw the freshly generated value, not the blank field.
         usage_result = dict((r.target_field, res) for r, res in results)["Usage"]
         assert usage_result.text == "generated:use a feline in a sentence"
 
+    def test_base_field_is_never_generated(self):
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [
+                ("Word", dict(enabled=True, type="text", prompt="ignore")),  # base
+                ("Def", dict(enabled=True, type="text", prompt="define {{Word}}")),
+            ],
+        )
+        results = service.generate_note(config, {"Word": "cat", "Def": ""})
+        assert [r.target_field for r, _ in results] == ["Def"]
+
     def test_skips_already_filled_target_without_overwrite(self):
         llm = _RecordingLLM()
         service = GenerationService(_stub_hub(llm=llm))
-        rule = SmartNotesFieldRule(
-            kind="text", prompt="define {{Word}}", target_field="Def"
+        config = _config(
+            "Word", [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))]
         )
-        results = service.generate_note([rule], {"Word": "cat", "Def": "filled"})
+        results = service.generate_note(config, {"Word": "cat", "Def": "filled"})
         assert results == []
 
-    def test_skips_rule_with_all_blank_sources(self):
+    def test_force_overwrite_regenerates_filled_target(self):
         llm = _RecordingLLM()
         service = GenerationService(_stub_hub(llm=llm))
-        rule = SmartNotesFieldRule(
-            kind="text", prompt="define {{Word}}", target_field="Def"
+        config = _config(
+            "Word", [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))]
         )
-        results = service.generate_note([rule], {"Word": "", "Def": ""})
+        results = service.generate_note(
+            config, {"Word": "cat", "Def": "filled"}, force_overwrite=True
+        )
+        assert [r.target_field for r, _ in results] == ["Def"]
+
+    def test_per_field_overwrite_regenerates_filled_target(self):
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [
+                (
+                    "Def",
+                    dict(
+                        enabled=True,
+                        type="text",
+                        prompt="define {{Word}}",
+                        overwrite=True,
+                    ),
+                )
+            ],
+        )
+        results = service.generate_note(config, {"Word": "cat", "Def": "filled"})
+        assert [r.target_field for r, _ in results] == ["Def"]
+
+    def test_skips_field_with_all_blank_sources(self):
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word", [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))]
+        )
+        results = service.generate_note(config, {"Word": "", "Def": ""})
+        assert results == []
+
+    def test_disabled_field_is_skipped(self):
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [("Def", dict(enabled=False, type="text", prompt="define {{Word}}"))],
+        )
+        results = service.generate_note(config, {"Word": "cat", "Def": ""})
         assert results == []
 
     def test_cycle_raises(self):
         service = GenerationService(_stub_hub(llm=_RecordingLLM()))
-        a = SmartNotesFieldRule(kind="text", prompt="{{B}}", target_field="A")
-        b = SmartNotesFieldRule(kind="text", prompt="{{A}}", target_field="B")
+        config = _config(
+            "Word",
+            [
+                ("A", dict(enabled=True, type="text", prompt="{{B}}", overwrite=True)),
+                ("B", dict(enabled=True, type="text", prompt="{{A}}", overwrite=True)),
+            ],
+        )
         with pytest.raises(SmartNotesCycleError):
-            service.generate_note([a, b], {"A": "", "B": ""}, overwrite=True)
+            service.generate_note(config, {"A": "", "B": ""})
 
 
 class TestPerFieldOverrides:
@@ -459,13 +534,13 @@ class TestPerFieldOverrides:
         service.generate(rule, {"Word": "cat"})
         assert hub.llm_overrides == [("", "img-model")]
 
-    def test_tts_rule_voice_override_and_interpolated_source(self):
+    def test_tts_rule_voice_override_and_interpolated_prompt(self):
         tts = _RecordingTTS()
         service = GenerationService(_stub_hub(tts=tts))
         rule = SmartNotesFieldRule(
-            kind="tts", source_field="Reading", target_field="Audio", voice="en-US-X"
+            kind="tts", prompt="hello {{Word}}", target_field="Audio", voice="en-US-X"
         )
-        service.generate(rule, {"Reading": "hello {{Word}}", "Word": "cat"})
+        service.generate(rule, {"Word": "cat"})
         assert tts.calls == [("hello cat", "en-US-X")]
 
     def test_text_result_is_markdown_converted(self):
@@ -474,6 +549,162 @@ class TestPerFieldOverrides:
         rule = SmartNotesFieldRule(kind="text", prompt="go", target_field="Def")
         result = service.generate(rule, {})
         assert result.text == "<strong>bold</strong>"
+
+
+# ---------------------------------------------------------------------------
+# Auto-smart: prompt-build (pure), result-apply (pure), and the thin glue.
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSmartPromptBuild:
+    def test_prompt_carries_persona_base_field_and_targets(self):
+        prompt = build_auto_smart_prompt("Basic", "Word", ["Meaning", "Audio"])
+        assert "senior language master" in prompt
+        assert "{{Word}}" in prompt
+        assert "Meaning" in prompt and "Audio" in prompt
+        # It must demand JSON output so the reply is parseable.
+        assert "JSON" in prompt
+
+
+class TestAutoSmartParse:
+    def test_parses_a_clean_json_object(self):
+        raw = '{"Meaning": {"type": "text", "prompt": "Define {{Word}}"}}'
+        out = parse_auto_smart_response(raw)
+        assert out == {"Meaning": AutoSmartField(type="text", prompt="Define {{Word}}")}
+
+    def test_tolerates_code_fences_and_prose(self):
+        raw = (
+            "Sure! Here you go:\n```json\n"
+            '{"Audio": {"type": "tts", "prompt": "{{Word}}"}}\n```\nHope that helps.'
+        )
+        out = parse_auto_smart_response(raw)
+        assert out["Audio"] == AutoSmartField(type="tts", prompt="{{Word}}")
+
+    def test_invalid_type_falls_back_to_text(self):
+        out = parse_auto_smart_response('{"X": {"type": "video", "prompt": "p"}}')
+        assert out["X"].type == "text"
+
+    def test_missing_prompt_defaults_to_empty(self):
+        out = parse_auto_smart_response('{"X": {"type": "text"}}')
+        assert out["X"].prompt == ""
+
+    def test_non_object_value_is_ignored(self):
+        out = parse_auto_smart_response('{"X": "nope", "Y": {"type": "text"}}')
+        assert "X" not in out and "Y" in out
+
+    def test_no_json_raises(self):
+        with pytest.raises(ProviderError):
+            parse_auto_smart_response("I cannot help with that.")
+
+    def test_malformed_json_raises(self):
+        with pytest.raises(ProviderError):
+            parse_auto_smart_response("{not valid json}")
+
+
+class TestAutoSmartApply:
+    def _config(self):
+        return SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(field="Meaning", enabled=True),
+                SmartNotesFieldConfig(
+                    field="Locked", enabled=True, prompt_locked=True, prompt="keep me"
+                ),
+                SmartNotesFieldConfig(field="Off", enabled=False),
+            ],
+        )
+
+    def test_only_enabled_unlocked_fields_are_overwritten(self):
+        config = self._config()
+        suggestions = {
+            "Meaning": AutoSmartField(type="text", prompt="Define {{Word}}"),
+            "Locked": AutoSmartField(type="image", prompt="overwrite attempt"),
+            "Off": AutoSmartField(type="tts", prompt="overwrite attempt"),
+        }
+        updated = apply_auto_smart(config, suggestions)
+        by_name = {f.field: f for f in updated.fields}
+        assert by_name["Meaning"].prompt == "Define {{Word}}"
+        assert by_name["Meaning"].type == "text"
+        # Locked + disabled fields are untouched.
+        assert by_name["Locked"].prompt == "keep me"
+        assert by_name["Off"].prompt == ""
+
+    def test_input_config_is_not_mutated(self):
+        config = self._config()
+        apply_auto_smart(config, {"Meaning": AutoSmartField(type="text", prompt="new")})
+        assert config.fields[0].prompt == ""  # original untouched
+
+    def test_field_without_suggestion_is_untouched(self):
+        config = self._config()
+        updated = apply_auto_smart(config, {})
+        assert updated.fields[0].prompt == ""
+
+    def test_candidate_fields_excludes_base_disabled_and_locked(self):
+        config = self._config()
+        assert candidate_fields(config) == ["Meaning"]
+
+
+class _CannedLLM(FakeLLMProvider):
+    def __init__(self, text):
+        super().__init__()
+        self._fixed_text = text
+
+    def generate_text(self, prompt, *, system=None, temperature=0.7, max_tokens=None):
+        return self._fixed_text
+
+
+class TestAutoSmartGenerate:
+    def test_calls_llm_and_applies_the_result(self):
+        class _Hub:
+            def llm(self, *, model="", provider=""):
+                return _CannedLLM(
+                    '{"Meaning": {"type": "text", "prompt": "Define {{Word}}"}}'
+                )
+
+            def tts(self):
+                raise AssertionError("no TTS")
+
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[SmartNotesFieldConfig(field="Meaning", enabled=True)],
+        )
+        updated = generate_auto_smart(_Hub(), config)
+        assert updated.fields[0].prompt == "Define {{Word}}"
+
+    def test_no_candidates_is_a_noop(self):
+        class _Hub:
+            def llm(self, *, model="", provider=""):
+                raise AssertionError("must not call the LLM with no candidates")
+
+            def tts(self):
+                raise AssertionError("no TTS")
+
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(field="Locked", enabled=True, prompt_locked=True)
+            ],
+        )
+        assert generate_auto_smart(_Hub(), config) == config
+
+    def test_provider_failure_propagates(self):
+        class _Hub:
+            def llm(self, *, model="", provider=""):
+                raise ProviderError("boom")
+
+            def tts(self):
+                raise AssertionError("no TTS")
+
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[SmartNotesFieldConfig(field="Meaning", enabled=True)],
+        )
+        with pytest.raises(ProviderError):
+            generate_auto_smart(_Hub(), config)
 
 
 class TestSmartNotesPlugin:
@@ -613,9 +844,7 @@ class _SmartNotesTTSGenContract:
 
     def test_tts_rule_synthesizes(self, hub):
         service = GenerationService(hub)
-        rule = SmartNotesFieldRule(
-            kind="tts", source_field="Word", target_field="Audio"
-        )
+        rule = SmartNotesFieldRule(kind="tts", prompt="{{Word}}", target_field="Audio")
         result = call_or_xfail(service.generate, rule, {"Word": "hello world"})
         assert result.kind == "tts"
         assert isinstance(result.data, (bytes, bytearray)) and result.data
@@ -671,9 +900,7 @@ class TestSmartNotesTTSGenReal(_SmartNotesTTSGenContract):
     def test_generated_audio_is_valid(self, hub):
         # Beyond non-empty: the field gets REAL audio in the provider's declared format.
         service = GenerationService(hub)
-        rule = SmartNotesFieldRule(
-            kind="tts", source_field="Word", target_field="Audio"
-        )
+        rule = SmartNotesFieldRule(kind="tts", prompt="{{Word}}", target_field="Audio")
         result = call_or_xfail(
             service.generate, rule, {"Word": "Hello, this is a real speech test."}
         )

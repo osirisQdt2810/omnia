@@ -11,9 +11,26 @@ from __future__ import annotations
 
 from conftest import FakeLLMProvider
 
-from omnia.core.config.models import SmartNotesFieldRule, SmartNotesSettings
+from omnia.core.config.models import (
+    SmartNotesFieldConfig,
+    SmartNotesNoteTypeConfig,
+    SmartNotesSettings,
+)
 from omnia.features.smart_notes.batch import BatchGenerator
 from omnia.features.smart_notes.logic import GenerationService
+
+
+def _note_type_config(note_type="Basic", *, enabled=True):
+    """A Basic note type whose 'Def' field is generated from the 'Word' base field."""
+    return SmartNotesNoteTypeConfig(
+        note_type=note_type,
+        base_field="Word",
+        fields=[
+            SmartNotesFieldConfig(
+                field="Def", enabled=enabled, type="text", prompt="define {{Word}}"
+            )
+        ],
+    )
 
 
 class _FakeNote:
@@ -126,13 +143,10 @@ def _generator(settings: SmartNotesSettings) -> GenerationService:
 
 class TestBatchGenerator:
     def _settings(self, **kw) -> SmartNotesSettings:
-        rule = SmartNotesFieldRule(
-            note_type="Basic",
-            target_field="Def",
-            kind="text",
-            prompt="define {{Word}}",
-        )
-        base = {"fields": [rule], "regenerate_when_batching": False}
+        base = {
+            "note_types": [_note_type_config()],
+            "regenerate_when_batching": False,
+        }
         base.update(kw)
         return SmartNotesSettings(**base)
 
@@ -164,7 +178,7 @@ class TestBatchGenerator:
         notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "filled"})}
         fake = _FakeCompat(notes)
         _patch_compat(monkeypatch, fake)
-        settings = self._settings(regenerate_when_batching=False, overwrite=False)
+        settings = self._settings(regenerate_when_batching=False)
         summaries: list = []
         BatchGenerator(_generator(settings), settings).run([1], summaries.append)
         assert summaries[0].skipped == 1
@@ -209,20 +223,16 @@ class TestBatchGenerator:
 
 
 class TestBatchGeneratorDisabledRules:
-    def test_disabled_rules_are_skipped_in_batch(self, monkeypatch):
+    def test_disabled_fields_are_skipped_in_batch(self, monkeypatch):
         notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
         fake = _FakeCompat(notes)
         _patch_compat(monkeypatch, fake)
-        rule = SmartNotesFieldRule(
-            note_type="Basic",
-            target_field="Def",
-            kind="text",
-            prompt="define {{Word}}",
-            enabled=False,
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config(enabled=False)],
+            regenerate_when_batching=False,
         )
-        settings = SmartNotesSettings(fields=[rule], regenerate_when_batching=False)
         summaries: list = []
         BatchGenerator(_generator(settings), settings).run([1], summaries.append)
-        # No enabled rule applies → empty plan → nothing happens.
+        # No enabled, generatable field → empty plan → nothing happens.
         assert summaries[0].processed == 0
         assert fake.progress == []

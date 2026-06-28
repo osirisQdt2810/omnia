@@ -204,12 +204,62 @@ for _pid in ("auto_flip", "typed_accuracy", "overdue_guard"):
         lambda pid=_pid: open_generic_config(pid),
     )
 
-step(
-    "SmartNotesDialog (custom Configure)",
-    lambda: __import__(
-        "omnia.gui.smart_notes_dialog", fromlist=["SmartNotesDialog"]
-    ).SmartNotesDialog(repo, None),
-)
+
+def build_smart_notes_dialog():
+    """Construct the SmartNotes WebDialog and drive its synchronous pycmd ops via the bridge.
+
+    Auto-smart is deliberately NOT fired here: it runs a real LLM off-thread and needs creds +
+    network, so the smoke only exercises the offline ops (list/load/set_base_field/create/save)
+    through the same ``_on_cmd`` envelope the webview uses.
+    """
+    from omnia.core.reviewer.web_injector import build_message
+    from omnia.gui.smart_notes_dialog import SmartNotesDialog
+
+    dialog = SmartNotesDialog(repo, None)
+
+    def op(name, data):
+        return dialog._on_cmd(build_message("smart_notes", name, data))
+
+    names = op("list_note_types", {})
+    assert names and "Basic" in names, f"list_note_types returned {names!r}"
+    loaded = op("load", {"note_type": "Basic"})
+    assert loaded["base_field"] == "Front", loaded
+    assert [r["field"] for r in loaded["rows"]] == ["Back"], loaded
+    assert loaded["providers"], "no LLM providers listed"
+    rebased = op("set_base_field", {"note_type": "Basic", "base_field": "Back"})
+    assert [r["field"] for r in rebased["rows"]] == ["Front"], rebased
+    created = op("create_field", {"note_type": "Basic", "field_name": "Example"})
+    assert "Example" in created.get("all_fields", []), created
+    saved = op(
+        "save",
+        {
+            "note_type": "Basic",
+            "base_field": "Front",
+            "rows": [
+                {
+                    "field": "Back",
+                    "enabled": True,
+                    "type": "text",
+                    "prompt": "Define {{Front}}",
+                },
+                {
+                    "field": "Example",
+                    "enabled": True,
+                    "type": "text",
+                    "prompt": "Use {{Front}}",
+                },
+            ],
+        },
+    )
+    assert saved == {"ok": True}, saved
+    # The save must round-trip back through the repo into the typed config.
+    reloaded = ConfigRepository(ConfigLoader(src / "config", tmp_override))
+    nt = reloaded.config.smart_notes.note_type_config("Basic")
+    assert nt is not None and nt.base_field == "Front", nt
+    assert {f.field for f in nt.generatable_fields()} == {"Back", "Example"}, nt
+
+
+step("SmartNotesDialog (custom Configure + pycmd ops)", build_smart_notes_dialog)
 
 
 def build_prompt_dialog():

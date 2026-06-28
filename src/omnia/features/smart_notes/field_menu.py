@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from omnia.core import anki_compat
 
 if TYPE_CHECKING:
+    from omnia.core.config.models import SmartNotesNoteTypeConfig
     from omnia.core.plugin import PluginContext
 
 _KINDS = ("text", "tts", "image")
@@ -61,6 +62,26 @@ def build_field_menu(
             )
         )
         menu.addAction(action)
+
+
+def single_field_config(
+    config: Optional[SmartNotesNoteTypeConfig], field: str
+) -> Optional[SmartNotesNoteTypeConfig]:
+    """Return a one-field copy of ``config`` for the on-demand "generate this field" action.
+
+    The field is forced ``enabled`` (the menu generates it even when it's disabled for batch)
+    and its target excluded if it is the base field. Returns None when ``config`` has no row
+    for ``field`` (or it IS the base field), so the caller can tell the user there's nothing
+    to generate.
+    """
+    if config is None or field == config.base_field:
+        return None
+    for row in config.fields:
+        if row.field == field:
+            return config.model_copy(
+                update={"fields": [row.model_copy(update={"enabled": True})]}
+            )
+    return None
 
 
 def _open_custom_prompt(

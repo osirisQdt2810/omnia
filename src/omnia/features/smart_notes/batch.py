@@ -23,11 +23,14 @@ from omnia.features.smart_notes.logic import (
     GenerationService,
     chunk,
     dedupe_preserving_order,
-    select_rules_for_note,
 )
 
 if TYPE_CHECKING:
-    from omnia.core.config.models import SmartNotesFieldRule, SmartNotesSettings
+    from omnia.core.config.models import (
+        SmartNotesFieldRule,
+        SmartNotesNoteTypeConfig,
+        SmartNotesSettings,
+    )
 
 # Notes generated per chunk before the progress bar updates / a cancel is honoured. Small so a
 # cancel feels responsive without flooding the provider; mirrors the reference's batching.
@@ -39,7 +42,7 @@ class _NotePlan:
     """One note's generation inputs, read on the main thread (the bg op never touches the col)."""
 
     nid: int
-    rules: list[SmartNotesFieldRule]
+    config: SmartNotesNoteTypeConfig
     fields: dict[str, str]
 
 
@@ -101,13 +104,13 @@ class BatchGenerator:
             return
 
         total = len(plans)
-        # The reference drives batch overwrite by ``regenerate_when_batching`` alone (the plain
-        # ``overwrite`` flag is the editor/manual setting); mirror that here.
-        overwrite = self._settings.regenerate_when_batching
+        # Batch overwrite is driven by ``regenerate_when_batching``: when set, the batch
+        # regenerates fields it already filled (ignoring per-field overwrite).
+        force_overwrite = self._settings.regenerate_when_batching
         anki_compat.progress_start(f"Omnia: generating… (0/{total})", total)
 
         def op() -> tuple[list[_NoteOutcome], bool]:
-            return self._generate(plans, total, overwrite=overwrite)
+            return self._generate(plans, total, force_overwrite=force_overwrite)
 
         def on_success(result: tuple[list[_NoteOutcome], bool]) -> None:
             outcomes, cancelled = result
@@ -125,20 +128,17 @@ class BatchGenerator:
 
     def _build_plans(self, note_ids: list[int]) -> list[_NotePlan]:
         plans: list[_NotePlan] = []
-        rules = list(self._settings.fields)
         for nid in note_ids:
             note = anki_compat.get_note(nid)
-            field_names = list(note.keys())
-            fields = {name: note[name] for name in field_names}
-            note_rules = select_rules_for_note(
-                rules, _note_type_name(note), field_names, enabled_only=True
-            )
-            if note_rules:
-                plans.append(_NotePlan(nid, note_rules, fields))
+            config = self._settings.note_type_config(_note_type_name(note))
+            if config is None or not config.generatable_fields():
+                continue
+            fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
+            plans.append(_NotePlan(nid, config, fields))
         return plans
 
     def _generate(
-        self, plans: list[_NotePlan], total: int, *, overwrite: bool
+        self, plans: list[_NotePlan], total: int, *, force_overwrite: bool
     ) -> tuple[list[_NoteOutcome], bool]:
         """Generate every plan in chunks off the main thread; returns outcomes + cancelled flag."""
         outcomes: list[_NoteOutcome] = []
@@ -150,7 +150,9 @@ class BatchGenerator:
                 return outcomes, True
             for index in batch:
                 plan = plans[index]
-                outcomes.append(self._generate_one(plan, overwrite=overwrite))
+                outcomes.append(
+                    self._generate_one(plan, force_overwrite=force_overwrite)
+                )
             done += len(batch)
             anki_compat.run_on_main(
                 lambda d=done: anki_compat.progress_update(
@@ -159,13 +161,13 @@ class BatchGenerator:
             )
         return outcomes, False
 
-    def _generate_one(self, plan: _NotePlan, *, overwrite: bool) -> _NoteOutcome:
+    def _generate_one(self, plan: _NotePlan, *, force_overwrite: bool) -> _NoteOutcome:
         try:
             results = self._service.generate_note(
-                plan.rules,
+                plan.config,
                 plan.fields,
                 allow_empty_fields=self._settings.allow_empty_fields,
-                overwrite=overwrite,
+                force_overwrite=force_overwrite,
             )
             return _NoteOutcome(plan.nid, results=results)
         except Exception:  # one bad note must not abort the rest of the batch
