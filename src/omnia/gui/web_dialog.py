@@ -64,12 +64,34 @@ class WebDialog(QDialog):
         # without this the webview's bridge guard dereferences ``mw.col`` and crashes.
         self._web.requiresCol = False
         self._web.set_bridge_command(self._on_cmd, self)
+        # Diagnostic: log whether the page actually loaded + how much body content it has, so a
+        # "blank dialog" report from a real (GPU) Anki — which the offscreen test harness can't
+        # reproduce — is diagnosable from omnia.log alone (did it not render, or not paint?).
+        self._web.loadFinished.connect(self._on_load_finished)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._web)
 
         self.set_html(html)
+
+    def _on_load_finished(self, ok: bool) -> None:
+        """Log the page-load outcome + rendered body size (real-Anki blank-dialog diagnostic)."""
+        title = self.windowTitle()
+        self._log.info("WebDialog %r loadFinished ok=%s", title, ok)
+
+        def _probe(result: Any) -> None:
+            self._log.info("WebDialog %r body-probe: %s", title, result)
+
+        try:
+            self._web.evalWithCallback(
+                "(function(){var b=document.body;"
+                "return b?(b.innerHTML.length+' chars, '+b.children.length+' children'):"
+                "'no body';})()",
+                _probe,
+            )
+        except Exception:  # diagnostic only — never let it affect the dialog
+            self._log.exception("WebDialog %r body-probe failed", title)
 
     def set_html(self, html: str) -> None:
         """Render ``html`` in the webview.
