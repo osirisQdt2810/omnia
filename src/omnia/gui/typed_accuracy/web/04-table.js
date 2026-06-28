@@ -1,69 +1,128 @@
 
+  /**
+   * Typed-accuracy stats panel — part 4 of 5 of the panel IIFE (load order matters).
+   * Panel state, range computation, the main refresh loop, and one-time UI bindings.
+   */
+
   const state = {
     viewMode: "unique",
     lastKey: "",
     isRefreshing: false,
   };
 
+  /**
+   * Read the selected range key from the radio group.
+   * @return {string}
+   */
   function getRangeFromUI() {
     const el = document.querySelector("input[name='ta_range']:checked");
     return el ? String(el.value) : "current";
   }
 
+  /**
+   * Show or hide the custom-range row.
+   * @param {boolean} show Whether to show the row.
+   */
   function showCustomRow(show) {
     const row = document.getElementById("ta_custom_row");
-    if (row) row.style.display = show ? "flex" : "none";
+    if (row) {
+      row.style.display = show ? "flex" : "none";
+    }
   }
 
+  /**
+   * Format an epoch-ms value as a local datetime-input value.
+   * @param {number} ms Epoch milliseconds.
+   * @return {string}
+   */
   function toLocalInputValue(ms) {
     const d = new Date(ms);
     const pad = (n) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
+  /**
+   * Parse a datetime-input value to epoch ms, or null when empty/invalid.
+   * @param {string} v The input value.
+   * @return {?number}
+   */
   function parseLocalInputValue(v) {
-    if (!v) return null;
+    if (!v) {
+      return null;
+    }
     const ms = Date.parse(v);
-    if (!isFinite(ms)) return null;
+    if (!isFinite(ms)) {
+      return null;
+    }
     return ms;
   }
 
+  /**
+   * Compute the [startMs, endMs] window for a range key.
+   * @param {number} did The deck id (for the session-open lookup).
+   * @param {string} rangeKey The selected range key.
+   * @return {!Promise<{startMs: number, endMs: number}>}
+   */
   async function computeRangeMs(did, rangeKey) {
     const now = Date.now();
     const endMs = now + BONUS_MS;
 
-    if (rangeKey === "backlog") return { startMs: 0, endMs };
-    if (rangeKey === "1m") return { startMs: now - 30 * 24 * 3600 * 1000, endMs };
-    if (rangeKey === "1w") return { startMs: now - 7 * 24 * 3600 * 1000, endMs };
-    if (rangeKey === "3d") return { startMs: now - 3 * 24 * 3600 * 1000, endMs };
-    if (rangeKey === "1d") return { startMs: now - 1 * 24 * 3600 * 1000, endMs };
+    if (rangeKey === "backlog") {
+      return {startMs: 0, endMs};
+    }
+    if (rangeKey === "1m") {
+      return {startMs: now - 30 * 24 * 3600 * 1000, endMs};
+    }
+    if (rangeKey === "1w") {
+      return {startMs: now - 7 * 24 * 3600 * 1000, endMs};
+    }
+    if (rangeKey === "3d") {
+      return {startMs: now - 3 * 24 * 3600 * 1000, endMs};
+    }
+    if (rangeKey === "1d") {
+      return {startMs: now - 1 * 24 * 3600 * 1000, endMs};
+    }
 
     if (rangeKey === "custom") {
       const fromEl = document.getElementById("ta_from");
       const toEl = document.getElementById("ta_to");
       const fromMs = parseLocalInputValue(fromEl?.value) ?? (now - 24 * 3600 * 1000);
       const toMs = parseLocalInputValue(toEl?.value) ?? now;
-      return { startMs: fromMs, endMs: toMs + BONUS_MS };
+      return {startMs: fromMs, endMs: toMs + BONUS_MS};
     }
 
-    const res = await pycmdAsync("get_session_open_ms", { did });
+    const res = await pycmdAsync("get_session_open_ms", {did});
     const openMs = res && res.ok ? Number(res.openMs || 0) : 0;
-    if (!openMs) return { startMs: now, endMs };
-    return { startMs: openMs, endMs };
+    if (!openMs) {
+      return {startMs: now, endMs};
+    }
+    return {startMs: openMs, endMs};
   }
 
+  /**
+   * Apply a responsive size class to the card based on its actual width.
+   * @param {?Element} card The panel card.
+   * @return {?string} The applied mode, or null.
+   */
   function applyCardResponsiveClass(card) {
     // Responsive based on the actual card width (not the window width).
     try {
-      if (!card) return null;
+      if (!card) {
+        return null;
+      }
 
       const rect = card.getBoundingClientRect();
       const w = Math.round(rect && rect.width ? rect.width : card.clientWidth || 0);
-      if (!w) return null;
+      if (!w) {
+        return null;
+      }
 
       let mode = "ta-wide";
-      if (w < 520) mode = "ta-narrow";
-      else if (w < 620) mode = "ta-medium";
+      if (w < 520) {
+        mode = "ta-narrow";
+      } else if (w < 620) {
+        mode = "ta-medium";
+      }
 
       if (card.__taResponsiveMode !== mode) {
         card.classList.remove("ta-narrow", "ta-medium", "ta-wide");
@@ -77,13 +136,22 @@
     }
   }
 
+  /**
+   * Mount the card, query the stats for the current scope/range, and paint the panel.
+   * @param {boolean=} force Force a refresh even when the key is unchanged.
+   * @return {!Promise<void>}
+   */
   async function refresh(force = false) {
-    if (state.isRefreshing) return;
+    if (state.isRefreshing) {
+      return;
+    }
     state.isRefreshing = true;
 
     try {
       const card = ensureMounted();
-      if (!card) return;
+      if (!card) {
+        return;
+      }
 
       // Apply responsive class based on the actual card width in the Stats grid.
       applyCardResponsiveClass(card);
@@ -91,7 +159,9 @@
       bindUIOnce();
 
       const did = await getCurrentDeckDid();
-      if (!did) return;
+      if (!did) {
+        return;
+      }
 
       const includeSubdecks = !!document.getElementById("ta_subdecks")?.checked;
       const rangeKey = getRangeFromUI();
@@ -114,14 +184,16 @@
         }
       }
 
-      const { startMs, endMs } = await computeRangeMs(did, rangeKey);
+      const {startMs, endMs} = await computeRangeMs(did, rangeKey);
 
       const tick = Math.floor(Date.now() / 2000);
       const key = [did, includeSubdecks ? 1 : 0, rangeKey, state.viewMode, startMs, endMs, tick].join("|");
-      if (!force && key === state.lastKey) return;
+      if (!force && key === state.lastKey) {
+        return;
+      }
       state.lastKey = key;
 
-      const res = await pycmdAsync("query", { did, includeSubdecks, startMs, endMs });
+      const res = await pycmdAsync("query", {did, includeSubdecks, startMs, endMs});
       if (!res || !res.ok) {
         setText("ta_err", "Query failed: " + (res?.error ?? "unknown"));
         return;
@@ -148,10 +220,10 @@
       const donut = document.getElementById("ta_donut");
       if (donut) {
         renderDonut(donut, [
-          { value: view.good, color: "#00c853" },
-          { value: view.bad, color: "#ff1744" },
-          { value: view.miss, color: "#ffd600" },
-          { value: view.empty, color: "#9e9e9e" },
+          {value: view.good, color: "#00c853"},
+          {value: view.bad, color: "#ff1744"},
+          {value: view.miss, color: "#ffd600"},
+          {value: view.empty, color: "#9e9e9e"},
         ]);
       }
     } finally {
@@ -159,6 +231,7 @@
     }
   }
 
+  /** Wire the panel's controls once (idempotent via per-element guard flags). */
   function bindUIOnce() {
     const wrap = document.getElementById("ta_donut_wrap");
     if (wrap && !wrap.__taBound) {
@@ -176,7 +249,9 @@
     }
 
     for (const r of document.querySelectorAll("input[name='ta_range']")) {
-      if (r.__taBound) continue;
+      if (r.__taBound) {
+        continue;
+      }
       r.__taBound = true;
       r.addEventListener("change", () => refresh(true));
     }

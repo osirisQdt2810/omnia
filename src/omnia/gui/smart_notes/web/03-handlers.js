@@ -1,30 +1,48 @@
 
+  /**
+   * Smart Notes config page — part 3 of 4 of the page IIFE (load order matters).
+   * Event handlers: load a note type, change base field, create a field, run Auto-smart, and
+   * save. Each posts the matching pycmd op through `send`.
+   */
+
+  /**
+   * Apply a `load`/`set_base_field` response to the page.
+   * @param {?Object} res The op response (providers, all_fields, base_field, rows).
+   */
   function applyLoad(res) {
-    if (!res) return;
+    if (!res) {
+      return;
+    }
     providers = res.providers || [];
     fill(baseSel, res.all_fields || [], res.base_field || "");
     renderRows(res.rows || []);
     setMsg("");
   }
 
+  /** Load the currently selected note type (or clear the table when none). */
   function loadNoteType() {
-    var nt = noteTypeSel.value;
-    if (!nt) { renderRows([]); return; }
-    send("load", { note_type: nt }, applyLoad);
+    const nt = noteTypeSel.value;
+    if (!nt) {
+      renderRows([]);
+      return;
+    }
+    send("load", {note_type: nt}, applyLoad);
   }
 
   noteTypeSel.addEventListener("change", loadNoteType);
   baseSel.addEventListener("change", function () {
-    send("set_base_field", { note_type: noteTypeSel.value, base_field: baseSel.value }, applyLoad);
+    send("set_base_field", {note_type: noteTypeSel.value, base_field: baseSel.value}, applyLoad);
   });
 
   document.getElementById("sn-create").addEventListener("click", function () {
-    var name = window.prompt("New field name:");
-    if (!name) return;
-    send("create_field", { note_type: noteTypeSel.value, field_name: name }, function (res) {
+    const name = window.prompt("New field name:");
+    if (!name) {
+      return;
+    }
+    send("create_field", {note_type: noteTypeSel.value, field_name: name}, function (res) {
       if (res && res.all_fields) {
         fill(baseSel, res.all_fields, baseSel.value);
-        send("set_base_field", { note_type: noteTypeSel.value, base_field: baseSel.value }, applyLoad);
+        send("set_base_field", {note_type: noteTypeSel.value, base_field: baseSel.value}, applyLoad);
       } else if (res && res.error) {
         setMsg(res.error, true);
       }
