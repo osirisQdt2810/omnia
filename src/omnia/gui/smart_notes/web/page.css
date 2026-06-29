@@ -139,8 +139,7 @@ select:disabled { opacity: 0.7; }
 .sn-acct-empty { color: var(--muted); font-style: italic; padding: 8px 2px; }
 .sn-acct-credit { color: var(--muted); font-size: 12px; padding: 8px 2px; }
 .sn-acct-credit.sn-acct-credit-ok { color: var(--fg); }
-.sn-acct-test { margin-top: 22px; border-top: 1px solid var(--card-border); padding-top: 16px; }
-/* "Test playground" reads as its own section header, set apart from the prompt box. */
+/* "Test playground" is a .sn-acct-section card; its title reads as the section header. */
 .sn-acct-test-title { font-size: 15px; font-weight: 800; letter-spacing: 0.2px; }
 .sn-acct-test .sn-modal-fields { margin: 4px 0 14px; }
 .sn-acct-input { width: 100%; min-height: 70px; resize: vertical; line-height: 1.5; }
@@ -162,10 +161,14 @@ select:disabled { opacity: 0.7; }
 
 /* Account default-model picker: the central provider+model used for detect-language,
    Auto-prompt, Improve, and any field left on "(inherit)". */
-.sn-acct-default {
-  border: 1px solid var(--card-border); border-radius: 10px; padding: 10px 12px;
-  background: var(--input-bg); margin-bottom: 10px;
+/* The Account kind panes are consistent cards — the default-model picker, the usage block,
+   and the test playground all share .sn-acct-section (translucent gradient, rounded). */
+.sn-acct-section {
+  border: 1px solid var(--card-border); border-radius: 10px; padding: 12px 14px;
+  margin-bottom: 10px;
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
 }
+.sn-acct-section:last-child { margin-bottom: 0; }
 .sn-acct-default-title { color: var(--muted); font-size: 12px; margin-bottom: 8px; line-height: 1.4; }
 .sn-acct-default-row { display: flex; gap: 16px; flex-wrap: wrap; }
 .sn-acct-default-field { display: flex; flex-direction: column; gap: 4px; }
@@ -250,7 +253,7 @@ select:disabled { opacity: 0.7; }
 
 /* Native runtimes (ADR-005): per-section groups of installable local engines, each row a
    toggle + a status line that flips between idle / installing (spinner) / installed / error. */
-.sn-native { margin-top: 18px; border-top: 1px solid var(--card-border); padding-top: 14px; }
+.sn-native { margin-top: 6px; }
 .sn-native-title {
   font-size: 15px; font-weight: 800; letter-spacing: 0.2px;
   background: linear-gradient(90deg, var(--accent), var(--accent-2));

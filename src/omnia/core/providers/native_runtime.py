@@ -48,6 +48,17 @@ _IS_WINDOWS = os.name == "nt"
 # install (process killed mid-pip) is correctly treated as not-installed and redone.
 _INSTALL_MARKER = ".omnia-installed"
 
+
+def _tail(output: bytes, max_chars: int = 1200) -> str:
+    """Decode the last chunk of captured child output, for surfacing in an error message.
+
+    pip's failure reason (e.g. "Could not find a version that satisfies torch") is in the last
+    lines, so we keep the tail (trimmed to ``max_chars``) rather than the whole, often-huge log.
+    """
+    text = output.decode("utf-8", "replace").strip()
+    return ("…" + text[-max_chars:]) if len(text) > max_chars else text
+
+
 # How long :meth:`NativeRuntimeManager.ensure_running` polls for the sidecar server to start
 # listening, and the gap between polls. Mirrors the viet-tts deadline-loop shape.
 _SERVER_STARTUP_TIMEOUT = 120.0
@@ -195,11 +206,14 @@ class ProcessRunner(Protocol):
         *,
         input: bytes | None = None,
         timeout: float | None = None,
+        merge_stderr: bool = False,
     ) -> tuple[int, bytes]:
-        """Run ``argv`` to completion, returning ``(exit_code, stdout_bytes)``.
+        """Run ``argv`` to completion, returning ``(exit_code, captured_bytes)``.
 
         Used by one-shot CLIs that emit their output (e.g. WAV bytes) on stdout. ``input``
-        (if given) is written to the child's stdin.
+        (if given) is written to the child's stdin. ``merge_stderr`` folds the child's stderr
+        into the captured stream (for surfacing an install error) — still captured, never
+        written to the real stderr (which would trip Anki's crash dialog).
         """
         ...
 
@@ -251,15 +265,17 @@ class SubprocessRunner:
         *,
         input: bytes | None = None,
         timeout: float | None = None,
+        merge_stderr: bool = False,
     ) -> tuple[int, bytes]:
-        # Capture stdout (e.g. WAV bytes) but discard stderr — see ``run`` re: Anki's crash
-        # dialog on child stderr.
+        # Capture stdout (e.g. WAV bytes); fold stderr into it when merge_stderr (to surface an
+        # install error). Either way stderr is NEVER inherited — writing to the real stderr
+        # inside Anki trips its crash dialog (see ``run``).
         completed = subprocess.run(
             list(argv),
             input=input,
             timeout=timeout,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
             check=False,
         )
         return completed.returncode, completed.stdout or b""
@@ -449,13 +465,15 @@ class NativeRuntimeManager:
 
         venv_python = str(self.venv_python(spec))
         _progress(f"installing {', '.join(spec.pip_packages)} (this may take a while)")
-        code = self._runner.run(
-            [venv_python, "-m", "pip", "install", *spec.pip_packages]
+        code, output = self._runner.run_capture(
+            [venv_python, "-m", "pip", "install", *spec.pip_packages],
+            merge_stderr=True,
         )
         if code != 0:
+            tail = _tail(output)
             raise ProviderError(
-                f"{spec.name}: failed to install its packages "
-                f"(`pip install` exited {code})."
+                f"{spec.name}: failed to install its packages (`pip install` exited {code})."
+                + (f"\n{tail}" if tail else "")
             )
 
         marker = self._marker_path(spec)

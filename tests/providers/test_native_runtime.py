@@ -109,6 +109,7 @@ class _FakeProcessRunner:
         *,
         input: bytes | None = None,
         timeout: float | None = None,
+        merge_stderr: bool = False,
     ) -> tuple[int, bytes]:
         code = self.run(argv, input=input, timeout=timeout)
         return code, self.capture_stdout
@@ -337,10 +338,14 @@ class TestEnsureInstalled:
         runner = _FakeProcessRunner(
             which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 1]
         )
+        # pip's real error (captured via merge_stderr) is surfaced in the message so the user
+        # sees WHY — e.g. no matching wheel for their Python.
+        runner.capture_stdout = b"ERROR: Could not find a version that satisfies torch"
         manager = NativeRuntimeManager(tmp_path, runner)
         spec = _server_spec()
-        with pytest.raises(ProviderError, match="pip install"):
+        with pytest.raises(ProviderError, match="satisfies torch") as exc:
             manager.ensure_installed(spec)
+        assert "pip install" in str(exc.value)
         assert not manager.is_installed(spec)  # no marker on failed install
 
 
