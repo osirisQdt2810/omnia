@@ -51,11 +51,20 @@ from omnia.core.plugin import AddonPaths  # noqa: E402
 _manager: Optional[PluginManager] = None
 
 
-def _user_files_dir() -> Path:
-    # Runtime state Anki preserves across updates: logs + per-plugin state files (NOT config).
+def addon_user_files_dir() -> Path:
+    """The add-on's ``user_files`` directory (runtime state Anki preserves across updates).
+
+    Holds logs + per-plugin state files (logs, usage.json, the fetched-voice cache) — NOT
+    config. Public so GUI glue (e.g. the Smart Notes dialog's voice cache) can resolve it
+    without threading a path through every constructor.
+    """
     path = _ADDON_DIR / "user_files"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _user_files_dir() -> Path:
+    return addon_user_files_dir()
 
 
 def _bootstrap() -> None:
@@ -65,6 +74,12 @@ def _bootstrap() -> None:
         return
 
     user_files = _user_files_dir()
+    # Every ProviderHub built anywhere records LLM/TTS usage to user_files/usage.json (Anki
+    # preserves user_files across updates; .gitignore already excludes it). Imported locally
+    # so the module stays import-safe headless.
+    from omnia.core.providers import usage
+
+    usage.set_default_recorder(usage.JsonUsageRecorder(user_files / "usage.json"))
     config_dir = _ADDON_DIR / "config"
     (_ADDON_DIR / "secrets").mkdir(parents=True, exist_ok=True)
     paths = AddonPaths(
@@ -78,8 +93,7 @@ def _bootstrap() -> None:
     # Tee any displayed/uncaught exception's full traceback into omnia.log — Anki's error
     # dialog only exposes the version + add-on list, not the traceback, so this is what makes
     # a user-reported crash diagnosable from the log alone.
-    from omnia.core.diagnostics import install_crash_logger
-    from omnia.core.logging import get_logger
+    from omnia.core.logging import get_logger, install_crash_logger
 
     install_crash_logger(get_logger())
     _manager = PluginManager(repository, paths)

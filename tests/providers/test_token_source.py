@@ -10,6 +10,7 @@ from omnia.core.providers.token_source import (
     ServiceAccountSigner,
     StaticTokenSource,
     resolve_token_source,
+    service_account_project,
 )
 
 
@@ -55,6 +56,24 @@ def _sa_config():
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     }
+
+
+class TestServiceAccountProject:
+    def test_reads_project_id_from_inline_json(self):
+        config = {"credentials_json": {"project_id": "my-gcp-proj"}}
+        assert service_account_project(config) == "my-gcp-proj"
+
+    def test_reads_project_id_from_json_file(self, tmp_path):
+        path = tmp_path / "sa.json"
+        path.write_text('{"project_id": "file-proj"}')
+        assert service_account_project({"credentials_path": str(path)}) == "file-proj"
+
+    def test_missing_credentials_is_empty(self):
+        assert service_account_project({}) == ""
+
+    def test_unreadable_path_is_empty(self):
+        # A bad path must not raise here — the provider surfaces the clear error instead.
+        assert service_account_project({"credentials_path": "/nope/sa.json"}) == ""
 
 
 class TestServiceAccountTokenSource:

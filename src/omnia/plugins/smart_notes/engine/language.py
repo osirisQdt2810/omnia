@@ -18,6 +18,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Optional
 
+from omnia.core import envs
+
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub
     from omnia.core.providers.llm.base import LLMProvider
@@ -49,7 +51,12 @@ def detect_language(llm: LLMProvider, text: str, *, fallback: str = "en") -> str
     snippet = (text or "").strip()
     if not snippet:
         return fallback
-    raw = llm.generate_text(snippet[:400], system=_DETECT_SYSTEM, max_tokens=8)
+    raw = llm.generate_text(
+        snippet[:400],
+        system=_DETECT_SYSTEM,
+        temperature=envs.OMNIA_SMART_NOTES_DETECT_LANGUAGE_TEMPERATURE,
+        max_tokens=8,
+    )
     match = _CODE_RE.search((raw or "").strip().lower())
     return match.group(0) if match else fallback
 

@@ -23,8 +23,8 @@ from omnia.core.providers import (
 )
 from omnia.core.providers.llm.factory import _BUILDERS as LLM_BUILDERS
 from omnia.core.providers.tts.edge_tts import EdgeTTS
-from omnia.core.providers.tts.factory import _BUILDERS as TTS_BUILDERS
 from omnia.core.providers.tts.piper import PiperTTS
+from omnia.core.providers.tts.registry import TTS_REGISTRY
 
 _MP3_B64 = base64.b64encode(b"MP3").decode()
 
@@ -82,15 +82,19 @@ _TTS_BUILD_CONFIGS = {
     "openai_compatible": {"provider": "openai_compatible", "api_key": "k"},
     "google_cloud": {"provider": "google_cloud", "access_token": "t"},
     "edge_tts": {"provider": "edge_tts"},
+    "viettts": {"provider": "viettts", "autostart": False},
     "piper": {"provider": "piper", "model": "voice.onnx"},
 }
-# The subset whose transport is HTTP (driven through the routing fake).
+# The subset whose transport is HTTP (driven through the routing fake). viettts POSTs the same
+# OpenAI-compatible /audio/speech as the openai family, so it sweeps through the routing fake
+# too — with autostart off so the sweep makes no subprocess/network call.
 _TTS_HTTP = (
     "google_translate",
     "openai",
     "openrouter",
     "openai_compatible",
     "google_cloud",
+    "viettts",
 )
 
 
@@ -98,7 +102,7 @@ class TestTTSSweep:
     def test_every_tts_provider_is_swept(self):
         assert (
             set(_TTS_BUILD_CONFIGS)
-            == set(TTS_BUILDERS)
+            == set(TTS_REGISTRY)
             == set(available_tts_providers())
         )
 
@@ -127,19 +131,26 @@ class TestTTSSweep:
     def test_piper_synthesizes_with_injected_runner(self):
         class _FakeRunner:
             def run(self, text, model_path):
-                assert model_path == "voice.onnx"
+                # A bare ".onnx" name resolves under the bundled models/piper dir.
+                assert model_path.endswith("voice.onnx")
                 return b"RIFFwav"
 
         audio = PiperTTS(model="voice.onnx", runner=_FakeRunner()).synthesize("hi")
         assert audio == b"RIFFwav"
 
-    def test_piper_default_runner_raises_instead_of_shelling_out(self):
-        # No subprocess: the out-of-the-box runner raises a clear error (a native runner must
-        # be injected) rather than invoking a piper CLI.
+    def test_piper_default_runner_requires_installed_native_runtime(self, tmp_path):
+        # The default runner (SidecarPiperRunner) runs piper in the add-on-managed venv
+        # (ADR-005). With no runtime installed and no auto-install, it raises the clear
+        # "enable it in Advanced" ProviderError from the manager rather than shelling out.
         from omnia.core.providers.errors import ProviderError
+        from omnia.core.providers.native_runtime import NativeRuntimeManager
+        from omnia.core.providers.tts.piper import SidecarPiperRunner
 
-        with pytest.raises(ProviderError, match="vendored native binary"):
-            PiperTTS(model="voice.onnx").synthesize("hi")
+        # The bundled default voice exists, so resolution passes the file check and reaches the
+        # manager's not-installed guard. Point the manager at an empty dir (nothing installed).
+        runner = SidecarPiperRunner(manager=NativeRuntimeManager(tmp_path))
+        with pytest.raises(ProviderError, match="isn't installed"):
+            PiperTTS(runner=runner).synthesize("hi")
 
 
 # --------------------------------------------------------------------------------------

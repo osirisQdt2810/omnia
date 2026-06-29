@@ -5,9 +5,21 @@ from __future__ import annotations
 import base64
 from typing import Optional
 
+from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.llm.base import LLMProvider
+
+
+def _usage_from_openai(resp: object) -> Optional[dict[str, int]]:
+    """Extract token usage from an OpenAI-compatible chat response (None if absent)."""
+    usage = resp.get("usage") if isinstance(resp, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    return {
+        "in": int(usage.get("prompt_tokens", 0)),
+        "out": int(usage.get("completion_tokens", 0)),
+        "total": int(usage.get("total_tokens", 0)),
+    }
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -21,6 +33,7 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str = "https://api.openai.com/v1",
         model: str = "gpt-4o-mini",
         image_model: Optional[str] = None,
+        temperature: float = 0.7,
         http: Optional[HttpClient] = None,
     ) -> None:
         if not api_key:
@@ -29,6 +42,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._image_model = image_model or "gpt-image-1"
+        self._temperature = temperature
         self._http = http or DEFAULT_HTTP_CLIENT
 
     def _headers(self) -> dict[str, str]:
@@ -39,7 +53,7 @@ class OpenAICompatibleProvider(LLMProvider):
         prompt: str,
         *,
         system: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
         messages = []
@@ -49,17 +63,39 @@ class OpenAICompatibleProvider(LLMProvider):
         payload: dict[str, object] = {
             "model": self._model,
             "messages": messages,
-            "temperature": temperature,
+            "temperature": self._temperature if temperature is None else temperature,
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         resp = self._http.post_json(
             f"{self._base_url}/chat/completions", payload, headers=self._headers()
         )
+        self.last_usage = _usage_from_openai(resp)
         try:
             return str(resp["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"Unexpected chat response shape: {resp}") from exc
+
+    def fetch_credit(self) -> Optional[dict]:
+        """Return OpenRouter credit ``{total, used, remaining}``, else None (best-effort).
+
+        Only meaningful for an OpenRouter endpoint: GET ``<base_url>/credits`` with the api
+        key and parse OpenRouter's ``data.total_credits`` / ``data.total_usage``. Returns None
+        for a non-OpenRouter base URL or on any error (never raises) — the Account dialog
+        treats a missing credit line as "unknown".
+        """
+        if "openrouter" not in self._base_url:
+            return None
+        try:
+            resp = self._http.get_json(
+                f"{self._base_url}/credits", headers=self._headers()
+            )
+            data = resp.get("data", {})
+            total = float(data["total_credits"])
+            used = float(data["total_usage"])
+        except (ProviderError, KeyError, TypeError, ValueError):
+            return None
+        return {"total": total, "used": used, "remaining": total - used}
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
         payload = {

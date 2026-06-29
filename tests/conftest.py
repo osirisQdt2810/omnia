@@ -20,6 +20,16 @@ _SRC = Path(__file__).resolve().parent.parent / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+# Mirror Anki's runtime: the add-on's third-party deps come ONLY from src/omnia/vendor/universal
+# (Anki's bundled Python has no pip packages). Appending it — exactly as the add-on does at
+# startup — means a test that imports a runtime dep (pydantic, tomli_w, rsa, pyasn1) uses the
+# VENDORED copy, so the suite can't falsely pass on a pip package that wouldn't exist in Anki.
+# Only the test RUNNER (pytest) need be installed in the host interpreter. See also the hermetic
+# guard in tests/providers/test_anki_runtime.py, which proves this with site-packages stripped.
+_VENDOR = _SRC / "omnia" / "vendor" / "universal"
+if _VENDOR.is_dir() and str(_VENDOR) not in sys.path:
+    sys.path.append(str(_VENDOR))
+
 
 class FakeHook:
     """Stand-in for an ``aqt.gui_hooks`` hook: supports append/remove and manual firing."""
@@ -244,6 +254,12 @@ class FakeHttpClient:
             return self._responder("get_bytes", url, params, headers)
         return self._data
 
+    def get_json(self, url, *, params=None, headers=None):
+        self.calls.append(("get_json", url, params, headers))
+        if self._responder:
+            return self._responder("get_json", url, params, headers)
+        return self._json
+
 
 class FakeCard:
     """A duck-typed card for pure-logic tests."""
@@ -415,10 +431,22 @@ def real_llm_provider_for_or_skip(provider: str, *, http=None):
     ).llm()
 
 
+def _can_reach(host: str, port: int, timeout: float = 3.0) -> bool:
+    """True if a TCP connection to ``host:port`` succeeds (a cheap network/up check)."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _tts_unavailable_reason(provider: str, repo, user_file) -> Optional[str]:
     """Why the real ``provider`` TTS can't run here (or None if it can)."""
     if provider == "google_translate":
-        return None  # free, no creds (needs only network — that's the test)
+        # Free, no creds — needs only network (that IS the test); skip if offline.
+        return None if _can_reach("translate.google.com", 443) else "no network"
     if provider in ("openai", "openrouter", "openai_compatible"):
         sub = getattr(repo.tts_settings(), provider, None)
         return None if (sub and sub.api_key) else f"no api_key for TTS {provider!r}"
@@ -427,17 +455,35 @@ def _tts_unavailable_reason(provider: str, repo, user_file) -> Optional[str]:
         ok = user_file.exists() and llm_sub_has_credentials("gemini_vertex", gv)
         return None if ok else "no [llm.gemini_vertex] Google auth for google_cloud TTS"
     if provider == "edge_tts":
-        import importlib.util
-
+        # Free Microsoft Edge voices over a PURE-STDLIB client (no edge-tts pip package, no
+        # aiohttp — it ships with the add-on). Needs only network; skip if the host is offline.
         return (
             None
-            if importlib.util.find_spec("edge_tts")
-            else "edge-tts package not installed"
+            if _can_reach("speech.platform.bing.com", 443)
+            else "no network for edge_tts"
+        )
+    if provider == "viettts":
+        # Local self-hosted open-source server (the user runs `pip install viet-tts`); skip
+        # unless a server is actually reachable at the configured base_url.
+        from urllib.parse import urlsplit
+
+        base = getattr(repo.tts_settings().viettts, "base_url", "")
+        parts = urlsplit(base)
+        host, port = parts.hostname or "127.0.0.1", parts.port or 8298
+        return (
+            None
+            if _can_reach(host, port, timeout=1.0)
+            else "viet-tts server not running (start it / pip install viet-tts)"
         )
     if provider == "piper":
-        # The add-on never shells out to piper and ships no native runner, so the real sweep
-        # can't synthesize through it out of the box — always skip the live piper case.
-        return "piper has no out-of-the-box runner (needs a vendored native binary injected)"
+        # piper synthesizes via the native `piper-tts` package (onnxruntime), which can't be
+        # vendored and isn't installed in the Anki-like test env — skip the live case when it's
+        # absent (its bundled .onnx voice ships in models/piper/).
+        try:
+            import piper  # noqa: F401
+        except ImportError:
+            return "piper-tts not installed (pip install piper-tts)"
+        return None
     return f"unknown TTS provider {provider!r}"
 
 
@@ -507,11 +553,13 @@ def real_tts_provider_for_or_skip(provider: str, *, http=None):
 
 
 # A real call failed because of a transient/quota/budget LIMIT (not a wiring bug) if its
-# status is 429/5xx, or the message names a quota/rate/token/no-text condition. Per the user:
-# such cases are `xfail` (we still record the test + the case), not hard failures.
-# (HTTP 429/5xx are matched by STATUS CODE below — not as bare "429"/"503" substrings, which
+# status is 402/429/5xx, or the message names a quota/rate/token/billing/no-text condition. Per
+# the user: such cases are `xfail` (we still record the test + the case), not hard failures —
+# a provider declining for billing (OpenRouter at $0 credit → HTTP 402) is an environmental
+# constraint, not a code bug, so it must not red the suite.
+# (HTTP 402/429/5xx are matched by STATUS CODE below — not as bare "402"/"503" substrings, which
 # would false-xfail any message that merely contains those digits.)
-_LIMIT_STATUS = frozenset({429, 500, 502, 503, 504})
+_LIMIT_STATUS = frozenset({402, 429, 500, 502, 503, 504})
 _LIMIT_MARKERS = (
     "quota",
     "rate limit",
@@ -528,6 +576,11 @@ _LIMIT_MARKERS = (
     "network error",
     "connection refused",
     "connection reset",
+    "insufficient",
+    "insufficient_quota",
+    "payment required",
+    "billing",
+    "credit",
 )
 
 

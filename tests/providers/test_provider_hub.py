@@ -18,7 +18,7 @@ from omnia.core.config.models import (
     OpenAICompatibleLLMSettings,
     TTSSettings,
 )
-from omnia.core.providers import ProviderError, ProviderHub
+from omnia.core.providers import ProviderError, ProviderHub, split_provider_voice
 
 
 class TestProviderHub:
@@ -93,6 +93,19 @@ class TestProviderHub:
         assert provider.name == "openai_compatible"
         assert provider._model == "rule-model"
 
+    def test_llm_image_model_override_pins_image_model_not_text_model(self):
+        # An image rule pins image_model (so generate_image targets it); the configured text
+        # model is left intact — the two are distinct fields on the same provider.
+        settings = LLMSettings(
+            provider="gemini",
+            gemini=GeminiLLMSettings(api_key="g", text_model="active-text"),
+        )
+        hub = ProviderHub(settings, http=FakeHttpClient())
+        provider = hub.llm(image_model="img-model")
+        assert provider.name == "gemini"
+        assert provider._image_model == "img-model"
+        assert provider._model == "active-text"  # text model not clobbered
+
     def test_llm_provider_override_switches_provider_and_keeps_its_creds(self):
         settings = LLMSettings(
             provider="openai",
@@ -114,6 +127,43 @@ class TestProviderHub:
         assert first is again  # same (provider, model) reuses the instance
         assert first is not other
 
+    def test_tts_named_provider_builds_that_provider(self):
+        # tts(provider="edge_tts") builds edge_tts even though the active provider is something
+        # else (an Auto-detect voice's provider, or a per-field override).
+        settings = TTSSettings(provider="google_translate")
+        provider = ProviderHub(None, settings, http=FakeHttpClient()).tts(
+            provider="edge_tts"
+        )
+        assert provider.name == "edge_tts"
+
+    def test_tts_no_override_builds_the_active_provider(self):
+        settings = TTSSettings(provider="edge_tts")
+        provider = ProviderHub(None, settings, http=FakeHttpClient()).tts()
+        assert provider.name == "edge_tts"
+
+    def test_resolve_auto_voice_splits_the_mapping(self):
+        settings = TTSSettings(
+            provider="edge_tts",
+            auto_voices={"ja": "edge_tts:ja-JP-NanamiNeural"},
+        )
+        hub = ProviderHub(None, settings)
+        assert hub.resolve_auto_voice("ja") == ("edge_tts", "ja-JP-NanamiNeural")
+
+    def test_resolve_auto_voice_allows_empty_voice_for_language_only_provider(self):
+        # "google_translate:" maps to (provider, "") — the provider speaks the language directly.
+        settings = TTSSettings(
+            provider="google_translate",
+            auto_voices={"th": "google_translate:"},
+        )
+        hub = ProviderHub(None, settings)
+        assert hub.resolve_auto_voice("th") == ("google_translate", "")
+
+    def test_resolve_auto_voice_raises_clear_error_when_unmapped(self):
+        hub = ProviderHub(None, TTSSettings(provider="edge_tts"))
+        with pytest.raises(ProviderError) as exc:
+            hub.resolve_auto_voice("ja")
+        assert "Auto-detect voice" in str(exc.value) and "'ja'" in str(exc.value)
+
     def test_vertex_auth_only_exposes_auth_fields_not_model_ids(self):
         llm = LLMSettings(
             gemini_vertex=GeminiVertexLLMSettings(
@@ -125,3 +175,23 @@ class TestProviderHub:
         assert auth["access_token"] == "tok"
         # model ids are NOT auth — they must not leak into the TTS auth bridge
         assert "text_model" not in auth and "image_model" not in auth
+
+
+class TestSplitProviderVoice:
+    def test_splits_on_the_first_colon(self):
+        assert split_provider_voice("edge_tts:ja-JP-NanamiNeural") == (
+            "edge_tts",
+            "ja-JP-NanamiNeural",
+        )
+
+    def test_keeps_a_voice_id_that_itself_has_a_colon(self):
+        assert split_provider_voice("p:a:b") == ("p", "a:b")
+
+    def test_empty_voice_after_colon(self):
+        assert split_provider_voice("google_translate:") == ("google_translate", "")
+
+    def test_no_colon_yields_empty_voice(self):
+        assert split_provider_voice("edge_tts") == ("edge_tts", "")
+
+    def test_blank_value(self):
+        assert split_provider_voice("") == ("", "")

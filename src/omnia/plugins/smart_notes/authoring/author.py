@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from omnia.core import envs
 from omnia.plugins.smart_notes.authoring.models import AutoSmartField
 from omnia.plugins.smart_notes.authoring.persona import (
     FLASHCARD_EXPERT_SYSTEM,
@@ -253,7 +254,11 @@ class PromptAuthor:
         prompt = build_auto_smart_prompt(
             config.note_type, config.base_field, candidates
         )
-        raw = self._llm.generate_text(prompt, system=FLASHCARD_EXPERT_SYSTEM)
+        raw = self._llm.generate_text(
+            prompt,
+            system=FLASHCARD_EXPERT_SYSTEM,
+            temperature=envs.OMNIA_SMART_NOTES_AUTO_PROMPT_TEMPERATURE,
+        )
         return apply_auto_smart(config, parse_auto_smart_response(raw))
 
     def improve(
@@ -277,7 +282,11 @@ class PromptAuthor:
         message = build_improve_prompt_message(
             note_type, base_field, target_field, rough, other_fields
         )
-        out = self._llm.generate_text(message, system=FLASHCARD_EXPERT_SYSTEM)
+        out = self._llm.generate_text(
+            message,
+            system=FLASHCARD_EXPERT_SYSTEM,
+            temperature=envs.OMNIA_SMART_NOTES_IMPROVE_PROMPT_TEMPERATURE,
+        )
         return out.strip() or rough
 
     def improve_all(
@@ -298,5 +307,9 @@ class PromptAuthor:
         if not pending:
             return {}
         message = build_improve_prompts_message(note_type, base_field, pending)
-        raw = self._llm.generate_text(message, system=FLASHCARD_EXPERT_SYSTEM)
+        raw = self._llm.generate_text(
+            message,
+            system=FLASHCARD_EXPERT_SYSTEM,
+            temperature=envs.OMNIA_SMART_NOTES_IMPROVE_ALL_TEMPERATURE,
+        )
         return parse_improved_prompts(raw)

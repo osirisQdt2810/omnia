@@ -2,13 +2,16 @@
 
 Layers (top to bottom):
 1. ``TestLLMFactoryErrors`` — pure error-path checks (sentinel inputs, no config needed).
-2. ``TestLLMProviderWiring`` — request wiring built from the REAL configured model/credentials
+2. ``TestGeminiImageGeneration`` — Gemini image generation over a mocked response (offline).
+3. ``TestLLMProviderWiring`` — request wiring built from the REAL configured model/credentials
    with a FakeHttpClient injected (offline, no quota → UNMARKED); asserts the actual config is
    wired in, not fabricated values. Skips a provider that isn't configured.
-3. ``LLMProviderContract`` (+ Fake/Real subclasses) — the structural contract: a provider is an
-   ``LLMProvider`` and returns non-empty text/optional kwargs/image-if-supported.
-4. ``TestRealLLMBehavior`` (``@llm``) — the REAL output must SATISFY the prompt (factual,
-   arithmetic, yes/no, item-count, conditional, JSON, translation) by partial/semantic match.
+4. ``LLMProviderContract`` + ``TestFakeLLMContract`` — the structural contract (fake context):
+   a provider is an ``LLMProvider`` and returns non-empty text / optional kwargs / image.
+5. ``RealLLMBehaviorMixin`` — the behavior battery: the REAL output must SATISFY the prompt
+   (factual, arithmetic, yes/no, item-count, conditional, JSON, translation) by partial match.
+6. ONE real suite PER provider (``Test<Provider>RealLLM``, all ``@llm``) — the contract + the
+   behavior battery against that provider, auto-skipping when it has no credentials configured.
 
 Real paths read the actual config (config/ + the gitignored user_files override), auto-skip a
 provider without credentials, and ``xfail`` on a quota/token/transient limit.
@@ -101,6 +104,30 @@ class TestLLMFactoryErrors:
         assert {"openai_compatible", "gemini", "gemini_vertex"} <= set(
             available_llm_providers()
         )
+
+    def test_vertex_derives_project_from_credentials_json(self):
+        # No explicit `project` in config: the factory reads `project_id` from the SA JSON.
+        provider = create_llm_provider(
+            {
+                "provider": "gemini_vertex",
+                "credentials_json": {"project_id": "derived-proj"},
+            }
+        )
+        assert provider._project == "derived-proj"
+
+    def test_vertex_explicit_project_wins_over_json(self):
+        provider = create_llm_provider(
+            {
+                "provider": "gemini_vertex",
+                "project": "explicit-proj",
+                "credentials_json": {"project_id": "derived-proj"},
+            }
+        )
+        assert provider._project == "explicit-proj"
+
+    def test_vertex_no_project_anywhere_raises(self):
+        with pytest.raises(ProviderError):
+            create_llm_provider({"provider": "gemini_vertex"})
 
 
 # --- 1b. Gemini image generation (offline, mocked HTTP) --------------------------------
@@ -265,26 +292,12 @@ class TestFakeLLMContract(LLMProviderContract):
         return FakeLLMProvider(text="pong")
 
 
-@pytest.mark.llm
-class TestRealLLMContract(LLMProviderContract):
-    """The contract against EACH real provider (skips per provider without credentials)."""
-
-    @pytest.fixture(params=llm_provider_params())
-    def provider(self, request) -> LLMProvider:
-        return real_llm_provider_for_or_skip(request.param)
-
-
 # --- 4. real behavior: the output must SATISFY the prompt ------------------------------
-@pytest.mark.llm
-class TestRealLLMBehavior:
-    """Each real provider's output must actually satisfy the prompt's requirement (partial /
-    semantic match — the right fact, count, or condition), not merely be non-empty. Built from
-    the real config, parametrized per provider; ``xfail`` on a quota/token limit.
+class RealLLMBehaviorMixin:
+    """The behavior battery: a real provider's output must actually SATISFY the prompt (the
+    right fact / count / condition by partial-semantic match), not merely be non-empty. Mixed
+    into each per-provider suite below; ``xfail`` on a quota/token limit via ``call_or_xfail``.
     """
-
-    @pytest.fixture(params=llm_provider_params())
-    def provider(self, request) -> LLMProvider:
-        return real_llm_provider_for_or_skip(request.param)
 
     def test_answers_a_factual_question(self, provider):
         out = call_or_xfail(
@@ -351,3 +364,42 @@ class TestRealLLMBehavior:
         # 'nước' — accept with/without the diacritic so the match is tolerant.
         n = _norm(out)
         assert "nư" in n or "nuoc" in n, f"expected 'nước', got: {out!r}"
+
+
+# --- 5. ONE real suite PER LLM provider ------------------------------------------------
+# Each provider gets its OWN class (so a failure is attributed to that provider by name, and
+# the suite is run "for all providers" as the user asked) combining the structural contract +
+# the behavior battery. Every class is marked ``llm`` (real quota) and auto-skips when that
+# provider has no credentials configured — so a credentialed env runs them for real while an
+# uncredentialed one reports a clear per-provider skip (never a fake pass).
+@pytest.mark.llm
+class _RealLLMProviderSuite(LLMProviderContract, RealLLMBehaviorMixin):
+    """Shared body for the per-provider real suites. ``PROVIDER`` is set by each subclass; the
+    leading underscore keeps pytest from collecting this base directly.
+    """
+
+    PROVIDER: str = ""
+
+    @pytest.fixture
+    def provider(self) -> LLMProvider:
+        return real_llm_provider_for_or_skip(self.PROVIDER)
+
+
+class TestGeminiVertexRealLLM(_RealLLMProviderSuite):
+    PROVIDER = "gemini_vertex"
+
+
+class TestGeminiRealLLM(_RealLLMProviderSuite):
+    PROVIDER = "gemini"
+
+
+class TestOpenAIRealLLM(_RealLLMProviderSuite):
+    PROVIDER = "openai"
+
+
+class TestOpenRouterRealLLM(_RealLLMProviderSuite):
+    PROVIDER = "openrouter"
+
+
+class TestOpenAICompatibleRealLLM(_RealLLMProviderSuite):
+    PROVIDER = "openai_compatible"

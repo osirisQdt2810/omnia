@@ -68,17 +68,21 @@ class ImageGenerator(Generator):
     def generate(
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> GenerationResult:
-        llm = self._providers.llm(model=rule.model, provider=rule.provider)
+        # An image rule's model IS the image model — pin it as image_model so generate_image
+        # targets it (pinning the text model would leave image_model unset).
+        llm = self._providers.llm(image_model=rule.model, provider=rule.provider)
         data = llm.generate_image(prompt_for(rule, fields))
         return GenerationResult("image", data=data, ext="png")
 
 
 class TTSGenerator(Generator):
-    """Synthesizes audio from the rule's spoken text, auto-detecting language when no voice.
+    """Synthesizes audio from the rule's spoken text, resolving the voice two ways.
 
     The spoken text is the interpolated prompt (or the interpolated source field when no
-    prompt is given). A pinned voice already fixes the language; otherwise the language is
-    detected (best-effort) so the provider picks a matching voice.
+    prompt is given). A rule with a concrete ``voice`` synthesizes it directly on the rule's
+    provider (honoring the per-field provider). A rule on Auto-detect (no voice) detects the
+    text's language and resolves a concrete ``(provider, voice)`` from the global
+    ``[tts.auto_voices]`` map — so every language points at a provider+voice that serves it.
     """
 
     def __init__(self, providers: ProviderHub, detector: LanguageDetector) -> None:
@@ -88,15 +92,17 @@ class TTSGenerator(Generator):
     def generate(
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> GenerationResult:
-        provider = self._providers.tts()
         text = tts_text(rule, fields)
-        # A pinned voice already fixes the language; an explicit language is used as-is;
-        # otherwise auto-detect the spoken text's language (best-effort).
         if rule.voice:
-            lang = None
-        elif rule.language:
-            lang = rule.language
+            # A pinned voice fixes the language; synthesize it on the rule's provider directly.
+            provider = self._providers.tts(provider=rule.provider)
+            data = provider.synthesize(text, lang=None, voice=rule.voice)
         else:
-            lang = self._detector.detect(self._providers, text)
-        data = provider.synthesize(text, lang=lang, voice=rule.voice or None)
+            # Auto-detect: find the language, then the global map's (provider, voice) for it.
+            lang = rule.language or self._detector.detect(self._providers, text)
+            picked_provider, voice = self._providers.resolve_auto_voice(lang or "")
+            provider = self._providers.tts(provider=picked_provider)
+            # An empty voice (a language-only provider, e.g. google_translate) → None so the
+            # provider uses the language directly rather than an empty voice id.
+            data = provider.synthesize(text, lang=lang, voice=voice or None)
         return GenerationResult("tts", data=data, ext=provider.audio_ext)

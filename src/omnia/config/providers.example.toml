@@ -100,6 +100,15 @@ speaking_rate = 1.0
 lang = "en"
 voice = ""             # e.g. "vi-VN-HoaiMyNeural"
 
+# Local, self-hosted open-source Vietnamese TTS (dangvansam/viet-tts). Run it yourself:
+#   pip install viet-tts && viettts server --host 127.0.0.1 --port 8298
+# Then point base_url at the running server. Offline + private once started; no cloud key.
+[tts.viettts]
+base_url = "http://localhost:8298/v1"
+model = "tts-1"
+voice = ""             # e.g. "nu-nhe-nhang"; empty -> provider default
+autostart = true       # auto-start the local viet-tts server on first use (needs viet-tts installed)
+
 # Offline; needs a vendored native runner injected (the add-on never shells out) + a `model`
 # (.onnx) voice path. Out of the box piper raises a clear error — prefer google_translate/edge_tts.
 [tts.piper]

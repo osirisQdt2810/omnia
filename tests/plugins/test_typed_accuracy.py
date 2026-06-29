@@ -309,7 +309,7 @@ class TestStatsInjector:
 
         evals: list[str] = []
         webview = types.SimpleNamespace(eval=evals.append)
-        StatsInjector(_WEB_DIR, logging.getLogger("omnia.test")).inject(webview)
+        StatsInjector(_WEB_DIR).inject(webview)
         joined = "\n".join(evals)
         assert "__TA_HTML_TEMPLATE" in joined  # template stashed
         assert "ta-card" in joined  # html template content present
@@ -320,4 +320,4 @@ class TestStatsInjector:
 
         webview = types.SimpleNamespace(eval=lambda _js: None)
         # tmp_path has no assets: inject must swallow the OSError.
-        StatsInjector(tmp_path, logging.getLogger("omnia.test")).inject(webview)
+        StatsInjector(tmp_path).inject(webview)

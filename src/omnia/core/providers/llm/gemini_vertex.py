@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.llm.gemini import GeminiProvider
 from omnia.core.providers.token_source import TokenSource, resolve_token_source
 
@@ -28,6 +28,7 @@ class GeminiVertexProvider(GeminiProvider):
         location: str = "global",
         model: str = "gemini-2.5-flash",
         image_model: str = "",
+        temperature: float = 0.7,
         auth: Optional[dict[str, Any]] = None,
         http: Optional[HttpClient] = None,
         token_source: Optional[TokenSource] = None,
@@ -40,6 +41,7 @@ class GeminiVertexProvider(GeminiProvider):
         self._location = location or "global"
         self._model = model
         self._image_model = image_model
+        self._temperature = temperature
         self._http = http or DEFAULT_HTTP_CLIENT
         # Inject a token source for tests; otherwise resolve the strategy from config.
         self._token_source = token_source or resolve_token_source(

@@ -33,14 +33,17 @@ class _Strict(BaseModel):
 # in. The model ids (text/image/embedding) are common to every provider, so they live on a
 # shared base; each provider subclass adds only its own API auth and tweaks model defaults.
 class LLMModelSettings(_Strict):
-    """Model ids shared by every LLM provider subsection.
+    """Model ids + sampling shared by every LLM provider subsection.
 
     ``embedding_model`` is reserved for a future embedding feature (no consumer yet).
+    ``temperature`` is the per-provider default sampling temperature used for text generation
+    (overridable per process via ``OMNIA_LLM_TEMPERATURE``; see :mod:`omnia.core.envs`).
     """
 
     text_model: str = ""
     image_model: str = ""
     embedding_model: str = ""
+    temperature: float = 0.7
 
 
 class GeminiVertexLLMSettings(LLMModelSettings):
@@ -153,10 +156,21 @@ class GoogleCloudTTSSettings(_Strict):
 
 
 class EdgeTTSSettings(_Strict):
-    """``edge_tts`` — Microsoft Edge neural voices (needs the ``edge-tts`` package)."""
+    """``edge_tts`` — Microsoft Edge online neural voices (free, keyless; pure-stdlib client)."""
 
     lang: str = "en"
     voice: str = ""  # e.g. "vi-VN-HoaiMyNeural"
+
+
+class VietTTSSettings(_Strict):
+    """``viettts`` — local self-hosted open-source Vietnamese TTS (OpenAI-compatible server)."""
+
+    base_url: str = "http://localhost:8298/v1"
+    model: str = "tts-1"
+    voice: str = ""  # e.g. "nu-nhe-nhang"; empty -> the provider's default
+    # Start the local viet-tts server on demand (needs `pip install viet-tts`) and reuse it,
+    # so the user never runs `viettts server` by hand. Turn off to use a server you started.
+    autostart: bool = True
 
 
 class PiperTTSSettings(_Strict):
@@ -197,6 +211,11 @@ class TTSSettings(_Strict):
     google_cloud: GoogleCloudTTSSettings = Field(default_factory=GoogleCloudTTSSettings)
     edge_tts: EdgeTTSSettings = Field(default_factory=EdgeTTSSettings)
     piper: PiperTTSSettings = Field(default_factory=PiperTTSSettings)
+    viettts: VietTTSSettings = Field(default_factory=VietTTSSettings)
+    # Global, cross-provider "Auto-detect" map: an ISO-639-1 language code → "provider:voice"
+    # (e.g. {"ja": "edge_tts:ja-JP-NanamiNeural"}). A sound field on Auto-detect resolves its
+    # voice through this table, so each language points at a provider+voice that serves it.
+    auto_voices: dict[str, str] = Field(default_factory=dict)
 
     def active(self) -> Optional[BaseModel]:
         """Return the settings subsection for the selected ``provider`` (None if unknown)."""

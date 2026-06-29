@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from omnia.core.diagnostics import install_crash_logger
+from omnia.core.logging import install_crash_logger
 
 
 @pytest.fixture

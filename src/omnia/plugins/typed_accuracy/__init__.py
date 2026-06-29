@@ -77,7 +77,7 @@ class TypedAccuracyPlugin(FeaturePlugin):
         settings = ctx.settings
         self._threshold = settings.threshold
         self._pass_ease = settings.pass_ease
-        self._injector = StatsInjector(_WEB_DIR, ctx.log)
+        self._injector = StatsInjector(_WEB_DIR)
 
         ctx.web.add_asset(self.id, WebAsset(answer_js=_ANSWER_JS))
         ctx.web.add_handler(self.id, "rated", self._on_rated)

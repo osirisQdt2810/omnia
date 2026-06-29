@@ -93,6 +93,163 @@ class TestConfigRepository:
         assert repo.feature_settings("auto_flip").delay_question_seconds == 3.0
 
 
+class TestProviderConfigWrites:
+    """The Account dialog's writes: default-model picker + Keys subtab secret edits."""
+
+    def test_set_active_llm_sets_provider_and_text_model(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_active_llm("gemini", text_model="gemini-3.5-flash")
+        assert repo.config.llm.provider == "gemini"
+        assert repo.config.llm.gemini.text_model == "gemini-3.5-flash"
+        # Persisted: a fresh repo reads it back from providers.toml.
+        fresh = ConfigRepository(ConfigLoader(tmp_cfg))
+        assert fresh.config.llm.provider == "gemini"
+        assert fresh.config.llm.gemini.text_model == "gemini-3.5-flash"
+
+    def test_set_active_llm_preserves_other_credentials(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_provider_secret("llm", "gemini", "api_key", "keep-me")
+        repo.set_active_llm("gemini", text_model="m2")
+        assert repo.config.llm.gemini.api_key == "keep-me"
+        assert repo.config.llm.gemini.text_model == "m2"
+
+    def test_set_active_llm_image_model_only(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_active_llm("openrouter", image_model="openai/gpt-image-1")
+        assert repo.config.llm.provider == "openrouter"
+        assert repo.config.llm.openrouter.image_model == "openai/gpt-image-1"
+
+    def test_set_active_tts_sets_voice_for_supported_provider(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_active_tts("edge_tts", voice="vi-VN-HoaiMyNeural")
+        assert repo.config.tts.provider == "edge_tts"
+        assert repo.config.tts.edge_tts.voice == "vi-VN-HoaiMyNeural"
+
+    def test_set_auto_voice_writes_language_mapping(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_auto_voice("ja", "edge_tts:ja-JP-NanamiNeural")
+        assert repo.config.tts.auto_voices["ja"] == "edge_tts:ja-JP-NanamiNeural"
+        # Persisted under [tts.auto_voices].ja — a fresh repo reads it back.
+        fresh = ConfigRepository(ConfigLoader(tmp_cfg))
+        assert fresh.config.tts.auto_voices["ja"] == "edge_tts:ja-JP-NanamiNeural"
+
+    def test_set_auto_voice_empty_value_deletes_the_entry(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_auto_voice("ja", "edge_tts:ja-JP-NanamiNeural")
+        repo.set_auto_voice("ja", "")
+        assert "ja" not in repo.config.tts.auto_voices
+        fresh = ConfigRepository(ConfigLoader(tmp_cfg))
+        assert "ja" not in fresh.config.tts.auto_voices
+
+    def test_set_active_tts_skips_voice_for_voiceless_provider(self, tmp_path):
+        # google_translate's strict model has no `voice` field; writing one would break the
+        # reload. The provider must still switch, and the config must reload cleanly.
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_active_tts("google_translate", voice="ignored")
+        assert repo.config.tts.provider == "google_translate"
+        assert repo.config.tts.google_translate.lang  # reloaded fine
+
+    def test_set_provider_secret_persists_nested_field(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_provider_secret("llm", "gemini_vertex", "project", "my-proj")
+        assert repo.config.llm.gemini_vertex.project == "my-proj"
+        fresh = ConfigRepository(ConfigLoader(tmp_cfg))
+        assert fresh.config.llm.gemini_vertex.project == "my-proj"
+
+    def test_set_provider_secret_rejects_unknown_domain(self, tmp_path):
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        with pytest.raises(ValueError):
+            repo.set_provider_secret("nope", "gemini", "api_key", "x")
+
+
+class TestSecretsOutOfConfig:
+    """Credentials are stored as references; the TOML never holds the raw secret."""
+
+    def _repo(self, tmp_path):
+        from omnia.core.config.secrets import SecretsStore
+
+        tmp_cfg = _tmp_config(tmp_path)
+        store = SecretsStore(tmp_path / "secrets")
+        return ConfigRepository(ConfigLoader(tmp_cfg), store), tmp_cfg
+
+    def test_secret_field_is_stored_as_reference_not_raw(self, tmp_path):
+        import tomllib
+
+        repo, tmp_cfg = self._repo(tmp_path)
+        repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "AIza-XYZ")])
+        # On disk the TOML holds only a reference; the raw key is nowhere in the file.
+        raw = (tmp_cfg / "providers.toml").read_bytes()
+        assert b"AIza-XYZ" not in raw
+        on_disk = tomllib.loads(raw.decode())["llm"]["gemini"]["api_key"]
+        assert on_disk.startswith("secret:")
+        # But the loaded config resolves it back to the real key for the providers.
+        assert repo.config.llm.gemini.api_key == "AIza-XYZ"
+
+    def test_secret_resolves_on_a_fresh_repo(self, tmp_path):
+        from omnia.core.config.secrets import SecretsStore
+
+        repo, tmp_cfg = self._repo(tmp_path)
+        repo.set_provider_fields(
+            "llm", "openrouter", [("api_key", "secret", "sk-or-123")]
+        )
+        fresh = ConfigRepository(
+            ConfigLoader(tmp_cfg), SecretsStore(tmp_path / "secrets")
+        )
+        assert fresh.config.llm.openrouter.api_key == "sk-or-123"
+
+    def test_non_secret_field_stays_inline(self, tmp_path):
+        import tomllib
+
+        repo, tmp_cfg = self._repo(tmp_path)
+        repo.set_provider_fields(
+            "llm", "gemini_vertex", [("project", "text", "my-proj")]
+        )
+        on_disk = tomllib.loads((tmp_cfg / "providers.toml").read_text())
+        assert on_disk["llm"]["gemini_vertex"]["project"] == "my-proj"
+
+    def test_file_kind_is_skipped_by_set_provider_fields(self, tmp_path):
+        repo, _ = self._repo(tmp_path)
+        # A "file" field is imported via Browse, never written by the batch save.
+        repo.set_provider_fields(
+            "llm", "gemini_vertex", [("credentials_path", "file", "/some/path")]
+        )
+        assert repo.config.llm.gemini_vertex.credentials_path == ""
+
+    def test_credential_file_imported_and_resolves_to_path(self, tmp_path):
+        src = tmp_path / "sa.json"
+        src.write_text('{"type":"service_account"}')
+        repo, _ = self._repo(tmp_path)
+        resolved = repo.set_provider_credential_file(
+            "llm", "gemini_vertex", "credentials_path", str(src)
+        )
+        assert resolved.endswith("secrets/llm.gemini_vertex.credentials_path.json")
+        # The loaded config resolves the ref to the absolute path of the secrets copy.
+        assert repo.config.llm.gemini_vertex.credentials_path == resolved
+
+    def test_clearing_a_secret_writes_empty(self, tmp_path):
+        repo, _ = self._repo(tmp_path)
+        repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "k")])
+        repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "")])
+        assert repo.config.llm.gemini.api_key == ""
+
+    def test_same_field_name_across_domains_no_collision(self, tmp_path):
+        # llm.openai.api_key and tts.openai.api_key must not share a secrets file.
+        repo, _ = self._repo(tmp_path)
+        repo.set_provider_fields("llm", "openai", [("api_key", "secret", "llm-key")])
+        repo.set_provider_fields("tts", "openai", [("api_key", "secret", "tts-key")])
+        assert repo.config.llm.openai.api_key == "llm-key"
+        assert repo.config.tts.openai.api_key == "tts-key"
+
+
 class TestConfigModels:
     def test_model_validation_rejects_bad_pass_ease(self):
         with pytest.raises(ValidationError):

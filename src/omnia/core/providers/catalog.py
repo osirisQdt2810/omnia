@@ -1,156 +1,67 @@
-"""Curated provider / model / voice catalog for the settings GUI.
+"""Thin, functions-only aggregator over the provider-layer catalog data.
 
-Pure data + small helpers so the Smart Notes table can show DROPDOWNS (not free-text)
-for the provider, the model, and — for sound fields — the voice. Anki runs offline and
-must not block the UI enumerating models/voices over the network, so the lists are
-hand-curated sensible defaults. Two rules keep them from going stale:
+The provider/model/voice/language LITERALS live WITH the providers — the LLM data in
+:mod:`omnia.core.providers.llm` (``LLM_PROVIDERS``/``_TEXT_MODELS``/``_IMAGE_MODELS``), and the
+TTS data in :mod:`omnia.core.providers.tts` (``TTS_PROVIDERS``/``LANGUAGES`` + each provider's
+own ``CURATED_VOICES`` aggregated via :func:`~omnia.core.providers.tts.voices_for`). This module
+holds ONLY the functions that shape that data into the payload the Smart Notes page bakes in;
+it declares no provider literals of its own (just the generation-kind markers). Two rules keep
+the dropdowns from going stale:
 
-* a user's own saved model/voice string is ALWAYS preserved by the GUI even if it is not
-  in the list (the dialog merges it in), so a missing entry never loses a configured value;
-* the LLM provider subset offered for generation is intentionally smaller than every
-  registered provider — ``openrouter`` already fronts the OpenAI-compatible family, so the
-  raw ``openai`` / ``openai_compatible`` names are omitted from the *generation* picker.
+* a user's own saved model/voice string is ALWAYS preserved by the GUI even if it is not in the
+  list (the dialog merges it in), so a missing entry never loses a configured value;
+* the LLM provider subset offered for generation is intentionally smaller than every registered
+  provider — ``openrouter`` already fronts the OpenAI-compatible family, so the raw ``openai`` /
+  ``openai_compatible`` names are omitted from the *generation* picker.
 
-This module imports nothing from ``aqt``/``anki`` (it tests headless) and nothing from the
-concrete providers — it is plain metadata the GUI bakes into the page.
+Imports nothing from ``aqt``/``anki`` (tests headless). It imports the provider PACKAGES (data
++ the voice aggregation) but never a concrete provider module, and the provider packages never
+import this one (the dependency runs one way).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from omnia.core.providers.llm import (
+    _IMAGE_MODELS,
+    _TEXT_MODELS,
+    LLM_PROVIDERS,
+)
+from omnia.core.providers.tts import (
+    _LANGUAGE_ONLY_TTS_PROVIDERS,
+    LANGUAGES,
+    TTS_PROVIDERS,
+    TTSVoice,
+    aggregated_voices,
+    voices_for,
+)
+
+# Re-exported (for back-compat with existing importers/tests) so callers can keep doing
+# ``from ...catalog import LLM_PROVIDERS / TTS_PROVIDERS / TTSVoice / LANGUAGES / voices_for``
+# even though the data now lives in the provider packages.
+__all__ = [
+    "KIND_IMAGE",
+    "KIND_TEXT",
+    "KIND_TTS",
+    "LANGUAGES",
+    "LLM_PROVIDERS",
+    "TTS_PROVIDERS",
+    "TTSVoice",
+    "catalog_payload",
+    "image_models",
+    "models_for",
+    "providers_for",
+    "text_models",
+    "voice_options_for_language",
+    "voices_for",
+]
 
 # Generation kinds a Smart Notes field can have (mirrors SmartNotesFieldConfig.type).
 KIND_TEXT = "text"
 KIND_IMAGE = "image"
 KIND_TTS = "tts"
 
-# LLM providers offered for text/image generation in Smart Notes. A deliberate subset of the
-# registered LLM providers: openrouter already proxies the OpenAI-compatible family, so the
-# bare openai/openai_compatible names are left out of the picker.
-LLM_PROVIDERS: list[str] = ["gemini", "gemini_vertex", "openrouter"]
-
-# TTS providers offered for sound generation (free/offline first; cloud after).
-TTS_PROVIDERS: list[str] = ["edge_tts", "google_cloud", "google_translate", "piper"]
-
-# Languages offered in the sound-field Language picker. ``code`` is the ISO 639-1 code passed
-# to the TTS provider; the empty code means "auto-detect the spoken text's language".
-LANGUAGES: list[dict[str, str]] = [
-    {"code": "", "label": "Auto-detect"},
-    {"code": "en", "label": "English"},
-    {"code": "vi", "label": "Vietnamese"},
-    {"code": "ja", "label": "Japanese"},
-    {"code": "ko", "label": "Korean"},
-    {"code": "zh", "label": "Chinese"},
-    {"code": "fr", "label": "French"},
-    {"code": "es", "label": "Spanish"},
-    {"code": "de", "label": "German"},
-]
-
-# Text models per LLM provider (curated defaults; the GUI merges in the user's saved model).
-_GEMINI_TEXT_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-3.5-pro",
-    "gemini-3.0-flash",
-    "gemini-3.0-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-]
-_TEXT_MODELS: dict[str, list[str]] = {
-    "gemini": list(_GEMINI_TEXT_MODELS),
-    "gemini_vertex": list(_GEMINI_TEXT_MODELS),
-    "openrouter": [
-        "openai/gpt-4o-mini",
-        "openai/gpt-4o",
-        "anthropic/claude-3.5-sonnet",
-        "google/gemini-2.0-flash-001",
-        "meta-llama/llama-3.1-70b-instruct",
-        "deepseek/deepseek-chat",
-    ],
-}
-
-# Image models per LLM provider (only those that actually generate images).
-_GEMINI_IMAGE_MODELS = [
-    "gemini-3.1-flash-image",
-    "gemini-3.0-flash-image",
-    "gemini-2.5-flash-image",
-    "imagen-3.0-generate-002",
-]
-_IMAGE_MODELS: dict[str, list[str]] = {
-    "gemini": list(_GEMINI_IMAGE_MODELS),
-    "gemini_vertex": list(_GEMINI_IMAGE_MODELS),
-    "openrouter": ["openai/gpt-image-1"],
-}
-
-
-@dataclass(frozen=True)
-class TTSVoice:
-    """One selectable TTS voice: what to pass to ``synthesize`` + how to label it.
-
-    ``voice`` is the exact id handed to :meth:`TTSProvider.synthesize`; ``model`` is the TTS
-    model where the provider needs one (e.g. OpenAI's ``gpt-4o-mini-tts``) and empty
-    otherwise. ``language``/``name``/``gender`` are display metadata — together they form the
-    human label so the user reads "Vietnamese · HoaiMy · Female" instead of a raw voice id.
-    """
-
-    provider: str
-    voice: str
-    language: str
-    name: str
-    gender: str
-    model: str = ""
-
-    @property
-    def label(self) -> str:
-        """Human label shown in the dropdown: ``<language> · <name> · <gender>``."""
-        return f"{self.language} · {self.name} · {self.gender}"
-
-
-# Curated voices per TTS provider. Vietnamese + English are first-class (the add-on's main
-# audience); a few common languages follow. Providers whose voice can't be enumerated offline
-# (piper = a local .onnx path, google_translate = language-only) have no entries — the GUI
-# falls back to the central config / auto-detect for those.
-_VOICES: dict[str, list[TTSVoice]] = {
-    "edge_tts": [
-        TTSVoice("edge_tts", "en-US-AriaNeural", "English (US)", "Aria", "Female"),
-        TTSVoice("edge_tts", "en-US-GuyNeural", "English (US)", "Guy", "Male"),
-        TTSVoice("edge_tts", "en-GB-SoniaNeural", "English (UK)", "Sonia", "Female"),
-        TTSVoice("edge_tts", "vi-VN-HoaiMyNeural", "Vietnamese", "HoaiMy", "Female"),
-        TTSVoice("edge_tts", "vi-VN-NamMinhNeural", "Vietnamese", "NamMinh", "Male"),
-        TTSVoice("edge_tts", "ja-JP-NanamiNeural", "Japanese", "Nanami", "Female"),
-        TTSVoice("edge_tts", "ko-KR-SunHiNeural", "Korean", "SunHi", "Female"),
-        TTSVoice("edge_tts", "fr-FR-DeniseNeural", "French", "Denise", "Female"),
-        TTSVoice("edge_tts", "es-ES-ElviraNeural", "Spanish", "Elvira", "Female"),
-        TTSVoice("edge_tts", "zh-CN-XiaoxiaoNeural", "Chinese", "Xiaoxiao", "Female"),
-    ],
-    "google_cloud": [
-        TTSVoice(
-            "google_cloud", "en-US-Neural2-C", "English (US)", "Neural2-C", "Female"
-        ),
-        TTSVoice(
-            "google_cloud", "en-US-Neural2-D", "English (US)", "Neural2-D", "Male"
-        ),
-        TTSVoice(
-            "google_cloud", "vi-VN-Neural2-A", "Vietnamese", "Neural2-A", "Female"
-        ),
-        TTSVoice(
-            "google_cloud", "vi-VN-Standard-B", "Vietnamese", "Standard-B", "Male"
-        ),
-        TTSVoice("google_cloud", "ja-JP-Neural2-B", "Japanese", "Neural2-B", "Female"),
-    ],
-    "openai": [
-        TTSVoice("openai", "alloy", "English", "Alloy", "Neutral", "gpt-4o-mini-tts"),
-        TTSVoice("openai", "echo", "English", "Echo", "Male", "gpt-4o-mini-tts"),
-        TTSVoice("openai", "fable", "English", "Fable", "Neutral", "gpt-4o-mini-tts"),
-        TTSVoice("openai", "onyx", "English", "Onyx", "Male", "gpt-4o-mini-tts"),
-        TTSVoice("openai", "nova", "English", "Nova", "Female", "gpt-4o-mini-tts"),
-        TTSVoice(
-            "openai", "shimmer", "English", "Shimmer", "Female", "gpt-4o-mini-tts"
-        ),
-    ],
-}
+# ISO 639-1 code → display name, for labelling the synthetic language-only TTS options.
+_LANGUAGE_LABELS: dict[str, str] = {lang["code"]: lang["label"] for lang in LANGUAGES}
 
 
 def providers_for(kind: str) -> list[str]:
@@ -173,12 +84,75 @@ def models_for(provider: str, kind: str) -> list[str]:
     return image_models(provider) if kind == KIND_IMAGE else text_models(provider)
 
 
-def voices_for(provider: str) -> list[TTSVoice]:
-    """Return the curated voices for a TTS ``provider`` (empty when not enumerable offline)."""
-    return list(_VOICES.get(provider, []))
+def _merged_voices(
+    fetched: dict[str, list[TTSVoice]] | None = None,
+) -> dict[str, list[TTSVoice]]:
+    """The aggregated curated voices with ``fetched`` (the Refresh result) merged over them.
+
+    A provider present in ``fetched`` (e.g. edge_tts) has its curated list REPLACED so the
+    dropdowns show the full enumerated set; every other provider keeps its seed, and a
+    fetched-only provider (no seed entry) is added. This is the single merge rule both the
+    per-language options and the ``voices`` payload share.
+    """
+    merged = dict(aggregated_voices())
+    if fetched:
+        merged.update(fetched)
+    return merged
 
 
-def catalog_payload() -> dict[str, object]:
+def _options_for_language(
+    lang: str, all_voices: list[TTSVoice]
+) -> list[dict[str, str]]:
+    """Build a language's voice options from an already-flattened, already-merged voice list.
+
+    The free language-only providers come first (synthetic empty-voice options), then every
+    named voice whose ``lang_code`` matches.
+    """
+    label = _LANGUAGE_LABELS.get(lang, lang)
+    options: list[dict[str, str]] = [
+        {"value": f"{provider}:", "label": f"{provider} · {label} (auto voice)"}
+        for provider in _LANGUAGE_ONLY_TTS_PROVIDERS
+    ]
+    options.extend(
+        {
+            "value": f"{v.provider}:{v.voice}",
+            "label": f"{v.provider} · {v.name} · {v.gender}",
+        }
+        for v in all_voices
+        if v.lang_code == lang
+    )
+    return options
+
+
+def voice_options_for_language(
+    lang: str, fetched: dict[str, list[TTSVoice]] | None = None
+) -> list[dict[str, str]]:
+    """Return the cross-provider voice options for ``lang`` as ``{value, label}`` dicts.
+
+    Gathers every voice (across ALL providers) whose ``lang_code`` matches ``lang``, as
+    ``{"value": "<provider>:<voice>", "label": "<provider> · <name> · <gender>"}``. With
+    ``fetched`` given (a provider→voices map from Refresh), that provider's fetched voices
+    replace its curated seed so the dropdown reflects the full enumerated set.
+
+    Every language also gets one synthetic option per language-only provider (e.g.
+    ``google_translate``): it has no named voices but serves any language for free, so the
+    option's voice is empty and synthesis uses the language directly.
+
+    Args:
+        lang: The ISO 639-1 language code to filter by.
+        fetched: Optional fetched voices per provider (merged over the seed).
+
+    Returns:
+        The voice options for that language: the free language-only providers first, then every
+        named voice whose ``lang_code`` matches.
+    """
+    all_voices = [v for voices in _merged_voices(fetched).values() for v in voices]
+    return _options_for_language(lang, all_voices)
+
+
+def catalog_payload(
+    fetched_voices: dict[str, list[TTSVoice]] | None = None,
+) -> dict[str, object]:
     """Build the JSON-able catalog the Smart Notes page bakes in to drive its dropdowns.
 
     Shape::
@@ -189,16 +163,30 @@ def catalog_payload() -> dict[str, object]:
           "text_models":  {provider: [id, ...]},
           "image_models": {provider: [id, ...]},
           "voices":       {provider: [{"voice", "label", "language", "gender", "model"}, ...]},
+          "auto_voice_options": {lang: [{"value", "label"}, ...]},  # the Auto-detect editor
         }
 
     The page reads ``llm_providers``/``tts_providers`` to fill the Provider dropdown by kind,
-    ``text_models``/``image_models`` to fill the Model dropdown, and ``voices`` to fill the
-    Voice dropdown for sound fields.
+    ``text_models``/``image_models`` to fill the Model dropdown, ``voices`` to fill the per-row
+    Voice dropdown, and ``auto_voice_options`` to fill each language's Auto-detect dropdown.
+
+    Args:
+        fetched_voices: Optional Refresh result (provider→voices) merged over the seed when
+            building ``auto_voice_options``/``voices`` (offline-safe: ``None`` uses the seed).
     """
+    # Aggregate + merge the fetched voices ONCE, then reuse for both the per-language options
+    # and the per-provider ``voices`` payload (no re-aggregation per language).
+    voices_by_provider = _merged_voices(fetched_voices)
+    all_voices = [v for voices in voices_by_provider.values() for v in voices]
     return {
         "llm_providers": list(LLM_PROVIDERS),
         "tts_providers": list(TTS_PROVIDERS),
         "languages": [dict(lang) for lang in LANGUAGES],
+        "auto_voice_options": {
+            lang["code"]: _options_for_language(lang["code"], all_voices)
+            for lang in LANGUAGES
+            if lang["code"]
+        },
         "text_models": {p: text_models(p) for p in LLM_PROVIDERS},
         "image_models": {p: image_models(p) for p in LLM_PROVIDERS},
         "voices": {
@@ -212,6 +200,6 @@ def catalog_payload() -> dict[str, object]:
                 }
                 for v in voices
             ]
-            for provider, voices in _VOICES.items()
+            for provider, voices in voices_by_provider.items()
         },
     }

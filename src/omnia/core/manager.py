@@ -23,6 +23,8 @@ from omnia.core.registry import get_registered
 from omnia.core.reviewer.ease_pipeline import EasePipeline
 from omnia.core.reviewer.web_injector import WebInjector
 
+logger = get_logger()
+
 
 class PluginManager:
     """Owns plugin instances, their contexts, and the active set."""
@@ -43,7 +45,6 @@ class PluginManager:
         )
         self._ease = ease or EasePipeline()
         self._web = web or WebInjector()
-        self._log = get_logger()
         self._plugins: dict[str, FeaturePlugin] = {}
         self._contexts: dict[str, PluginContext] = {}
         self._active: set[str] = set()
@@ -83,10 +84,10 @@ class PluginManager:
         try:
             plugin.on_enable(self._context(plugin_id))
         except Exception:  # plugin-isolation boundary — see module docstring
-            self._log.exception("Failed to enable plugin %s", plugin_id)
+            logger.exception("Failed to enable plugin %s", plugin_id)
             return False
         self._active.add(plugin_id)
-        self._log.info("Enabled plugin %s", plugin_id)
+        logger.info("Enabled plugin %s", plugin_id)
         return True
 
     def _deactivate(self, plugin_id: str) -> bool:
@@ -95,13 +96,13 @@ class PluginManager:
         try:
             plugin.on_disable(self._context(plugin_id))
         except Exception:  # plugin-isolation boundary — see module docstring
-            self._log.exception("Failed to disable plugin %s", plugin_id)
+            logger.exception("Failed to disable plugin %s", plugin_id)
             ok = False
         # Always drop from the active set: a plugin that failed teardown is in an unknown
         # state, and leaving it "active" only causes cascading errors on retry/teardown.
         self._active.discard(plugin_id)
         if ok:
-            self._log.info("Disabled plugin %s", plugin_id)
+            logger.info("Disabled plugin %s", plugin_id)
         return ok
 
     # --- public API (used by the settings GUI) --------------------------------------

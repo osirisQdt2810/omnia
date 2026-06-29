@@ -15,11 +15,23 @@ from __future__ import annotations
 import base64
 from typing import Any, Optional
 
+from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.llm.base import LLMProvider
 
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def _usage_from_gemini(resp: Any) -> Optional[dict[str, int]]:
+    """Extract token usage from a Gemini ``generateContent`` response (None if absent)."""
+    meta = resp.get("usageMetadata") if isinstance(resp, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    return {
+        "in": int(meta.get("promptTokenCount", 0)),
+        "out": int(meta.get("candidatesTokenCount", 0)),
+        "total": int(meta.get("totalTokenCount", 0)),
+    }
 
 
 class GeminiProvider(LLMProvider):
@@ -32,6 +44,7 @@ class GeminiProvider(LLMProvider):
         api_key: str,
         model: str = "gemini-2.0-flash",
         image_model: str = "",
+        temperature: float = 0.7,
         http: Optional[HttpClient] = None,
     ) -> None:
         if not api_key:
@@ -39,6 +52,7 @@ class GeminiProvider(LLMProvider):
         self._api_key = api_key
         self._model = model
         self._image_model = image_model
+        self._temperature = temperature
         self._http = http or DEFAULT_HTTP_CLIENT
 
     # --- hooks subclasses override (the only things that differ for Vertex) ---------
@@ -132,13 +146,15 @@ class GeminiProvider(LLMProvider):
         prompt: str,
         *,
         system: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
-        payload = self._build_payload(prompt, system, temperature, max_tokens)
+        temp = self._temperature if temperature is None else temperature
+        payload = self._build_payload(prompt, system, temp, max_tokens)
         resp = self._http.post_json(
             self._endpoint(self._model), payload, headers=self._headers()
         )
+        self.last_usage = _usage_from_gemini(resp)
         return self._parse_response(resp)
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:

@@ -7,10 +7,11 @@ fragments are concatenated.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from omnia.core.providers.http import DEFAULT_HTTP_CLIENT, HttpClient
+from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.tts.base import TTSProvider
+from omnia.core.providers.tts.registry import register_tts
 
 _ENDPOINT = "https://translate.google.com/translate_tts"
 _MAX_CHARS = 200
@@ -50,6 +51,7 @@ def split_text(text: str, max_chars: int = _MAX_CHARS) -> list[str]:
     return chunks
 
 
+@register_tts("google_translate")
 class GoogleTranslateTTS(TTSProvider):
     """Key-free TTS using translate.google.com."""
 
@@ -66,6 +68,14 @@ class GoogleTranslateTTS(TTSProvider):
         self._lang = lang
         self._tld = tld
         self._http = http or DEFAULT_HTTP_CLIENT
+
+    @classmethod
+    def from_config(
+        cls, config: dict[str, Any], http: Optional[HttpClient] = None
+    ) -> GoogleTranslateTTS:
+        return cls(
+            lang=config.get("lang", "en"), tld=config.get("tld", "com"), http=http
+        )
 
     def synthesize(
         self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
