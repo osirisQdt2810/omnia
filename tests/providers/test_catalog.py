@@ -14,8 +14,10 @@ from omnia.core.providers.catalog import (
     models_for,
     providers_for,
     text_models,
+    voice_options_for_language,
     voices_for,
 )
+from omnia.core.providers.tts.base import TTSVoice
 
 
 class TestProviderSubsets:
@@ -64,10 +66,13 @@ class TestVoices:
         voice = voices_for("edge_tts")[0]
         assert voice.label == f"{voice.language} · {voice.name} · {voice.gender}"
 
-    def test_provider_without_offline_voices_is_empty(self):
-        # google_translate is language-only; piper is a local .onnx path — neither enumerates.
+    def test_language_only_provider_has_no_named_voices(self):
+        # google_translate is language-only — it enumerates no named voices.
         assert voices_for("google_translate") == []
-        assert voices_for("piper") == []
+
+    def test_piper_ships_a_bundled_vietnamese_voice(self):
+        # piper now carries a bundled vi voice (resolved to models/piper/<name>.onnx).
+        assert any(v.lang_code == "vi" for v in voices_for("piper"))
 
 
 class TestCatalogPayload:
@@ -89,8 +94,109 @@ class TestCatalogPayload:
 
         json.dumps(catalog_payload())  # must not raise
 
-    def test_languages_present_with_auto_detect_first(self):
+    def test_languages_expanded_to_broad_iso_set(self):
         langs = catalog_payload()["languages"]
-        assert langs[0]["code"] == "" and "auto" in langs[0]["label"].lower()
         codes = {lang["code"] for lang in langs}
-        assert "vi" in codes and "en" in codes
+        # The "" Auto-detect entry was dropped (no per-field Language picker any more).
+        assert "" not in codes
+        # A broad ISO-639-1 set: spot-check a spread of the ~40 codes.
+        assert {"vi", "en", "ja", "th", "ar", "uk", "te"}.issubset(codes)
+        assert len(codes) >= 30
+
+
+class TestTTSVoiceLangCode:
+    def test_every_seed_voice_has_a_lang_code(self):
+        for provider in ("edge_tts", "google_cloud", "viettts", "openai"):
+            for voice in voices_for(provider):
+                assert voice.lang_code, f"{provider}:{voice.voice} has no lang_code"
+
+    def test_edge_tts_lang_codes_are_iso_639_1(self):
+        codes = {v.lang_code for v in voices_for("edge_tts")}
+        assert {"vi", "en", "ja", "th", "ar"}.issubset(codes)
+
+
+class TestVoiceOptionsForLanguage:
+    def test_includes_cross_provider_named_voices_for_vietnamese(self):
+        options = voice_options_for_language("vi")
+        # Every option is value="provider:voice" + a human label.
+        for opt in options:
+            assert ":" in opt["value"]
+            assert opt["label"]
+        providers = {opt["value"].split(":", 1)[0] for opt in options}
+        # Cross-provider: edge_tts + viettts both serve Vietnamese, plus the free fallback.
+        assert {"edge_tts", "viettts", "google_translate"}.issubset(providers)
+
+    def test_language_only_provider_present_for_language_without_named_voice(self):
+        # "th" (Thai) has an edge_tts seed voice but no viettts/openai voice — google_translate
+        # must still be offered as the free, voiceless fallback.
+        options = voice_options_for_language("th")
+        values = {opt["value"] for opt in options}
+        assert "google_translate:" in values
+
+    def test_unknown_language_still_offers_the_free_fallback(self):
+        # A code with no curated named voice at all still gets the google_translate option.
+        options = voice_options_for_language("xx")
+        assert any(opt["value"] == "google_translate:" for opt in options)
+
+    def test_fetched_voices_replace_the_seed_for_their_provider(self):
+        fetched = {
+            "edge_tts": [
+                TTSVoice(
+                    "edge_tts",
+                    "vi-VN-FetchedNeural",
+                    "vi-VN",
+                    "Fetched",
+                    "Female",
+                    "",
+                    "vi",
+                )
+            ]
+        }
+        options = voice_options_for_language("vi", fetched)
+        values = {opt["value"] for opt in options}
+        assert "edge_tts:vi-VN-FetchedNeural" in values
+        # The seed edge_tts voice is replaced (not merged) by the fetched list.
+        assert "edge_tts:vi-VN-HoaiMyNeural" not in values
+
+
+class TestAutoVoiceOptionsPayload:
+    def test_keyed_by_every_non_empty_language(self):
+        payload = catalog_payload()
+        options = payload["auto_voice_options"]
+        codes = {lang["code"] for lang in payload["languages"] if lang["code"]}
+        assert set(options) == codes
+
+    def test_auto_voice_options_are_json_serializable(self):
+        import json
+
+        json.dumps(catalog_payload()["auto_voice_options"])  # must not raise
+
+    def test_fetched_voices_flow_into_the_payload(self):
+        fetched = {
+            "edge_tts": [
+                TTSVoice(
+                    "edge_tts",
+                    "ja-JP-FetchedNeural",
+                    "ja-JP",
+                    "Fetched",
+                    "Male",
+                    "",
+                    "ja",
+                )
+            ]
+        }
+        options = catalog_payload(fetched)["auto_voice_options"]["ja"]
+        assert any(o["value"] == "edge_tts:ja-JP-FetchedNeural" for o in options)
+
+    def test_fetched_only_provider_not_in_seed_reaches_the_payload(self):
+        # A provider present only in the Refresh result (no curated seed entry) must still
+        # contribute its voices to both the per-language options and the ``voices`` payload.
+        fetched = {
+            "azure_tts": [
+                TTSVoice("azure_tts", "en-US-Foo", "en-US", "Foo", "Female", "", "en")
+            ]
+        }
+        payload = catalog_payload(fetched)
+        assert "azure_tts" in payload["voices"]
+        options = payload["auto_voice_options"]["en"]
+        assert any(o["value"] == "azure_tts:en-US-Foo" for o in options)

@@ -3,11 +3,12 @@
    * Smart Notes config page — part 3 of 6 of the page IIFE.
    * Row rendering + collection. Each non-base field is one row: a Generate toggle, a Lock
    * toggle (freeze + blur), a Type select (text / image / sound), a clickable Prompt summary
-   * (opens the editor), and kind-aware Provider / Model / Voice / Language pickers — Model
-   * applies to text & image, Voice + Language to sound. The Voice + Language COLUMNS only show
-   * when at least one row is a sound field; within a row the not-applicable cells are faded.
-   * The editable prompt/model/voice/language live on the row's data-* attributes so collectRows
-   * reads a single source of truth.
+   * (opens the editor), and kind-aware Provider / Model / Voice pickers — Model applies to
+   * text & image, Voice to sound. The Voice COLUMN only shows when at least one row is a sound
+   * field; within a row the not-applicable cells are faded. The editable prompt/model/voice
+   * live on the row's data-* attributes so collectRows reads a single source of truth. There is
+   * no Language picker: a pinned voice fixes the language, and a voice left on "(provider
+   * default)" lets the engine auto-detect it (the field's saved `language` is preserved as-is).
    */
 
   /**
@@ -46,7 +47,6 @@
     tr.appendChild(cell("sn-lockable sn-provider-cell"));
     tr.appendChild(cell("sn-lockable sn-model-cell"));
     tr.appendChild(cell("sn-lockable sn-col-voice sn-voice-cell"));
-    tr.appendChild(cell("sn-lockable sn-col-language sn-lang-cell"));
 
     const tdPrev = cell("sn-center sn-lockable");
     const prev = document.createElement("button");
@@ -67,7 +67,6 @@
 
     const kind = row.type || "text";
     rebuildProvider(tr, kind, row.provider || "");
-    rebuildLanguage(tr);
     applyKindState(tr, kind);
     updatePromptSummary(tr);
     applyLockState(tr);
@@ -227,7 +226,7 @@
    * @param {string} provider The selected TTS provider.
    */
   function rebuildVoice(tr, provider) {
-    const options = [{value: "", label: "(provider default)"}].concat(
+    const options = [{value: "", label: "Auto-detect"}].concat(
       voiceEntries(provider).map(function (v) {
         return {value: v.voice, label: v.label};
       })
@@ -244,27 +243,8 @@
   }
 
   /**
-   * Rebuild the Language picker (Auto-detect + the catalog languages).
-   * @param {!HTMLTableRowElement} tr The row.
-   */
-  function rebuildLanguage(tr) {
-    const options = languageOptions().map(function (l) {
-      return {value: l.code, label: l.label};
-    });
-    fillCellSelect(
-      tr.querySelector(".sn-lang-cell"),
-      "sn-language",
-      options,
-      tr.dataset.language || "",
-      function (value) {
-        tr.dataset.language = value;
-      }
-    );
-  }
-
-  /**
-   * Mark the cells that don't apply to a row's kind: Model is n/a for sound; Voice + Language
-   * are n/a for text/image (faded via .sn-na).
+   * Mark the cells that don't apply to a row's kind: Model is n/a for sound; Voice is n/a for
+   * text/image (faded via .sn-na).
    * @param {!HTMLTableRowElement} tr The row.
    * @param {string} kind text | image | tts
    */
@@ -272,12 +252,11 @@
     const sound = isTts(kind);
     tr.querySelector(".sn-model-cell").classList.toggle("sn-na", sound);
     tr.querySelector(".sn-voice-cell").classList.toggle("sn-na", !sound);
-    tr.querySelector(".sn-lang-cell").classList.toggle("sn-na", !sound);
   }
 
   /**
    * React to a Type change: re-scope Provider/Model/Voice to the new kind, refresh the
-   * applicability fade, and show/hide the Voice + Language columns.
+   * applicability fade, and show/hide the Voice column.
    * @param {!HTMLTableRowElement} tr The row.
    * @param {string} kind The new type value.
    */
@@ -300,7 +279,6 @@
       "sn-provider",
       "sn-model",
       "sn-voice",
-      "sn-language",
       "sn-overwrite",
       "sn-preview"
     ].forEach(function (cls) {
@@ -311,7 +289,24 @@
     });
   }
 
-  /** Show the Voice + Language columns only when at least one row is a sound field. */
+  /**
+   * Sort the table rows by field name, toggling ascending ↔ descending. Reorders the existing
+   * <tr> nodes (their state is preserved); a later re-render restores the note type's order.
+   */
+  function sortByField() {
+    sortDir = sortDir === 1 ? -1 : 1;
+    const rows = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+    rows.sort(function (a, b) {
+      return sortDir * a.dataset.field.localeCompare(b.dataset.field);
+    });
+    rows.forEach(function (tr) {
+      tbody.appendChild(tr);
+    });
+    sortBtn.textContent = sortDir === 1 ? "↑" : "↓";
+    sortBtn.classList.add("sn-sort-active");
+  }
+
+  /** Show the Voice column only when at least one row is a sound field. */
   function updateSoundColumns() {
     let hasSound = false;
     Array.prototype.forEach.call(tbody.querySelectorAll(".sn-type"), function (sel) {
@@ -338,32 +333,195 @@
   }
 
   /**
-   * Render the deck picker from `allDecks` + `selectedDecks` and refresh the button summary.
-   * One checkbox row per deck; ticking a deck unchecks "All", an empty selection rechecks it.
+   * Build the deck hierarchy from the flat `allDecks` ("::"-separated names). Every level is a
+   * real Anki deck, so each node carries its own deck id.
+   * @return {!Object} A root node {seg, full, id, kids: [node, ...]}.
+   */
+  function buildDeckTree() {
+    const root = {seg: "", full: "", id: null, kids: [], index: {}};
+    allDecks.forEach(function (deck) {
+      const parts = String(deck.name).split("::");
+      let node = root;
+      let path = "";
+      parts.forEach(function (seg, i) {
+        path = i === 0 ? seg : path + "::" + seg;
+        let child = node.index[path];
+        if (!child) {
+          child = {seg: seg, full: path, id: null, kids: [], index: {}};
+          node.index[path] = child;
+          node.kids.push(child);
+        }
+        node = child;
+      });
+      node.id = parseInt(deck.id, 10);
+    });
+    return root;
+  }
+
+  /** All deck ids in a node's subtree (the node + every descendant). */
+  function subtreeIds(node) {
+    let ids = node.id != null ? [node.id] : [];
+    node.kids.forEach(function (kid) {
+      ids = ids.concat(subtreeIds(kid));
+    });
+    return ids;
+  }
+
+  /**
+   * Render the deck picker as a collapsible, indented tree filtered by the search box.
+   * Subdecks are hidden until their parent is expanded (a search auto-expands matches). A
+   * deck's checkbox cascades to its whole subtree; "All decks" mode shows everything ticked +
+   * disabled (the canonical "no restriction", persisted as []).
    */
   function renderDecks() {
+    const term = (decksSearch.value || "").trim().toLowerCase();
     decksList.innerHTML = "";
-    allDecks.forEach(function (deck) {
-      const id = parseInt(deck.id, 10);
-      const label = document.createElement("label");
-      label.className = "sn-decks-row";
-      const cb = makeCheckbox("sn-deck-cb", selectedDecks.indexOf(id) >= 0);
-      cb.dataset.deckId = String(id);
-      cb.addEventListener("change", onDeckToggle);
-      const span = document.createElement("span");
-      span.textContent = deck.name;
-      label.appendChild(cb);
-      label.appendChild(span);
-      decksList.appendChild(label);
-    });
-    decksAll.checked = selectedDecks.length === 0;
+    let shown = 0;
+
+    function matches(node) {
+      if (!term) {
+        return true;
+      }
+      if (node.full.toLowerCase().indexOf(term) >= 0) {
+        return true;
+      }
+      return node.kids.some(matches);
+    }
+
+    function renderKids(node, depth) {
+      node.kids.forEach(function (child) {
+        if (!matches(child)) {
+          return;
+        }
+        shown += 1;
+        decksList.appendChild(deckRow(child, depth, term));
+        const expanded = term ? true : !!deckExpanded[child.full];
+        if (child.kids.length && expanded) {
+          renderKids(child, depth + 1);
+        }
+      });
+    }
+
+    if (deckTree) {
+      renderKids(deckTree, 0);
+    }
+    decksEmpty.textContent =
+      allDecks.length === 0
+        ? "No decks in this collection."
+        : shown === 0
+          ? "No deck matches “" + decksSearch.value + "”."
+          : "";
+    decksAll.checked = deckAllMode;
     updateDecksSummary();
   }
 
-  /** Reflect the selection count in the toolbar button label ("All decks" or "N deck(s)"). */
+  /**
+   * Build one tree row: an expand toggle (for nodes with children), a cascading checkbox, and
+   * the deck's leaf name, indented by depth.
+   * @param {!Object} node The deck node.
+   * @param {number} depth Indent level.
+   * @param {string} term The active search term (forces expansion when set).
+   * @return {!HTMLElement}
+   */
+  function deckRow(node, depth, term) {
+    const row = document.createElement("div");
+    row.className = "sn-decks-row";
+    row.style.paddingLeft = 6 + depth * 18 + "px";
+
+    const tog = document.createElement("span");
+    tog.className = "sn-deck-tog";
+    if (node.kids.length) {
+      tog.textContent = term || deckExpanded[node.full] ? "▾" : "▸";
+      tog.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        deckExpanded[node.full] = !deckExpanded[node.full];
+        renderDecks();
+      });
+    }
+
+    const label = document.createElement("label");
+    label.className = "sn-deck-label";
+    label.title = node.full;
+    const cb = makeCheckbox(
+      "sn-deck-cb",
+      deckAllMode || selectedDecks.indexOf(node.id) >= 0
+    );
+    cb.disabled = deckAllMode;
+    cb.addEventListener("change", function () {
+      onDeckToggle(node, cb.checked);
+    });
+    const span = document.createElement("span");
+    span.textContent = node.seg;
+    label.appendChild(cb);
+    label.appendChild(span);
+
+    row.appendChild(tog);
+    row.appendChild(label);
+    return row;
+  }
+
+  /**
+   * Toggle a deck (and its whole subtree) in the selection; an empty selection snaps back to
+   * "All decks" mode.
+   * @param {!Object} node The deck node toggled.
+   * @param {boolean} checked The checkbox's new state.
+   */
+  function onDeckToggle(node, checked) {
+    subtreeIds(node).forEach(function (id) {
+      const at = selectedDecks.indexOf(id);
+      if (checked && at < 0) {
+        selectedDecks.push(id);
+      } else if (!checked && at >= 0) {
+        selectedDecks.splice(at, 1);
+      }
+    });
+    if (selectedDecks.length === 0) {
+      deckAllMode = true;
+    }
+    renderDecks();
+  }
+
+  /** Reflect the selection in the toolbar button label ("All decks" or "N deck(s)"). */
   function updateDecksSummary() {
     const n = selectedDecks.length;
-    decksBtn.textContent = n === 0 ? "All decks" : n + " deck" + (n === 1 ? "" : "s");
+    decksBtn.textContent =
+      deckAllMode || n === 0 ? "All decks" : n + " deck" + (n === 1 ? "" : "s");
+  }
+
+  /**
+   * Toggle a whole column from its header: flip every row's control for `col` to a single
+   * shared state (if any is "off", turn all on; otherwise all off).
+   * @param {string} col "generate" | "lock" | "overwrite"
+   */
+  function toggleAllColumn(col) {
+    const rows = tbody.querySelectorAll("tr");
+    if (col === "lock") {
+      const turnOn = Array.prototype.some.call(rows, function (tr) {
+        return !tr.querySelector(".sn-lock").classList.contains("sn-locked");
+      });
+      Array.prototype.forEach.call(rows, function (tr) {
+        const lock = tr.querySelector(".sn-lock");
+        lock.classList.toggle("sn-locked", turnOn);
+        lock.textContent = turnOn ? "🔒" : "🔓";
+        applyLockState(tr);
+      });
+      return;
+    }
+    const sel = col === "generate" ? ".sn-enabled" : ".sn-overwrite";
+    const boxes = [];
+    Array.prototype.forEach.call(rows, function (tr) {
+      const box = tr.querySelector(sel);
+      if (box && !box.disabled) {
+        boxes.push(box);
+      }
+    });
+    const turnOn = boxes.some(function (box) {
+      return !box.checked;
+    });
+    boxes.forEach(function (box) {
+      box.checked = turnOn;
+    });
   }
 
   /**

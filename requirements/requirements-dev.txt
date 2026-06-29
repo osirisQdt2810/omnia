@@ -1,26 +1,32 @@
 # Host / CI development tooling for Omnia (an Anki add-on).
-# These are NOT shipped with the add-on — they only run tests + linters on the host.
-# The add-on itself ships pure-Python code + whatever lives in src/omnia/vendor/.
+#
+# GOAL: emulate Anki's bundled-Python runtime as closely as possible. This venv must contain
+# ONLY test tooling (test runner, formatters, linters, type checker) — NEVER a third-party
+# RUNTIME dependency of the add-on.
+#
+# WHY: Anki does not pip-install for you. At runtime the add-on's third-party deps come solely
+# from src/omnia/vendor/universal (added to sys.path at startup; see requirements-vendor.txt).
+# The test suite mirrors that exactly — tests/conftest.py appends that same vendor dir to
+# sys.path — so pip-installing pydantic / rsa / pyasn1 / tomli-w here would only SHADOW the
+# vendored copies and hide vendoring bugs. Keep them out. The hermetic guard in
+# tests/providers/test_anki_runtime.py enforces this with site-packages stripped.
+#
+# edge_tts likewise needs NO package: it speaks the Microsoft Edge protocol over the
+# pure-stdlib WebSocket client (core/network/websocket.py), so it ships and is tested for
+# real with nothing installed.
 
 # Test runner
 pytest==8.3.4
 pytest-mock==3.14.0
 
-# Formatters / linters / types — pinned to match .pre-commit-config.yaml
-black==24.10.0
-ruff==0.8.0
-isort==5.13.2
+# Formatters / linters / types — pinned to match .pre-commit-config.yaml.
+# ruff must be new enough for the UP045/UP046/UP047 selectors that pyproject's ignore list
+# uses (UP046/047 suppress PEP-695 rewrites that would break Anki's Python-3.10 minimum);
+# black/isort track the style the committed code is formatted with.
+black==26.5.1
+ruff==0.15.20
+isort==8.0.1
 mypy==1.13.0
 
 # Git hook runner
 pre-commit==4.0.1
-
-# Config stack (also vendored into the add-on — see requirements-vendor.txt). Installed on
-# the host so the test suite runs the real validation/parsing code.
-pydantic>=2.9
-PyYAML>=6.0
-tomli-w>=1.0
-types-PyYAML>=6.0      # mypy stubs
-rsa>=4.9               # gemini_vertex service-account signing (also vendored)
-pyasn1>=0.6            # PKCS#8 unwrap for the above
-

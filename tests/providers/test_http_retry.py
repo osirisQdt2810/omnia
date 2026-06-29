@@ -8,8 +8,8 @@ import urllib.request
 
 import pytest
 
+from omnia.core.network.http import RetryPolicy, UrllibHttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.http import RetryPolicy, UrllibHttpClient
 
 
 class _Resp:

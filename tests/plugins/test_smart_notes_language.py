@@ -28,17 +28,27 @@ class _BoomLLM(FakeLLMProvider):
 
 
 class _Hub:
-    """Minimal ProviderHub-shaped stub exposing ``llm()`` / ``tts()``."""
+    """Minimal ProviderHub-shaped stub exposing ``llm()`` / ``tts(provider=)`` / resolve.
 
-    def __init__(self, llm=None, tts=None) -> None:
+    ``auto_voices`` maps a detected language code to ``(provider, voice)`` for the Auto-detect
+    path; unmapped languages raise (mirroring the real hub).
+    """
+
+    def __init__(self, llm=None, tts=None, auto_voices=None) -> None:
         self._llm = llm
         self._tts = tts
+        self._auto_voices = auto_voices or {}
 
     def llm(self, *, model: str = "", provider: str = ""):
         return self._llm
 
-    def tts(self):
+    def tts(self, *, provider: str = ""):
         return self._tts
+
+    def resolve_auto_voice(self, lang: str):
+        if lang not in self._auto_voices:
+            raise ProviderError(f"No Auto-detect voice set for language {lang!r}")
+        return self._auto_voices[lang]
 
 
 class _RecordingTTS(FakeTTSProvider):
@@ -111,12 +121,19 @@ class TestLanguageDetectorReal:
 
 
 class TestTTSLanguagePath:
-    def test_no_voice_detects_and_passes_language(self):
+    def test_no_voice_detects_and_resolves_language_to_a_voice(self):
         tts = _RecordingTTS()
-        service = GenerationService(_Hub(llm=_CodeLLM("vi"), tts=tts))
+        # Auto-detect: the detected language ("vi") is threaded AND drives the map lookup.
+        service = GenerationService(
+            _Hub(
+                llm=_CodeLLM("vi"),
+                tts=tts,
+                auto_voices={"vi": ("edge_tts", "vi-VN-HoaiMyNeural")},
+            )
+        )
         rule = SmartNotesFieldRule(kind="tts", prompt="{{Word}}", target_field="Audio")
         service.generate(rule, {"Word": "xin chào"})
-        assert tts.calls == [("xin chào", "vi", None)]
+        assert tts.calls == [("xin chào", "vi", "vi-VN-HoaiMyNeural")]
 
     def test_pinned_voice_skips_detection(self):
         tts = _RecordingTTS()
@@ -132,21 +149,34 @@ class TestTTSLanguagePath:
         service.generate(rule, {"Word": "hi"})
         assert tts.calls == [("hi", None, "en-US-X")]
 
-    def test_detection_failure_falls_back_to_no_language(self):
+    def test_detection_failure_resolves_the_empty_language(self):
         tts = _RecordingTTS()
-        service = GenerationService(_Hub(llm=_BoomLLM(), tts=tts))
+        # A swallowed detection failure → no language ("") → the map's "" fallback resolves it.
+        service = GenerationService(
+            _Hub(
+                llm=_BoomLLM(),
+                tts=tts,
+                auto_voices={"": ("google_translate", "")},
+            )
+        )
         rule = SmartNotesFieldRule(kind="tts", prompt="{{Word}}", target_field="Audio")
         service.generate(rule, {"Word": "hi"})
+        # Empty resolved voice → None so the provider uses the language directly.
         assert tts.calls == [("hi", None, None)]
 
-    def test_detection_disabled_passes_no_language(self):
+    def test_detection_disabled_resolves_the_empty_language(self):
         tts = _RecordingTTS()
         service = GenerationService(
-            _Hub(llm=_CodeLLM("vi"), tts=tts), detect_tts_language=False
+            _Hub(
+                llm=_CodeLLM("vi"),
+                tts=tts,
+                auto_voices={"": ("edge_tts", "en-US-AriaNeural")},
+            ),
+            detect_tts_language=False,
         )
         rule = SmartNotesFieldRule(kind="tts", prompt="{{Word}}", target_field="Audio")
         service.generate(rule, {"Word": "xin chào"})
-        assert tts.calls == [("xin chào", None, None)]
+        assert tts.calls == [("xin chào", None, "en-US-AriaNeural")]
 
     def test_explicit_language_skips_detection(self):
         tts = _RecordingTTS()
@@ -155,12 +185,18 @@ class TestTTSLanguagePath:
             def generate_text(self, *a, **k):
                 raise AssertionError("must not detect when a language is set")
 
-        service = GenerationService(_Hub(llm=_NoDetect(), tts=tts))
+        service = GenerationService(
+            _Hub(
+                llm=_NoDetect(),
+                tts=tts,
+                auto_voices={"vi": ("edge_tts", "vi-VN-HoaiMyNeural")},
+            )
+        )
         rule = SmartNotesFieldRule(
             kind="tts", prompt="{{Word}}", target_field="Audio", language="vi"
         )
         service.generate(rule, {"Word": "x"})
-        assert tts.calls == [("x", "vi", None)]
+        assert tts.calls == [("x", "vi", "vi-VN-HoaiMyNeural")]
 
     def test_voice_overrides_language(self):
         tts = _RecordingTTS()

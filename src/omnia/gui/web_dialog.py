@@ -26,6 +26,8 @@ from aqt.webview import AnkiWebView
 from omnia.core.logging import get_logger
 from omnia.core.reviewer.web_injector import parse_message
 
+logger = get_logger()
+
 # A WebDialog op handler: (data) -> JSON-serializable result returned to the JS callback.
 DialogHandler = Callable[[dict[str, Any]], Any]
 
@@ -55,7 +57,6 @@ class WebDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._handlers = handlers
-        self._log = get_logger()
         self.setWindowTitle(title)
         self.setMinimumSize(width, height)
 
@@ -78,10 +79,10 @@ class WebDialog(QDialog):
     def _on_load_finished(self, ok: bool) -> None:
         """Log the page-load outcome + rendered body size (real-Anki blank-dialog diagnostic)."""
         title = self.windowTitle()
-        self._log.info("WebDialog %r loadFinished ok=%s", title, ok)
+        logger.info("WebDialog %r loadFinished ok=%s", title, ok)
 
         def _probe(result: Any) -> None:
-            self._log.info("WebDialog %r body-probe: %s", title, result)
+            logger.info("WebDialog %r body-probe: %s", title, result)
 
         try:
             self._web.evalWithCallback(
@@ -91,7 +92,7 @@ class WebDialog(QDialog):
                 _probe,
             )
         except Exception:  # diagnostic only — never let it affect the dialog
-            self._log.exception("WebDialog %r body-probe failed", title)
+            logger.exception("WebDialog %r body-probe failed", title)
 
     def set_html(self, html: str) -> None:
         """Render ``html`` in the webview.
@@ -134,5 +135,5 @@ class WebDialog(QDialog):
         try:
             return handler(parsed.data)
         except Exception:  # UI boundary: never let a handler crash the dialog
-            self._log.exception("WebDialog handler for op %r failed", parsed.op)
+            logger.exception("WebDialog handler for op %r failed", parsed.op)
             return None

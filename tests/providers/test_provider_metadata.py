@@ -18,8 +18,9 @@ from omnia.core.providers import (
 )
 from omnia.core.providers.llm.factory import _BUILDERS as LLM_BUILDERS
 from omnia.core.providers.llm.factory import _PROVIDER_CLASSES as LLM_CLASSES
-from omnia.core.providers.tts.factory import _BUILDERS as TTS_BUILDERS
-from omnia.core.providers.tts.factory import _PROVIDER_CLASSES as TTS_CLASSES
+from omnia.core.providers.tts.base import TTSProvider
+from omnia.core.providers.tts.openai_compatible import OpenAICompatibleTTS
+from omnia.core.providers.tts.registry import TTS_REGISTRY
 
 
 class TestProviderClassification:
@@ -42,10 +43,13 @@ class TestProviderClassification:
         assert available_keyless_llm_providers() == []
 
     def test_keyless_tts_are_the_free_offline_ones(self):
+        # Free/offline/local-open-source providers need no cloud key: google_translate + Edge
+        # (both pure-stdlib clients), piper (local model), viettts (local self-hosted server).
         assert set(available_keyless_tts_providers()) == {
             "google_translate",
             "edge_tts",
             "piper",
+            "viettts",
         }
 
 
@@ -54,8 +58,20 @@ class TestClassMetadataConsistency:
         # Drift guard: the name->class map used for classification must match the builders.
         assert set(LLM_CLASSES) == set(LLM_BUILDERS)
 
-    def test_tts_classes_cover_builders(self):
-        assert set(TTS_CLASSES) == set(TTS_BUILDERS)
+    def test_tts_registry_resolves_to_provider_subclasses(self):
+        # Every registered name resolves to a TTSProvider subclass.
+        assert TTS_REGISTRY
+        for cls in TTS_REGISTRY.values():
+            assert issubclass(cls, TTSProvider)
+
+    def test_tts_registry_lists_match_registry(self):
+        # The available_* queries are derived straight from the registry's name set.
+        assert set(available_tts_providers()) == set(TTS_REGISTRY)
+
+    def test_tts_openai_family_shares_one_class(self):
+        # openai/openrouter/openai_compatible are ONE class under three names.
+        for name in ("openai", "openrouter", "openai_compatible"):
+            assert TTS_REGISTRY[name] is OpenAICompatibleTTS
 
     def test_llm_requires_api_matches_classification(self):
         req = set(available_llm_providers_requiring_api())
@@ -64,5 +80,5 @@ class TestClassMetadataConsistency:
 
     def test_tts_requires_api_matches_classification(self):
         req = set(available_tts_providers_requiring_api())
-        for name, cls in TTS_CLASSES.items():
+        for name, cls in TTS_REGISTRY.items():
             assert (name in req) == cls.requires_api

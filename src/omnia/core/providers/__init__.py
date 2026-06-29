@@ -26,10 +26,33 @@ from omnia.core.providers.tts import (
     available_tts_providers_requiring_api,
     create_tts_provider,
 )
+from omnia.core.providers.usage import (
+    RecordingLLMProvider,
+    RecordingTTSProvider,
+    UsageRecorder,
+    default_recorder,
+)
 
 if TYPE_CHECKING:
     from omnia.core.config.models import LLMSettings, TTSSettings
-    from omnia.core.providers.http import HttpClient
+    from omnia.core.network.http import HttpClient
+
+
+def split_provider_voice(value: str) -> tuple[str, str]:
+    """Split a ``"provider:voice"`` Auto-detect mapping into its parts.
+
+    Splits on the FIRST ``":"`` so a voice id that itself contains a colon stays intact.
+
+    Args:
+        value: A ``"<provider>:<voice>"`` string from ``[tts.auto_voices]``.
+
+    Returns:
+        ``(provider, voice)``; both empty for a blank value, ``voice`` empty when no colon.
+    """
+    provider, sep, voice = value.partition(":")
+    if not sep:
+        return value, ""
+    return provider, voice
 
 
 class ProviderHub:
@@ -47,13 +70,19 @@ class ProviderHub:
         llm_settings: Optional[LLMSettings] = None,
         tts_settings: Optional[TTSSettings] = None,
         http: Optional[HttpClient] = None,
+        recorder: Optional[UsageRecorder] = None,
     ) -> None:
         self._llm_settings = llm_settings
         self._tts_settings = tts_settings
         self._http = http
-        # Providers built for a per-rule (provider, model) override, cached so repeated rules
-        # reuse one instance instead of rebuilding it for every note.
-        self._llm_cache: dict[tuple[str, str], LLMProvider] = {}
+        # Every built provider is wrapped so each generation records usage (calls + rough
+        # char counts) for the Account dialog. Defaults to the process-wide recorder set at
+        # bootstrap (a no-op until then).
+        self._recorder = recorder if recorder is not None else default_recorder()
+        # Providers built for a per-rule (provider, model, image_model) override, cached so
+        # repeated rules reuse one instance instead of rebuilding it for every note (the wrapped
+        # instance is cached, so the recording wrapper is reused too).
+        self._llm_cache: dict[tuple[str, str, str], LLMProvider] = {}
 
     def _llm_config(self, provider: str = "") -> dict[str, Any]:
         """Flatten the active (or named ``provider``) ``[llm.<provider>]`` subsection.
@@ -82,46 +111,121 @@ class ProviderHub:
             return {}
         return self._llm_settings.gemini_vertex.google_auth()
 
-    def _tts_config(self) -> dict[str, Any]:
+    def _tts_config(self, provider: str = "") -> dict[str, Any]:
+        """Flatten the active (or named ``provider``) ``[tts.<provider>]`` subsection.
+
+        ``provider`` selects a non-active subsection (e.g. an Auto-detect voice's provider, or a
+        per-field override); empty = the configured active provider. Keeps the google_cloud
+        vertex-auth bridge for whichever provider is google_cloud.
+        """
         settings = self._tts_settings
         if settings is None:
-            return {}
-        config: dict[str, Any] = {"provider": settings.provider}
-        active = settings.active()
-        if active is not None:
-            config.update(active.dict())
+            return {"provider": provider} if provider else {}
+        name = provider or settings.provider
+        config: dict[str, Any] = {"provider": name}
+        sub = getattr(settings, name, None)
+        if isinstance(sub, BaseModel):
+            config.update(sub.dict())
         # google_cloud authenticates with the same Google service account as gemini_vertex.
-        if settings.provider == "google_cloud":
+        if name == "google_cloud":
             config = {**self._vertex_auth(), **config}
         return config
 
-    def llm(self, *, model: str = "", provider: str = "") -> LLMProvider:
-        """Build an LLM provider, optionally pinned to a different ``provider``/``model``.
+    def llm(
+        self, *, model: str = "", image_model: str = "", provider: str = ""
+    ) -> LLMProvider:
+        """Build an LLM provider, optionally pinned to a different ``provider``/model.
 
-        With both empty, returns the configured active provider. A smart-notes rule may pin
-        its own ``provider``/``model``; the model is fixed at construction (never threaded
-        per call), so the hub builds a provider whose config has ``model`` (and ``provider``)
-        overridden — caching by ``(provider, model)`` so repeated rules reuse one instance.
+        With everything empty, returns the configured active provider. A smart-notes rule may
+        pin its own ``provider`` and model; the model is fixed at construction (never threaded
+        per call), so the hub builds a provider whose config has the model (and ``provider``)
+        overridden — caching by ``(provider, model, image_model)`` so repeated rules reuse one
+        instance. ``model`` overrides the text/chat model; ``image_model`` overrides the image
+        model — they are distinct fields on the same provider, so an image rule pins
+        ``image_model`` (a text rule pins ``model``) and never clobbers the other.
 
         Args:
             provider: Override the active provider name (empty = the configured one).
             model: Override the text model id (empty = the subsection's configured model).
+            image_model: Override the image model id (empty = the subsection's configured one).
         """
-        if not model and not provider:
-            return create_llm_provider(self._llm_config(), self._http)
-        key = (provider, model)
+        if not model and not image_model and not provider:
+            config = self._llm_config()
+            built = create_llm_provider(config, self._http)
+            return self._record_llm(built, config)
+        key = (provider, model, image_model)
         cached = self._llm_cache.get(key)
         if cached is None:
             config = self._llm_config(provider)
             if model:
                 config["model"] = model
-            cached = create_llm_provider(config, self._http)
+            if image_model:
+                config["image_model"] = image_model
+            built = create_llm_provider(config, self._http)
+            cached = self._record_llm(built, config)
             self._llm_cache[key] = cached
         return cached
 
-    def tts(self) -> TTSProvider:
-        """Build the configured TTS provider."""
-        return create_tts_provider(self._tts_config(), self._http)
+    def tts(self, *, provider: str = "") -> TTSProvider:
+        """Build a TTS provider, optionally pinned to a different ``provider``.
+
+        Empty ``provider`` builds the configured active provider; a named one builds that
+        provider (e.g. a sound field's pinned provider, or an Auto-detect voice's provider).
+        Wrapped so each synthesis records usage.
+
+        Args:
+            provider: Override the active provider name (empty = the configured one).
+        """
+        built = create_tts_provider(self._tts_config(provider), self._http)
+        return RecordingTTSProvider(built, self._recorder)
+
+    def resolve_auto_voice(self, lang: str) -> tuple[str, str]:
+        """Resolve the global Auto-detect ``(provider, voice)`` for a language code.
+
+        Looks ``lang`` up in ``[tts.auto_voices]`` and splits the stored ``"provider:voice"``
+        string. This is the SOLE source of truth for an Auto-detect field's voice — it never
+        consults the catalog or any fetched/cached voice list, so a saved mapping works even on
+        a machine that never refreshed voices.
+
+        Args:
+            lang: The detected ISO 639-1 language code.
+
+        Returns:
+            ``(provider, voice)`` for ``lang``.
+
+        Raises:
+            ProviderError: When ``lang`` has no Auto-detect voice configured.
+        """
+        mapping = self._tts_settings.auto_voices if self._tts_settings else {}
+        value = mapping.get(lang, "")
+        # A present mapping resolves; the voice MAY be empty for a language-only provider (e.g.
+        # "google_translate:"), which synthesizes from the language directly.
+        if not value:
+            raise ProviderError(
+                f"No Auto-detect voice set for language {lang!r} — configure it in "
+                "Sound → Auto-detect voices."
+            )
+        provider, voice = split_provider_voice(value)
+        if not provider:
+            raise ProviderError(
+                f"No Auto-detect voice set for language {lang!r} — configure it in "
+                "Sound → Auto-detect voices."
+            )
+        return provider, voice
+
+    def _record_llm(self, provider: LLMProvider, config: dict[str, Any]) -> LLMProvider:
+        """Wrap ``provider`` so each generation records usage under the right model.
+
+        Text records under ``config['model']`` (the resolved text model) and image under
+        ``config['image_model']`` — the two are distinct on the same provider, so the recorder
+        must not log an image call under the text model.
+        """
+        return RecordingLLMProvider(
+            provider,
+            self._recorder,
+            model=str(config.get("model", "")) or "(default)",
+            image_model=str(config.get("image_model", "")),
+        )
 
 
 __all__ = [
@@ -137,4 +241,5 @@ __all__ = [
     "available_tts_providers_requiring_api",
     "create_llm_provider",
     "create_tts_provider",
+    "split_provider_voice",
 ]

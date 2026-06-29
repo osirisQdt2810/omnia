@@ -37,6 +37,11 @@ class ConfigLoader:
         """
         self._config_dir = config_dir
 
+    @property
+    def config_dir(self) -> Path:
+        """The directory holding the live domain config files."""
+        return self._config_dir
+
     def ensure_live_files(self) -> None:
         """Create any missing live file by copying its ``*.example.toml`` template."""
         for name in self.LIVE_FILES:

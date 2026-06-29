@@ -19,19 +19,20 @@ repos:
 
   # Import sorting — standalone isort (NOT ruff's "I" rule), profile=black (pyproject).
   - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
+    rev: 8.0.1
     hooks:
       - id: isort
 
   # Formatter.
   - repo: https://github.com/psf/black
-    rev: 24.10.0
+    rev: 26.5.1
     hooks:
       - id: black
 
-  # Linter (autofix). Import-sorting (I) is delegated to isort above.
+  # Linter (autofix). Import-sorting (I) is delegated to isort above. ruff must be new enough
+  # for the UP045/UP046/UP047 selectors pyproject's ignore list references.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    rev: v0.15.20
     hooks:
       - id: ruff
         args: [--fix]

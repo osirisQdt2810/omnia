@@ -10,8 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Optional
 
+from omnia.core.network.http import HttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.http import HttpClient
 from omnia.core.providers.llm.base import LLMProvider
 from omnia.core.providers.llm.gemini import GeminiProvider
 from omnia.core.providers.llm.gemini_vertex import GeminiVertexProvider
@@ -35,6 +35,7 @@ def _build_openai(config: dict[str, Any], http: Optional[HttpClient]) -> LLMProv
         base_url=base_url,
         model=config.get("model", "gpt-4o-mini"),
         image_model=config.get("image_model"),
+        temperature=float(config.get("temperature", 0.7)),
         http=http,
     )
 
@@ -44,6 +45,7 @@ def _build_gemini(config: dict[str, Any], http: Optional[HttpClient]) -> LLMProv
         api_key=config.get("api_key", ""),
         model=config.get("model", "gemini-2.0-flash"),
         image_model=config.get("image_model", ""),
+        temperature=float(config.get("temperature", 0.7)),
         http=http,
     )
 
@@ -51,11 +53,16 @@ def _build_gemini(config: dict[str, Any], http: Optional[HttpClient]) -> LLMProv
 def _build_gemini_vertex(
     config: dict[str, Any], http: Optional[HttpClient]
 ) -> LLMProvider:
+    # The project is optional in config: the service-account JSON already carries `project_id`,
+    # so fall back to it when no explicit project is set (an explicit one still wins).
+    from omnia.core.providers.token_source import service_account_project
+
     return GeminiVertexProvider(
-        project=config.get("project", ""),
+        project=config.get("project", "") or service_account_project(config),
         location=config.get("location", "global"),
         model=config.get("model", "gemini-2.5-flash"),
         image_model=config.get("image_model", ""),
+        temperature=float(config.get("temperature", 0.7)),
         auth={
             "access_token": config.get("access_token"),
             "credentials_path": config.get("credentials_path"),

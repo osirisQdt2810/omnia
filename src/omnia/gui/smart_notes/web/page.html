@@ -22,30 +22,22 @@
     <label class="sn-field">
       <span class="sn-label" title="Limit this note type's generation to specific decks (none ticked = all decks).">Decks</span>
       <button id="sn-decks-btn" class="sn-btn" type="button">All decks</button>
-      <div id="sn-decks-panel" class="sn-decks-panel" hidden>
-        <label class="sn-decks-row sn-decks-all">
-          <input type="checkbox" id="sn-decks-all" class="sn-check" checked>
-          <span>All decks</span>
-        </label>
-        <div id="sn-decks-list" class="sn-decks-list"></div>
-      </div>
     </label>
   </div>
   <div class="sn-table-wrap">
     <table class="sn-table">
       <thead>
         <tr>
-          <th>Field</th>
-          <th title="Generate this field in batches / Auto-smart / Editor ✨">Generate</th>
-          <th title="Lock this field — freeze its settings and skip it in Auto-smart / Improve">Lock</th>
+          <th class="sn-th-field"><span>Field</span><button id="sn-sort-field" class="sn-sort" type="button" title="Sort rows by field name">↕</button></th>
+          <th class="sn-th-toggle" data-toggle="generate" title="Generate this field in batches / Auto-prompt / Editor ✨ — click to toggle ALL">Generate</th>
+          <th class="sn-th-toggle" data-toggle="lock" title="Lock a field (freeze its settings; skip Auto-prompt / Improve) — click to toggle ALL">Lock</th>
           <th>Type</th>
           <th>Prompt</th>
           <th title="Inherit the central provider when blank">Provider</th>
           <th title="Model for text/image fields">Model</th>
-          <th class="sn-col-voice" title="Voice for a sound field (blank = the provider's default for the language)">Voice</th>
-          <th class="sn-col-language" title="Language for a sound field — Auto-detect or pick">Language</th>
+          <th class="sn-col-voice" title="Voice for a sound field (blank = the provider's default; the language is taken from the voice, or auto-detected when blank)">Voice</th>
           <th title="Test this field's prompt on a random note">Preview</th>
-          <th title="Overwrite the field even if it already has content">Overwrite</th>
+          <th class="sn-th-toggle" data-toggle="overwrite" title="Overwrite the field even if it already has content — click to toggle ALL">Overwrite</th>
         </tr>
       </thead>
       <tbody id="sn-rows"></tbody>
@@ -55,8 +47,9 @@
   <footer class="sn-footer">
     <div class="sn-footer-left">
       <button id="sn-create" class="sn-btn">+ Create field</button>
-      <button id="sn-auto" class="sn-btn sn-btn-magic">✨ Auto-smart</button>
+      <button id="sn-auto" class="sn-btn sn-btn-magic" title="Draft a prompt + type for every Generate-on, unlocked field using the default model">✨ Auto-prompt</button>
       <button id="sn-improve-all" class="sn-btn sn-btn-magic">✦ Improve all prompts</button>
+      <button id="sn-options" class="sn-btn" title="Smart Notes generation options">⚙ Options</button>
       <span id="sn-msg" class="sn-msg"></span>
     </div>
     <div class="sn-footer-right">
@@ -86,6 +79,90 @@
       <button id="sn-modal-save" class="sn-btn sn-btn-primary">Save prompt</button>
     </div>
   </div>
+</div>
+
+<div id="sn-decks-modal" class="sn-modal" hidden>
+  <div class="sn-modal-card sn-decks-card">
+    <div class="sn-modal-head">
+      <div class="sn-modal-title">Decks for this note type</div>
+      <button id="sn-decks-close" class="sn-iconbtn" title="Close">✕</button>
+    </div>
+    <input id="sn-decks-search" type="text" class="sn-decks-search" placeholder="Search decks…">
+    <label class="sn-decks-row sn-decks-all">
+      <input type="checkbox" id="sn-decks-all" class="sn-check" checked>
+      <span>All decks</span>
+    </label>
+    <div id="sn-decks-list" class="sn-decks-grid"></div>
+    <div id="sn-decks-empty" class="sn-decks-empty"></div>
+    <div class="sn-modal-foot">
+      <button id="sn-decks-done" class="sn-btn sn-btn-primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="sn-options-modal" class="sn-modal" hidden>
+  <div class="sn-modal-card sn-options-card">
+    <div class="sn-modal-head">
+      <div class="sn-modal-title">Smart Notes options</div>
+      <button id="sn-options-close" class="sn-iconbtn" title="Close">✕</button>
+    </div>
+    <div class="sn-tabs">
+      <button class="sn-tab sn-tab-active" data-tab="general">General</button>
+      <button class="sn-tab" data-tab="account">Usage &amp; Keys</button>
+    </div>
+    <div class="sn-tabpane" data-pane="general">
+      <div class="sn-modal-fields">These apply to every note type (Smart Notes generation behaviour).</div>
+      <label class="sn-opt-row" title="ON: the moment a card appears in review, Omnia fills its empty smart fields in the background, so the answer side is ready without a manual batch.&#10;OFF: fields are generated only when you run a batch from the browser.&#10;&#10;Example: you study a fresh word → its Meaning / Example / Audio are filled in before you flip the card.">
+        <input type="checkbox" id="sn-opt-gen-review" class="sn-check">
+        <span><b>Pre-generate at review</b> — when a card is shown, fill its empty smart fields in the background.</span>
+      </label>
+      <label class="sn-opt-row" title="ON: a batch re-generates fields that ALREADY have content, replacing them.&#10;OFF: a batch skips filled fields and only generates the blank ones.&#10;&#10;Example: you improved a prompt and want every existing card refreshed → turn ON, then batch. Leave OFF to top up only missing fields cheaply.">
+        <input type="checkbox" id="sn-opt-regen-batch" class="sn-check">
+        <span><b>Regenerate when batching</b> — during a batch, re-generate fields that already have content.</span>
+      </label>
+      <label class="sn-opt-row" title="ON: a field is generated even when EVERY field its prompt references is blank.&#10;OFF: generation is skipped when all referenced (source) fields are empty — so the AI is never asked about nothing.&#10;&#10;Example: a card with only the Word filled still generates Meaning; a totally blank card generates nothing.">
+        <input type="checkbox" id="sn-opt-allow-empty" class="sn-check">
+        <span><b>Allow empty sources</b> — generate even when every referenced field is blank.</span>
+      </label>
+      <div class="sn-native">
+        <div class="sn-native-title">Native runtimes</div>
+        <div class="sn-modal-fields">Optional local engines — installed into an isolated venv; the first install downloads the runtime.</div>
+        <div id="sn-native-list" class="sn-native-list"></div>
+      </div>
+    </div>
+    <div class="sn-tabpane" data-pane="account" hidden>
+      <div class="sn-subtabs">
+        <button class="sn-subtab sn-subtab-active" data-subtab="text">Text</button>
+        <button class="sn-subtab" data-subtab="image">Image</button>
+        <button class="sn-subtab" data-subtab="sound">Sound</button>
+        <button class="sn-subtab" data-subtab="keys">🔑 Keys</button>
+      </div>
+      <div id="sn-acct-kind">
+        <div id="sn-acct-default" class="sn-acct-default"></div>
+        <div id="sn-acct-autovoices" class="sn-acct-autovoices" hidden></div>
+        <div id="sn-acct-usage" class="sn-acct-usage"></div>
+        <div id="sn-acct-credit" class="sn-acct-credit"></div>
+        <div class="sn-acct-test">
+          <div class="sn-acct-test-title">Test playground</div>
+          <div class="sn-modal-fields">Run the active kind's provider once and see the result.</div>
+          <textarea id="sn-acct-input" class="sn-acct-input" placeholder="Type a prompt (for sound, the text to speak)…"></textarea>
+          <div class="sn-acct-test-row">
+            <button id="sn-acct-run" class="sn-btn sn-btn-magic">Run test</button>
+            <span id="sn-acct-msg" class="sn-msg"></span>
+          </div>
+          <div id="sn-acct-out" class="sn-acct-out"></div>
+        </div>
+      </div>
+      <div id="sn-keys" class="sn-keys" hidden></div>
+    </div>
+    <div class="sn-modal-foot">
+      <button id="sn-options-done" class="sn-btn sn-btn-primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="sn-lightbox" class="sn-lightbox" hidden>
+  <img id="sn-lightbox-img" alt="Generated image preview">
 </div>
 
 <script>var SN_TYPES = {types_json};</script>

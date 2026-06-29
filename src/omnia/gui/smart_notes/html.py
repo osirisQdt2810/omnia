@@ -20,7 +20,15 @@ Python through the WebDialog bridge with these ops:
 * ``improve_all`` ``{note_type, base_field, rows, decks}`` → ``{improved: {field: prompt}}`` (pushed)
 * ``preview`` ``{note_type, base_field, field, type, prompt, provider, model, voice}`` → a
   generated sample for a random note (pushed)
-* ``save`` ``{note_type, base_field, rows, decks}`` → ``{ok: true}`` once persisted
+* ``account_data`` → ``{models: {kind: [...]}, defaults: {kind: {provider, model}}}``
+* ``set_default_model`` ``{kind, provider, model}`` → ``{defaults}`` (the central default used
+  for detect-language / Auto-prompt / Improve and any "(inherit)" field)
+* ``account_keys`` → ``{providers: [card]}`` (managed providers' credential fields + state)
+* ``set_secret`` ``{provider, field, value}`` → ``{ok}`` (persist one credential field)
+* ``browse_file`` ``{provider, field}`` → ``{path}`` (native picker; persists the chosen path)
+* ``open_url`` ``{url}`` (open a provider console/billing link in the browser)
+* ``account_keys_credit`` → OpenRouter balance pushed via ``window.__snKeysCreditResult``
+* ``save`` ``{note_type, base_field, rows, decks, options}`` → ``{ok: true}`` once persisted
 
 The Provider/Model/Voice dropdowns are driven by a catalog baked into ``window.__SN_CATALOG``
 (see :func:`~omnia.core.providers.catalog.catalog_payload`); the ``load`` response's
@@ -33,6 +41,8 @@ This module imports only pure data (the config models + the provider catalog); n
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from omnia.core.providers.catalog import catalog_payload
 from omnia.gui.assets import read_asset, read_assets
@@ -40,6 +50,9 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
+
+if TYPE_CHECKING:
+    from omnia.core.providers.native_runtime import NativeRuntimeManager
 
 _FIELD_TYPES = ("text", "tts", "image")
 
@@ -53,6 +66,113 @@ _PAGE_JS_PARTS = [
     "05-handlers.js",
     "06-init.js",
 ]
+
+
+def native_runtimes_payload(manager: NativeRuntimeManager) -> dict[str, Any]:
+    """Build the Options → General "Native runtimes" panel data, grouped by section.
+
+    Walks the process-wide native-runtime registry (grouped by section) and, for each spec,
+    reports its identity, download-size hint, and whether ``manager`` already has it installed.
+    Pure: takes the manager (its only Anki-touching collaborator) so it unit-tests with a fake
+    manager + the registry, no venv/pip/network.
+
+    Args:
+        manager: The native-runtime manager whose install state is queried per spec.
+
+    Returns:
+        ``{"sections": [{"section": str, "runtimes": [{name, label, size_hint, section,
+        installed}, ...]}, ...]}`` in the registry's deterministic section/name order.
+    """
+    from omnia.core.providers.native_runtime import native_runtimes_by_section
+
+    sections: list[dict[str, Any]] = []
+    for section, specs in native_runtimes_by_section().items():
+        sections.append(
+            {
+                "section": section,
+                "runtimes": [
+                    {
+                        "name": spec.name,
+                        "label": spec.label,
+                        "size_hint": spec.size_hint,
+                        "section": spec.section,
+                        "installed": manager.is_installed(spec),
+                    }
+                    for spec in specs
+                ],
+            }
+        )
+    return {"sections": sections}
+
+
+def set_native_runtime(
+    manager: NativeRuntimeManager,
+    name: str,
+    enabled: bool,
+    *,
+    run_async: Callable[
+        [Callable[[], None], Callable[[], None], Callable[[Exception], None]], None
+    ],
+    push_progress: Callable[[str, str], None],
+    push_done: Callable[[str, bool, str], None],
+) -> dict[str, Any] | None:
+    """Route an install (enabled) / uninstall (disabled) toggle for one native runtime.
+
+    Pure decision logic for ``set_native_runtime``, with its Anki-touching collaborators
+    injected so it unit-tests headless (a fake manager + a synchronous ``run_async``):
+
+    * Unknown ``name`` → push a done-error and return None.
+    * ``enabled`` → schedule ``manager.ensure_installed`` through ``run_async`` (it is slow —
+      venv + pip), forwarding progress lines via ``push_progress`` and the final outcome
+      (success or failure) via ``push_done``; return None (the row updates through the pushes).
+    * not ``enabled`` → call ``manager.uninstall`` synchronously and return the refreshed row
+      payload (``{name, installed}``) for the immediate JS callback.
+
+    Args:
+        manager: The native-runtime manager (its install/uninstall are the side effects).
+        name: The runtime name from the page.
+        enabled: True to install, False to uninstall.
+        run_async: Runs ``op`` off-thread, then ``on_success`` / ``on_failure`` (the install
+            seam). The dialog backs this with ``anki_compat.run_in_background``.
+        push_progress: ``(name, message)`` → a progress line for the row.
+        push_done: ``(name, installed, error)`` → the final install outcome for the row.
+
+    Returns:
+        The synchronous uninstall payload, or None when the action is asynchronous/unknown.
+    """
+    from omnia.core.providers.native_runtime import native_runtime
+
+    spec = native_runtime(name)
+    if spec is None:
+        push_done(name, False, "Unknown runtime.")
+        return None
+
+    if not enabled:
+        manager.uninstall(spec)
+        return {"name": name, "installed": False}
+
+    def op() -> None:
+        manager.ensure_installed(spec, on_progress=lambda msg: push_progress(name, msg))
+
+    run_async(
+        op,
+        lambda: push_done(name, True, ""),
+        lambda exc: push_done(name, False, _native_error(exc)),
+    )
+    return None
+
+
+def _native_error(exc: Exception) -> str:
+    """A short user-facing message for a native-runtime install failure.
+
+    A :class:`ProviderError` already carries an actionable message (e.g. "no host Python …"),
+    so it is shown verbatim; anything else is generic.
+    """
+    from omnia.core.providers.errors import ProviderError
+
+    if isinstance(exc, ProviderError):
+        return f"Install failed: {exc}"
+    return "Install failed — see logs."
 
 
 def rows_for_note_type(

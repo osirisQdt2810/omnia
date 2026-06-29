@@ -28,6 +28,8 @@ from omnia.core.logging import get_logger
 if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
 
+logger = get_logger("smart_notes")
+
 _TITLES = {"text": "💬 Custom Text", "image": "🖼️ Custom Image", "tts": "🔈 Custom TTS"}
 
 
@@ -52,7 +54,6 @@ class CustomPromptDialog(QDialog):
         self._field_names = field_names
         self._target_field = target_field
         self._on_save = on_save
-        self._log = get_logger("smart_notes")
         self._result: Optional[Any] = None
         self.setWindowTitle(_TITLES.get(kind, "Custom Prompt"))
         self.setMinimumWidth(560)
@@ -185,7 +186,7 @@ class CustomPromptDialog(QDialog):
         try:
             return ProviderHub(self._repo.llm_settings(), self._repo.tts_settings())
         except Exception as exc:  # boundary: surface bad provider config to the user
-            self._log.exception("smart_notes: could not build provider hub")
+            logger.exception("smart_notes: could not build provider hub")
             show_warning(f"Omnia: provider config error:\n{exc}")
             return None
 

@@ -28,6 +28,8 @@ from omnia.plugins.smart_notes.integration.batch import materialize
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule, SmartNotesSettings
 
+logger = get_logger("smart_notes")
+
 
 class ReviewTimeEvaluator:
     """Generates the shown card's empty smart fields in the background, then redraws it."""
@@ -40,7 +42,6 @@ class ReviewTimeEvaluator:
         self._service = service
         # Settings are read FRESH each card (via the provider) so edits made mid-review apply.
         self._settings_provider = settings_provider
-        self._log = get_logger("smart_notes")
         # Note ids currently being generated, so a re-show of the same card mid-flight doesn't
         # kick off a duplicate background wave.
         self._in_flight: set[int] = set()
@@ -57,7 +58,7 @@ class ReviewTimeEvaluator:
         try:
             self._maybe_generate(card, settings)
         except Exception:  # the reviewer must never crash because of this feature
-            self._log.exception("smart_notes: review-time generation failed")
+            logger.exception("smart_notes: review-time generation failed")
 
     def _maybe_generate(self, card: Any, settings: SmartNotesSettings) -> None:
         nid = int(card.nid)
@@ -111,11 +112,11 @@ class ReviewTimeEvaluator:
                 anki_compat.update_note(note)
                 self._redraw_if_current(nid)
         except Exception:
-            self._log.exception("smart_notes: failed to write review-time note %s", nid)
+            logger.exception("smart_notes: failed to write review-time note %s", nid)
 
     def _on_failure(self, nid: int, exc: Exception) -> None:
         self._in_flight.discard(nid)
-        self._log.exception("smart_notes: review-time generation error: %s", exc)
+        logger.exception("smart_notes: review-time generation error: %s", exc)
 
     @staticmethod
     def _redraw_if_current(nid: int) -> None:

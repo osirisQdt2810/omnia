@@ -10,6 +10,60 @@
   // The row currently open in the editor (null when the popup is closed).
   let modalRow = null;
 
+  // --- image lightbox --------------------------------------------------------------
+  // Generated images are shown as a line + a "Preview" button (never inlined — a full-res
+  // picture overflows the dialog and breaks the layout). The button opens this borderless
+  // overlay across the whole Smart Notes UI; click anywhere or press Esc to close.
+  /**
+   * Open the full-screen image lightbox for a data URI.
+   * @param {string} src The image data URI.
+   */
+  function openLightbox(src) {
+    if (!src) {
+      return;
+    }
+    lightboxImg.src = src;
+    lightbox.hidden = false;
+  }
+
+  function closeLightbox() {
+    lightbox.hidden = true;
+    lightboxImg.src = "";
+  }
+
+  lightbox.addEventListener("click", closeLightbox);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !lightbox.hidden) {
+      closeLightbox();
+    }
+  });
+
+  /**
+   * Build an image-result block: a "🖼️ <message>" line + a Preview button that opens the
+   * lightbox. Shared by the playground and the prompt-editor preview so a generated image is
+   * presented identically and never overflows.
+   * @param {!Object} payload {image: dataURI, message}.
+   * @return {!HTMLElement}
+   */
+  function imageResultNode(payload) {
+    const wrap = document.createElement("div");
+    wrap.className = "sn-img-result";
+    const line = document.createElement("div");
+    line.textContent = "🖼️ " + (payload.message || "Image generated.");
+    wrap.appendChild(line);
+    if (payload.image) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sn-btn sn-img-preview";
+      btn.textContent = "🔍 Preview image";
+      btn.addEventListener("click", function () {
+        openLightbox(payload.image);
+      });
+      wrap.appendChild(btn);
+    }
+    return wrap;
+  }
+
   /**
    * Open the prompt editor for a row: seed the textarea + the {{Field}} reference hint.
    * @param {!HTMLTableRowElement} tr The row whose prompt is being edited.
@@ -201,6 +255,17 @@
       show(res.text || "(empty result)", false);
     } else if (res.kind === "tts") {
       show("🔊 " + (res.message || "Audio preview played."), false);
+    } else if (res.kind === "image") {
+      // Don't inline the (often huge) image — show a line + a Preview button (lightbox).
+      const container = inModal ? modalResult : msgEl;
+      if (inModal) {
+        setModalMsg("", false);
+        modalResult.className = "sn-modal-result";
+      } else {
+        msgEl.className = "sn-msg";
+      }
+      container.innerHTML = "";
+      container.appendChild(imageResultNode(res));
     } else {
       show("🖼️ " + (res.message || "Image generated."), false);
     }

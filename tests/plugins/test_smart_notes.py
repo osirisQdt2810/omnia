@@ -228,7 +228,11 @@ def _route(method, url, body, headers):
 def _hub():
     return ProviderHub(
         LLMSettings(provider="openai", openai=OpenAICompatibleLLMSettings(api_key="k")),
-        TTSSettings(provider="google_translate"),  # lang defaults to "en"
+        # An Auto-detect map so a voiceless tts rule (English) resolves to google_translate.
+        TTSSettings(
+            provider="google_translate",
+            auto_voices={"en": "google_translate:en"},
+        ),
         http=FakeHttpClient(responder=_route),
     )
 
@@ -255,8 +259,9 @@ class TestGenerationService:
 
     def test_generate_tts_uses_prompt_text(self):
         service = GenerationService(_hub())
+        # An explicit language skips detection; the Auto-detect map resolves the provider/voice.
         rule = SmartNotesFieldRule(
-            kind="tts", prompt="say {{Word}}", target_field="Audio"
+            kind="tts", prompt="say {{Word}}", target_field="Audio", language="en"
         )
         result = service.generate(rule, {"Word": "cat"})
         assert result.kind == "tts"
@@ -266,7 +271,7 @@ class TestGenerationService:
     def test_generate_tts_falls_back_to_source_field(self):
         service = GenerationService(_hub())
         rule = SmartNotesFieldRule(
-            kind="tts", source_field="Word", target_field="Audio"
+            kind="tts", source_field="Word", target_field="Audio", language="en"
         )
         result = service.generate(rule, {"Word": "cat"})
         assert result.kind == "tts"
@@ -540,7 +545,8 @@ class TestPerFieldOverrides:
         service.generate(rule, {"Word": "x"})
         # The model is fixed at construction: the service asks the hub for a provider INSTANCE
         # configured with that (provider, model), never threading model into generate_text.
-        assert hub.llm_overrides == [("gemini", "rule-model")]
+        # A text rule pins the text model; image_model is left untouched.
+        assert hub.llm_overrides == [("gemini", "rule-model", "")]
 
     def test_text_rule_without_override_uses_the_active_provider(self):
         hub = _stub_hub(llm=_RecordingLLM())
@@ -550,7 +556,7 @@ class TestPerFieldOverrides:
         )
         service.generate(rule, {"Word": "x"})
         # An empty override means "use the configured active provider".
-        assert hub.llm_overrides == [("", "")]
+        assert hub.llm_overrides == [("", "", "")]
 
     def test_image_rule_model_override_selects_a_provider_instance(self):
         hub = _stub_hub(llm=_RecordingLLM())
@@ -559,7 +565,8 @@ class TestPerFieldOverrides:
             kind="image", prompt="a {{Word}}", target_field="Pic", model="img-model"
         )
         service.generate(rule, {"Word": "cat"})
-        assert hub.llm_overrides == [("", "img-model")]
+        # An image rule pins the IMAGE model (so generate_image targets it), not the text model.
+        assert hub.llm_overrides == [("", "", "img-model")]
 
     def test_tts_rule_voice_override_and_interpolated_prompt(self):
         tts = _RecordingTTS()
@@ -569,6 +576,53 @@ class TestPerFieldOverrides:
         )
         service.generate(rule, {"Word": "cat"})
         assert tts.calls == [("hello cat", "en-US-X")]
+
+    def test_tts_concrete_voice_builds_the_rules_provider(self):
+        tts = _RecordingTTS()
+        hub = _stub_hub(tts=tts)
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(
+            kind="tts",
+            prompt="hi",
+            target_field="Audio",
+            voice="vi-VN-HoaiMyNeural",
+            provider="edge_tts",
+        )
+        service.generate(rule, {})
+        # The pinned voice synthesizes on the rule's provider directly (no resolution).
+        assert hub.tts_providers == ["edge_tts"]
+        assert tts.calls == [("hi", "vi-VN-HoaiMyNeural")]
+
+    def test_tts_auto_detect_resolves_provider_and_voice_from_the_map(self):
+        tts = _RecordingTTS()
+        # language="ja" skips detection; the map resolves (provider, voice).
+        hub = _stub_hub(tts=tts, auto_voices={"ja": ("edge_tts", "ja-JP-NanamiNeural")})
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(
+            kind="tts", prompt="こんにちは", target_field="Audio", language="ja"
+        )
+        service.generate(rule, {})
+        assert hub.tts_providers == ["edge_tts"]
+        assert tts.calls == [("こんにちは", "ja-JP-NanamiNeural")]
+
+    def test_tts_auto_detect_unmapped_language_raises(self):
+        hub = _stub_hub(tts=_RecordingTTS(), auto_voices={})
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(
+            kind="tts", prompt="x", target_field="Audio", language="ja"
+        )
+        with pytest.raises(ProviderError):
+            service.generate(rule, {})
+
+    def test_tts_auto_detect_runs_detection_then_raises_when_unmapped(self):
+        # No explicit language → the engine DETECTS; with a None LLM the detector yields no
+        # language and the empty map has no fallback, so generation fails with a clear
+        # ProviderError instead of silently using a wrong-language voice.
+        hub = _stub_hub(llm=None, tts=_RecordingTTS(), auto_voices={})
+        service = GenerationService(hub)
+        rule = SmartNotesFieldRule(kind="tts", prompt="x", target_field="Audio")
+        with pytest.raises(ProviderError):
+            service.generate(rule, {})
 
     def test_text_result_is_markdown_converted(self):
         llm = _RecordingLLM(by_target={"go": "**bold**"})
@@ -799,28 +853,38 @@ class TestSmartNotesSettingsDefaults:
 
 
 class _StubHub:
-    """A minimal ProviderHub-shaped stub exposing ``llm(model=, provider=)`` / ``tts()``.
+    """A minimal ProviderHub-shaped stub exposing ``llm(...)`` / ``tts(provider=)`` / resolve.
 
-    Records the per-rule ``(provider, model)`` overrides the service asks for, since the model
-    is now selected by picking a provider INSTANCE (never a per-call kwarg).
+    Records the per-rule ``(provider, model, image_model)`` LLM overrides and the ``tts``
+    provider asked for. ``auto_voices`` maps a language code to ``(provider, voice)`` for the
+    Auto-detect path; ``resolve_auto_voice`` raises a ProviderError for an unmapped language
+    (mirroring the real hub), so the engine's Auto-detect contract is exercised offline.
     """
 
-    def __init__(self, *, llm=None, tts=None):
+    def __init__(self, *, llm=None, tts=None, auto_voices=None):
         self._llm = llm
         self._tts = tts
         self.llm_overrides: list = []
+        self.tts_providers: list = []
+        self._auto_voices = auto_voices or {}
 
-    def llm(self, *, model: str = "", provider: str = ""):
-        self.llm_overrides.append((provider, model))
+    def llm(self, *, model: str = "", image_model: str = "", provider: str = ""):
+        self.llm_overrides.append((provider, model, image_model))
         return self._llm
 
-    def tts(self):
+    def tts(self, *, provider: str = ""):
+        self.tts_providers.append(provider)
         return self._tts
 
+    def resolve_auto_voice(self, lang: str):
+        if lang not in self._auto_voices:
+            raise ProviderError(f"No Auto-detect voice set for language {lang!r}")
+        return self._auto_voices[lang]
 
-def _stub_hub(*, llm=None, tts=None):
-    """A minimal ProviderHub-shaped stub exposing ``llm(model=, provider=)`` / ``tts()``."""
-    return _StubHub(llm=llm, tts=tts)
+
+def _stub_hub(*, llm=None, tts=None, auto_voices=None):
+    """A minimal ProviderHub-shaped stub exposing ``llm(...)`` / ``tts(provider=)`` / resolve."""
+    return _StubHub(llm=llm, tts=tts, auto_voices=auto_voices)
 
 
 class _SmartNotesLLMGenContract:
@@ -908,7 +972,9 @@ class TestSmartNotesTTSGenFake(_SmartNotesTTSGenContract):
 
     @pytest.fixture
     def hub(self):
-        return _stub_hub(tts=FakeTTSProvider())
+        # The contract rule is voiceless (Auto-detect); with a None LLM the detector yields no
+        # language (""), which the map resolves to the canned provider (empty voice).
+        return _stub_hub(tts=FakeTTSProvider(), auto_voices={"": ("fake", "")})
 
 
 class TestSmartNotesTTSGenReal(_SmartNotesTTSGenContract):
@@ -916,7 +982,10 @@ class TestSmartNotesTTSGenReal(_SmartNotesTTSGenContract):
 
     @pytest.fixture(params=tts_provider_params())
     def hub(self, request):
-        return _stub_hub(tts=real_tts_provider_for_or_skip(request.param))
+        provider = real_tts_provider_for_or_skip(request.param)
+        # Auto-detect with no LLM → lang "" → resolve to this provider (empty voice → the
+        # provider's configured/default voice). Exercises the resolver + tts(provider=) path.
+        return _stub_hub(tts=provider, auto_voices={"": (request.param, "")})
 
     def test_generated_audio_is_valid(self, hub):
         # Beyond non-empty: the field gets REAL audio in the provider's declared format.
