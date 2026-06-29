@@ -21,8 +21,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import Any, Optional
 
+from omnia.core.network.http import HttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.http import HttpClient
 
 _SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 _TOKEN_SKEW_S = 60  # refresh this many seconds before actual expiry
@@ -173,6 +173,20 @@ def _load_service_account(config: dict[str, Any]) -> Optional[dict[str, Any]]:
         with open(path, encoding="utf-8") as handle:
             return json.load(handle)
     return None
+
+
+def service_account_project(config: dict[str, Any]) -> str:
+    """Return the GCP ``project_id`` from the configured service-account JSON, or ``""``.
+
+    Lets a Vertex config omit ``project`` (the service-account key already carries it). Any
+    problem reading/parsing the credentials yields ``""`` — the provider then raises its own
+    clear "requires a GCP 'project'" error rather than this surfacing an obscure one.
+    """
+    try:
+        service_account = _load_service_account(config)
+    except (OSError, ValueError):
+        return ""
+    return str(service_account.get("project_id", "")) if service_account else ""
 
 
 _HEADER = {"alg": "RS256", "typ": "JWT"}

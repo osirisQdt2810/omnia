@@ -34,6 +34,8 @@ from omnia.plugins.smart_notes.integration import (
     set_button_enabled,
 )
 
+logger = get_logger("smart_notes")
+
 _BROWSER_HOOK = "browser_will_show_context_menu"
 _SIDEBAR_HOOK = "browser_sidebar_will_show_context_menu"
 _EDITOR_HOOK = "editor_did_init_buttons"
@@ -185,7 +187,6 @@ class SmartNotesPlugin(FeaturePlugin):
         from aqt.utils import showWarning, tooltip
 
         set_button_enabled(editor, True)
-        log = get_logger("smart_notes")
         written = 0
         for rule, result in results:
             try:
@@ -196,7 +197,7 @@ class SmartNotesPlugin(FeaturePlugin):
                 )
                 written += 1
             except Exception:  # one bad field must not abort the rest
-                log.exception(
+                logger.exception(
                     "smart_notes: failed to write field %s", rule.target_field
                 )
         if written:

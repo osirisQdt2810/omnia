@@ -11,9 +11,12 @@ only ``webview.eval`` is Anki glue, and that webview is passed in.
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from typing import Any
+
+from omnia.core.logging import get_logger
+
+logger = get_logger("typed_accuracy")
 
 _CSS_STYLE_ID = "typed-accuracy-stats-css"
 
@@ -31,16 +34,14 @@ _JS_PARTS = (
 class StatsInjector:
     """Loads the panel assets and evaluates them into a stats webview."""
 
-    def __init__(self, web_dir: Path, logger: logging.Logger) -> None:
+    def __init__(self, web_dir: Path) -> None:
         """Initialise the injector.
 
         Args:
             web_dir: Directory holding ``typed_accuracy.{css,html}`` plus the ordered
                 ``0N-*.js`` script pieces.
-            logger: Logger for injection failures.
         """
         self._web_dir = web_dir
-        self._logger = logger
 
     def _read(self, name: str) -> str:
         return (self._web_dir / name).read_text(encoding="utf-8")
@@ -59,7 +60,7 @@ class StatsInjector:
             html = self._read("typed_accuracy.html")
             js = self._read_js()
         except OSError:
-            self._logger.exception("typed_accuracy: failed to read panel assets")
+            logger.exception("typed_accuracy: failed to read panel assets")
             return
 
         try:
@@ -86,4 +87,4 @@ class StatsInjector:
 """)
             webview.eval(js)
         except Exception:
-            self._logger.exception("typed_accuracy: panel injection failed")
+            logger.exception("typed_accuracy: panel injection failed")

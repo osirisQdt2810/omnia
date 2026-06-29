@@ -94,6 +94,16 @@ class HttpClient(ABC):
     ) -> bytes:
         """GET ``url`` (with optional query ``params``); return the raw response bytes."""
 
+    @abstractmethod
+    def get_json(
+        self,
+        url: str,
+        *,
+        params: Optional[dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        """GET ``url`` (with optional query ``params``); return the parsed JSON object."""
+
 
 class UrllibHttpClient(HttpClient):
     """Stdlib (``urllib``) implementation of :class:`HttpClient`."""
@@ -146,6 +156,20 @@ class UrllibHttpClient(HttpClient):
             url = f"{url}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers=headers or {}, method="GET")
         return self._request(req)
+
+    def get_json(
+        self,
+        url: str,
+        *,
+        params: Optional[dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        full = url
+        if params:
+            full = f"{url}?{urllib.parse.urlencode(params)}"
+        return self._parse_json_object(
+            self.get_bytes(url, params=params, headers=headers), full
+        )
 
     @staticmethod
     def _build_post(

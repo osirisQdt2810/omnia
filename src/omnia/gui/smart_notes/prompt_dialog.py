@@ -40,6 +40,8 @@ if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
+logger = get_logger("smart_notes")
+
 _KINDS = ("text", "image", "tts")
 _ALL_DECKS_LABEL = "All decks"
 _TITLES = {
@@ -63,7 +65,6 @@ class PromptDialog(QDialog):
         self._repo = repo
         self._rule = rule
         self._on_save = on_save
-        self._log = get_logger("smart_notes")
         self._decks = anki_compat.deck_names()
         self.setWindowTitle(f"Smart Notes — {_TITLES.get(rule.kind, 'Field')}")
         self.setMinimumWidth(640)
@@ -313,7 +314,7 @@ class PromptDialog(QDialog):
         try:
             return ProviderHub(self._repo.llm_settings(), self._repo.tts_settings())
         except Exception as exc:  # boundary: surface bad provider config to the user
-            self._log.exception("smart_notes: could not build provider hub")
+            logger.exception("smart_notes: could not build provider hub")
             showWarning(f"Omnia: provider config error:\n{exc}")
             return None
 

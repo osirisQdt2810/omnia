@@ -303,10 +303,37 @@ def random_note_of_type(
     return col.get_note(note_ids[0]) if note_ids else None
 
 
-def play_audio(data: bytes, ext: str) -> None:
+def pick_file(
+    *,
+    title: str = "Select a file",
+    file_filter: str = "All files (*)",
+    parent: Optional[Any] = None,
+) -> str:
+    """Open a native file picker and return the chosen path ("" if cancelled).
+
+    Main-thread only (called from a pycmd handler). Used by the Keys subtab to browse for a
+    service-account JSON key.
+    """
+    from aqt.qt import QFileDialog
+
+    path, _ = QFileDialog.getOpenFileName(
+        parent or main_window(), title, "", file_filter
+    )
+    return str(path or "")
+
+
+def open_external_url(url: str) -> None:
+    """Open ``url`` in the user's default browser (for 'manage credit/quota' links)."""
+    from aqt.utils import openLink
+
+    openLink(url)
+
+
+def play_audio(data: bytes, ext: str) -> str:
     """Play raw audio ``data`` through Anki's av player (writes a temp clip first).
 
     Used by the prompt/custom dialogs to preview a generated TTS clip without saving a rule.
+    Returns the temp clip path so the caller can replay it via :func:`replay_audio_file`.
     """
     import tempfile
     from pathlib import Path
@@ -316,6 +343,14 @@ def play_audio(data: bytes, ext: str) -> None:
     tmp = Path(tempfile.gettempdir()) / f"omnia-preview.{ext or 'mp3'}"
     tmp.write_bytes(data)
     av_player.play_file(str(tmp))
+    return str(tmp)
+
+
+def replay_audio_file(path: str) -> None:
+    """Replay a previously-written audio clip (the playground "Play again" button)."""
+    from aqt.sound import av_player
+
+    av_player.play_file(path)
 
 
 def redraw_reviewer_current_card() -> None:

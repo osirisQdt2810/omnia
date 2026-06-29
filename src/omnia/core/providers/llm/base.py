@@ -24,6 +24,11 @@ class LLMProvider(ABC):
     # offline / open-source providers that must run without any secret. Used to classify
     # providers (factory: requiring-api vs keyless) and to derive test markers.
     requires_api: bool = True
+    # The token usage of the most recent call, when the provider's response reports it:
+    # ``{"in": prompt_tokens, "out": completion_tokens, "total": total_tokens}``. None when
+    # the provider/response carries no usage. The usage recorder reads this to log exact
+    # tokens (not just character approximations). Set by each concrete provider per call.
+    last_usage: Optional[dict[str, int]] = None
 
     @abstractmethod
     def generate_text(
@@ -31,18 +36,18 @@ class LLMProvider(ABC):
         prompt: str,
         *,
         system: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
         """Return the model's text completion for ``prompt``.
 
-        The text model is fixed at construction (``__init__``); to use a different model,
-        build a provider configured with it (see ``ProviderHub.llm``).
+        The text model and the default ``temperature`` are fixed at construction (``__init__``);
+        to use a different model, build a provider configured with it (see ``ProviderHub.llm``).
 
         Args:
             prompt: The user prompt.
             system: Optional system / instruction message.
-            temperature: Sampling temperature.
+            temperature: Sampling temperature; ``None`` uses the provider's configured default.
             max_tokens: Optional output token cap.
 
         Raises:

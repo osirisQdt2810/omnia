@@ -15,17 +15,66 @@
   const autoBtn = document.getElementById("sn-auto");
   const improveAllBtn = document.getElementById("sn-improve-all");
   const saveBtn = document.getElementById("sn-save");
+  const sortBtn = document.getElementById("sn-sort-field");
 
-  // Decks picker handles (a note-type-level scope: which decks this config applies to).
+  // Field-name sort direction for the table: 0 none, 1 ascending, -1 descending.
+  let sortDir = 0;
+
+  // Decks picker handles (a note-type-level scope: which decks this config applies to). The
+  // button opens a modal with a search box + a multi-column grid of deck checkboxes.
   const decksBtn = document.getElementById("sn-decks-btn");
-  const decksPanel = document.getElementById("sn-decks-panel");
+  const decksModal = document.getElementById("sn-decks-modal");
+  const decksClose = document.getElementById("sn-decks-close");
+  const decksDone = document.getElementById("sn-decks-done");
+  const decksSearch = document.getElementById("sn-decks-search");
   const decksAll = document.getElementById("sn-decks-all");
   const decksList = document.getElementById("sn-decks-list");
+  const decksEmpty = document.getElementById("sn-decks-empty");
 
-  // The full deck list ([{id, name}, ...]) + the selected subset (deck ids; [] = all decks),
-  // both seeded from the load response and read back into the save/auto/improve/preview payloads.
+  // The full deck list ([{id, name}, ...]) + the selected subset (deck ids), seeded from the
+  // load response and read back into the save/auto/improve/preview payloads.
   let allDecks = [];
   let selectedDecks = [];
+  // deckAllMode true = apply to ALL decks (persisted as []); false = only `selectedDecks`.
+  let deckAllMode = true;
+  // The deck hierarchy built from the "::" paths + which nodes are expanded (subdecks are
+  // hidden by default so a big, deeply-nested tree stays scannable).
+  let deckTree = null;
+  const deckExpanded = {};
+
+  // Options modal handles + the global Smart Notes flags (apply to every note type).
+  const optionsBtn = document.getElementById("sn-options");
+  const optionsModal = document.getElementById("sn-options-modal");
+  const optionsClose = document.getElementById("sn-options-close");
+  const optionsDone = document.getElementById("sn-options-done");
+  const optGenReview = document.getElementById("sn-opt-gen-review");
+  const optRegenBatch = document.getElementById("sn-opt-regen-batch");
+  const optAllowEmpty = document.getElementById("sn-opt-allow-empty");
+  const nativeListEl = document.getElementById("sn-native-list");
+
+  // Tabbed Options dialog: General (the flags above) + Account (usage tables, OpenRouter
+  // credit, and a test playground). Handles for the tab strip, the per-kind sub-tabs, and the
+  // account panes live here; the logic is in 05-handlers.js (which owns the Options modal).
+  const acctKindEl = document.getElementById("sn-acct-kind");
+  const acctDefaultEl = document.getElementById("sn-acct-default");
+  // The global "Auto-detect voices" editor (sound subtab only): one row per language mapping
+  // its detected language to a concrete provider·voice in [tts.auto_voices].
+  const acctAutoVoicesEl = document.getElementById("sn-acct-autovoices");
+  const acctUsageEl = document.getElementById("sn-acct-usage");
+  const acctCreditEl = document.getElementById("sn-acct-credit");
+  const acctInput = document.getElementById("sn-acct-input");
+  const acctRunBtn = document.getElementById("sn-acct-run");
+  const acctMsgEl = document.getElementById("sn-acct-msg");
+  const acctOutEl = document.getElementById("sn-acct-out");
+  // Keys subtab: provider credential cards (masked key/secret fields, eye reveal, save,
+  // file-browse, an honest quota story). Rendered by 05-handlers from the account_keys op.
+  const keysEl = document.getElementById("sn-keys");
+
+  // Full-screen image lightbox: a generated image is never rendered inline (it can be huge and
+  // overflow the dialog) — the result shows a line + a Preview button that opens this borderless
+  // overlay over the whole UI.
+  const lightbox = document.getElementById("sn-lightbox");
+  const lightboxImg = document.getElementById("sn-lightbox-img");
 
   // Prompt-editor popup handles.
   const modal = document.getElementById("sn-modal");

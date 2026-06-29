@@ -333,12 +333,13 @@ class TestBuildSmartNotesHtml:
         for op in ("improve_prompt", "improve_all", "preview"):
             assert op in html
 
-    def test_voice_language_columns_and_languages_baked(self):
+    def test_voice_column_present_and_no_language_picker(self):
         html = build_smart_notes_html(dark=False)
-        assert ">Voice<" in html and ">Language<" in html
-        assert "sn-col-voice" in html and "sn-col-language" in html
+        # The Voice column stays; the Language picker was removed (a voice fixes the language,
+        # else the engine auto-detects). The conditional-column mechanism still gates Voice.
+        assert ">Voice<" in html and "sn-col-voice" in html
         assert "sn-has-sound" in html  # the conditional-column mechanism
-        assert "Auto-detect" in html  # the languages list is baked in
+        assert ">Language<" not in html and "sn-col-language" not in html
 
     def test_prompt_editor_and_improve_hooks_present(self):
         html = build_smart_notes_html(dark=False)
@@ -349,6 +350,55 @@ class TestBuildSmartNotesHtml:
 
     def test_decks_picker_present(self):
         html = build_smart_notes_html(dark=False)
-        assert "sn-decks" in html  # the deck-scope picker markup
-        assert "sn-decks-panel" in html
+        assert "sn-decks-modal" in html  # the searchable deck-scope popup
+        assert "sn-decks-search" in html
         assert "selectedDeckIds" in html  # the JS helper read into the payloads
+        assert (
+            "buildDeckTree" in html and "sn-deck-tog" in html
+        )  # collapsible hierarchy
+
+    def test_toggle_all_headers_and_options_present(self):
+        html = build_smart_notes_html(dark=False)
+        assert 'data-toggle="generate"' in html and "sn-th-toggle" in html
+        assert "sn-options-modal" in html and "⚙ Options" in html
+        assert "toggleAllColumn" in html  # the header click handler
+
+    def test_field_sort_present(self):
+        html = build_smart_notes_html(dark=False)
+        assert "sn-sort-field" in html and "sortByField" in html
+
+    def test_tabbed_options_with_account_markup(self):
+        html = build_smart_notes_html(dark=False)
+        assert "sn-tabs" in html and 'data-tab="account"' in html
+        assert "sn-acct-usage" in html
+        assert 'id="sn-acct-run"' in html
+
+    def test_account_ops_and_push_hooks_wired(self):
+        html = build_smart_notes_html(dark=False)
+        for op in ("account_data", "account_credit", "account_test"):
+            assert op in html
+        assert "window.__snAccountTestResult" in html
+        assert "window.__snCreditResult" in html
+
+    def test_auto_detect_voices_editor_baked(self):
+        html = build_smart_notes_html(dark=False)
+        # The catalog bakes the per-language Auto-detect options the editor populates from.
+        assert "auto_voice_options" in html
+        # The new ops + push hook + Refresh button are wired in.
+        for op in ("set_auto_voice", "refresh_voices"):
+            assert op in html
+        assert "window.__snVoicesRefreshed" in html
+        assert "Refresh voices" in html
+
+    def test_native_runtimes_panel_present(self):
+        html = build_smart_notes_html(dark=False)
+        # The Options → General "Native runtimes" panel: its container + the op + push hooks.
+        assert "Native runtimes" in html and "sn-native-list" in html
+        assert "set_native_runtime" in html and "native_runtimes" in html
+        assert "window.__snNativeRuntimeProgress" in html
+        assert "window.__snNativeRuntimeDone" in html
+
+    def test_per_field_voice_empty_option_reads_auto_detect(self):
+        # The per-row Voice picker's blank option is relabeled to "Auto-detect" in rebuildVoice.
+        html = build_smart_notes_html(dark=False)
+        assert 'label: "Auto-detect"' in html

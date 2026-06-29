@@ -33,6 +33,8 @@ if TYPE_CHECKING:
         SmartNotesSettings,
     )
 
+logger = get_logger("smart_notes")
+
 # Notes generated per chunk before the progress bar updates / a cancel is honoured. Small so a
 # cancel feels responsive without flooding the provider; mirrors the reference's batching.
 _CHUNK_SIZE = 5
@@ -86,7 +88,6 @@ class BatchGenerator:
     ) -> None:
         self._service = service
         self._settings = settings
-        self._log = get_logger("smart_notes")
 
     def run(self, note_ids: list[int], on_done: Callable[[BatchSummary], None]) -> None:
         """Generate smart fields for ``note_ids`` in the background, then call ``on_done``.
@@ -123,7 +124,7 @@ class BatchGenerator:
 
         def on_failure(exc: Exception) -> None:
             anki_compat.progress_finish()
-            self._log.exception("smart_notes batch failed")
+            logger.exception("smart_notes batch failed")
             on_done(BatchSummary(failed=total))
 
         anki_compat.run_in_background(op, on_success=on_success, on_failure=on_failure)
@@ -185,7 +186,7 @@ class BatchGenerator:
             )
             return _NoteOutcome(plan.nid, results=results)
         except Exception:  # one bad note must not abort the rest of the batch
-            self._log.exception("smart_notes: failed to generate note %s", plan.nid)
+            logger.exception("smart_notes: failed to generate note %s", plan.nid)
             return _NoteOutcome(plan.nid, failed=True)
 
     def _apply(self, outcomes: list[_NoteOutcome]) -> BatchSummary:
@@ -217,7 +218,7 @@ class BatchGenerator:
                 anki_compat.update_note(note)
             return wrote
         except Exception:
-            self._log.exception("smart_notes: failed to write note %s", outcome.nid)
+            logger.exception("smart_notes: failed to write note %s", outcome.nid)
             return False
 
 
