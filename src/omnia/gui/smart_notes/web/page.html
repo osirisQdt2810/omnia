@@ -109,6 +109,7 @@
     <div class="sn-tabs">
       <button class="sn-tab sn-tab-active" data-tab="general">General</button>
       <button class="sn-tab" data-tab="account">Usage &amp; Keys</button>
+      <button class="sn-tab" data-tab="advanced">Advanced</button>
     </div>
     <div class="sn-tabpane" data-pane="general">
       <div class="sn-modal-fields">These apply to every note type (Smart Notes generation behaviour).</div>
@@ -124,6 +125,9 @@
         <input type="checkbox" id="sn-opt-allow-empty" class="sn-check">
         <span><b>Allow empty sources</b> — generate even when every referenced field is blank.</span>
       </label>
+    </div>
+    <div class="sn-tabpane" data-pane="advanced" hidden>
+      <div class="sn-modal-fields">Advanced — optional local engines installed on demand into an isolated venv.</div>
       <div class="sn-native">
         <div class="sn-native-title">Native runtimes</div>
         <div class="sn-modal-fields">Optional local engines — installed into an isolated venv; the first install downloads the runtime.</div>
@@ -138,11 +142,13 @@
         <button class="sn-subtab" data-subtab="keys">🔑 Keys</button>
       </div>
       <div id="sn-acct-kind">
-        <div id="sn-acct-default" class="sn-acct-default"></div>
-        <div id="sn-acct-autovoices" class="sn-acct-autovoices" hidden></div>
-        <div id="sn-acct-usage" class="sn-acct-usage"></div>
-        <div id="sn-acct-credit" class="sn-acct-credit"></div>
-        <div class="sn-acct-test">
+        <div id="sn-acct-default" class="sn-acct-default sn-acct-section"></div>
+        <div id="sn-acct-autovoices" class="sn-acct-autovoices sn-acct-section" hidden></div>
+        <div class="sn-acct-usage-box sn-acct-section">
+          <div id="sn-acct-usage" class="sn-acct-usage"></div>
+          <div id="sn-acct-credit" class="sn-acct-credit"></div>
+        </div>
+        <div class="sn-acct-test sn-acct-section">
           <div class="sn-acct-test-title">Test playground</div>
           <div class="sn-modal-fields">Run the active kind's provider once and see the result.</div>
           <textarea id="sn-acct-input" class="sn-acct-input" placeholder="Type a prompt (for sound, the text to speak)…"></textarea>

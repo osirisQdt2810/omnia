@@ -106,10 +106,9 @@
   }
 
   optionsBtn.addEventListener("click", function () {
-    // Always open on the General tab; the Account tab lazy-loads its data on first show.
+    // Always open on the General tab; Account + Advanced load their data on first show.
     showTab("general");
     optionsModal.hidden = false;
-    loadNativeRuntimes();  // refresh the General-tab native-runtimes panel each open
   });
   optionsClose.addEventListener("click", closeOptions);
   optionsDone.addEventListener("click", closeOptions);
@@ -119,7 +118,7 @@
     }
   });
 
-  // --- Native runtimes (General tab; ADR-005) --------------------------------------
+  // --- Native runtimes (Advanced tab; ADR-005) -------------------------------------
   // Optional local engines (TTS/...) installed into an isolated venv. Each row is a checkbox
   // (checked = installed) + a status line. Ticking installs OFF-THREAD (the result is pushed
   // back through window.__snNativeRuntime*); unticking uninstalls (fast, synchronous callback).
@@ -237,7 +236,9 @@
   window.__snNativeRuntimeProgress = function (name, msg) {
     const status = nativeStatusFor(name);
     if (status) {
-      setNativeStatus(status, '<span class="sn-spin"></span>Installing… ' + esc(msg), false, true);
+      // The backend message is already a full phrase ("creating runtime environment…",
+      // "installing … (this may take a while)") — show it as-is, no "Installing…" prefix.
+      setNativeStatus(status, '<span class="sn-spin"></span>' + esc(msg), false, true);
     }
   };
 
@@ -309,6 +310,9 @@
       acctLoaded = true;
       send("account_data", {}, renderAccount);
       send("account_credit", {}, null);
+    }
+    if (name === "advanced") {
+      loadNativeRuntimes();  // refresh install state each time the Advanced tab opens
     }
   }
 
