@@ -48,6 +48,9 @@ SPEC: NativeRuntimeSpec = register_native_runtime(
         # Not on PyPI — installed from GitHub (needs `git` + a Python 3.10+ host). The VCS
         # install pulls PyTorch, hence the ~2 GB size hint.
         pip_packages=("git+https://github.com/dangvansam/viet-tts.git",),
+        # viet-tts requires Python >=3.10 (<4.0); without this the bootstrap could pick Anki's
+        # minimal-PATH /usr/bin/python3 (3.9.6) and pip would reject the package.
+        min_python=(3, 10),
         mode="server",
         size_hint="~2 GB",
         server_argv=(

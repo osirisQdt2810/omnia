@@ -65,16 +65,19 @@ class _FakeProcessRunner:
         listening: Sequence[bool] | None = None,
         proc: _FakeProc | None = None,
         free_port: int | None = None,
+        python_versions: dict[str, tuple[int, int] | None] | None = None,
     ) -> None:
         self._which_map = which_map or {}
         self._run_codes = list(run_codes or [])
         self._listening = list(listening or [])
         self._proc = proc or _FakeProc()
         self._free_port = free_port
+        self._python_versions = python_versions or {}
         self.run_calls: list[list[str]] = []
         self.run_inputs: list[bytes | None] = []
         self.popen_calls: list[list[str]] = []
         self.which_calls: list[str] = []
+        self.python_version_calls: list[str] = []
         self.is_listening_calls: list[tuple[str, int]] = []
         self.terminated: list[Any] = []
         self.capture_stdout: bytes = b""
@@ -82,6 +85,10 @@ class _FakeProcessRunner:
     def which(self, exe: str) -> str | None:
         self.which_calls.append(exe)
         return self._which_map.get(exe)
+
+    def python_version(self, exe: str) -> tuple[int, int] | None:
+        self.python_version_calls.append(exe)
+        return self._python_versions.get(exe)
 
     def run(
         self,
@@ -227,35 +234,72 @@ class TestNativeRuntimeSpec:
                 name="x", pip_packages=("p",), mode="cli", section="tts", label="X"
             )
 
+    def test_min_python_defaults_to_3_9(self) -> None:
+        assert _server_spec().min_python == (3, 9)
+
+    def test_min_python_is_carried(self) -> None:
+        assert _server_spec(min_python=(3, 10)).min_python == (3, 10)
+
+    def test_min_python_wrong_length_raises(self) -> None:
+        with pytest.raises(ValueError, match="min_python must be"):
+            _server_spec(min_python=(3,))
+
+    def test_min_python_non_int_raises(self) -> None:
+        with pytest.raises(ValueError, match="min_python must be"):
+            _server_spec(min_python=(3, "10"))
+
+    def test_viettts_spec_requires_python_3_10(self) -> None:
+        from omnia.core.providers.tts.viettts import SPEC
+
+        assert SPEC.min_python == (3, 10)
+
 
 class TestHostPython:
+    @pytest.fixture(autouse=True)
+    def _no_fs_globs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Keep discovery hermetic: no real filesystem globbing. Candidates are driven purely
+        # through the fake runner's ``which`` + ``python_version``.
+        monkeypatch.setattr(native_runtime, "_PYTHON_SEARCH_GLOBS", ())
+
     def test_explicit_override_wins(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(which_map={"python3": "/usr/bin/python3"})
         manager = NativeRuntimeManager(
             tmp_path, runner, host_python="/opt/py/bin/python"
         )
+        # No version check on an explicit override (an explicit/test choice).
         assert manager.host_python() == "/opt/py/bin/python"
         assert runner.which_calls == []  # override short-circuits PATH probing
+        assert runner.python_version_calls == []
 
     def test_falls_back_to_python3(self, tmp_path: Path) -> None:
-        runner = _FakeProcessRunner(which_map={"python3": "/usr/bin/python3"})
+        runner = _FakeProcessRunner(
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 12)},
+        )
         manager = NativeRuntimeManager(tmp_path, runner)
         assert manager.host_python() == "/usr/bin/python3"
 
     def test_prefers_versioned_minor_over_generic_python3(self, tmp_path: Path) -> None:
-        # A torch-friendly minor on PATH wins over the generic python3 (which may be too new
-        # for the runtime's wheels).
+        # Both report the same (established) minor, so they tie on rank; the versioned
+        # which-name (discovered first) breaks the tie over the generic python3.
         runner = _FakeProcessRunner(
             which_map={
                 "python3.12": "/usr/bin/python3.12",
                 "python3": "/usr/bin/python3",
-            }
+            },
+            python_versions={
+                "/usr/bin/python3.12": (3, 12),
+                "/usr/bin/python3": (3, 12),
+            },
         )
         manager = NativeRuntimeManager(tmp_path, runner)
         assert manager.host_python() == "/usr/bin/python3.12"
 
     def test_falls_back_to_python_when_no_python3(self, tmp_path: Path) -> None:
-        runner = _FakeProcessRunner(which_map={"python": "/usr/bin/python"})
+        runner = _FakeProcessRunner(
+            which_map={"python": "/usr/bin/python"},
+            python_versions={"/usr/bin/python": (3, 11)},
+        )
         manager = NativeRuntimeManager(tmp_path, runner)
         assert manager.host_python() == "/usr/bin/python"
 
@@ -263,10 +307,63 @@ class TestHostPython:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(native_runtime, "_IS_WINDOWS", True)
-        runner = _FakeProcessRunner(which_map={"py": r"C:\Windows\py.exe"})
+        runner = _FakeProcessRunner(
+            which_map={"py": r"C:\Windows\py.exe"},
+            python_versions={r"C:\Windows\py.exe": (3, 12)},
+        )
         manager = NativeRuntimeManager(tmp_path, runner)
         assert manager.host_python() == r"C:\Windows\py.exe"
         assert "py" in runner.which_calls
+
+    def test_skips_too_old_picks_satisfying_for_min_python(
+        self, tmp_path: Path
+    ) -> None:
+        # A 3.9 interpreter is skipped for a (3, 10) floor; the next, newer candidate is chosen.
+        runner = _FakeProcessRunner(
+            which_map={
+                "python3": "/usr/bin/python3",
+                "python3.11": "/opt/py/bin/python3.11",
+            },
+            python_versions={
+                "/usr/bin/python3": (3, 9),
+                "/opt/py/bin/python3.11": (3, 11),
+            },
+        )
+        manager = NativeRuntimeManager(tmp_path, runner)
+        assert manager.host_python((3, 10)) == "/opt/py/bin/python3.11"
+
+    def test_prefers_established_minor_over_bleeding_edge(self, tmp_path: Path) -> None:
+        # Both clear the (3, 10) floor, but 3.14 is too new for native wheels (torch/onnxruntime
+        # lag CPython), so the established 3.13 must win — even though the 3.14 interpreter is
+        # DISCOVERED FIRST (it answers to an earlier which-name). Rank, not discovery order,
+        # decides. Driven purely through the fake which + python_version (no real FS / globs).
+        # The which-names are probed in _PREFERRED_HOST_PYTHONS order, so the bleeding-edge
+        # interpreter (reached via the earlier-probed "python3" generic) is discovered before the
+        # established 3.13 — yet 3.13 still wins on rank. Versions come from the probe, not the
+        # filename, which is exactly why an interpreter's real version is what's ranked.
+        runner = _FakeProcessRunner(
+            which_map={
+                "python3": "/usr/bin/python3",  # generic; here it is a 3.14
+                "python": "/usr/bin/python3.13",  # an established 3.13, discovered later
+            },
+            python_versions={
+                "/usr/bin/python3": (
+                    3,
+                    14,
+                ),  # not in _PREFERRED_HOST_PYTHONS (last resort)
+                "/usr/bin/python3.13": (3, 13),  # established (rank 0)
+            },
+        )
+        manager = NativeRuntimeManager(tmp_path, runner)
+        assert manager.host_python((3, 10)) == "/usr/bin/python3.13"
+
+    def test_returns_none_when_only_too_old_python(self, tmp_path: Path) -> None:
+        runner = _FakeProcessRunner(
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 9)},
+        )
+        manager = NativeRuntimeManager(tmp_path, runner)
+        assert manager.host_python((3, 10)) is None
 
     def test_returns_none_when_no_python(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(which_map={})
@@ -295,6 +392,11 @@ class TestVenvPython:
 
 
 class TestEnsureInstalled:
+    @pytest.fixture(autouse=True)
+    def _no_fs_globs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Hermetic: drive host-Python discovery through the fake runner only, no real FS.
+        monkeypatch.setattr(native_runtime, "_PYTHON_SEARCH_GLOBS", ())
+
     def test_idempotent_when_marker_present(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(which_map={"python3": "/usr/bin/python3"})
         manager = NativeRuntimeManager(tmp_path, runner)
@@ -307,7 +409,9 @@ class TestEnsureInstalled:
 
     def test_creates_venv_then_pip_installs_in_order(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(
-            which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 0, 0]
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 12)},
+            run_codes=[0, 0, 0],
         )
         manager = NativeRuntimeManager(tmp_path, runner)
         spec = _server_spec()
@@ -344,12 +448,28 @@ class TestEnsureInstalled:
     def test_raises_when_no_host_python(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(which_map={})
         manager = NativeRuntimeManager(tmp_path, runner)
-        with pytest.raises(ProviderError, match="Install Python 3"):
+        with pytest.raises(ProviderError, match="install Python"):
             manager.ensure_installed(_server_spec())
+
+    def test_raises_when_only_too_old_python_for_min(self, tmp_path: Path) -> None:
+        # spec needs >=3.10 but only a 3.9 interpreter exists: a clear error, and NOTHING runs
+        # (no venv created, no pip).
+        runner = _FakeProcessRunner(
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 9)},
+        )
+        manager = NativeRuntimeManager(tmp_path, runner)
+        spec = _server_spec(min_python=(3, 10))
+        with pytest.raises(ProviderError, match=r"needs Python >= 3\.10"):
+            manager.ensure_installed(spec)
+        assert runner.run_calls == []  # no venv, no pip
+        assert not manager.venv_dir(spec).exists()
 
     def test_raises_when_venv_create_fails(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(
-            which_map={"python3": "/usr/bin/python3"}, run_codes=[1]
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 12)},
+            run_codes=[1],
         )
         manager = NativeRuntimeManager(tmp_path, runner)
         with pytest.raises(ProviderError, match="venv"):
@@ -358,7 +478,9 @@ class TestEnsureInstalled:
     def test_raises_when_pip_install_fails(self, tmp_path: Path) -> None:
         # run_codes: venv create (0), pip upgrade (0, best-effort), then the package install (1).
         runner = _FakeProcessRunner(
-            which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 0, 1]
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 12)},
+            run_codes=[0, 0, 1],
         )
         # pip's real error (captured via merge_stderr) is surfaced in the message so the user
         # sees WHY — e.g. no matching wheel for their Python.

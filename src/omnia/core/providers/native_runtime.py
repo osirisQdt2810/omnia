@@ -23,6 +23,7 @@ grouped by section.
 from __future__ import annotations
 
 import atexit
+import glob
 import os
 import shutil
 import socket
@@ -64,16 +65,46 @@ def _tail(output: bytes, max_chars: int = 1200) -> str:
 _SERVER_STARTUP_TIMEOUT = 120.0
 _SERVER_POLL_INTERVAL = 0.5
 
-# Bootstrap-interpreter preference. Native runtime deps (PyTorch, onnxruntime) lag the newest
-# CPython by a release or two, so a machine whose default ``python3`` is bleeding-edge (no wheels
-# yet → ``pip install`` fails) can still install if a slightly older, well-supported minor is on
-# PATH. Probe these specific minors before the generic ``python3``/``python``.
+# Bootstrap-interpreter preference, BEST FIRST. Native runtime deps (PyTorch, onnxruntime) lag the
+# newest CPython by a release or two, so a bleeding-edge interpreter (e.g. 3.14, no wheels yet →
+# ``pip install`` fails) is a WORSE choice than an established minor. ``host_python`` uses this
+# both as the ``which`` probe-name list AND (via the derived versions below) as the selection
+# ranking: a candidate whose minor is listed here ranks by its index (3.13 best … 3.9 last
+# established); any minor NOT listed — a too-new 3.14, or whatever generic ``python3``/``python``
+# resolves to — ranks AFTER all of these, a last resort used only when no established minor exists.
 _PREFERRED_HOST_PYTHONS = (
+    "python3.13",
     "python3.12",
     "python3.11",
-    "python3.13",
     "python3.10",
     "python3.9",
+)
+
+
+def _preferred_host_versions() -> tuple[tuple[int, int], ...]:
+    """Parse the ``(major, minor)`` versions from ``_PREFERRED_HOST_PYTHONS`` (best first).
+
+    Derived so the probe-name list and the selection ranking never drift; reads the module-level
+    tuple by name so tests can monkeypatch ``_PREFERRED_HOST_PYTHONS``.
+    """
+    versions: list[tuple[int, int]] = []
+    for name in _PREFERRED_HOST_PYTHONS:
+        major, _, minor = name.removeprefix("python").partition(".")
+        versions.append((int(major), int(minor)))
+    return tuple(versions)
+
+
+# Common install locations to glob for a host Python *off* PATH. Anki's app subprocess PATH on
+# macOS is minimal (often only ``/usr/bin/python3``, which is 3.9.6 and too old for some runtimes),
+# so a user's Homebrew / MacPorts / python.org interpreter won't be on PATH. Globbing these lets
+# ``host_python`` still find a suitable interpreter. POSIX-only; skipped on Windows (which uses the
+# ``which``-name list incl. the ``py`` launcher). Tests monkeypatch this to ``[]`` to stay hermetic.
+_PYTHON_SEARCH_GLOBS = (
+    "/opt/homebrew/bin/python3.*",
+    "/usr/local/bin/python3.*",
+    "/opt/local/bin/python3.*",
+    "/Library/Frameworks/Python.framework/Versions/3.*/bin/python3",
+    "/usr/bin/python3.*",
 )
 
 
@@ -103,6 +134,10 @@ class NativeRuntimeSpec:
             after it (see ``run_in_venv`` / ``run_capture_in_venv``).
         host: Bind/connect host for ``mode="server"``.
         port: Fixed port, or ``0`` to let the manager/caller pick a free one.
+        min_python: Minimum host-Python ``(major, minor)`` the runtime's packages require.
+            The manager only bootstraps the venv from an interpreter ``>=`` this. Defaults to
+            ``(3, 9)`` (Anki's minimum); a provider whose package needs newer (e.g. viet-tts
+            requires ``>=3.10``) sets it explicitly.
     """
 
     name: str
@@ -115,8 +150,18 @@ class NativeRuntimeSpec:
     cli_argv: tuple[str, ...] = ()
     host: str = "127.0.0.1"
     port: int = 0
+    min_python: tuple[int, int] = (3, 9)
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.min_python, tuple)
+            or len(self.min_python) != 2
+            or not all(isinstance(part, int) for part in self.min_python)
+        ):
+            raise ValueError(
+                f"NativeRuntimeSpec {self.name!r}: min_python must be a (major, minor) "
+                f"int tuple, got {self.min_python!r}"
+            )
         if self.mode not in ("server", "cli"):
             raise ValueError(
                 f"NativeRuntimeSpec {self.name!r}: mode must be 'server' or 'cli', "
@@ -199,6 +244,10 @@ class ProcessRunner(Protocol):
         """Resolve ``exe`` to a full path on PATH, or None if not found."""
         ...
 
+    def python_version(self, exe: str) -> tuple[int, int] | None:
+        """Return ``exe``'s ``(major, minor)`` version, or None if it can't be determined."""
+        ...
+
     def run(
         self,
         argv: Sequence[str],
@@ -251,6 +300,24 @@ class SubprocessRunner:
 
     def which(self, exe: str) -> str | None:
         return shutil.which(exe)
+
+    def python_version(self, exe: str) -> tuple[int, int] | None:
+        # Probe the interpreter itself (its filename can lie about the real version). Capture
+        # everything; never inherit stderr — writing to the real stderr inside Anki trips its
+        # crash dialog. Any failure (missing exe, non-zero exit, unparseable output) → None.
+        code, out = self.run_capture(
+            [exe, "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
+            merge_stderr=False,
+        )
+        if code != 0:
+            return None
+        parts = out.decode("utf-8", "replace").split()
+        if len(parts) < 2:
+            return None
+        try:
+            return int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
 
     def run(
         self,
@@ -370,28 +437,96 @@ class NativeRuntimeManager:
         self._servers: dict[str, _Server] = {}
 
     # -- interpreter / path resolution ----------------------------------------------------
-    def host_python(self) -> str | None:
+    def host_python(self, min_python: tuple[int, int] = (3, 9)) -> str | None:
         """Detect a bootstrap interpreter to create the venv (NOT Anki's frozen one).
 
-        Prefers an explicit ``host_python`` override, then probes specific torch-friendly
-        minors (see ``_PREFERRED_HOST_PYTHONS``) before the generic ``python3``/``python``, and
-        (on Windows) the ``py`` launcher — all via ``runner.which``. Probing versioned minors
-        first lets a machine whose default ``python3`` is too new for the runtime's wheels still
-        install when an older, supported minor is also on PATH.
+        An explicit ``host_python`` override wins unconditionally (an explicit/test choice; no
+        version check). Otherwise the manager discovers candidate interpreters — PATH names via
+        ``runner.which`` (preferred minors, then ``python3``/``python``, plus ``py`` on Windows),
+        then common off-PATH install locations (see :meth:`_glob_python_candidates`) — probes each
+        one's real version, keeps only those ``>= min_python`` (the hard floor), and returns the
+        BEST-RANKED.
+
+        Ranking favours an *established* minor over a bleeding-edge one: native deps (PyTorch,
+        onnxruntime) lag CPython, so a freshly-released 3.14 with no wheels is worse than 3.13.
+        A candidate whose minor is in ``_PREFERRED_HOST_PYTHONS`` ranks by its index there (3.13
+        best … 3.9 last); any other minor (a too-new 3.14, or whatever generic ``python3``
+        resolves to) ranks after all of them — a last resort. Probing real versions (not
+        filenames) is what lets this skip Anki's minimal-PATH ``/usr/bin/python3`` (3.9.6) and
+        pick a newer Homebrew/MacPorts/python.org interpreter for a runtime that needs ``>=3.10``.
+
+        Args:
+            min_python: Minimum acceptable ``(major, minor)`` (the hard floor).
 
         Returns:
-            The interpreter path, or None when no usable host Python is on PATH.
+            The interpreter path, or None when no candidate meets ``min_python``.
         """
         if self._host_python_override:
             return self._host_python_override
-        candidates = [*_PREFERRED_HOST_PYTHONS, "python3", "python"]
+
+        preferred = _preferred_host_versions()
+        last_resort = len(preferred)
+
+        def rank(version: tuple[int, int]) -> int:
+            try:
+                return preferred.index(version)
+            except ValueError:
+                return last_resort
+
+        # Each entry is (rank, discovery_index, path); discovery order is the tie-breaker so a
+        # which-name beats a glob hit at the same minor. Probe each interpreter exactly once.
+        qualifying: list[tuple[int, int, str]] = []
+        for index, path in enumerate(self._python_candidates()):
+            version = self._runner.python_version(path)
+            if version is not None and version >= min_python:
+                qualifying.append((rank(version), index, path))
+        if not qualifying:
+            return None
+        return min(qualifying)[2]
+
+    def _python_candidates(self) -> list[str]:
+        """Build the de-duplicated list of host-Python paths to probe (discovery order).
+
+        PATH names (via ``runner.which``) come first, then the off-PATH glob hits (see
+        :meth:`_glob_python_candidates`). Paths are de-duplicated (resolving symlinks where cheap)
+        while preserving first-seen order. Ordering here is only a tie-breaker — final preference
+        is the version ranking in :meth:`host_python`.
+        """
+        names = [*_PREFERRED_HOST_PYTHONS, "python3", "python"]
         if _IS_WINDOWS:
-            candidates.append("py")
-        for exe in candidates:
-            found = self._runner.which(exe)
-            if found:
-                return found
-        return None
+            names.append("py")
+        found = [self._runner.which(name) for name in names]
+        raw = [path for path in found if path]
+        raw.extend(self._glob_python_candidates())
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for path in raw:
+            try:
+                key = str(Path(path).resolve())
+            except OSError:
+                key = path
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(path)
+        return candidates
+
+    @staticmethod
+    def _glob_python_candidates() -> list[str]:
+        """Glob common off-PATH install locations for python interpreters.
+
+        Returns the (sorted, de-duplicated) matches for the POSIX ``_PYTHON_SEARCH_GLOBS``. Empty
+        on Windows (handled via the ``which``-name list incl. ``py``). Tests set
+        ``_PYTHON_SEARCH_GLOBS = ()`` to keep discovery hermetic. Final preference among hits is
+        the version ranking in :meth:`host_python`, not this order.
+        """
+        if _IS_WINDOWS:
+            return []
+        matches: list[str] = []
+        for pattern in _PYTHON_SEARCH_GLOBS:
+            matches.extend(glob.glob(pattern))
+        return sorted(set(matches))
 
     def venv_dir(self, spec: NativeRuntimeSpec) -> Path:
         """Return the venv directory for ``spec`` (``envs_dir / spec.name``)."""
@@ -461,13 +596,13 @@ class NativeRuntimeManager:
         if self.is_installed(spec):
             return
 
-        host_python = self.host_python()
+        host_python = self.host_python(spec.min_python)
         if host_python is None:
+            maj, minr = spec.min_python
             raise ProviderError(
-                f"{spec.name}: no host Python found to create its runtime. Install "
-                f"Python 3.12 (python.org) and ensure `python3`/`python` is on PATH, then "
-                f"try again. (Newer releases such as 3.14 may not have wheels for some "
-                f"runtimes yet, e.g. PyTorch.)"
+                f"{spec.name}: needs Python >= {maj}.{minr}, but no suitable interpreter "
+                f"was found. Anki's PATH can be minimal — install Python {maj}.{minr}+ "
+                f"(python.org) or ensure it's on PATH, then try again."
             )
 
         venv_dir = self.venv_dir(spec)
