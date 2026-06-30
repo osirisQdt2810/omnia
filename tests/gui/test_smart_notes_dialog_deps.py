@@ -1,8 +1,8 @@
 """Tests for the Smart Notes controllers' prompt↔graph dependency sync glue.
 
 The off-thread classify + main-thread reconcile + push live on the
-:class:`~omnia.gui.smart_notes.controllers.graph.GraphController` (Features 1 & 2); the save
-cycle guard lives on the :class:`~omnia.gui.smart_notes.controllers.config.ConfigController`.
+:class:`~omnia.gui.smart_notes.dialogs.controllers.graph.GraphController` (Features 1 & 2); the save
+cycle guard lives on the :class:`~omnia.gui.smart_notes.dialogs.controllers.config.ConfigController`.
 Both take a shared ``SmartNotesContext``; here we hand them a tiny fake context (a
 ``SimpleNamespace`` exposing just ``eval_js`` / ``build_hub`` / ``friendly`` / ``store`` as each
 test needs) so the pure-ish glue runs headless — no Qt stack, no real dialog. The extra ``aqt``
@@ -15,13 +15,26 @@ import sys
 import types
 from typing import Any
 
-# --- stub the extra aqt symbols dialog.py / web_dialog.py import at module load ----------
+# --- stub the extra aqt symbols the dialogs package imports at module load ----------------
+# Importing any ``dialogs.controllers.*`` submodule first runs the ``dialogs`` package
+# __init__, which loads config_dialog.py + custom_prompt.py (and web_dialog.py) — so stub the
+# Qt symbols all of those import at module top.
 _theme_mod = types.ModuleType("aqt.theme")
 _theme_mod.theme_manager = types.SimpleNamespace(night_mode=False)
 sys.modules.setdefault("aqt.theme", _theme_mod)
 
 _qt = sys.modules.get("aqt.qt") or types.ModuleType("aqt.qt")
-for _name in ("QDialog", "QVBoxLayout", "QWebEngineView", "QWidget"):
+for _name in (
+    "QComboBox",
+    "QDialog",
+    "QDialogButtonBox",
+    "QLabel",
+    "QPlainTextEdit",
+    "QPushButton",
+    "QVBoxLayout",
+    "QWebEngineView",
+    "QWidget",
+):
     if not hasattr(_qt, _name):
         setattr(_qt, _name, type(_name, (), {}))
 sys.modules["aqt.qt"] = _qt
@@ -35,18 +48,20 @@ _webview_mod.AnkiWebView = type("AnkiWebView", (), {})
 sys.modules.setdefault("aqt.webview", _webview_mod)
 aqt.webview = _webview_mod
 
-from omnia.gui.smart_notes.controllers.account import (  # noqa: E402
+from omnia.gui.smart_notes.dialogs.controllers.account import (  # noqa: E402
     AccountController,
 )
-from omnia.gui.smart_notes.controllers.authoring import (  # noqa: E402
+from omnia.gui.smart_notes.dialogs.controllers.authoring import (  # noqa: E402
     AuthoringController,
 )
-from omnia.gui.smart_notes.controllers.config import ConfigController  # noqa: E402
-from omnia.gui.smart_notes.controllers.graph import (  # noqa: E402
+from omnia.gui.smart_notes.dialogs.controllers.config import (  # noqa: E402
+    ConfigController,
+)
+from omnia.gui.smart_notes.dialogs.controllers.graph import (  # noqa: E402
     GraphController,
     _DepPlan,
 )
-from omnia.gui.smart_notes.controllers.native_runtime import (  # noqa: E402
+from omnia.gui.smart_notes.dialogs.controllers.native_runtime import (  # noqa: E402
     NativeRuntimeController,
 )
 
