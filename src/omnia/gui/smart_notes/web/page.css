@@ -566,3 +566,63 @@ select:disabled { opacity: 0.7; }
   font-size: 12px; pointer-events: none; max-width: 80%; z-index: 2;
 }
 .sn-graph-toast[hidden] { display: none; }
+
+/* The graph view's top bar: the hint on the left, the Sync-prompts reload on the right. */
+.sn-graph-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
+.sn-graph-bar .sn-graph-hint { margin-bottom: 0; flex: 1; }
+.sn-graph-reload { flex: none; white-space: nowrap; }
+
+/* --- Graph→prompt diff popover (Feature 2) -----------------------------------------------
+   A compact floating card anchored near the edited node: a muted read-only "Was" over an
+   editable "Now", gated by a live validate. NOT the full-screen modal — it positions itself.
+   No SVG filters (Metal hazard); depth comes from the --card gradient + shadow. */
+.sn-diff-pop {
+  position: fixed; z-index: 70; width: 380px; max-width: calc(100vw - 24px);
+}
+.sn-diff-pop[hidden] { display: none; }
+.sn-diff-card {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: calc(100vh - 48px);
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  border: 1px solid var(--card-border); border-radius: 12px;
+  box-shadow: 0 14px 40px var(--shadow); padding: 12px 14px;
+  transform-origin: top left; animation: sn-diff-in 0.13s ease;
+}
+@keyframes sn-diff-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.sn-diff-head { display: flex; align-items: center; justify-content: space-between; }
+.sn-diff-title { font-size: 13px; font-weight: 700; }
+.sn-diff-notice {
+  font-size: 12px; color: var(--fg); background: var(--head);
+  border: 1px solid var(--card-border); border-radius: 8px; padding: 6px 8px; line-height: 1.4;
+}
+.sn-diff-notice[hidden] { display: none; }
+.sn-diff-section { display: flex; flex-direction: column; gap: 3px; }
+.sn-diff-label {
+  text-transform: uppercase; font-size: 10px; font-weight: 700; letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.sn-diff-old {
+  font-size: 12px; line-height: 1.45; color: var(--muted); white-space: pre-wrap;
+  word-break: break-word; max-height: 110px; overflow: auto;
+  background: var(--row-alt); border: 1px solid var(--card-border);
+  border-radius: 8px; padding: 7px 9px;
+}
+.sn-diff-chevron {
+  text-align: center; color: var(--accent); font-size: 18px; line-height: 1;
+  margin: -2px 0;
+}
+.sn-diff-new {
+  width: 100%; min-height: 120px; max-height: 38vh; resize: vertical;
+  line-height: 1.5; font-size: 12.5px;
+}
+.sn-diff-err {
+  font-size: 12px; color: var(--fail); line-height: 1.4;
+  background: var(--row-alt); border: 1px solid var(--fail);
+  border-radius: 8px; padding: 6px 8px;
+}
+.sn-diff-err[hidden] { display: none; }
+.sn-diff-foot { display: flex; align-items: center; gap: 8px; }
+.sn-diff-spacer { flex: 1; }
