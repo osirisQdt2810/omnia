@@ -513,16 +513,13 @@
     const provOpts = providerNames(isSound ? "tts" : kind).map(function (p) {
       return {value: p, label: p};
     });
-    const modelList = isSound
+    const modelOpts = isSound
       ? voiceEntries(def.provider).map(function (v) {
           return {value: v.voice, label: v.label};
         })
       : modelValues(kind, def.provider).map(function (m) {
           return {value: m, label: m};
         });
-    const modelOpts = isSound
-      ? [{value: "", label: "(provider default)"}].concat(modelList)
-      : modelList;
 
     acctDefaultEl.innerHTML = "";
     const title = document.createElement("div");
@@ -540,9 +537,18 @@
       applyDefaultModel(kind, value, "");
     });
     const mdl = labeledCell(isSound ? "Voice" : "Model");
-    fillCellSelect(mdl.cell, "sn-acct-default-sel", modelOpts, def.model, function (value) {
-      applyDefaultModel(kind, def.provider, value);
-    });
+    if (isSound && modelOpts.length === 0) {
+      // This provider exposes no selectable voice (e.g. google_translate picks by language /
+      // TLD, not a named voice). Show a muted note instead of an empty, unusable dropdown.
+      const note = document.createElement("span");
+      note.className = "sn-acct-default-note";
+      note.textContent = "— this provider has no selectable voice —";
+      mdl.cell.appendChild(note);
+    } else {
+      fillCellSelect(mdl.cell, "sn-acct-default-sel", modelOpts, def.model, function (value) {
+        applyDefaultModel(kind, def.provider, value);
+      });
+    }
     row.appendChild(prov.label);
     row.appendChild(mdl.label);
     acctDefaultEl.appendChild(row);
