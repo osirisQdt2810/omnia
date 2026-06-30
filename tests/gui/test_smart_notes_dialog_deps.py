@@ -17,7 +17,7 @@ from typing import Any
 
 # --- stub the extra aqt symbols the dialogs package imports at module load ----------------
 # Importing any ``dialogs.controllers.*`` submodule first runs the ``dialogs`` package
-# __init__, which loads config_dialog.py + custom_prompt.py (and web_dialog.py) — so stub the
+# __init__, which loads studio.py + prompt.py (and web_dialog.py) — so stub the
 # Qt symbols all of those import at module top.
 _theme_mod = types.ModuleType("aqt.theme")
 _theme_mod.theme_manager = types.SimpleNamespace(night_mode=False)

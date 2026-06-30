@@ -6,7 +6,7 @@ page push (``eval_js``), the provider/secrets config repo, the synced per-note-t
 store, and the native-runtime manager — plus the small shared helpers (build the provider hub,
 friendly error messages, settings/deck/voice reads) that used to live on the god-class dialog.
 
-Built ONCE by the thin :class:`~omnia.gui.smart_notes.dialogs.config_dialog.SmartNotesDialog` shell and passed
+Built ONCE by the thin :class:`~omnia.gui.smart_notes.dialogs.studio.SmartNotesDialog` shell and passed
 to each controller's constructor, so the controllers stay decoupled from Qt and from each other
 (the one cross-controller wire — authoring → graph — is an explicit constructor arg, not via this
 context). Only loaded inside Anki; pure-logic imports stay lazy so the deps tests can stub it.
