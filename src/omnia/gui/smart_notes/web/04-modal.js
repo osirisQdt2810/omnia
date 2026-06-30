@@ -171,11 +171,46 @@
 
   modalSave.addEventListener("click", function () {
     if (modalRow) {
-      modalRow.dataset.prompt = modalPrompt.value;
+      const oldPrompt = modalRow.dataset.prompt || "";
+      const newPrompt = modalPrompt.value;
+      modalRow.dataset.prompt = newPrompt;
       updatePromptSummary(modalRow);
+      maybeClassifyDeps(modalRow, oldPrompt, newPrompt);
     }
     closeModal();
   });
+
+  /**
+   * After a prompt is saved, kick off the prompt→graph dependency sync (Feature 1) when the
+   * prompt actually changed and references at least one field — the off-thread classifier labels
+   * the new refs hard/soft and the result recolours the graph via window.__snDepsResult.
+   * @param {!HTMLTableRowElement} tr The row whose prompt was saved.
+   * @param {string} oldPrompt The prompt before this save.
+   * @param {string} newPrompt The prompt after this save.
+   */
+  function maybeClassifyDeps(tr, oldPrompt, newPrompt) {
+    // Skip when unchanged or there's no FIELD ref. The negative lookahead mirrors Python's
+    // extract_field_refs so a cloze-only prompt ({{c1::…}}) doesn't fire a no-op classify.
+    if (newPrompt === oldPrompt || !/\{\{(?!c\d+::)[^{}]+\}\}/.test(newPrompt)) {
+      return;
+    }
+    setMsg('<span class="sn-spin"></span>↻ Updating dependencies…', false);
+    send(
+      "classify_deps",
+      {
+        note_type: noteTypeSel.value,
+        base_field: baseSel.value,
+        rows: [
+          {
+            field: tr.dataset.field,
+            prompt: newPrompt,
+            depends_on: readDependsOn(tr)
+          }
+        ]
+      },
+      null
+    );
+  }
 
   // ✨ Improve (mechanism X): rewrite the rough prompt in the editor into a polished one.
   modalImprove.addEventListener("click", function () {

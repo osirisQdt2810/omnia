@@ -58,6 +58,48 @@
     }
   }
 
+  /**
+   * Apply a field's reconciled dependency edges (the prompt→graph sync, Feature 1) onto its row,
+   * then recolour the graph. Writes the whole {field, kind, auto}[] list onto the row's
+   * data-depends-on (the single source of truth collectRows/readDependsOn read), so a
+   * classifier-written `auto` flag round-trips and isn't downgraded to a user edge on save.
+   * @param {string} field The dependent field whose edges were reconciled.
+   * @param {!Array<!Object>} deps The reconciled depends_on entries ({field, kind, auto}).
+   */
+  function applyFieldDeps(field, deps) {
+    let row = null;
+    Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
+      if ((tr.dataset.field || "").toLowerCase() === (field || "").toLowerCase()) {
+        row = tr;
+      }
+    });
+    if (!row) {
+      return;
+    }
+    row.dataset.dependsOn = JSON.stringify(deps || []);
+    refreshGraphIfOpen();
+  }
+
+  /**
+   * Receive the prompt→graph classify result (off-thread): apply each field's reconciled edges.
+   * Applied PER FIELD so concurrent classify ops touching different fields don't clobber one
+   * another. An {error} payload (no field entries) surfaces on the footer; otherwise a brief
+   * "Dependencies updated" status confirms the recolour.
+   * @param {?(Array<!Object>|Object)} items [{field, depends_on}] on success, {error} on failure.
+   */
+  window.__snDepsResult = function (items) {
+    if (!Array.isArray(items)) {
+      setMsg((items && items.error) || "Could not update dependencies — see logs.", true);
+      return;
+    }
+    items.forEach(function (item) {
+      if (item && item.field) {
+        applyFieldDeps(item.field, item.depends_on || []);
+      }
+    });
+    setMsg("Dependencies updated.", false);
+  };
+
   /** Briefly show a status message over the graph. */
   function graphToastMsg(text) {
     graphToast.textContent = text;

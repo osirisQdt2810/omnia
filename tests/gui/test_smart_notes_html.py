@@ -107,8 +107,27 @@ class TestGraphPayload:
         cfg = note_type_config_from_payload("Vocab", "Word", rows)
         field = cfg.fields[0]
         assert [(d.field, d.kind) for d in field.depends_on] == [("Word", "soft")]
+        # auto defaults to False (a user/explicit edge) and round-trips through the payload.
         assert row_to_payload(field)["depends_on"] == [
-            {"field": "Word", "kind": "soft"}
+            {"field": "Word", "kind": "soft", "auto": False}
+        ]
+
+    def test_auto_flag_round_trips_so_classifier_kind_is_not_downgraded(self):
+        # A classifier-written edge carries auto=True; the page must preserve it through
+        # readDependsOn/collectRows so a re-save keeps it an auto edge (not downgraded to user).
+        rows = [
+            _row(
+                "Definition",
+                enabled=True,
+                type="text",
+                depends_on=[{"field": "Word", "kind": "hard", "auto": True}],
+            )
+        ]
+        cfg = note_type_config_from_payload("Vocab", "Word", rows)
+        dep = cfg.fields[0].depends_on[0]
+        assert (dep.field, dep.kind, dep.auto) == ("Word", "hard", True)
+        assert row_to_payload(cfg.fields[0])["depends_on"] == [
+            {"field": "Word", "kind": "hard", "auto": True}
         ]
 
 
@@ -470,3 +489,19 @@ class TestBuildSmartNotesHtml:
         # The per-row Voice picker's blank option is relabeled to "Auto-detect" in rebuildVoice.
         html = build_smart_notes_html(dark=False)
         assert 'label: "Auto-detect"' in html
+
+    def test_classify_deps_op_and_push_hook_wired(self):
+        # Feature 1 (prompt → graph): modalSave posts classify_deps; the result recolours via
+        # window.__snDepsResult, applied per field through applyFieldDeps.
+        html = build_smart_notes_html(dark=False)
+        assert 'send(\n      "classify_deps"' in html or '"classify_deps"' in html
+        assert "window.__snDepsResult" in html
+        assert "function applyFieldDeps" in html
+
+    def test_auto_and_improve_apply_optional_deps_map(self):
+        # The auto/improve folds carry an optional res.deps map the page applies per field, and
+        # append the "Updated dependency colours" sentence to the completion message.
+        html = build_smart_notes_html(dark=False)
+        assert "applyDepsMap" in html
+        assert "res.deps" in html
+        assert "Updated dependency colours for" in html
