@@ -82,11 +82,14 @@ class ReviewTimeEvaluator:
         service = self._service
 
         def op() -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
-            return service.generate_note(
+            # Review-time pre-generation only fills empty fields; blocked fields stay empty and
+            # are simply not written (the next show re-evaluates), so the block list is unused.
+            results, _blocked = service.generate_note(
                 config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
             )
+            return results
 
         anki_compat.run_in_background(
             op,

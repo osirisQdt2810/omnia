@@ -12,6 +12,7 @@ The injected :class:`~omnia.core.providers.ProviderHub` keeps it testable with a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from omnia.core.providers.errors import ProviderError
@@ -26,6 +27,7 @@ from omnia.plugins.smart_notes.engine.generators import (
 from omnia.plugins.smart_notes.engine.ordering import order_rules
 from omnia.plugins.smart_notes.engine.rules import (
     compile_note_type_rules,
+    rule_prerequisites,
     should_skip_rule,
 )
 
@@ -35,6 +37,32 @@ if TYPE_CHECKING:
         SmartNotesFieldRule,
         SmartNotesNoteTypeConfig,
     )
+
+
+@dataclass(frozen=True)
+class BlockedField:
+    """A field that was NOT generated because a HARD prerequisite was empty/failed.
+
+    ``missing`` lists the prerequisite field names (display case) that were blank or had
+    themselves been blocked/failed. Blocking is transitive: a blocked field puts no value in
+    the working map, so its own hard dependents block in turn.
+    """
+
+    target_field: str
+    missing: list[str]
+
+
+def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
+    """Return the field names ``rule`` HARD-depends on (the gate's blocking prerequisites).
+
+    Reads the rule's prerequisites through the single source of truth
+    (:func:`~omnia.plugins.smart_notes.engine.rules.rule_prerequisites`) and keeps only the
+    ``"hard"`` ones — soft prerequisites order generation but never block. The explicit
+    kind-override (e.g. a derived source recoloured ``"soft"``) is already applied there, so a
+    softened source is correctly excluded here. Names keep their original case (for the
+    ``missing`` report); matching is the caller's job.
+    """
+    return [field for field, kind in rule_prerequisites(rule) if kind == "hard"]
 
 
 class GenerationService:
@@ -91,7 +119,7 @@ class GenerationService:
         *,
         allow_empty_fields: bool = False,
         force_overwrite: bool = False,
-    ) -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
+    ) -> tuple[list[tuple[SmartNotesFieldRule, GenerationResult]], list[BlockedField]]:
         """Generate a note type's enabled fields, in dependency order, with chaining.
 
         The note type's generatable fields are compiled into rules
@@ -100,9 +128,16 @@ class GenerationService:
         (:func:`~omnia.plugins.smart_notes.engine.ordering.order_rules`) so a field that
         references another generated field runs after it, and each text result is written back
         into a working copy of ``fields`` so the dependent field interpolates the freshly
-        generated value. The base field is never generated. Fields whose sources are all blank,
-        or whose target is already filled, are skipped per
-        :func:`~omnia.plugins.smart_notes.engine.rules.should_skip_rule`.
+        generated value. The base field is never generated.
+
+        Before each rule runs, its HARD prerequisites (derived prompt refs/source field, minus
+        any the field marked ``"soft"`` in ``depends_on``, plus explicit hard deps) are checked
+        against the working map: if any is blank or was itself blocked/failed, the rule is
+        skipped and recorded as a :class:`BlockedField` (it writes no value, so its own hard
+        dependents block transitively). Soft prerequisites never block. The existing skip
+        predicate (:func:`~omnia.plugins.smart_notes.engine.rules.should_skip_rule`) still
+        applies AFTER the block gate, so already-filled / all-sources-blank rules are skipped as
+        before. A prerequisite that is "already filled and not overwritten" counts as present.
 
         Args:
             config: The note type's smart-notes config (its base field + per-field rows).
@@ -112,7 +147,9 @@ class GenerationService:
                 (the batch "regenerate when batching" path), ignoring per-field ``overwrite``.
 
         Returns:
-            ``(rule, result)`` pairs for the fields that actually generated, in run order.
+            A tuple ``(results, blocked)`` where ``results`` is the ``(rule, result)`` pairs for
+            the fields that actually generated (in run order) and ``blocked`` lists the fields
+            skipped for a missing hard prerequisite.
 
         Raises:
             SmartNotesCycleError: If the fields reference each other in a cycle.
@@ -123,13 +160,50 @@ class GenerationService:
             rules = [rule.copy(update={"overwrite": True}) for rule in rules]
         working = dict(fields)
         results: list[tuple[SmartNotesFieldRule, GenerationResult]] = []
+        blocked: list[BlockedField] = []
+        # Lower-cased target names that generated a non-error result this run. Media (image/tts)
+        # results are NOT chained into ``working`` (they are embed refs, not prompt text), so a
+        # field hard-depending on a media field would falsely read it blank; ``produced`` records
+        # the success so such a prerequisite still counts as satisfied.
+        produced: set[str] = set()
         for rule in order_rules(rules):
+            missing = self._missing_hard_prerequisites(rule, working, produced)
+            if missing:
+                blocked.append(BlockedField(rule.target_field, missing))
+                continue  # writes no value → hard dependents block transitively
             if should_skip_rule(rule, working, allow_empty_fields=allow_empty_fields):
                 continue
             result = self.generate(rule, working)
             results.append((rule, result))
+            produced.add(rule.target_field.strip().lower())
             # Only text feeds downstream prompts; media (image/tts) becomes an embed ref a
             # later prompt shouldn't consume.
             if result.kind == "text" and result.text is not None:
                 working[rule.target_field] = result.text
-        return results
+        return results, blocked
+
+    @staticmethod
+    def _missing_hard_prerequisites(
+        rule: SmartNotesFieldRule, working: dict[str, str], produced: set[str]
+    ) -> list[str]:
+        """Return the rule's hard prerequisites that are unmet (case-insensitive).
+
+        A prerequisite is satisfied when it holds a non-blank value in ``working`` (an input
+        field or a chained text result) OR its producing rule generated successfully this run
+        (``produced`` — covers image/tts fields, whose embed refs are not chained into
+        ``working``). It is "missing" only when it is genuinely blank AND was not produced — the
+        case where it was itself blocked or its generation yielded an empty value, which
+        propagates the block transitively. Returns the missing prerequisites' display names
+        (empty list = all met).
+        """
+        present = {
+            name.strip().lower()
+            for name, value in working.items()
+            if str(value).strip()
+        }
+        present |= produced
+        return [
+            prereq
+            for prereq in _hard_prerequisites(rule)
+            if prereq.strip().lower() not in present
+        ]
