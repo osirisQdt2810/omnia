@@ -45,7 +45,9 @@ SPEC: NativeRuntimeSpec = register_native_runtime(
         name="viettts",
         section="tts",
         label="VietTTS (Vietnamese, local)",
-        pip_packages=("viet-tts",),
+        # Not on PyPI — installed from GitHub (needs `git` + a Python 3.10+ host). The VCS
+        # install pulls PyTorch, hence the ~2 GB size hint.
+        pip_packages=("git+https://github.com/dangvansam/viet-tts.git",),
         mode="server",
         size_hint="~2 GB",
         server_argv=(
