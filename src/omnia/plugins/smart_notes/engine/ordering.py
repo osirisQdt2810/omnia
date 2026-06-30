@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omnia.core.providers.errors import ProviderError
-from omnia.plugins.smart_notes.engine.rules import rule_source_fields
+from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
@@ -26,22 +26,14 @@ class SmartNotesCycleError(ProviderError):
     """Raised when chained field rules form a cycle (or a rule references itself)."""
 
 
-def _source_fields(rule: SmartNotesFieldRule) -> list[str]:
-    """Return the field names ``rule`` reads, lower-cased (for case-insensitive matching).
-
-    Reuses the same "what fields does this rule read" helper the skip predicate uses, so the
-    dependency graph and the skip logic can never drift apart.
-    """
-    return [name.strip().lower() for name in rule_source_fields(rule)]
-
-
 def order_rules(rules: list[SmartNotesFieldRule]) -> list[SmartNotesFieldRule]:
     """Topologically order ``rules`` so each rule's dependencies generate before it.
 
-    A rule depends on another when one of its source fields names the other's
-    ``target_field`` (case-insensitive). Rules whose dependencies are not in ``rules`` (a
-    plain source field, not produced by another rule) have no incoming edges and keep their
-    relative order. Independent rules preserve input order (stable sort).
+    A rule depends on another when one of its source fields, or one of its explicit
+    ``depends_on`` entries, names the other's ``target_field`` (case-insensitive). Both
+    dependency kinds (hard/soft) affect ordering. Rules whose dependencies are not in
+    ``rules`` (a plain source field, not produced by another rule) have no incoming edges and
+    keep their relative order. Independent rules preserve input order (stable sort).
 
     Args:
         rules: The rules selected for one note.
@@ -62,14 +54,18 @@ def order_rules(rules: list[SmartNotesFieldRule]) -> list[SmartNotesFieldRule]:
     dependents: list[list[int]] = [[] for _ in rules]
     indegree = [0] * len(rules)
     for index, rule in enumerate(rules):
-        for source in _source_fields(rule):
-            producer = by_target.get(source)
+        seen: set[int] = set()
+        for field, _kind in rule_prerequisites(rule):
+            producer = by_target.get(field.strip().lower())
             if producer is None:
                 continue  # a plain note field, not produced by another rule
             if producer == index:
                 raise SmartNotesCycleError(
                     f"smart_notes rule for {rule.target_field!r} references itself"
                 )
+            if producer in seen:
+                continue  # the same edge from both a derived ref and an explicit dep
+            seen.add(producer)
             dependents[producer].append(index)
             indegree[index] += 1
 

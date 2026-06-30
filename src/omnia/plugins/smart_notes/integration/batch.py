@@ -56,6 +56,7 @@ class BatchSummary:
     processed: int = 0
     failed: int = 0
     skipped: int = 0
+    blocked: int = 0
     cancelled: bool = False
 
     def message(self) -> str:
@@ -65,6 +66,8 @@ class BatchSummary:
             parts.append(f"{self.failed} failed")
         if self.skipped:
             parts.append(f"{self.skipped} skipped")
+        if self.blocked:
+            parts.append(f"{self.blocked} blocked — missing prerequisites")
         prefix = "Cancelled — " if self.cancelled else ""
         return prefix + ", ".join(parts) + "."
 
@@ -77,6 +80,7 @@ class _NoteOutcome:
     results: list[tuple[SmartNotesFieldRule, GenerationResult]] = field(
         default_factory=list
     )
+    blocked: int = 0
     failed: bool = False
 
 
@@ -178,13 +182,13 @@ class BatchGenerator:
 
     def _generate_one(self, plan: _NotePlan, *, force_overwrite: bool) -> _NoteOutcome:
         try:
-            results = self._service.generate_note(
+            results, blocked = self._service.generate_note(
                 plan.config,
                 plan.fields,
                 allow_empty_fields=self._settings.allow_empty_fields,
                 force_overwrite=force_overwrite,
             )
-            return _NoteOutcome(plan.nid, results=results)
+            return _NoteOutcome(plan.nid, results=results, blocked=len(blocked))
         except Exception:  # one bad note must not abort the rest of the batch
             logger.exception("smart_notes: failed to generate note %s", plan.nid)
             return _NoteOutcome(plan.nid, failed=True)
@@ -196,8 +200,11 @@ class BatchGenerator:
             if outcome.failed:
                 summary.failed += 1
                 continue
+            summary.blocked += outcome.blocked
             if not outcome.results:
-                summary.skipped += 1
+                # A note with only blocked fields counts as blocked, not skipped.
+                if not outcome.blocked:
+                    summary.skipped += 1
                 continue
             if self._write_note(outcome):
                 summary.processed += 1

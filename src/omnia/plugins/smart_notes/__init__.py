@@ -167,11 +167,14 @@ class SmartNotesPlugin(FeaturePlugin):
         fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
 
         def op() -> list[tuple[Any, GenerationResult]]:
-            return service.generate_note(
+            # Blocked fields stay empty (their hard prerequisites are missing); the editor only
+            # writes generated results, so the block list is unused on this manual path.
+            results, _blocked = service.generate_note(
                 config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
             )
+            return results
 
         anki_compat.run_in_background(
             op,

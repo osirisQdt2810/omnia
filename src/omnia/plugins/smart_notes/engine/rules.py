@@ -37,6 +37,42 @@ def rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
     return [rule.source_field] if rule.source_field else []
 
 
+def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
+    """Return ``(prerequisite_field, effective_kind)`` pairs for ``rule``.
+
+    The SINGLE source of truth for what a rule depends on. Derived prerequisites (the prompt
+    ``{{refs}}`` / ``source_field`` from :func:`rule_source_fields`) default to kind ``"hard"``;
+    they are UNIONed with the rule's explicit ``depends_on`` entries, and an explicit entry for
+    the same field OVERRIDES the derived kind (e.g. recolours a derived hard edge to soft).
+    Field names keep their original case; de-duplication is case-insensitive (first occurrence
+    wins for the display name). Ordering uses every pair (both kinds order); blocking filters to
+    ``"hard"``; the graph builder adds its ``derived`` flag on top.
+
+    Args:
+        rule: The compiled generation rule.
+
+    Returns:
+        ``(field, kind)`` pairs in stable order: derived prerequisites first (in source order),
+        then any explicit-only prerequisites, each with its effective kind.
+    """
+    override = {dep.field.strip().lower(): dep.kind for dep in rule.depends_on}
+    prerequisites: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name in rule_source_fields(rule):
+        lower = name.strip().lower()
+        if not lower or lower in seen:
+            continue
+        seen.add(lower)
+        prerequisites.append((name.strip(), override.get(lower, "hard")))
+    for dep in rule.depends_on:
+        lower = dep.field.strip().lower()
+        if not lower or lower in seen:
+            continue
+        seen.add(lower)
+        prerequisites.append((dep.field.strip(), dep.kind))
+    return prerequisites
+
+
 def should_skip_rule(
     rule: SmartNotesFieldRule,
     fields: dict[str, str],
@@ -108,6 +144,7 @@ def compile_note_type_rules(
                 voice=field.voice,
                 language=field.language,
                 overwrite=field.overwrite,
+                depends_on=list(field.depends_on),
             )
         )
     return rules
