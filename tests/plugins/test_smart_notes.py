@@ -29,6 +29,7 @@ from omnia.core.config.models import (
 )
 from omnia.core.providers import ProviderError, ProviderHub
 from omnia.plugins.smart_notes.authoring import (
+    AutoSmartDep,
     AutoSmartField,
     PromptAuthor,
     apply_auto_smart,
@@ -891,6 +892,24 @@ class TestAutoSmartPromptBuild:
         # It must demand JSON output so the reply is parseable.
         assert "JSON" in prompt
 
+    def test_prompt_asks_for_depends_on(self):
+        prompt = build_auto_smart_prompt("Basic", "Word", ["Meaning"])
+        assert "depends_on" in prompt
+        assert "hard" in prompt and "soft" in prompt
+        # No existing edges → no KEEP-these block is emitted.
+        assert "ALREADY" not in prompt
+
+    def test_prompt_serializes_an_existing_edge_when_graph_non_empty(self):
+        prompt = build_auto_smart_prompt(
+            "Basic",
+            "Word",
+            ["Meaning", "Audio"],
+            existing_deps={"Audio": [AutoSmartDep(field="Meaning", kind="soft")]},
+        )
+        # The existing edge is spelled out so the model keeps it instead of clobbering it.
+        assert "KEEP" in prompt
+        assert '"Audio" depends on "Meaning" (soft)' in prompt
+
 
 class TestAutoSmartParse:
     def test_parses_a_clean_json_object(self):
@@ -925,6 +944,38 @@ class TestAutoSmartParse:
     def test_malformed_json_raises(self):
         with pytest.raises(ProviderError):
             parse_auto_smart_response("{not valid json}")
+
+    def test_reads_depends_on_with_kind_default_hard(self):
+        raw = (
+            '{"Example": {"type": "text", "prompt": "p", '
+            '"depends_on": [{"field": "Meaning"}, {"field": "IPA", "kind": "soft"}]}}'
+        )
+        out = parse_auto_smart_response(raw)
+        assert out["Example"].depends_on == (
+            AutoSmartDep(field="Meaning", kind="hard"),
+            AutoSmartDep(field="IPA", kind="soft"),
+        )
+
+    def test_unknown_kind_becomes_hard(self):
+        raw = '{"X": {"type": "text", "depends_on": [{"field": "Y", "kind": "weird"}]}}'
+        out = parse_auto_smart_response(raw)
+        assert out["X"].depends_on == (AutoSmartDep(field="Y", kind="hard"),)
+
+    def test_entry_without_field_is_dropped(self):
+        raw = (
+            '{"X": {"type": "text", "depends_on": [{"kind": "hard"}, {"field": "Y"}]}}'
+        )
+        out = parse_auto_smart_response(raw)
+        assert out["X"].depends_on == (AutoSmartDep(field="Y", kind="hard"),)
+
+    def test_self_reference_is_ignored(self):
+        raw = '{"X": {"type": "text", "depends_on": [{"field": "x"}, {"field": "Y"}]}}'
+        out = parse_auto_smart_response(raw)
+        assert out["X"].depends_on == (AutoSmartDep(field="Y", kind="hard"),)
+
+    def test_absent_depends_on_is_empty_tuple(self):
+        out = parse_auto_smart_response('{"X": {"type": "text", "prompt": "p"}}')
+        assert out["X"].depends_on == ()
 
 
 class TestAutoSmartApply:
@@ -969,6 +1020,64 @@ class TestAutoSmartApply:
     def test_candidate_fields_excludes_base_disabled_and_locked(self):
         config = self._config()
         assert candidate_fields(config) == ["Meaning"]
+
+    def test_depends_on_fills_a_gap_field_and_maps_to_field_dep(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[SmartNotesFieldConfig(field="Example", enabled=True)],
+        )
+        suggestions = {
+            "Example": AutoSmartField(
+                type="text",
+                prompt="p",
+                depends_on=(AutoSmartDep(field="Meaning", kind="soft"),),
+            )
+        }
+        updated = apply_auto_smart(config, suggestions)
+        assert updated.fields[0].depends_on == [FieldDep(field="Meaning", kind="soft")]
+
+    def test_existing_depends_on_is_preserved_not_clobbered(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Example",
+                    enabled=True,
+                    depends_on=[FieldDep(field="Word", kind="hard")],
+                )
+            ],
+        )
+        suggestions = {
+            "Example": AutoSmartField(
+                type="text",
+                prompt="p",
+                depends_on=(AutoSmartDep(field="Meaning", kind="soft"),),
+            )
+        }
+        updated = apply_auto_smart(config, suggestions)
+        # The user-drawn edge stays; the suggestion does not overwrite it.
+        assert updated.fields[0].depends_on == [FieldDep(field="Word", kind="hard")]
+
+    def test_depends_on_skips_locked_and_disabled_fields(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(field="Locked", enabled=True, prompt_locked=True),
+                SmartNotesFieldConfig(field="Off", enabled=False),
+            ],
+        )
+        dep = (AutoSmartDep(field="Word", kind="hard"),)
+        suggestions = {
+            "Locked": AutoSmartField(type="text", prompt="p", depends_on=dep),
+            "Off": AutoSmartField(type="text", prompt="p", depends_on=dep),
+        }
+        updated = apply_auto_smart(config, suggestions)
+        by_name = {f.field: f for f in updated.fields}
+        assert by_name["Locked"].depends_on == []
+        assert by_name["Off"].depends_on == []
 
 
 class _CannedLLM(FakeLLMProvider):
