@@ -21,7 +21,14 @@
    * @return {!Array<string>}
    */
   function providerNames(kind) {
-    const names = isTts(kind) ? CATALOG.tts_providers : CATALOG.llm_providers;
+    // image uses its own list (only providers that actually generate images — no openrouter,
+    // which has no /images/generations endpoint); tts uses tts_providers; text uses llm.
+    const names =
+      kind === "image"
+        ? CATALOG.image_providers
+        : isTts(kind)
+          ? CATALOG.tts_providers
+          : CATALOG.llm_providers;
     return (names || []).slice();
   }
 

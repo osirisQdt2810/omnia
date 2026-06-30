@@ -33,8 +33,14 @@ class TestProviderSubsets:
 
     def test_providers_for_kind_routes_llm_vs_tts(self):
         assert providers_for("text") == LLM_PROVIDERS
-        assert providers_for("image") == LLM_PROVIDERS
         assert providers_for("tts") == TTS_PROVIDERS
+
+    def test_image_providers_exclude_non_image_capable(self):
+        # Only providers that actually generate images are offered for image — openrouter
+        # (no /images/generations endpoint) is excluded so it's never selectable + 404s.
+        image = providers_for("image")
+        assert "gemini" in image and "gemini_vertex" in image
+        assert "openrouter" not in image
 
 
 class TestModels:

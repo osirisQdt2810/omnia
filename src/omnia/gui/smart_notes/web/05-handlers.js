@@ -118,6 +118,18 @@
     }
   });
 
+  // The per-language Auto-detect voice map opens in its own popup (✕ / Done / backdrop close).
+  function closeAutoVoices() {
+    autovoicesModal.hidden = true;
+  }
+  autovoicesClose.addEventListener("click", closeAutoVoices);
+  autovoicesDone.addEventListener("click", closeAutoVoices);
+  autovoicesModal.addEventListener("click", function (e) {
+    if (e.target === autovoicesModal) {
+      closeAutoVoices();
+    }
+  });
+
   // --- Native runtimes (Advanced tab; ADR-005) -------------------------------------
   // Optional local engines (TTS/...) installed into an isolated venv. Each row is a checkbox
   // (checked = installed) + a status line. Ticking installs OFF-THREAD (the result is pushed
@@ -402,11 +414,10 @@
   function renderAutoVoices() {
     const isSound = acctSubtab === "sound";
     acctAutoVoicesEl.hidden = !isSound;
+    acctAutoVoicesEl.innerHTML = "";
     if (!isSound) {
-      acctAutoVoicesEl.innerHTML = "";
       return;
     }
-    acctAutoVoicesEl.innerHTML = "";
 
     const head = document.createElement("div");
     head.className = "sn-acct-default-title";
@@ -415,27 +426,47 @@
       "language using the voice you map here.";
     acctAutoVoicesEl.appendChild(head);
 
+    // The section stays compact: a button to open the per-language map (a popup), and Refresh.
+    const row = document.createElement("div");
+    row.className = "sn-acct-test-row";
+
+    const configure = document.createElement("button");
+    configure.type = "button";
+    configure.className = "sn-btn sn-btn-magic";
+    configure.textContent = "Choose voices…";
+    configure.addEventListener("click", openAutoVoices);
+    row.appendChild(configure);
+
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.className = "sn-btn sn-acct-refresh-voices";
     refresh.textContent = "↻ Refresh voices";
-    refresh.title = "Fetch the full edge_tts voice list to enrich these dropdowns";
+    refresh.title = "Fetch the full edge_tts voice list to enrich the choices";
     refresh.addEventListener("click", function () {
       refresh.disabled = true;
       refresh.textContent = "↻ Refreshing…";
       send("refresh_voices", {}, null);
     });
-    acctAutoVoicesEl.appendChild(refresh);
+    row.appendChild(refresh);
 
-    const list = document.createElement("div");
-    list.className = "sn-acct-autovoices-list";
+    acctAutoVoicesEl.appendChild(row);
+  }
+
+  /** Open the per-language Auto-detect voice-map popup and render its rows. */
+  function openAutoVoices() {
+    renderAutoVoicesList();
+    autovoicesModal.hidden = false;
+  }
+
+  /** Render one row per language (label + cross-provider voice select) into the popup list. */
+  function renderAutoVoicesList() {
+    autovoicesListEl.innerHTML = "";
     (CATALOG.languages || []).forEach(function (lang) {
       if (!lang.code) {
         return;
       }
-      list.appendChild(autoVoiceRow(lang));
+      autovoicesListEl.appendChild(autoVoiceRow(lang));
     });
-    acctAutoVoicesEl.appendChild(list);
   }
 
   /**
@@ -476,7 +507,10 @@
       CATALOG.auto_voice_options = res.auto_voice_options;
     }
     if (acctSubtab === "sound") {
-      renderAutoVoices();
+      renderAutoVoices();  // re-enables the section's Refresh button
+      if (!autovoicesModal.hidden) {
+        renderAutoVoicesList();  // refresh the open popup's dropdowns
+      }
     }
   };
 
