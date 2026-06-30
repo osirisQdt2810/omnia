@@ -387,7 +387,86 @@ def parse_classified_deps(raw: str) -> tuple[EdgeKinding, ...]:
     Raises:
         ProviderError: When no JSON object/array can be extracted from ``raw``.
     """
-    entries = _classified_entries(raw)
+    return _parse_kindings(_classified_entries(raw))
+
+
+def build_classify_deps_batch_message(
+    note_type: str,
+    base_field: str,
+    items: list[tuple[str, str, list[str]]],
+) -> str:
+    """Build ONE message asking the model to classify many fields' refs in a single call.
+
+    The cost mitigation for big note types (a note with dozens of fields must not fan out to one
+    LLM call per field on Auto-prompt / Improve-all). Generic across note types — it bakes no
+    note-specific rule into the wording (the hard/soft rubric lives in
+    :data:`~omnia.plugins.smart_notes.authoring.persona.DEPENDENCY_CLASSIFIER_SYSTEM`).
+
+    Args:
+        note_type: The note type's name (context for the model).
+        base_field: The always-present input field, referenced as ``{{<base>}}``.
+        items: ``(target_field, prompt, refs)`` triples — one per field to classify. ``refs`` is
+            the referenced field names that field's prompt needs labelled.
+
+    Returns:
+        A single user message asking for a JSON object mapping each target field to its list of
+        ``{"field", "kind"}`` verdicts.
+    """
+    blocks: list[str] = []
+    for target_field, prompt, refs in items:
+        refs_list = "\n".join(f"    - {name}" for name in refs)
+        blocks.append(
+            f'- Field "{target_field}", generation prompt:\n'
+            f'  """\n{prompt.strip()}\n"""\n'
+            f"  Referenced fields to classify:\n{refs_list}"
+        )
+    listing = "\n\n".join(blocks)
+    return (
+        f'Note type: "{note_type}". Base (input) field: {{{{{base_field}}}}}.\n\n'
+        "For EACH field below, classify how the generated field depends on EACH of its "
+        "referenced fields (hard = its content fundamentally is-about / cannot exist without "
+        "the reference; soft = the reference only sharpens an output already producible without "
+        f"it):\n\n{listing}\n\n"
+        "Respond with ONLY a JSON object mapping each field name to its verdicts: "
+        '{"<FieldName>": [{"field": "<name>", "kind": "hard"|"soft"}, ...], ...}. '
+        "No prose, no code fences."
+    )
+
+
+def parse_classified_deps_batch(raw: str) -> dict[str, tuple[EdgeKinding, ...]]:
+    """Parse the batch classifier reply into ``{field: (EdgeKinding, ...)}``, tolerantly.
+
+    Reuses the single-reply per-entry tolerance (:func:`parse_classified_deps`'s rules) for each
+    field's verdict list: an entry needs a non-empty ``field`` (else dropped); ``kind`` defaults
+    to ``"hard"`` and anything other than ``"soft"`` becomes ``"hard"``; entries are
+    de-duplicated case-insensitively (first wins). A map entry whose value is not a list is
+    dropped, and a field key that strips to empty is dropped.
+
+    Args:
+        raw: The model's raw text reply.
+
+    Returns:
+        A mapping of target field name → its classified ``EdgeKinding`` tuple.
+
+    Raises:
+        ProviderError: When no JSON object can be extracted or it is not an object.
+    """
+    data = first_json_object(raw)
+    result: dict[str, tuple[EdgeKinding, ...]] = {}
+    for name, value in data.items():
+        field = str(name).strip()
+        if not field or not isinstance(value, list):
+            continue
+        result[field] = _parse_kindings(value)
+    return result
+
+
+def _parse_kindings(entries: list[object]) -> tuple[EdgeKinding, ...]:
+    """Read one field's verdict list into de-duplicated ``EdgeKinding`` entries, tolerantly.
+
+    The shared per-entry parse for both the single (:func:`parse_classified_deps`) and the batch
+    (:func:`parse_classified_deps_batch`) classifier replies.
+    """
     kindings: list[EdgeKinding] = []
     seen: set[str] = set()
     for entry in entries:
@@ -684,6 +763,50 @@ class PromptAuthor:
             temperature=envs.OMNIA_SMART_NOTES_CLASSIFY_DEPS_TEMPERATURE,
         )
         return parse_classified_deps(raw)
+
+    def classify_dependencies_batch(
+        self,
+        *,
+        note_type: str,
+        base_field: str,
+        items: list[tuple[str, str, list[str]]],
+    ) -> dict[str, tuple[EdgeKinding, ...]]:
+        """Classify many fields' refs hard/soft in ONE LLM call (cost mitigation).
+
+        The batched counterpart of :meth:`classify_dependencies`: a big note type (dozens of
+        fields) would otherwise fan out to one LLM call per field on Auto-prompt / Improve-all.
+        Returns ``{}`` immediately — WITHOUT calling the LLM — when EVERY item has empty refs
+        (nothing to classify). Items whose refs are empty are dropped from the request (the model
+        is only asked about fields that actually reference something); the caller reconciles those
+        empty-ref fields itself (to drop a vanished derived edge), no model needed. Uses the
+        deterministic classify temperature.
+
+        Args:
+            note_type: The note type's name (context for the model).
+            base_field: The always-present input field, referenced as ``{{<base>}}``.
+            items: ``(target_field, prompt, refs)`` triples. ``refs`` should be the field names
+                needing classification (typically the NEW refs); passing all refs is harmless —
+                the reconciler keeps existing kinds regardless.
+
+        Returns:
+            A mapping of target field name → its classified ``EdgeKinding`` tuple. Fields whose
+            refs were empty are absent.
+
+        Raises:
+            ProviderError: On a provider failure or an unparseable reply.
+        """
+        pending = [
+            (target_field, prompt, refs) for target_field, prompt, refs in items if refs
+        ]
+        if not pending:
+            return {}
+        message = build_classify_deps_batch_message(note_type, base_field, pending)
+        raw = self._llm.generate_text(
+            message,
+            system=DEPENDENCY_CLASSIFIER_SYSTEM,
+            temperature=envs.OMNIA_SMART_NOTES_CLASSIFY_DEPS_TEMPERATURE,
+        )
+        return parse_classified_deps_batch(raw)
 
     def rewrite_for_edge_change(
         self,

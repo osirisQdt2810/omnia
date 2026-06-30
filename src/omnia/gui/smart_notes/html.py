@@ -16,8 +16,13 @@ Python through the WebDialog bridge with these ops:
 * ``set_base_field`` ``{note_type, base_field}`` → re-rendered rows for the new base
 * ``create_field`` ``{note_type, field_name}`` → the note type's updated field names
 * ``auto_smart`` ``{note_type, base_field, rows, decks}`` → rows with prompts/types filled in
+  (pushed via ``window.__snAutoResult``, optionally carrying a ``deps`` map alongside ``rows``)
 * ``improve_prompt`` ``{note_type, base_field, field, prompt}`` → a polished prompt (pushed)
-* ``improve_all`` ``{note_type, base_field, rows, decks}`` → ``{improved: {field: prompt}}`` (pushed)
+* ``improve_all`` ``{note_type, base_field, rows, decks}`` → ``{improved: {field: prompt}}``
+  (pushed via ``window.__snImproveAllResult``, optionally carrying a ``deps`` map)
+* ``classify_deps`` ``{note_type, base_field, rows:[{field, prompt, depends_on}]}`` → the
+  prompt→graph sync: off-thread, classifies each row's NEW refs hard/soft and reconciles, then
+  pushes ``window.__snDepsResult([{field, depends_on:[{field, kind, auto}]}])``
 * ``preview`` ``{note_type, base_field, field, type, prompt, provider, model, voice}`` → a
   generated sample for a random note (pushed)
 * ``account_data`` → ``{models: {kind: [...]}, defaults: {kind: {provider, model}}}``
@@ -267,8 +272,11 @@ def field_configs_from_payload(
 def _deps_from_payload(deps: object) -> list[FieldDep]:
     """Build the explicit dependency edges from a row's posted ``depends_on`` list.
 
-    Each entry is ``{field, kind}``; an entry with no ``field`` name is skipped and an invalid
-    ``kind`` falls back to ``"hard"`` so a malformed payload can't raise during validation.
+    Each entry is ``{field, kind, auto}``; an entry with no ``field`` name is skipped and an
+    invalid ``kind`` falls back to ``"hard"`` so a malformed payload can't raise during
+    validation. The ``auto`` provenance flag (a classifier-written edge) round-trips so the page
+    preserving it through ``collectRows``/``readDependsOn`` keeps a classifier kind from being
+    downgraded to a user edge on the next save.
 
     Args:
         deps: The ``depends_on`` value posted from the page (expected: a list of dicts).
@@ -288,7 +296,9 @@ def _deps_from_payload(deps: object) -> list[FieldDep]:
         kind = str(dep.get("kind", "hard"))
         if kind not in _DEP_KINDS:
             kind = "hard"
-        result.append(FieldDep(field=field, kind=kind))
+        result.append(
+            FieldDep(field=field, kind=kind, auto=bool(dep.get("auto", False)))
+        )
     return result
 
 
@@ -334,7 +344,8 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
         "language": row.language,
         "overwrite": row.overwrite,
         "depends_on": [
-            {"field": dep.field, "kind": dep.kind} for dep in row.depends_on
+            {"field": dep.field, "kind": dep.kind, "auto": dep.auto}
+            for dep in row.depends_on
         ],
     }
 

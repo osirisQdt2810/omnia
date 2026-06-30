@@ -12,17 +12,22 @@ from conftest import FakeLLMProvider, call_or_xfail, real_llm_provider_or_skip
 
 from omnia.core.providers import ProviderError
 from omnia.plugins.smart_notes.authoring import (
+    AutoSmartDep,
+    AutoSmartField,
     EdgeChange,
     EdgeKinding,
     PromptAuthor,
+    apply_auto_smart,
 )
 from omnia.plugins.smart_notes.authoring.author import (
+    build_classify_deps_batch_message,
     build_classify_deps_message,
     build_edge_change_message,
     build_improve_in_popover_message,
     build_improve_prompt_message,
     build_improve_prompts_message,
     parse_classified_deps,
+    parse_classified_deps_batch,
     parse_improved_prompts,
 )
 from omnia.plugins.smart_notes.config import FieldDep
@@ -261,6 +266,105 @@ class TestClassifyDependencies:
 
 
 # ---------------------------------------------------------------------------
+# Two-way sync: batched classifier (one LLM call for many fields).
+# ---------------------------------------------------------------------------
+
+
+class TestBuildClassifyDepsBatchMessage:
+    def test_lists_each_field_its_prompt_and_refs(self):
+        msg = build_classify_deps_batch_message(
+            "Chemistry",
+            "Compound",
+            [
+                (
+                    "Reaction",
+                    "React {{Compound}} with {{Catalyst}}.",
+                    ["Compound", "Catalyst"],
+                ),
+                ("Hazard", "Risks of {{Compound}}.", ["Compound"]),
+            ],
+        )
+        assert "Chemistry" in msg and "{{Compound}}" in msg
+        assert "Reaction" in msg and "Hazard" in msg
+        assert "Catalyst" in msg
+        # Asks for a JSON map keyed by field name.
+        assert "JSON object" in msg
+
+    def test_is_field_name_agnostic(self):
+        msg = build_classify_deps_batch_message(
+            "Chemistry", "Compound", [("Reaction", "Use {{Compound}}.", ["Compound"])]
+        )
+        _assert_no_vocab_leak(msg)
+
+
+class TestParseClassifiedDepsBatch:
+    def test_parses_map_of_verdicts(self):
+        raw = (
+            '{"Reaction": [{"field": "Compound", "kind": "hard"}, '
+            '{"field": "Catalyst", "kind": "soft"}], '
+            '"Hazard": [{"field": "Compound", "kind": "hard"}]}'
+        )
+        out = parse_classified_deps_batch(raw)
+        assert out == {
+            "Reaction": (
+                EdgeKinding(field="Compound", kind="hard"),
+                EdgeKinding(field="Catalyst", kind="soft"),
+            ),
+            "Hazard": (EdgeKinding(field="Compound", kind="hard"),),
+        }
+
+    def test_malformed_entries_are_dropped_per_field(self):
+        # A missing-field entry and a bad kind: the first is dropped, the second defaults hard.
+        raw = '{"Reaction": [{"kind": "hard"}, {"field": "Compound", "kind": "??"}]}'
+        out = parse_classified_deps_batch(raw)
+        assert out == {"Reaction": (EdgeKinding(field="Compound", kind="hard"),)}
+
+    def test_non_list_value_is_dropped(self):
+        raw = '{"Reaction": "oops", "Hazard": [{"field": "Compound", "kind": "soft"}]}'
+        out = parse_classified_deps_batch(raw)
+        assert out == {"Hazard": (EdgeKinding(field="Compound", kind="soft"),)}
+
+    def test_case_insensitive_dedup_within_a_field(self):
+        raw = (
+            '{"Reaction": [{"field": "Compound", "kind": "hard"}, '
+            '{"field": "compound", "kind": "soft"}]}'
+        )
+        out = parse_classified_deps_batch(raw)
+        assert out == {"Reaction": (EdgeKinding(field="Compound", kind="hard"),)}
+
+    def test_no_json_raises(self):
+        with pytest.raises(ProviderError):
+            parse_classified_deps_batch("nope")
+
+
+class TestClassifyDependenciesBatch:
+    def test_no_call_when_every_item_has_empty_refs(self):
+        author = PromptAuthor(_RaisingLLM())
+        out = author.classify_dependencies_batch(
+            note_type="Kanji",
+            base_field="Kanji",
+            items=[("Example", "Write something.", []), ("Notes", "", [])],
+        )
+        assert out == {}
+
+    def test_classifies_only_items_with_refs_in_one_call(self):
+        llm = _ScriptedLLM(['{"Example": [{"field": "Kanji", "kind": "hard"}]}'])
+        author = PromptAuthor(llm)
+        out = author.classify_dependencies_batch(
+            note_type="Kanji",
+            base_field="Kanji",
+            items=[
+                ("Example", "Use {{Kanji}}.", ["Kanji"]),
+                ("Notes", "Plain note.", []),
+            ],
+        )
+        assert out == {"Example": (EdgeKinding(field="Kanji", kind="hard"),)}
+        assert len(llm.calls) == 1  # ONE batched call, not one per field
+        # Deterministic classify temperature (B2: no flicker).
+        assert llm.calls[0][2] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Two-way sync: reconcile_field_deps (pure, deterministic — B1/B2).
 # ---------------------------------------------------------------------------
 
@@ -483,3 +587,55 @@ class TestMessageBuildersAreGeneric:
         )
         assert "{{Compound}}" in msg
         _assert_no_vocab_leak(msg)
+
+
+# ---------------------------------------------------------------------------
+# Two-way sync: the auto/improve fold is disjoint — reconcile after apply_auto_smart only
+# classifies genuinely-new refs and never overwrites a kind apply_auto_smart already wrote (B2).
+# ---------------------------------------------------------------------------
+
+
+class TestAutoSmartReconcileDisjoint:
+    def test_reconcile_keeps_kind_apply_auto_smart_wrote(self):
+        from omnia.plugins.smart_notes.config import (
+            SmartNotesFieldConfig,
+            SmartNotesNoteTypeConfig,
+        )
+
+        # Auto-smart proposes Example soft-depends on Reading (and writes the prompt referencing
+        # it). The fold then classifies, but Reading is NOT a NEW ref (apply_auto_smart already
+        # set it), so reconcile keeps soft even though the classifier (here) would say hard.
+        config = SmartNotesNoteTypeConfig(
+            note_type="Kanji",
+            base_field="Kanji",
+            fields=[SmartNotesFieldConfig(field="Example", enabled=True)],
+        )
+        suggestions = {
+            "Example": AutoSmartField(
+                type="text",
+                prompt="Write a sentence using {{Kanji}} and {{Reading}}.",
+                depends_on=(AutoSmartDep(field="Reading", kind="soft"),),
+            )
+        }
+        applied = apply_auto_smart(config, suggestions)
+        field = applied.fields[0]
+        # apply_auto_smart wrote Reading=soft as an explicit (non-auto) edge.
+        reading = next(d for d in field.depends_on if d.field == "Reading")
+        assert reading.kind == "soft"
+
+        # The fold's NEW refs are only those WITHOUT an existing depends_on entry. Reading already
+        # has one, so it isn't passed to the classifier — only {{Kanji}} is new.
+        have = {d.field.lower() for d in field.depends_on}
+        new_refs = [ref for ref in ("Kanji", "Reading") if ref.lower() not in have]
+        assert new_refs == ["Kanji"]
+
+        # Even if the classifier (wrongly) said Reading=hard, reconcile keeps soft (B2) and only
+        # adds the genuinely-new Kanji edge.
+        reconciled = reconcile_field_deps(
+            field.prompt,
+            {"Kanji": "hard", "Reading": "hard"},
+            list(field.depends_on),
+        )
+        by_field = {d.field: d for d in reconciled}
+        assert by_field["Reading"].kind == "soft"  # untouched — disjoint
+        assert by_field["Kanji"].kind == "hard" and by_field["Kanji"].auto is True

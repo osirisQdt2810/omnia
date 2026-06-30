@@ -1125,11 +1125,14 @@
     autoBtn.disabled = false;
     if (res && res.rows) {
       // renderRows seeds each row's data-depends-on from row.depends_on, so the proposed graph
-      // is already on the rows; re-lay it out when the Dependencies view is open.
+      // is already on the rows. The optional res.deps map (the prompt→graph fold) carries the
+      // RECONCILED depends_on per field; apply it on top so classifier-coloured edges (with their
+      // `auto` flag) override the rows' seed before the graph re-lays out.
       renderRows(res.rows);
+      const colored = applyDepsMap(res.deps);
       refreshGraphIfOpen();
       const n = typeof res.filled === "number" ? res.filled : res.rows.length;
-      setMsg("Auto-prompt wrote prompts for " + n + " field(s).", false);
+      setMsg("Auto-prompt wrote prompts for " + n + " field(s)." + depsSuffix(colored), false);
     } else {
       setMsg((res && res.error) || "Auto-prompt failed — see logs.", true);
     }
@@ -1161,11 +1164,48 @@
           n += 1;
         }
       });
-      setMsg("Improved " + n + " prompt(s).", false);
+      // The improve-all fold returns a {field: prompt} map (applied above) PLUS an optional deps
+      // map (the prompt→graph classify against the improved prompts); apply the latter per field.
+      const colored = applyDepsMap(res.deps);
+      refreshGraphIfOpen();
+      setMsg("Improved " + n + " prompt(s)." + depsSuffix(colored), false);
     } else {
       setMsg((res && res.error) || "Improve all failed — see logs.", true);
     }
   };
+
+  /**
+   * Apply a {field: [{field, kind, auto}]} deps map onto the rows (the auto/improve prompt→graph
+   * fold), returning the count of fields with at least one edge (for the completion message).
+   * @param {?Object} deps The deps map ({field: depends_on[]}), or null/absent.
+   * @return {number} The number of fields that ended up with one or more dependency edges.
+   */
+  function applyDepsMap(deps) {
+    if (!deps) {
+      return 0;
+    }
+    let colored = 0;
+    Object.keys(deps).forEach(function (field) {
+      const list = deps[field] || [];
+      applyFieldDeps(field, list);
+      if (list.length) {
+        colored += 1;
+      }
+    });
+    return colored;
+  }
+
+  /**
+   * Build the " Updated dependency colours for N field(s)." suffix appended to the auto/improve
+   * completion message (empty when no field gained an edge).
+   * @param {number} colored The number of fields with at least one dependency edge.
+   * @return {string}
+   */
+  function depsSuffix(colored) {
+    return colored
+      ? " Updated dependency colours for " + colored + " field(s)."
+      : "";
+  }
   improveAllBtn.addEventListener("click", function () {
     improveAllBtn.disabled = true;
     setMsg('<span class="sn-spin"></span>Improving all unlocked prompts…', false);

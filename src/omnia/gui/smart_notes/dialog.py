@@ -24,6 +24,8 @@ inside Anki.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -56,6 +58,22 @@ if TYPE_CHECKING:
 logger = get_logger("smart_notes")
 
 
+@dataclass(frozen=True)
+class _DepPlan:
+    """What a ``classify_deps`` request must do per row: classify, reuse a memo, or just reconcile.
+
+    ``uncached_items`` are the ``(field, prompt, new_refs)`` triples whose new refs need a fresh
+    LLM classify (no memo hit); ``cached`` is ``{field: {ref: kind}}`` for rows whose identical
+    prompt was already classified this session (the memo). Rows with no new refs appear in
+    neither — they still reconcile (to drop a vanished derived edge) with no verdicts.
+    """
+
+    uncached_items: list[tuple[str, str, list[str]]] = dataclass_field(
+        default_factory=list
+    )
+    cached: dict[str, dict[str, str]] = dataclass_field(default_factory=dict)
+
+
 class SmartNotesDialog(WebDialog):
     """Per-note-type Smart Notes table: base field + per-field generation config + Auto-smart."""
 
@@ -69,6 +87,13 @@ class SmartNotesDialog(WebDialog):
         # The native-runtime sidecar manager (ADR-005), built once and shared by the
         # native_runtimes / set_native_runtime ops so install state + tracked servers persist.
         self._native_manager = default_manager()
+        # Per-dialog memo for the prompt→graph dependency sync: re-saving an unchanged prompt
+        # reuses the cached classifier verdicts so the LLM isn't re-called; correctness never
+        # depends on it (the reconcile re-derives the edge set every time). Keyed by the FULL
+        # classifier context (note_type, base_field, field, prompt) — every input that can change
+        # the verdict — so one dialog instance serving many note types can never reuse a verdict
+        # computed under a different note type / base field.
+        self._deps_memo: dict[tuple[str, str, str, str], dict[str, str]] = {}
         super().__init__(
             parent,
             title="Smart Notes ✨",
@@ -83,6 +108,7 @@ class SmartNotesDialog(WebDialog):
                 "set_base_field": self._on_set_base_field,
                 "create_field": self._on_create_field,
                 "graph_recompute": self._on_graph_recompute,
+                "classify_deps": self._on_classify_deps,
                 "auto_smart": self._on_auto_smart,
                 "improve_prompt": self._on_improve_prompt,
                 "improve_all": self._on_improve_all,
@@ -189,6 +215,207 @@ class SmartNotesDialog(WebDialog):
             logger.exception("smart_notes: failed to recompute field graph")
             return {"error": f"Could not lay out the graph: {exc}"}
 
+    # --- prompt→graph dependency sync (Feature 1) ------------------------------------
+    def _on_classify_deps(self, data: dict[str, Any]) -> None:
+        """Classify a changed field's NEW refs hard/soft off-thread, then recolour the graph.
+
+        Feature 1 (prompt → graph): when a field's prompt changes the page posts that field (and
+        its live ``depends_on``) here. For each row we derive its prompt ``{{refs}}`` and the
+        subset with no existing ``depends_on`` entry — those are the ONLY refs the classifier
+        labels (:meth:`reconcile_field_deps` keeps existing kinds — B2). The single batched LLM
+        call runs in ONE :func:`run_in_background`; the SUCCESS callback (main thread) reconciles
+        each row and pushes the recoloured ``depends_on`` via ``window.__snDepsResult`` — the push
+        MUST happen there, never inside the worker (off-thread ``eval_js`` hard-crashes Qt).
+
+        A row whose prompt references nothing still reconciles (to DROP a now-vanished derived
+        edge) — that path needs no LLM. A per-instance memo keyed by
+        ``(note_type, base_field, field, prompt)`` avoids a repeat classify of an unchanged
+        prompt; correctness never depends on it.
+        """
+        note_type = str(data.get("note_type", ""))
+        base_field = str(data.get("base_field", ""))
+        rows = list(data.get("rows", []))
+        plan = self._plan_dep_classification(note_type, base_field, rows)
+        if plan.uncached_items:
+            hub = self._build_hub()
+            if hub is None:
+                self._push_deps_result(error="Provider config error — see logs.")
+                return
+
+            from omnia.plugins.smart_notes.authoring import PromptAuthor
+
+            anki_compat.run_in_background(
+                lambda: PromptAuthor(hub.llm()).classify_dependencies_batch(
+                    note_type=note_type,
+                    base_field=base_field,
+                    items=plan.uncached_items,
+                ),
+                on_success=lambda classified: self._push_deps_result(
+                    items=self._reconcile_rows(
+                        note_type, base_field, rows, plan, classified
+                    )
+                ),
+                on_failure=lambda exc: self._push_deps_result(
+                    error=self._friendly(exc, "Classify dependencies failed")
+                ),
+                label="Omnia: classifying dependencies…",
+            )
+            return
+        # Nothing new to classify (all refs known, or no refs) — reconcile on the main thread so
+        # a vanished derived edge is still dropped, no LLM call needed.
+        self._push_deps_result(
+            items=self._reconcile_rows(note_type, base_field, rows, plan, {})
+        )
+
+    def _plan_dep_classification(
+        self, note_type: str, base_field: str, rows: list[Any]
+    ) -> _DepPlan:
+        """Decide, per row, which refs need a (fresh) classify vs. a memo/known hit.
+
+        Returns the batch items to send the LLM (only rows with genuinely-new, uncached refs) and
+        the memo-cached verdicts to fold in without a call. See :class:`_DepPlan`.
+        """
+        from omnia.gui.smart_notes.html import _deps_from_payload
+        from omnia.plugins.smart_notes.engine.interpolation import extract_field_refs
+
+        uncached_items: list[tuple[str, str, list[str]]] = []
+        cached: dict[str, dict[str, str]] = {}
+        for row in rows:
+            field = str(row.get("field", ""))
+            prompt = str(row.get("prompt", ""))
+            have = {
+                dep.field.strip().lower()
+                for dep in _deps_from_payload(row.get("depends_on", []))
+            }
+            new_refs = [
+                ref
+                for ref in extract_field_refs(prompt)
+                if ref.strip().lower() not in have
+            ]
+            if not new_refs:
+                continue
+            memo = self._deps_memo.get((note_type, base_field, field, prompt))
+            if memo is not None:
+                cached[field] = memo
+            else:
+                uncached_items.append((field, prompt, new_refs))
+        return _DepPlan(uncached_items=uncached_items, cached=cached)
+
+    def _reconcile_rows(
+        self,
+        note_type: str,
+        base_field: str,
+        rows: list[Any],
+        plan: _DepPlan,
+        classified: dict[str, tuple[Any, ...]],
+    ) -> list[dict[str, Any]]:
+        """Reconcile every row's ``depends_on`` from the classifier verdicts (main thread).
+
+        Folds the fresh batch ``classified`` (EdgeKinding tuples) with the plan's memo-``cached``
+        verdicts, memoises the fresh ones by ``(note_type, base_field, field, prompt)``, and returns
+        the recoloured
+        per-field ``depends_on`` payload the page applies.
+        """
+        from omnia.gui.smart_notes.html import _deps_from_payload
+        from omnia.plugins.smart_notes.engine.rules import reconcile_field_deps
+
+        fresh = {
+            field: {k.field: k.kind for k in kindings}
+            for field, kindings in classified.items()
+        }
+        for field, kinds in fresh.items():
+            prompt = next(
+                (
+                    str(r.get("prompt", ""))
+                    for r in rows
+                    if str(r.get("field", "")) == field
+                ),
+                "",
+            )
+            self._deps_memo[(note_type, base_field, field, prompt)] = kinds
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            field = str(row.get("field", ""))
+            prompt = str(row.get("prompt", ""))
+            current = _deps_from_payload(row.get("depends_on", []))
+            classified_for_field = fresh.get(field) or plan.cached.get(field) or {}
+            reconciled = reconcile_field_deps(prompt, classified_for_field, current)
+            items.append(
+                {
+                    "field": field,
+                    "depends_on": [
+                        {"field": dep.field, "kind": dep.kind, "auto": dep.auto}
+                        for dep in reconciled
+                    ],
+                }
+            )
+        return items
+
+    def _push_deps_result(
+        self, *, items: Optional[list[dict[str, Any]]] = None, error: str = ""
+    ) -> None:
+        """Send the reconciled per-field ``depends_on`` to ``window.__snDepsResult``.
+
+        On error the page is sent an ``{error}`` item-list shape it ignores gracefully; the hook
+        only applies entries with a ``field``.
+        """
+        payload: list[dict[str, Any]] | dict[str, Any]
+        payload = {"error": error} if error else (items or [])
+        self.eval_js(f"window.__snDepsResult({json.dumps(payload)});")
+
+    def _deps_map_for_rows(
+        self, note_type: str, base_field: str, rows: list[Any]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Classify + reconcile the given rows SYNCHRONOUSLY for the auto/improve fold.
+
+        Called from INSIDE an existing ``run_in_background`` worker (auto-smart / improve-all),
+        so the LLM call here is already off the main thread — it must NOT push to the page. It
+        returns ``{field: [{field, kind, auto}]}`` for the affected fields, which the caller folds
+        into its single pushed payload. Disjointness (B2): the classifier only labels NEW refs and
+        :func:`reconcile_field_deps` keeps existing kinds, so this never overwrites a kind that
+        apply_auto_smart or the user already set.
+        """
+        from omnia.gui.smart_notes.html import _deps_from_payload
+        from omnia.plugins.smart_notes.authoring import PromptAuthor
+        from omnia.plugins.smart_notes.engine.interpolation import extract_field_refs
+        from omnia.plugins.smart_notes.engine.rules import reconcile_field_deps
+
+        items: list[tuple[str, str, list[str]]] = []
+        for row in rows:
+            prompt = str(row.get("prompt", ""))
+            have = {
+                dep.field.strip().lower()
+                for dep in _deps_from_payload(row.get("depends_on", []))
+            }
+            new_refs = [
+                ref
+                for ref in extract_field_refs(prompt)
+                if ref.strip().lower() not in have
+            ]
+            items.append((str(row.get("field", "")), prompt, new_refs))
+        hub = self._build_hub()
+        if hub is None:
+            return {}
+        classified = PromptAuthor(hub.llm()).classify_dependencies_batch(
+            note_type=note_type, base_field=base_field, items=items
+        )
+        fresh = {
+            field: {k.field: k.kind for k in kindings}
+            for field, kindings in classified.items()
+        }
+        result: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            field = str(row.get("field", ""))
+            prompt = str(row.get("prompt", ""))
+            current = _deps_from_payload(row.get("depends_on", []))
+            reconciled = reconcile_field_deps(prompt, fresh.get(field, {}), current)
+            result[field] = [
+                {"field": dep.field, "kind": dep.kind, "auto": dep.auto}
+                for dep in reconciled
+            ]
+        return result
+
     def _on_create_field(self, data: dict[str, Any]) -> dict[str, Any]:
         note_type = str(data.get("note_type", ""))
         field_name = str(data.get("field_name", "")).strip()
@@ -209,11 +436,15 @@ class SmartNotesDialog(WebDialog):
         are delivered to the page through ``window.__snAutoResult`` once the background op
         finishes (success or a friendly ProviderError message). Reports a clear, actionable
         message when there is nothing to fill (no Generate-on + unlocked field) instead of
-        silently succeeding.
+        silently succeeding. After the prompts are written it folds in the SAME batched
+        prompt→graph classify (Feature 1) so the new prompts' refs are coloured hard/soft in the
+        graph — done in the worker (already off-thread), pushed once from the success callback.
         """
+        note_type = str(data.get("note_type", ""))
+        base_field = str(data.get("base_field", ""))
         config = note_type_config_from_payload(
-            str(data.get("note_type", "")),
-            str(data.get("base_field", "")),
+            note_type,
+            base_field,
             list(data.get("rows", [])),
             list(data.get("decks", [])),
         )
@@ -232,10 +463,16 @@ class SmartNotesDialog(WebDialog):
             self._push_auto_result(error="Provider config error — see logs.")
             return
 
+        def work() -> tuple[Any, dict[str, list[dict[str, Any]]]]:
+            updated = PromptAuthor(hub.llm()).auto_smart(config)
+            rows = [row_to_payload(row) for row in updated.fields]
+            deps = self._deps_map_for_rows(note_type, base_field, rows)
+            return updated, deps
+
         anki_compat.run_in_background(
-            lambda: PromptAuthor(hub.llm()).auto_smart(config),
-            on_success=lambda updated: self._push_auto_result(
-                config=updated, filled=len(candidates)
+            work,
+            on_success=lambda result: self._push_auto_result(
+                config=result[0], filled=len(candidates), deps=result[1]
             ),
             on_failure=self._on_auto_failure,
             label="Omnia: auto-prompt…",
@@ -286,13 +523,17 @@ class SmartNotesDialog(WebDialog):
     def _on_improve_all(self, data: dict[str, Any]) -> None:
         """Rewrite every Generate-on + unlocked field's rough prompt at once (off-thread; pushed).
 
-        The result returns through ``window.__snImproveAllResult`` as ``{field: prompt}``.
+        The result returns through ``window.__snImproveAllResult`` as ``{field: prompt}`` plus an
+        optional ``deps`` map. After the prompts are rewritten it folds in the SAME batched
+        prompt→graph classify (Feature 1) against the IMPROVED prompts so the graph recolours —
+        run in the worker (already off-thread), pushed once from the success callback.
         """
         note_type = str(data.get("note_type", ""))
         base_field = str(data.get("base_field", ""))
+        posted_rows = list(data.get("rows", []))
         items = [
             (str(row.get("field", "")), str(row.get("prompt", "")))
-            for row in data.get("rows", [])
+            for row in posted_rows
             if row.get("enabled")
             and not row.get("prompt_locked")
             and str(row.get("field", "")) != base_field
@@ -311,11 +552,30 @@ class SmartNotesDialog(WebDialog):
 
         from omnia.plugins.smart_notes.authoring import PromptAuthor
 
-        anki_compat.run_in_background(
-            lambda: PromptAuthor(hub.llm()).improve_all(
+        def work() -> tuple[dict[str, str], dict[str, list[dict[str, Any]]]]:
+            improved = PromptAuthor(hub.llm()).improve_all(
                 note_type=note_type, base_field=base_field, items=items
+            )
+            # Classify against the IMPROVED prompts (keeping each row's current depends_on).
+            rows = [
+                {
+                    "field": str(row.get("field", "")),
+                    "prompt": improved.get(
+                        str(row.get("field", "")), str(row.get("prompt", ""))
+                    ),
+                    "depends_on": row.get("depends_on", []),
+                }
+                for row in posted_rows
+                if str(row.get("field", "")) in improved
+            ]
+            deps = self._deps_map_for_rows(note_type, base_field, rows)
+            return improved, deps
+
+        anki_compat.run_in_background(
+            work,
+            on_success=lambda result: self._push_improve_all(
+                improved=result[0], deps=result[1]
             ),
-            on_success=lambda mapping: self._push_improve_all(improved=mapping),
             on_failure=lambda exc: self._push_improve_all(
                 error=self._friendly(exc, "Improve all failed")
             ),
@@ -883,9 +1143,14 @@ class SmartNotesDialog(WebDialog):
         *,
         config: Optional[SmartNotesNoteTypeConfig] = None,
         filled: int = 0,
+        deps: Optional[dict[str, list[dict[str, Any]]]] = None,
         error: str = "",
     ) -> None:
-        """Send the Auto-smart outcome to the page's ``window.__snAutoResult`` hook."""
+        """Send the Auto-smart outcome to the page's ``window.__snAutoResult`` hook.
+
+        Carries the filled ``rows`` and, when the prompt→graph fold ran, an optional ``deps`` map
+        (``{field: [{field, kind, auto}]}``) the page applies per-field to recolour the graph.
+        """
         if error:
             result: dict[str, Any] = {"error": error}
         else:
@@ -894,6 +1159,8 @@ class SmartNotesDialog(WebDialog):
                 "rows": [row_to_payload(row) for row in config.fields],
                 "filled": filled,
             }
+            if deps:
+                result["deps"] = deps
         self.eval_js(f"window.__snAutoResult({json.dumps(result)});")
 
     def _push_improve(self, field: str, *, prompt: str = "", error: str = "") -> None:
@@ -904,12 +1171,23 @@ class SmartNotesDialog(WebDialog):
         )
 
     def _push_improve_all(
-        self, *, improved: Optional[dict[str, str]] = None, error: str = ""
+        self,
+        *,
+        improved: Optional[dict[str, str]] = None,
+        deps: Optional[dict[str, list[dict[str, Any]]]] = None,
+        error: str = "",
     ) -> None:
-        """Send the Improve-all outcome to the page's ``window.__snImproveAllResult`` hook."""
-        result: dict[str, Any] = (
-            {"error": error} if error else {"improved": improved or {}}
-        )
+        """Send the Improve-all outcome to the page's ``window.__snImproveAllResult`` hook.
+
+        Carries the ``{field: prompt}`` map and, when the prompt→graph fold ran, an optional
+        ``deps`` map (``{field: [{field, kind, auto}]}``) the page applies per-field.
+        """
+        if error:
+            result: dict[str, Any] = {"error": error}
+        else:
+            result = {"improved": improved or {}}
+            if deps:
+                result["deps"] = deps
         self.eval_js(f"window.__snImproveAllResult({json.dumps(result)});")
 
     def _push_preview(
