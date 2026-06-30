@@ -13,11 +13,12 @@ from omnia.plugins.smart_notes.authoring.author import (
     candidate_fields,
     parse_auto_smart_response,
 )
-from omnia.plugins.smart_notes.authoring.models import AutoSmartField
+from omnia.plugins.smart_notes.authoring.models import AutoSmartDep, AutoSmartField
 from omnia.plugins.smart_notes.authoring.persona import FLASHCARD_EXPERT_SYSTEM
 
 __all__ = [
     "FLASHCARD_EXPERT_SYSTEM",
+    "AutoSmartDep",
     "AutoSmartField",
     "PromptAuthor",
     "apply_auto_smart",

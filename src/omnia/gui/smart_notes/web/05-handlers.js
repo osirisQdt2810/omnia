@@ -1124,7 +1124,10 @@
   window.__snAutoResult = function (res) {
     autoBtn.disabled = false;
     if (res && res.rows) {
+      // renderRows seeds each row's data-depends-on from row.depends_on, so the proposed graph
+      // is already on the rows; re-lay it out when the Dependencies view is open.
       renderRows(res.rows);
+      refreshGraphIfOpen();
       const n = typeof res.filled === "number" ? res.filled : res.rows.length;
       setMsg("Auto-prompt wrote prompts for " + n + " field(s).", false);
     } else {
