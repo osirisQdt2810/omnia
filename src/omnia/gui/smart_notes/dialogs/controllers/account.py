@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.gui.smart_notes.context import SmartNotesContext
+from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.engine import GenerationResult

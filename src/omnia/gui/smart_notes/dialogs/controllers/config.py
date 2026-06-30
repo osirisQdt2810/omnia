@@ -14,7 +14,7 @@ from typing import Any
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.providers import available_llm_providers
-from omnia.gui.smart_notes.context import SmartNotesContext
+from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.gui.smart_notes.html import (
     cycle_error_for_config,
     graph_payload,
