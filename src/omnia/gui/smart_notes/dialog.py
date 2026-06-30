@@ -172,7 +172,7 @@ class SmartNotesDialog(WebDialog):
         The JS posts the live rows (including each row's ``depends_on``) after every structural
         edge edit and on first opening the Dependencies view; this builds a config and returns a
         freshly laid-out :func:`graph_payload` so the layout is always computed in Python. A
-        cycle (the server-side backstop via :func:`build_field_graph` / ``layered_layout``) or any
+        cycle (the server-side backstop via ``FieldGraph.from_config`` / ``laid_out``) or any
         other failure returns ``{error}`` so the dialog never crashes and the page can revert the
         optimistic change.
         """

@@ -6,6 +6,11 @@ than its submodules. No Anki imports — the whole engine unit-tests headless.
 
 from __future__ import annotations
 
+from omnia.plugins.smart_notes.engine.consistency import (
+    ConsistencyResult,
+    NodeEdgeSet,
+    validate_prompt_syntax,
+)
 from omnia.plugins.smart_notes.engine.generators import (
     GenerationResult,
     Generator,
@@ -18,14 +23,11 @@ from omnia.plugins.smart_notes.engine.graph import (
     FieldGraph,
     FieldNode,
     GraphEdge,
-    build_field_graph,
-    layered_layout,
-    validate_acyclic,
-    would_create_cycle,
 )
 from omnia.plugins.smart_notes.engine.interpolation import (
     extract_field_refs,
     interpolate,
+    validate_brace_syntax,
 )
 from omnia.plugins.smart_notes.engine.markdown import convert_markdown_to_html
 from omnia.plugins.smart_notes.engine.ordering import (
@@ -35,6 +37,7 @@ from omnia.plugins.smart_notes.engine.ordering import (
 from omnia.plugins.smart_notes.engine.rules import (
     applies_to_deck,
     chunk,
+    compile_field_rule,
     compile_note_type_rules,
     dedupe_preserving_order,
     should_skip_rule,
@@ -43,6 +46,7 @@ from omnia.plugins.smart_notes.engine.service import BlockedField, GenerationSer
 
 __all__ = [
     "BlockedField",
+    "ConsistencyResult",
     "FieldGraph",
     "FieldNode",
     "GenerationResult",
@@ -51,20 +55,20 @@ __all__ = [
     "GraphEdge",
     "ImageGenerator",
     "LanguageDetector",
+    "NodeEdgeSet",
     "SmartNotesCycleError",
     "TTSGenerator",
     "TextGenerator",
     "applies_to_deck",
-    "build_field_graph",
     "chunk",
+    "compile_field_rule",
     "compile_note_type_rules",
     "convert_markdown_to_html",
     "dedupe_preserving_order",
     "extract_field_refs",
     "interpolate",
-    "layered_layout",
     "order_rules",
     "should_skip_rule",
-    "validate_acyclic",
-    "would_create_cycle",
+    "validate_brace_syntax",
+    "validate_prompt_syntax",
 ]

@@ -21,20 +21,27 @@ from omnia.plugins.smart_notes.engine.interpolation import (
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
+        SmartNotesFieldConfig,
         SmartNotesFieldRule,
         SmartNotesNoteTypeConfig,
     )
 
 
 def rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
-    """Return the field names a rule reads (prompt refs, or its source_field)."""
-    if rule.kind == "tts":
-        if rule.prompt:
-            return extract_field_refs(rule.prompt)
-        return [rule.source_field] if rule.source_field else []
+    """Return the field names a rule DEPENDS on (prompt refs, or a real source field).
+
+    These are the DERIVED dependencies the graph, ordering, and blocking read. They are the
+    prompt's ``{{refs}}`` when a prompt is given; otherwise the rule's ``source_field`` — UNLESS
+    that source is purely the empty-prompt → base fallback (``source_is_base_fallback``), in
+    which case it is NOT a dependency and nothing is returned (so an empty-prompt field has no
+    derived incoming edge). Generation reads ``source_field`` separately (see
+    :func:`prompt_for` / :func:`tts_text`) and is unaffected.
+    """
     if rule.prompt:
         return extract_field_refs(rule.prompt)
-    return [rule.source_field] if rule.source_field else []
+    if rule.source_field and not rule.source_is_base_fallback:
+        return [rule.source_field]
+    return []
 
 
 def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
@@ -105,6 +112,44 @@ def should_skip_rule(
     return False
 
 
+def compile_field_rule(
+    field_config: SmartNotesFieldConfig, base_field: str
+) -> SmartNotesFieldRule:
+    """Compile ONE field config into a self-contained generation rule.
+
+    The single site that turns a :class:`~omnia.plugins.smart_notes.config.SmartNotesFieldConfig`
+    into a :class:`~omnia.plugins.smart_notes.config.SmartNotesFieldRule`, so generation, the
+    dependency graph, and the consistency checker all derive a field's rule the same way and can
+    never diverge. ``field`` → ``target_field``, ``type`` → ``kind``, the ``prompt`` template is
+    carried through, and (for a field with no prompt) ``base_field`` is used as the implicit
+    ``source_field`` so the field still generates from the base — that fallback source is flagged
+    ``source_is_base_fallback`` so it is NOT treated as a derived dependency.
+
+    Args:
+        field_config: The persisted per-field config row.
+        base_field: The note type's base (input) field, used as the empty-prompt source.
+
+    Returns:
+        The compiled :class:`~omnia.plugins.smart_notes.config.SmartNotesFieldRule`.
+    """
+    from omnia.plugins.smart_notes.config import SmartNotesFieldRule
+
+    has_prompt = bool(field_config.prompt)
+    return SmartNotesFieldRule(
+        source_field="" if has_prompt else base_field,
+        source_is_base_fallback=not has_prompt,
+        target_field=field_config.field,
+        kind=field_config.type,
+        prompt=field_config.prompt,
+        provider=field_config.provider,
+        model=field_config.model,
+        voice=field_config.voice,
+        language=field_config.language,
+        overwrite=field_config.overwrite,
+        depends_on=list(field_config.depends_on),
+    )
+
+
 def compile_note_type_rules(
     config: SmartNotesNoteTypeConfig,
 ) -> list[SmartNotesFieldRule]:
@@ -127,27 +172,11 @@ def compile_note_type_rules(
     Returns:
         One rule per generatable field, in their configured order.
     """
-    from omnia.plugins.smart_notes.config import SmartNotesFieldRule
-
     base = config.base_field
-    rules: list[SmartNotesFieldRule] = []
-    for field in config.generatable_fields():
-        rules.append(
-            SmartNotesFieldRule(
-                note_type=config.note_type,
-                source_field="" if field.prompt else base,
-                target_field=field.field,
-                kind=field.type,
-                prompt=field.prompt,
-                provider=field.provider,
-                model=field.model,
-                voice=field.voice,
-                language=field.language,
-                overwrite=field.overwrite,
-                depends_on=list(field.depends_on),
-            )
-        )
-    return rules
+    return [
+        compile_field_rule(field, base).copy(update={"note_type": config.note_type})
+        for field in config.generatable_fields()
+    ]
 
 
 def applies_to_deck(config: SmartNotesNoteTypeConfig, deck_id: int) -> bool:
