@@ -1,6 +1,6 @@
 
   /**
-   * Smart Notes config page — part 6 of 6 of the page IIFE.
+   * Smart Notes config page — part 7 of 7 of the page IIFE.
    * This fragment CLOSES the IIFE. It seeds the page from the server-baked initial state and
    * falls back to a live `list_note_types` only when nothing was baked.
    */

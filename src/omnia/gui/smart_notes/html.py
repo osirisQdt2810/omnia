@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 from omnia.core.providers.catalog import catalog_payload
 from omnia.gui.assets import read_asset, read_assets
 from omnia.plugins.smart_notes.config import (
+    FieldDep,
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
@@ -55,16 +56,18 @@ if TYPE_CHECKING:
     from omnia.core.providers.native_runtime import NativeRuntimeManager
 
 _FIELD_TYPES = ("text", "tts", "image")
+_DEP_KINDS = ("hard", "soft")
 
 # The page script is split into cohesive pieces under ``web/``; they are concatenated in this
-# exact order (a single IIFE opened by 01 and closed by 06).
+# exact order (a single IIFE opened by 01 and closed by 07).
 _PAGE_JS_PARTS = [
     "01-bridge.js",
     "02-catalog.js",
     "03-render.js",
     "04-modal.js",
     "05-handlers.js",
-    "06-init.js",
+    "06-graph.js",
+    "07-init.js",
 ]
 
 
@@ -225,9 +228,9 @@ def field_configs_from_payload(
     """Build :class:`SmartNotesFieldConfig`s from the JS-posted row dicts (one per non-base field).
 
     Each dict carries the row's editable state (``field``, ``enabled``, ``type``, ``prompt``,
-    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``language``, ``overwrite``). A row
-    with no ``field`` name is skipped; an invalid ``type`` falls back to ``"text"`` so a
-    malformed payload can't raise during validation.
+    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``language``, ``overwrite``,
+    ``depends_on``). A row with no ``field`` name is skipped; an invalid ``type`` falls back to
+    ``"text"`` so a malformed payload can't raise during validation.
 
     Args:
         rows: The row dicts posted from the page.
@@ -255,9 +258,38 @@ def field_configs_from_payload(
                 voice=str(row.get("voice", "")),
                 language=str(row.get("language", "")),
                 overwrite=bool(row.get("overwrite", False)),
+                depends_on=_deps_from_payload(row.get("depends_on", [])),
             )
         )
     return configs
+
+
+def _deps_from_payload(deps: object) -> list[FieldDep]:
+    """Build the explicit dependency edges from a row's posted ``depends_on`` list.
+
+    Each entry is ``{field, kind}``; an entry with no ``field`` name is skipped and an invalid
+    ``kind`` falls back to ``"hard"`` so a malformed payload can't raise during validation.
+
+    Args:
+        deps: The ``depends_on`` value posted from the page (expected: a list of dicts).
+
+    Returns:
+        Validated dependency edges, in posted order.
+    """
+    result: list[FieldDep] = []
+    if not isinstance(deps, list):
+        return result
+    for dep in deps:
+        if not isinstance(dep, dict):
+            continue
+        field = str(dep.get("field", "")).strip()
+        if not field:
+            continue
+        kind = str(dep.get("kind", "hard"))
+        if kind not in _DEP_KINDS:
+            kind = "hard"
+        result.append(FieldDep(field=field, kind=kind))
+    return result
 
 
 def note_type_config_from_payload(
@@ -301,6 +333,53 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
         "voice": row.voice,
         "language": row.language,
         "overwrite": row.overwrite,
+        "depends_on": [
+            {"field": dep.field, "kind": dep.kind} for dep in row.depends_on
+        ],
+    }
+
+
+def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
+    """Build the field dependency graph payload (nodes + edges) the SVG view renders.
+
+    Computes the effective graph for ``config`` (:func:`build_field_graph`) and the deterministic
+    layered layout (:func:`layered_layout`), then serializes both for the page. The layout
+    (``column``/``row``) is the single source of truth — it is always computed in Python so the
+    JS never re-implements longest-path; the page only places nodes by these coordinates.
+
+    Args:
+        config: The note type's smart-notes config (with each field's ``depends_on``).
+
+    Returns:
+        ``{"nodes": [{name, is_base, generatable, column, row}, ...],
+        "edges": [{src, dst, kind, derived}, ...]}``.
+    """
+    from omnia.plugins.smart_notes.engine.graph import (
+        build_field_graph,
+        layered_layout,
+    )
+
+    graph = layered_layout(build_field_graph(config))
+    return {
+        "nodes": [
+            {
+                "name": node.name,
+                "is_base": node.is_base,
+                "generatable": node.generatable,
+                "column": node.column,
+                "row": node.row,
+            }
+            for node in graph.nodes
+        ],
+        "edges": [
+            {
+                "src": edge.src,
+                "dst": edge.dst,
+                "kind": edge.kind,
+                "derived": edge.derived,
+            }
+            for edge in graph.edges
+        ],
     }
 
 
@@ -326,6 +405,11 @@ def load_payload(
         "providers": providers,
         "decks": list(config.decks) if config else [],
         "all_decks": all_decks or [],
+        "graph": graph_payload(
+            note_type_config_from_payload(
+                note_type, base_field, [row_to_payload(row) for row in rows]
+            )
+        ),
     }
 
 

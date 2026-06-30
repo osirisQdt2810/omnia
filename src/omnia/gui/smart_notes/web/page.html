@@ -24,7 +24,11 @@
       <button id="sn-decks-btn" class="sn-btn" type="button">All decks</button>
     </label>
   </div>
-  <div class="sn-table-wrap">
+  <div class="sn-viewswitch" role="tablist">
+    <button id="sn-view-fields" class="sn-view-btn sn-view-active" type="button" data-view="fields">Fields</button>
+    <button id="sn-view-graph" class="sn-view-btn" type="button" data-view="graph" title="Visualise and edit how each field depends on the others — drag node→node to add an edge, click an edge to toggle hard/soft, Delete to remove.">Dependencies</button>
+  </div>
+  <div id="sn-fields-view" class="sn-table-wrap">
     <table class="sn-table">
       <thead>
         <tr>
@@ -43,6 +47,13 @@
       <tbody id="sn-rows"></tbody>
     </table>
     <div id="sn-empty" class="sn-empty"></div>
+  </div>
+  <div id="sn-graph-view" class="sn-graph-wrap" hidden>
+    <div class="sn-graph-hint">Drag from one field to another to add a dependency. Click an edge to toggle <b class="sn-edge-hard">hard</b> ↔ <b class="sn-edge-soft">soft</b>; select it and press Delete to remove.</div>
+    <div id="sn-graph-scroll" class="sn-graph-scroll">
+      <svg id="sn-graph-svg" class="sn-graph-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div id="sn-graph-toast" class="sn-graph-toast" hidden></div>
   </div>
   <footer class="sn-footer">
     <div class="sn-footer-left">
