@@ -14,7 +14,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
-from omnia.core import envs
+from omnia import envs
 from omnia.plugins.smart_notes.authoring.models import (
     AutoSmartDep,
     AutoSmartField,
