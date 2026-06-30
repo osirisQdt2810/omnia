@@ -24,6 +24,8 @@
     deckTree = buildDeckTree();
     renderDecks();
     applyOptions(res.options);
+    // Seed the dependency-graph view with the server-laid-out graph (refreshes it if open).
+    seedGraph(res.graph);
     setMsg("");
   }
 
