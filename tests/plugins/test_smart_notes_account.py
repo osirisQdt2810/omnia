@@ -8,7 +8,9 @@ from omnia.core.config.models import (
     EdgeTTSSettings,
     LLMSettings,
     OpenAICompatibleLLMSettings,
+    PiperTTSSettings,
     TTSSettings,
+    VietTTSSettings,
 )
 from omnia.core.providers.llm.openai_compatible import OpenAICompatibleProvider
 from omnia.plugins.smart_notes.account import (
@@ -181,6 +183,19 @@ class TestDefaultModels:
         # google_translate has no voice field, so the sound default model is blank.
         defaults = default_models(_llm(), TTSSettings())
         assert defaults["sound"] == {"provider": "google_translate", "model": ""}
+
+    def test_sound_blank_voice_stays_blank_not_model(self):
+        # viettts carries an OpenAI-compat model="tts-1" alongside its voice; a blank voice must
+        # report blank (the provider's own default), NOT leak the unrelated model id.
+        tts = TTSSettings(provider="viettts", viettts=VietTTSSettings(voice=""))
+        defaults = default_models(_llm(), tts)
+        assert defaults["sound"] == {"provider": "viettts", "model": ""}
+
+    def test_sound_piper_uses_onnx_model_as_voice(self):
+        # piper has no voice field — its selectable "voice" is the .onnx model path.
+        tts = TTSSettings(provider="piper", piper=PiperTTSSettings(model="vi.onnx"))
+        defaults = default_models(_llm(), tts)
+        assert defaults["sound"] == {"provider": "piper", "model": "vi.onnx"}
 
 
 class TestKeyCards:

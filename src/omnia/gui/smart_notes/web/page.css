@@ -179,6 +179,8 @@ select:disabled { opacity: 0.7; }
   letter-spacing: 0.5px; color: var(--muted);
 }
 .sn-acct-default-sel { width: 100%; min-width: 0; }
+/* Shown in place of the Voice dropdown for a provider with no selectable voice. */
+.sn-acct-default-note { color: var(--muted); font-size: 12px; font-style: italic; padding: 6px 0; }
 
 /* The Auto-detect voice map lives in its own popup: a scrollable column of language → voice
    rows (full-width selects), instead of dumping ~40 dropdowns into the Account pane. */
