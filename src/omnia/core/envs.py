@@ -67,6 +67,14 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "OMNIA_SMART_NOTES_IMPROVE_ALL_TEMPERATURE": lambda: _float(
         "OMNIA_SMART_NOTES_IMPROVE_ALL_TEMPERATURE", 0.4
     ),
+    #   smart_notes · classify-deps: label refs hard/soft → deterministic (B2: no flicker).
+    "OMNIA_SMART_NOTES_CLASSIFY_DEPS_TEMPERATURE": lambda: _float(
+        "OMNIA_SMART_NOTES_CLASSIFY_DEPS_TEMPERATURE", 0.0
+    ),
+    #   smart_notes · rewrite-edge: rewrite a prompt to reflect ONE graph edge change.
+    "OMNIA_SMART_NOTES_REWRITE_EDGE_TEMPERATURE": lambda: _float(
+        "OMNIA_SMART_NOTES_REWRITE_EDGE_TEMPERATURE", 0.3
+    ),
     # ── HTTP ── default request timeout (seconds) for the stdlib HTTP client.
     "OMNIA_HTTP_TIMEOUT": lambda: _float("OMNIA_HTTP_TIMEOUT", 30.0),
 }

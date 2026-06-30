@@ -40,6 +40,7 @@ from omnia.plugins.smart_notes.engine.rules import (
     compile_field_rule,
     compile_note_type_rules,
     dedupe_preserving_order,
+    reconcile_field_deps,
     should_skip_rule,
 )
 from omnia.plugins.smart_notes.engine.service import BlockedField, GenerationService
@@ -68,6 +69,7 @@ __all__ = [
     "extract_field_refs",
     "interpolate",
     "order_rules",
+    "reconcile_field_deps",
     "should_skip_rule",
     "validate_brace_syntax",
     "validate_prompt_syntax",
