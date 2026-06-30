@@ -465,8 +465,9 @@ class NativeRuntimeManager:
         if host_python is None:
             raise ProviderError(
                 f"{spec.name}: no host Python found to create its runtime. Install "
-                f"Python 3.x (python.org) and ensure `python3`/`python` is on PATH, "
-                f"then try again."
+                f"Python 3.12 (python.org) and ensure `python3`/`python` is on PATH, then "
+                f"try again. (Newer releases such as 3.14 may not have wheels for some "
+                f"runtimes yet, e.g. PyTorch.)"
             )
 
         venv_dir = self.venv_dir(spec)
