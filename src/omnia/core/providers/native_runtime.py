@@ -64,6 +64,18 @@ def _tail(output: bytes, max_chars: int = 1200) -> str:
 _SERVER_STARTUP_TIMEOUT = 120.0
 _SERVER_POLL_INTERVAL = 0.5
 
+# Bootstrap-interpreter preference. Native runtime deps (PyTorch, onnxruntime) lag the newest
+# CPython by a release or two, so a machine whose default ``python3`` is bleeding-edge (no wheels
+# yet → ``pip install`` fails) can still install if a slightly older, well-supported minor is on
+# PATH. Probe these specific minors before the generic ``python3``/``python``.
+_PREFERRED_HOST_PYTHONS = (
+    "python3.12",
+    "python3.11",
+    "python3.13",
+    "python3.10",
+    "python3.9",
+)
+
 
 @dataclass(frozen=True)
 class NativeRuntimeSpec:
@@ -361,15 +373,18 @@ class NativeRuntimeManager:
     def host_python(self) -> str | None:
         """Detect a bootstrap interpreter to create the venv (NOT Anki's frozen one).
 
-        Prefers an explicit ``host_python`` override, then probes ``python3``, ``python``,
-        and (on Windows) the ``py`` launcher via ``runner.which``.
+        Prefers an explicit ``host_python`` override, then probes specific torch-friendly
+        minors (see ``_PREFERRED_HOST_PYTHONS``) before the generic ``python3``/``python``, and
+        (on Windows) the ``py`` launcher — all via ``runner.which``. Probing versioned minors
+        first lets a machine whose default ``python3`` is too new for the runtime's wheels still
+        install when an older, supported minor is also on PATH.
 
         Returns:
             The interpreter path, or None when no usable host Python is on PATH.
         """
         if self._host_python_override:
             return self._host_python_override
-        candidates = ["python3", "python"]
+        candidates = [*_PREFERRED_HOST_PYTHONS, "python3", "python"]
         if _IS_WINDOWS:
             candidates.append("py")
         for exe in candidates:
