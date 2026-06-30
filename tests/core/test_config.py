@@ -147,6 +147,15 @@ class TestProviderConfigWrites:
         fresh = ConfigRepository(ConfigLoader(tmp_cfg))
         assert "ja" not in fresh.config.tts.auto_voices
 
+    def test_set_active_tts_writes_piper_voice_to_its_model_field(self, tmp_path):
+        # piper has no `voice` field — its selectable "voice" is the .onnx model, so the
+        # value is stored as `model` (otherwise it would silently revert in the picker).
+        tmp_cfg = _tmp_config(tmp_path)
+        repo = ConfigRepository(ConfigLoader(tmp_cfg))
+        repo.set_active_tts("piper", voice="vi_VN-vais1000-medium")
+        assert repo.config.tts.provider == "piper"
+        assert repo.config.tts.piper.model == "vi_VN-vais1000-medium"
+
     def test_set_active_tts_skips_voice_for_voiceless_provider(self, tmp_path):
         # google_translate's strict model has no `voice` field; writing one would break the
         # reload. The provider must still switch, and the config must reload cleanly.

@@ -170,13 +170,15 @@ select:disabled { opacity: 0.7; }
 }
 .sn-acct-section:last-child { margin-bottom: 0; }
 .sn-acct-default-title { color: var(--muted); font-size: 12px; margin-bottom: 8px; line-height: 1.4; }
-.sn-acct-default-row { display: flex; gap: 16px; flex-wrap: wrap; }
-.sn-acct-default-field { display: flex; flex-direction: column; gap: 4px; }
+.sn-acct-default-row { display: flex; gap: 16px; }
+/* flex:1 + min-width:0 so each cell shares the row and a long option label is clipped by the
+   select rather than widening it (which pushed the voice dropdown onto its own line). */
+.sn-acct-default-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 0; min-width: 0; }
 .sn-acct-default-label {
   font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.5px; color: var(--muted);
 }
-.sn-acct-default-sel { min-width: 200px; }
+.sn-acct-default-sel { width: 100%; min-width: 0; }
 
 /* The Auto-detect voice map lives in its own popup: a scrollable column of language → voice
    rows (full-width selects), instead of dumping ~40 dropdowns into the Account pane. */

@@ -136,16 +136,17 @@ class ConfigRepository:
     def set_active_tts(self, provider: str, *, voice: Optional[str] = None) -> None:
         """Set the active TTS provider (and optionally its voice, where the provider has one).
 
-        A blank/None ``voice`` only switches the provider; a non-empty voice is written only
-        for providers whose settings model actually has a ``voice`` field (e.g. edge_tts,
-        google_cloud, openai) — never for voice-less ones like google_translate, whose
-        strict model would reject the unknown key.
+        A blank/None ``voice`` only switches the provider. A non-empty value is written to the
+        provider's voice field — ``voice`` for most, but ``model`` for piper (whose selectable
+        "voice" is its ``.onnx`` model, not a named voice) — and skipped for a voice-less
+        provider like google_translate, whose strict model would reject the unknown key.
         """
         data = self._loader.read_file("providers.toml")
         tts = data.setdefault("tts", {})
         tts["provider"] = provider
-        if voice and self._tts_supports_voice(provider):
-            tts.setdefault(provider, {})["voice"] = voice
+        field = self._tts_voice_field(provider)
+        if voice and field:
+            tts.setdefault(provider, {})[field] = voice
         self._loader.write_file("providers.toml", data)
         self._reload()
 
@@ -263,10 +264,22 @@ class ConfigRepository:
                         setattr(sub, field, self._secrets.resolve(value))
 
     @staticmethod
-    def _tts_supports_voice(provider: str) -> bool:
-        """Whether the TTS ``provider``'s settings model has a ``voice`` field."""
+    def _tts_voice_field(provider: str) -> Optional[str]:
+        """The settings field a TTS provider stores its selectable voice in (or None).
+
+        Most providers use ``voice``; piper has no named voice — its selectable value is the
+        ``.onnx`` model, so it stores into ``model``. A voice-less provider (google_translate)
+        returns None: its strict settings model would reject either key.
+        """
         sub = getattr(TTSSettings(), provider, None)
-        return sub is not None and "voice" in type(sub).__fields__
+        if sub is None:
+            return None
+        fields = type(sub).__fields__
+        if "voice" in fields:
+            return "voice"
+        if "model" in fields:
+            return "model"
+        return None
 
     @staticmethod
     def _file_for(section: str) -> str:
