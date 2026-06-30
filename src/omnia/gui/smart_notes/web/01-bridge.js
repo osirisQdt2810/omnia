@@ -60,6 +60,11 @@
   // The global "Auto-detect voices" editor (sound subtab only): one row per language mapping
   // its detected language to a concrete provider·voice in [tts.auto_voices].
   const acctAutoVoicesEl = document.getElementById("sn-acct-autovoices");
+  // The per-language voice map lives in its own modal (the section shows only two buttons).
+  const autovoicesModal = document.getElementById("sn-autovoices-modal");
+  const autovoicesListEl = document.getElementById("sn-autovoices-list");
+  const autovoicesClose = document.getElementById("sn-autovoices-close");
+  const autovoicesDone = document.getElementById("sn-autovoices-done");
   const acctUsageEl = document.getElementById("sn-acct-usage");
   const acctCreditEl = document.getElementById("sn-acct-credit");
   const acctInput = document.getElementById("sn-acct-input");
