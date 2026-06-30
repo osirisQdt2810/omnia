@@ -1,12 +1,18 @@
 
   /**
-   * Smart Notes config page — the field dependency-graph view (a MIDDLE fragment of the page
-   * IIFE; it neither opens nor closes it). Renders the Python-laid-out graph as SVG and edits
-   * edges: drag node→node adds a hard edge, clicking an edge toggles hard↔soft, and Delete
-   * removes the selected one. Layout is ALWAYS computed server-side (the `graph_recompute` op),
-   * so this fragment never re-implements longest-path; it only draws and mutates each row's
+   * Smart Notes config page — the field dependency-graph canvas (a MIDDLE fragment of the page
+   * IIFE; it neither opens nor closes it). Renders the Python-laid-out graph as ONE pannable /
+   * zoomable SVG viewport and edits edges: drag a node's connector handle → another node adds a
+   * hard edge, clicking an edge toggles hard↔soft, and Delete removes the selected one. Layout
+   * (pixel x/y + bounds) is ALWAYS computed server-side (the `graph_recompute` op), so this
+   * fragment never re-implements longest-path; it draws, pans/zooms, and mutates each row's
    * `depends_on` (the single source of truth `collectRows` reads, so the existing Save persists
-   * it). Hoisted `function seedGraph` is called by applyLoad in 05-handlers.js.
+   * it). Node MOVES are visual-only (an ephemeral posOverride map, wiped on recompute).
+   *
+   * CSP-safe: vanilla SVG + CSS only, no external libs. NO SVG <filter> drop-shadows and NO
+   * overflow:auto scroller — both blank the page on QtWebEngine/macOS Metal; depth/pan/zoom use
+   * stroke/opacity/gradients and a single <g> transform instead. Hoisted `function seedGraph` is
+   * called by applyLoad in 05-handlers.js.
    */
 
   const SVGNS = "http://www.w3.org/2000/svg";
@@ -17,20 +23,29 @@
   const fieldsView = document.getElementById("sn-fields-view");
   const graphView = document.getElementById("sn-graph-view");
 
-  // Layout constants (px). Columns = topological layers (x), rows = within-layer index (y).
-  const COL_W = 210;
-  const ROW_H = 72;
-  const NODE_W = 156;
-  const NODE_H = 40;
-  const PAD = 24;
+  // Fallback node box size (Python sends w/h per node, but a dangling/legacy payload may not).
+  const NODE_W = 180;
+  const NODE_H = 46;
+  const HANDLE_R = 7; // connector port radius (grows on hover via CSS)
+  const MOVE_THRESHOLD = 4; // px a body-drag must travel before it's a MOVE (else a click)
+  const MIN_K = 0.3;
+  const MAX_K = 2.2;
   const HARD_COLOR = "#e5484d";
   const SOFT_COLOR = "#30a46c";
 
-  let graphData = {nodes: [], edges: []};
+  let graphData = {nodes: [], edges: [], bounds: {width: 0, height: 0}};
   let graphVisible = false;
   let selectedEdge = null; // {src, dst, derived} of the currently-selected edge
-  let dragSrc = null;
-  let dragLine = null;
+  let posOverride = {}; // name(lower) -> {x, y} ephemeral move overrides (wiped on recompute)
+
+  // Viewport transform applied to the single <g id="sn-graph-vp">.
+  let view = {tx: 0, ty: 0, k: 1};
+  let viewport = null; // the <g> all nodes/edges live inside
+
+  // Active gesture (at most one): pan, connect (edge create), or move (node drag).
+  let pan = null; // {x0, y0, tx0, ty0}
+  let connect = null; // {src, line}
+  let move = null; // {name, started, sx, sy, ox, oy, group}
 
   /** Create an SVG element. */
   function svgEl(tag) {
@@ -38,13 +53,20 @@
   }
 
   /**
-   * Store the server-laid-out graph and redraw if the view is open.
-   * @param {?Object} graph {nodes:[{name,is_base,generatable,column,row}], edges:[{src,dst,kind,derived}]}.
+   * Store the server-laid-out graph (nodes carry pixel x/y/w/h + a top-level bounds) and redraw
+   * if the view is open. Clears any ephemeral move overrides — positions are visual-only and the
+   * server is the source of truth on each (re)seed.
+   * @param {?Object} graph {nodes:[{name,is_base,generatable,column,row,x,y,w,h,lane}], edges:[...], bounds:{width,height}}.
    */
   function seedGraph(graph) {
-    graphData = graph && graph.nodes ? graph : {nodes: [], edges: []};
+    graphData =
+      graph && graph.nodes
+        ? graph
+        : {nodes: [], edges: [], bounds: {width: 0, height: 0}};
+    posOverride = {};
     if (graphVisible) {
       renderGraph();
+      fitView();
     }
   }
 
@@ -143,21 +165,23 @@
       function (res) {
         if (res && res.error) {
           graphToastMsg(res.error);
+          // An optimistic add/toggle that the server rejected (e.g. a cycle the JS precheck
+          // missed) must not leave a dangling selection pointing at an edge that never landed.
+          selectedEdge = null;
           renderGraph();
           return;
         }
         if (res && res.graph) {
           graphData = res.graph;
+          posOverride = {}; // positions are visual-only — the fresh layout is authoritative
         }
         renderGraph();
+        fitView();
       }
     );
   }
 
-  // --- node/edge geometry ----------------------------------------------------------------
-  function nodePos(node) {
-    return {x: PAD + node.column * COL_W, y: PAD + node.row * ROW_H};
-  }
+  // --- node geometry (pixels from Python, optionally overridden by an in-progress move) -------
   function nodeByName(name) {
     const lc = (name || "").toLowerCase();
     for (let i = 0; i < graphData.nodes.length; i++) {
@@ -166,6 +190,16 @@
       }
     }
     return null;
+  }
+  function nodeSize(node) {
+    return {w: node && node.w ? node.w : NODE_W, h: node && node.h ? node.h : NODE_H};
+  }
+  function nodePos(node) {
+    const lc = (node.name || "").toLowerCase();
+    if (posOverride[lc]) {
+      return {x: posOverride[lc].x, y: posOverride[lc].y};
+    }
+    return {x: node.x || 0, y: node.y || 0};
   }
   function isSelected(edge) {
     return (
@@ -182,29 +216,64 @@
     }
     const nodes = graphData.nodes || [];
     const edges = graphData.edges || [];
-    let maxCol = 0;
-    let maxRow = 0;
-    nodes.forEach(function (n) {
-      maxCol = Math.max(maxCol, n.column);
-      maxRow = Math.max(maxRow, n.row);
-    });
-    const w = PAD * 2 + (maxCol + 1) * COL_W;
-    const h = PAD * 2 + (maxRow + 1) * ROW_H;
-    graphSvg.setAttribute("width", String(w));
-    graphSvg.setAttribute("height", String(h));
+    const bounds = graphData.bounds || {width: 0, height: 0};
+    const w = Math.max(1, bounds.width || 1);
+    const h = Math.max(1, bounds.height || 1);
     graphSvg.setAttribute("viewBox", "0 0 " + w + " " + h);
 
+    graphSvg.appendChild(buildDefs());
+
+    viewport = svgEl("g");
+    viewport.setAttribute("id", "sn-graph-vp");
+    applyViewTransform();
+    graphSvg.appendChild(viewport);
+
+    edges.forEach(function (e) {
+      const wrap = edgeGroup(e);
+      if (wrap) {
+        viewport.appendChild(wrap);
+      }
+    });
+    nodes.forEach(function (n) {
+      viewport.appendChild(nodeGroup(n));
+    });
+  }
+
+  function applyViewTransform() {
+    if (viewport) {
+      viewport.setAttribute(
+        "transform",
+        "translate(" + view.tx + "," + view.ty + ") scale(" + view.k + ")"
+      );
+    }
+  }
+
+  /** <defs>: arrowheads + linear gradients for each edge kind. */
+  function buildDefs() {
     const defs = svgEl("defs");
     defs.appendChild(arrowMarker("sn-arrow-hard", HARD_COLOR));
     defs.appendChild(arrowMarker("sn-arrow-soft", SOFT_COLOR));
-    graphSvg.appendChild(defs);
+    defs.appendChild(edgeGradient("sn-grad-hard", "#ff6b6b", HARD_COLOR));
+    defs.appendChild(edgeGradient("sn-grad-soft", "#4cc38a", SOFT_COLOR));
+    return defs;
+  }
 
-    edges.forEach(function (e) {
-      graphSvg.appendChild(edgePath(e));
-    });
-    nodes.forEach(function (n) {
-      graphSvg.appendChild(nodeGroup(n));
-    });
+  function edgeGradient(id, from, to) {
+    const g = svgEl("linearGradient");
+    g.setAttribute("id", id);
+    g.setAttribute("x1", "0");
+    g.setAttribute("y1", "0");
+    g.setAttribute("x2", "1");
+    g.setAttribute("y2", "0");
+    const a = svgEl("stop");
+    a.setAttribute("offset", "0");
+    a.setAttribute("stop-color", from);
+    const b = svgEl("stop");
+    b.setAttribute("offset", "1");
+    b.setAttribute("stop-color", to);
+    g.appendChild(a);
+    g.appendChild(b);
+    return g;
   }
 
   function arrowMarker(id, color) {
@@ -223,38 +292,76 @@
     return m;
   }
 
-  function edgePath(e) {
-    const s = nodeByName(e.src);
-    const d = nodeByName(e.dst);
-    const path = svgEl("path");
-    if (!s || !d) {
-      return path; // dangling edge (renamed/missing field) — skip silently
-    }
+  /** The bezier `d` for an edge from src's right port to dst's left port. */
+  function edgeD(s, d) {
     const sp = nodePos(s);
     const dp = nodePos(d);
-    const sx = sp.x + NODE_W;
-    const sy = sp.y + NODE_H / 2;
+    const ss = nodeSize(s);
+    const ds = nodeSize(d);
+    const sx = sp.x + ss.w;
+    const sy = sp.y + ss.h / 2;
     const ex = dp.x;
-    const ey = dp.y + NODE_H / 2;
+    const ey = dp.y + ds.h / 2;
     const dx = Math.max(40, Math.abs(ex - sx) / 2);
-    path.setAttribute(
-      "d",
-      "M" + sx + "," + sy + " C" + (sx + dx) + "," + sy + " " + (ex - dx) + "," + ey + " " + ex + "," + ey
+    return (
+      "M" + sx + "," + sy + " C" + (sx + dx) + "," + sy + " " +
+      (ex - dx) + "," + ey + " " + ex + "," + ey
     );
-    const soft = e.kind === "soft";
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", soft ? SOFT_COLOR : HARD_COLOR);
-    path.setAttribute("stroke-width", isSelected(e) ? "4" : "2");
-    if (e.derived) {
-      path.setAttribute("stroke-dasharray", "6,4");
+  }
+
+  /**
+   * Build one edge as a group of: a wide transparent hit-twin (easy clicking), an optional
+   * translucent glow under the selected edge (no SVG filter), and the visible stroke.
+   */
+  function edgeGroup(e) {
+    const s = nodeByName(e.src);
+    const d = nodeByName(e.dst);
+    if (!s || !d) {
+      return null; // dangling edge (renamed/missing field) — skip silently
     }
-    path.setAttribute("marker-end", "url(#" + (soft ? "sn-arrow-soft" : "sn-arrow-hard") + ")");
-    path.setAttribute("class", "sn-edge" + (isSelected(e) ? " sn-edge-selected" : ""));
+    const dd = edgeD(s, d);
+    const soft = e.kind === "soft";
+    const sel = isSelected(e);
+    const g = svgEl("g");
+    g.setAttribute("class", "sn-edge-g");
+
+    const hit = svgEl("path");
+    hit.setAttribute("d", dd);
+    hit.setAttribute("class", "sn-edge-hit");
+    hit.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      onEdgeClick(e);
+    });
+    g.appendChild(hit);
+
+    if (sel) {
+      const glow = svgEl("path");
+      glow.setAttribute("d", dd);
+      glow.setAttribute("class", "sn-edge-glow");
+      glow.setAttribute("stroke", soft ? SOFT_COLOR : HARD_COLOR);
+      g.appendChild(glow);
+    }
+
+    const path = svgEl("path");
+    path.setAttribute("d", dd);
+    path.setAttribute(
+      "class",
+      "sn-edge " + (soft ? "sn-edge-soft" : "sn-edge-hard") + (sel ? " sn-edge-selected" : "")
+    );
+    path.setAttribute("stroke", "url(#" + (soft ? "sn-grad-soft" : "sn-grad-hard") + ")");
+    if (e.derived) {
+      path.setAttribute("stroke-dasharray", "7,5");
+    }
+    path.setAttribute(
+      "marker-end",
+      "url(#" + (soft ? "sn-arrow-soft" : "sn-arrow-hard") + ")"
+    );
     path.addEventListener("click", function (ev) {
       ev.stopPropagation();
       onEdgeClick(e);
     });
-    return path;
+    g.appendChild(path);
+    return g;
   }
 
   function nodeGroup(n) {
@@ -265,81 +372,65 @@
     );
     g.setAttribute("data-node", n.name);
     const p = nodePos(n);
+    const sz = nodeSize(n);
+    g.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+
     const rect = svgEl("rect");
-    rect.setAttribute("x", String(p.x));
-    rect.setAttribute("y", String(p.y));
-    rect.setAttribute("width", String(NODE_W));
-    rect.setAttribute("height", String(NODE_H));
-    rect.setAttribute("rx", "8");
+    rect.setAttribute("x", "0");
+    rect.setAttribute("y", "0");
+    rect.setAttribute("width", String(sz.w));
+    rect.setAttribute("height", String(sz.h));
+    rect.setAttribute("rx", "11");
+    rect.setAttribute("class", "sn-node-box");
+
     const text = svgEl("text");
-    text.setAttribute("x", String(p.x + NODE_W / 2));
-    text.setAttribute("y", String(p.y + NODE_H / 2));
+    text.setAttribute("x", String(sz.w / 2));
+    text.setAttribute("y", String(sz.h / 2));
     text.setAttribute("text-anchor", "middle");
     text.setAttribute("dominant-baseline", "central");
-    text.textContent = n.name.length > 20 ? n.name.slice(0, 19) + "…" : n.name;
+    text.textContent = n.name.length > 22 ? n.name.slice(0, 21) + "…" : n.name;
+
+    // The connector port on the right edge — mousedown here starts an EDGE CREATE.
+    const handle = svgEl("circle");
+    handle.setAttribute("cx", String(sz.w));
+    handle.setAttribute("cy", String(sz.h / 2));
+    handle.setAttribute("r", String(HANDLE_R));
+    handle.setAttribute("class", "sn-handle");
+    handle.addEventListener("mousedown", function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      startConnect(n.name, ev);
+    });
+
     const title = svgEl("title");
-    title.textContent = n.name + (n.is_base ? " (base / input)" : n.generatable ? "" : " (not generated)");
+    title.textContent =
+      n.name + (n.is_base ? " (base / input)" : n.generatable ? "" : " (not generated)");
+
     g.appendChild(rect);
     g.appendChild(text);
+    g.appendChild(handle);
     g.appendChild(title);
     g.addEventListener("mousedown", function (ev) {
-      startDrag(n.name, ev);
+      startMove(n.name, ev);
     });
     return g;
   }
 
-  // --- editing: drag to create, click to toggle, Delete to remove ------------------------
-  function startDrag(srcName, ev) {
-    ev.preventDefault();
-    dragSrc = srcName;
-    dragLine = svgEl("line");
-    dragLine.setAttribute("class", "sn-drag-line");
-    const a = anchorRight(srcName);
-    setLineEnds(dragLine, a.x, a.y, a.x, a.y);
-    graphSvg.appendChild(dragLine);
-    document.addEventListener("mousemove", onDragMove);
-    document.addEventListener("mouseup", onDragEnd);
-  }
-  function onDragMove(ev) {
-    if (!dragLine) {
-      return;
-    }
-    const a = anchorRight(dragSrc);
-    const p = toSvgCoords(ev);
-    setLineEnds(dragLine, a.x, a.y, p.x, p.y);
-  }
-  function onDragEnd(ev) {
-    document.removeEventListener("mousemove", onDragMove);
-    document.removeEventListener("mouseup", onDragEnd);
-    if (dragLine && dragLine.parentNode) {
-      dragLine.parentNode.removeChild(dragLine);
-    }
-    const target = nodeNameAt(ev.clientX, ev.clientY);
-    const src = dragSrc;
-    dragLine = null;
-    dragSrc = null;
-    if (target && src && target.toLowerCase() !== src.toLowerCase()) {
-      addEdge(src, target);
-    }
-  }
-
-  function anchorRight(name) {
-    const n = nodeByName(name);
-    const p = nodePos(n);
-    return {x: p.x + NODE_W, y: p.y + NODE_H / 2};
-  }
-  function setLineEnds(line, x1, y1, x2, y2) {
-    line.setAttribute("x1", String(x1));
-    line.setAttribute("y1", String(y1));
-    line.setAttribute("x2", String(x2));
-    line.setAttribute("y2", String(y2));
-  }
-  function toSvgCoords(ev) {
+  // --- coordinate mapping ---------------------------------------------------------------
+  /**
+   * Map a mouse event to WORLD coords (the space nodes are laid out in). Composition order:
+   * screen → SVG-viewBox space (via getBoundingClientRect + the viewBox scale) → world (undo the
+   * viewport translate/scale). The drag-line endpoint and any geometry math must use this so they
+   * never drift from elementFromPoint (which is already transform-aware).
+   */
+  function screenToWorld(ev) {
     const r = graphSvg.getBoundingClientRect();
     const vb = graphSvg.viewBox.baseVal;
     const sx = r.width ? vb.width / r.width : 1;
     const sy = r.height ? vb.height / r.height : 1;
-    return {x: (ev.clientX - r.left) * sx, y: (ev.clientY - r.top) * sy};
+    const vbx = (ev.clientX - r.left) * sx; // point in viewBox space
+    const vby = (ev.clientY - r.top) * sy;
+    return {x: (vbx - view.tx) / view.k, y: (vby - view.ty) / view.k};
   }
   function nodeNameAt(clientX, clientY) {
     let el = document.elementFromPoint(clientX, clientY);
@@ -350,6 +441,192 @@
       el = el.parentNode;
     }
     return null;
+  }
+
+  // --- fit / pan / zoom -----------------------------------------------------------------
+  /** Frame the whole graph (from the Python bounds) within the SVG viewBox. */
+  function fitView() {
+    const bounds = graphData.bounds || {width: 0, height: 0};
+    const bw = bounds.width || 0;
+    const bh = bounds.height || 0;
+    const vb = graphSvg.viewBox.baseVal;
+    if (!bw || !bh || !vb.width || !vb.height) {
+      view = {tx: 0, ty: 0, k: 1};
+      applyViewTransform();
+      return;
+    }
+    const k = clampK(Math.min(vb.width / bw, vb.height / bh, 1));
+    view = {
+      tx: (vb.width - bw * k) / 2,
+      ty: (vb.height - bh * k) / 2,
+      k: k
+    };
+    applyViewTransform();
+  }
+  function clampK(k) {
+    return Math.max(MIN_K, Math.min(MAX_K, k));
+  }
+
+  // Pan = drag empty canvas. mousedown on the bare SVG (not a node/edge) starts it; the screen
+  // delta is mapped through the viewBox scale so the canvas tracks the cursor 1:1.
+  graphSvg.addEventListener("mousedown", function (ev) {
+    if (ev.target !== graphSvg || ev.button !== 0) {
+      return;
+    }
+    pan = {x0: ev.clientX, y0: ev.clientY, tx0: view.tx, ty0: view.ty};
+    graphSvg.classList.add("sn-dragging");
+    if (selectedEdge) {
+      selectedEdge = null;
+      renderGraph();
+    }
+    document.addEventListener("mousemove", onPanMove);
+    document.addEventListener("mouseup", onPanEnd);
+    ev.preventDefault();
+  });
+  function onPanMove(ev) {
+    if (!pan) {
+      return;
+    }
+    const r = graphSvg.getBoundingClientRect();
+    const vb = graphSvg.viewBox.baseVal;
+    const sx = r.width ? vb.width / r.width : 1;
+    const sy = r.height ? vb.height / r.height : 1;
+    view.tx = pan.tx0 + (ev.clientX - pan.x0) * sx;
+    view.ty = pan.ty0 + (ev.clientY - pan.y0) * sy;
+    applyViewTransform();
+  }
+  function onPanEnd(ev) {
+    document.removeEventListener("mousemove", onPanMove);
+    document.removeEventListener("mouseup", onPanEnd);
+    graphSvg.classList.remove("sn-dragging");
+    pan = null;
+  }
+
+  // Cursor-anchored wheel zoom: keep the world point under the cursor fixed across the scale.
+  graphSvg.addEventListener(
+    "wheel",
+    function (ev) {
+      ev.preventDefault();
+      const r = graphSvg.getBoundingClientRect();
+      const vb = graphSvg.viewBox.baseVal;
+      const sx = r.width ? vb.width / r.width : 1;
+      const sy = r.height ? vb.height / r.height : 1;
+      const vbx = (ev.clientX - r.left) * sx;
+      const vby = (ev.clientY - r.top) * sy;
+      const k1 = clampK(view.k * (ev.deltaY < 0 ? 1.1 : 1 / 1.1));
+      // world point under the cursor must stay put: vb = tx + world*k.
+      const wx = (vbx - view.tx) / view.k;
+      const wy = (vby - view.ty) / view.k;
+      view.tx = vbx - wx * k1;
+      view.ty = vby - wy * k1;
+      view.k = k1;
+      applyViewTransform();
+    },
+    {passive: false}
+  );
+
+  // --- editing: connect to create, move to reposition, click to toggle, Delete to remove ----
+  function startConnect(srcName, ev) {
+    connect = {src: srcName, line: svgEl("path")};
+    connect.line.setAttribute("class", "sn-drag-line");
+    const a = anchorRight(srcName);
+    connect.line.setAttribute("d", "M" + a.x + "," + a.y + " L" + a.x + "," + a.y);
+    viewport.appendChild(connect.line);
+    document.addEventListener("mousemove", onConnectMove);
+    document.addEventListener("mouseup", onConnectEnd);
+  }
+  function onConnectMove(ev) {
+    if (!connect) {
+      return;
+    }
+    const a = anchorRight(connect.src);
+    const p = screenToWorld(ev);
+    const dx = Math.max(40, Math.abs(p.x - a.x) / 2);
+    connect.line.setAttribute(
+      "d",
+      "M" + a.x + "," + a.y + " C" + (a.x + dx) + "," + a.y + " " +
+      (p.x - dx) + "," + p.y + " " + p.x + "," + p.y
+    );
+  }
+  function onConnectEnd(ev) {
+    document.removeEventListener("mousemove", onConnectMove);
+    document.removeEventListener("mouseup", onConnectEnd);
+    if (!connect) {
+      return; // defensive: a reseed/recompute mid-drag may have cleared it
+    }
+    if (connect.line && connect.line.parentNode) {
+      connect.line.parentNode.removeChild(connect.line);
+    }
+    const target = nodeNameAt(ev.clientX, ev.clientY);
+    const src = connect.src;
+    connect = null;
+    if (target && src && target.toLowerCase() !== src.toLowerCase()) {
+      addEdge(src, target);
+    }
+  }
+
+  /**
+   * mousedown on a node BODY: start a MOVE that only "arms" once the pointer travels past
+   * MOVE_THRESHOLD; under threshold + a quick mouseup is treated as a click/select (no move). A
+   * move writes the ephemeral posOverride map — node positions are visual-only, not persisted.
+   */
+  function startMove(name, ev) {
+    if (ev.button !== 0) {
+      return;
+    }
+    ev.preventDefault();
+    const n = nodeByName(name);
+    const p = nodePos(n);
+    move = {
+      name: name,
+      started: false,
+      sx: ev.clientX,
+      sy: ev.clientY,
+      ox: p.x,
+      oy: p.y
+    };
+    document.addEventListener("mousemove", onMoveDrag);
+    document.addEventListener("mouseup", onMoveEnd);
+  }
+  function onMoveDrag(ev) {
+    if (!move) {
+      return;
+    }
+    const dpx = ev.clientX - move.sx;
+    const dpy = ev.clientY - move.sy;
+    if (!move.started && Math.hypot(dpx, dpy) < MOVE_THRESHOLD) {
+      return; // still a potential click
+    }
+    move.started = true;
+    graphSvg.classList.add("sn-dragging"); // suppress position transitions during a live drag
+    // Convert the screen delta into world units via the current viewBox+zoom scale.
+    const r = graphSvg.getBoundingClientRect();
+    const vb = graphSvg.viewBox.baseVal;
+    const sx = r.width ? vb.width / r.width : 1;
+    const sy = r.height ? vb.height / r.height : 1;
+    const x = move.ox + (dpx * sx) / view.k;
+    const y = move.oy + (dpy * sy) / view.k;
+    const lc = move.name.toLowerCase();
+    posOverride[lc] = {x: x, y: y};
+    redrawMoved(move.name);
+  }
+  function onMoveEnd(ev) {
+    document.removeEventListener("mousemove", onMoveDrag);
+    document.removeEventListener("mouseup", onMoveEnd);
+    graphSvg.classList.remove("sn-dragging");
+    move = null;
+  }
+
+  /** Re-render after a node move so its edges follow (cheap: full redraw, positions cached). */
+  function redrawMoved(name) {
+    renderGraph();
+  }
+
+  function anchorRight(name) {
+    const n = nodeByName(name);
+    const p = nodePos(n);
+    const sz = nodeSize(n);
+    return {x: p.x + sz.w, y: p.y + sz.h / 2};
   }
 
   function addEdge(src, dst) {
@@ -395,12 +672,6 @@
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       removeEdge(selectedEdge);
-    }
-  });
-  graphSvg.addEventListener("click", function () {
-    if (selectedEdge) {
-      selectedEdge = null;
-      renderGraph();
     }
   });
 

@@ -506,24 +506,63 @@ select:disabled { opacity: 0.7; }
 .sn-graph-hint { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
 .sn-edge-hard { color: #e5484d; }
 .sn-edge-soft { color: #30a46c; }
+/* The graph scroller IS the pan/zoom viewport — overflow:hidden (auto blanks on macOS Metal).
+   A subtle dot grid gives depth without an SVG filter. */
 .sn-graph-scroll {
-  overflow: auto; max-height: 60vh; border: 1px solid var(--card-border);
-  border-radius: 10px; background: var(--input-bg);
+  position: relative; overflow: hidden; height: 62vh;
+  border: 1px solid var(--card-border); border-radius: 12px;
+  background-color: var(--input-bg);
+  background-image: radial-gradient(var(--card-border) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
-.sn-graph-svg { display: block; user-select: none; }
-.sn-node { cursor: grab; }
-.sn-node rect { fill: var(--card-top); stroke: var(--card-border); stroke-width: 1.5; }
-.sn-node text { fill: var(--fg); font-size: 12px; pointer-events: none; }
-.sn-node:hover rect { stroke: var(--accent); }
-.sn-node-base rect { fill: var(--accent); stroke: transparent; }
+.sn-graph-svg { display: block; width: 100%; height: 100%; user-select: none; cursor: grab; }
+.sn-graph-svg.sn-dragging { cursor: grabbing; }
+
+/* Nodes: translucent gradient cards; smooth glide on relayout (suppressed mid-drag). */
+.sn-node { cursor: grab; transition: transform 0.18s ease; }
+.sn-dragging .sn-node { transition: none; }
+.sn-node-box {
+  fill: var(--card-top); stroke: var(--card-border); stroke-width: 1.5;
+  transition: stroke 0.15s ease, stroke-width 0.15s ease;
+}
+.sn-node text {
+  fill: var(--fg); font-size: 12.5px; font-weight: 500; pointer-events: none;
+}
+.sn-node:hover .sn-node-box { stroke: var(--accent); stroke-width: 2; }
+.sn-node-base .sn-node-box {
+  fill: var(--accent); stroke: var(--accent-2); stroke-width: 2;
+}
 .sn-node-base text { fill: #fff; }
-.sn-node-ng rect { stroke-dasharray: 4,3; opacity: 0.7; }
-.sn-edge { cursor: pointer; }
-.sn-edge:hover { stroke-width: 3; }
-.sn-drag-line { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4,4; pointer-events: none; }
+.sn-node-ng .sn-node-box { stroke-dasharray: 5,4; opacity: 0.78; }
+.sn-node-moving .sn-node-box, .sn-dragging .sn-node-box { stroke: var(--accent-2); stroke-width: 2.5; }
+
+/* Connector handle (port): a small dot on the right edge that grows + brightens on hover. */
+.sn-handle {
+  fill: var(--accent); stroke: var(--card-top); stroke-width: 1.5;
+  opacity: 0.55; cursor: crosshair;
+  transition: r 0.12s ease, opacity 0.12s ease;
+}
+.sn-node:hover .sn-handle, .sn-handle:hover { opacity: 1; r: 9; }
+
+/* Edges: gradient stroke, dashed when derived; a wide transparent hit-twin makes clicking easy;
+   the selected edge gets a translucent under-stroke glow (NO SVG filter). */
+.sn-edge {
+  fill: none; stroke-width: 2.5; cursor: pointer;
+  transition: stroke-width 0.12s ease;
+}
+.sn-edge:hover { stroke-width: 3.5; }
+.sn-edge-selected { stroke-width: 4; }
+.sn-edge-hit {
+  fill: none; stroke: transparent; stroke-width: 16; cursor: pointer;
+}
+.sn-edge-glow { fill: none; stroke-width: 9; opacity: 0.28; }
+.sn-drag-line {
+  fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6,5;
+  pointer-events: none;
+}
 .sn-graph-toast {
   position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
   background: rgba(0, 0, 0, 0.82); color: #fff; padding: 6px 12px; border-radius: 8px;
-  font-size: 12px; pointer-events: none; max-width: 80%;
+  font-size: 12px; pointer-events: none; max-width: 80%; z-index: 2;
 }
 .sn-graph-toast[hidden] { display: none; }

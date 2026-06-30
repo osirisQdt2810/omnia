@@ -351,24 +351,28 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
 
 
 def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
-    """Build the field dependency graph payload (nodes + edges) the SVG view renders.
+    """Build the field dependency graph payload (nodes + edges + geometry) the canvas renders.
 
-    Computes the effective graph for ``config`` (:meth:`FieldGraph.from_config`) and the
-    deterministic layered layout (:meth:`FieldGraph.laid_out`), then serializes both for the
-    page. The layout (``column``/``row``) is the single source of truth — it is always computed
-    in Python so the JS never re-implements longest-path; the page only places nodes by these
-    coordinates.
+    Computes the effective graph for ``config`` (:meth:`FieldGraph.from_config`), the
+    deterministic layered layout (:meth:`FieldGraph.laid_out`, for the integer ``column``/``row``
+    kept for back-compat), and the balanced grid-wrapped pixel geometry
+    (:meth:`FieldGraph.flow_layout`), then serializes them for the page. Layout is the single
+    source of truth — always computed in Python so the JS never re-implements longest-path; the
+    page prefers each node's pixel ``x``/``y`` and frames the canvas from ``bounds``.
 
     Args:
         config: The note type's smart-notes config (with each field's ``depends_on``).
 
     Returns:
-        ``{"nodes": [{name, is_base, generatable, column, row}, ...],
-        "edges": [{src, dst, kind, derived}, ...]}``.
+        ``{"nodes": [{name, is_base, generatable, column, row, x, y, w, h, lane}, ...],
+        "edges": [{src, dst, kind, derived}, ...], "bounds": {width, height}}``.
     """
     from omnia.plugins.smart_notes.engine.graph import FieldGraph
 
-    graph = FieldGraph.from_config(config).laid_out()
+    graph = FieldGraph.from_config(config)
+    laid = graph.laid_out()
+    flow = graph.flow_layout()
+    geometry = {layout.name: layout for layout in flow.nodes}
     return {
         "nodes": [
             {
@@ -377,8 +381,13 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
                 "generatable": node.generatable,
                 "column": node.column,
                 "row": node.row,
+                "x": geometry[node.name].x,
+                "y": geometry[node.name].y,
+                "w": geometry[node.name].w,
+                "h": geometry[node.name].h,
+                "lane": geometry[node.name].lane,
             }
-            for node in graph.nodes
+            for node in laid.nodes
         ],
         "edges": [
             {
@@ -387,8 +396,9 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
                 "kind": edge.kind,
                 "derived": edge.derived,
             }
-            for edge in graph.edges
+            for edge in laid.edges
         ],
+        "bounds": {"width": flow.width, "height": flow.height},
     }
 
 

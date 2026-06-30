@@ -74,6 +74,11 @@ class TestGraphPayload:
         } in gp["edges"]
         # every node carries a layout column/row (computed in Python)
         assert all("column" in n and "row" in n for n in gp["nodes"])
+        # ...plus pixel geometry for the flow canvas and a top-level bounds.
+        assert all(
+            all(k in n for k in ("x", "y", "w", "h", "lane")) for n in gp["nodes"]
+        )
+        assert gp["bounds"]["width"] > 0 and gp["bounds"]["height"] > 0
 
     def test_explicit_soft_overrides_derived_hard(self):
         cfg = _config(
