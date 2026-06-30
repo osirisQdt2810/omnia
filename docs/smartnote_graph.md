@@ -334,3 +334,80 @@ auto-prompt parse/apply), `tests/gui/test_smart_notes_html.py` (`graph_payload`,
   vậy config cũ tự có đồ thị, không cần migrate.
 - **Không lưu tọa độ node**: chỉ lưu *quan hệ* (cạnh), còn vị trí luôn được tính lại → đồ thị luôn gọn.
 - **Kiểm tra chu trình hai lớp**: client (chặn ngay khi kéo) + server (chốt chặn khi recompute).
+
+---
+
+# Phần II — Đồng bộ HAI CHIỀU prompt ⇄ graph (Feature 1 & 2) + UI mới
+
+Phần I (mục 1–10) mô tả đồ thị *một chiều* (suy ra từ prompt). Phần II mô tả việc nâng cấp thành
+**đồng bộ hai chiều** và giao diện vẽ lại đẹp hơn.
+
+## 11. Lớp dùng chung: `engine/consistency.py`
+
+Một lớp thuần (không LLM) là "xương sống" mà cả hai chiều dùng chung nên không bao giờ lệch nhau:
+
+- `NodeEdgeSet.derive(target, prompt, depends_on, known_fields)` → tập cạnh-vào `(src, kind)` tại một
+  node, từ một prompt *ứng viên* (dùng để kiểm tra trước khi áp).
+- `FieldGraph.node_edge_set(target)` → tập cạnh-vào từ đồ thị đã dựng. Hai đường này **bắt buộc khớp
+  nhau** (có test bất biến) — cùng đi qua `compile_field_rule` + `rule_prerequisites`.
+- `NodeEdgeSet.diff(after)` → `ConsistencyResult{ok, added_fields, removed_fields, kind_changes,
+  bad_syntax, messages}`. `ok` **bỏ qua** khác biệt *kind* (hard/soft) — kind được áp riêng theo cơ chế
+  lockstep, không do guard rail quyết định.
+- `validate_prompt_syntax` / `interpolation.validate_brace_syntax`: bắt cú pháp `{{}}` sai (cloze-aware).
+
+## 12. Feature 1 — prompt → graph (phân loại hard/soft bằng LLM)
+
+Code chỉ biết "có cạnh" (vì có `{{ref}}`), **không** biết cạnh đó *bắt buộc* (hard) hay *tùy chọn*
+(soft) — đó là phán đoán ngữ nghĩa, nên cần **LLM (temperature 0)**.
+
+- **Khi nào chạy**: sau khi Save một prompt (popup), sau Auto-prompt, sau Improve-all.
+- **Cách chạy**: op `classify_deps` (off-thread); với note lớn dùng `classify_dependencies_batch`
+  (gộp **một** lời gọi cho nhiều field). Kết quả ghi vào `depends_on` của field, đẩy về trang qua
+  `window.__snDepsResult` **chỉ từ success-callback** (eval_js off-thread sẽ làm Anki/Qt segfault).
+- **Tôn trọng người dùng (B2)**: `reconcile_field_deps` **chỉ phân loại ref MỚI**; ref đã có kind
+  (người dùng đặt hoặc lần trước) giữ nguyên → không nhấp nháy. Kind do classifier ghi mang cờ
+  `auto=True` (phân biệt với cạnh người dùng).
+- **Bền qua recompute (B1)**: kind soft phải được ghi thành entry tường minh, nếu không recompute sẽ
+  về hard mặc định.
+
+## 13. Feature 2 — graph → prompt (sửa cạnh → viết lại prompt)
+
+Khi người dùng sửa cạnh rồi bấm **↻ Sync prompts**:
+
+1. **Diff** (client, `diffEdges`): so `depends_on` hiện tại với mốc `lastSyncedDeps` (chụp lúc load /
+   save / sau Feature-1) → danh sách node đích thay đổi + loại đổi (add/remove/toggle).
+2. **Hàng đợi theo thứ tự topo, xử lý từng node một (lazy)**: rewrite của node sau được tính **sau khi**
+   node trước đã Apply (đọc trạng thái row hiện tại) → không bị "viết C dựa trên B cũ". Op
+   `rewrite_edges` (off-thread) gọi `PromptAuthor.rewrite_for_edge_change` (có guard rail + 1 lần retry).
+3. **Popover diff** (`#sn-diff-pop`): "Was" (prompt cũ, chỉ đọc) ↑ mũi tên ↓ "Now" (prompt mới, sửa
+   được). Có nút **✨ Improve** (op `improve_prompt_pinned`, ghim đúng tập phụ thuộc).
+4. **Guard rail (op `validate_prompt`, debounce 250ms)**: mọi prompt rời popover (LLM/sửa tay/Improve)
+   phải suy ra **đúng** tập cạnh dự định tại node + cú pháp `{{}}` hợp lệ, nếu không **Apply bị khoá**.
+   Chính là Feature 1 dùng ngược → dùng chung lớp `consistency`.
+5. **Apply**: pre-check chu trình (client) **trước khi** ghi → rollback nếu tạo vòng; ghi prompt + set
+   `depends_on` theo kind dự định **lockstep** (kind không trôi) → recompute (backstop
+   `validate_acyclic`). Backstop cuối cùng: `_on_save` **từ chối lưu** nếu đồ thị có chu trình.
+
+LLM (`authoring/`): `DEPENDENCY_CLASSIFIER_SYSTEM` (phân loại), `FLASHCARD_EXPERT_SYSTEM` (viết lại);
+prompt được viết theo "reasoning shape" — không gắn cứng tên field của một note type nào → generic.
+
+## 14. UI mới (mục 5 cũ được vẽ lại)
+
+- **Layout**: `FieldGraph.flow_layout()` (Python) — xếp theo tầng, **wrap cột cao thành nhiều lane** và
+  căn giữa → hết cảnh 33 field một cột. JS chỉ vẽ theo toạ độ Python trả về.
+- **Canvas**: một `<g>` pan/zoom (kéo nền = pan, lăn chuột = zoom quanh con trỏ, fitView khi mở).
+- **Cử chỉ**: kéo **thân node = di chuyển** (chỉ thị giác, không lưu); kéo **handle (cổng bên phải) =
+  tạo cạnh**; click cạnh = đổi hard↔soft; chọn + Delete = xoá.
+- **Thẩm mỹ**: cạnh Bézier gradient (hard đỏ / soft xanh), hit-twin để dễ click, node nền gradient mờ,
+  animation CSS. **Không dùng SVG `<filter>` / `overflow:auto`** (gây blank trên QtWebEngine/macOS Metal).
+
+## 15. Bản đồ file (phần mở rộng)
+
+| Thành phần | File |
+|------------|------|
+| Lớp consistency dùng chung | `engine/consistency.py` |
+| Phân loại + viết lại bằng LLM | `authoring/{author,models,persona}.py` |
+| Op nối (classify/validate/rewrite/improve) + backstop lưu | `gui/smart_notes/dialog.py` |
+| Diff cạnh client + hàng đợi + popover + pan/zoom/cử chỉ | `gui/smart_notes/web/06-graph.js` |
+| Popover markup + style | `gui/smart_notes/web/page.html`, `page.css` |
+| Bố cục đẹp (flow_layout) | `engine/graph.py` |
