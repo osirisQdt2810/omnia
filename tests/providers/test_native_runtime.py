@@ -242,6 +242,18 @@ class TestHostPython:
         manager = NativeRuntimeManager(tmp_path, runner)
         assert manager.host_python() == "/usr/bin/python3"
 
+    def test_prefers_versioned_minor_over_generic_python3(self, tmp_path: Path) -> None:
+        # A torch-friendly minor on PATH wins over the generic python3 (which may be too new
+        # for the runtime's wheels).
+        runner = _FakeProcessRunner(
+            which_map={
+                "python3.12": "/usr/bin/python3.12",
+                "python3": "/usr/bin/python3",
+            }
+        )
+        manager = NativeRuntimeManager(tmp_path, runner)
+        assert manager.host_python() == "/usr/bin/python3.12"
+
     def test_falls_back_to_python_when_no_python3(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(which_map={"python": "/usr/bin/python"})
         manager = NativeRuntimeManager(tmp_path, runner)
