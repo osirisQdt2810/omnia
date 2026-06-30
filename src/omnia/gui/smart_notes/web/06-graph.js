@@ -48,6 +48,16 @@
     }
   }
 
+  /**
+   * Re-lay out the graph from the live rows when the Dependencies view is open (no-op when it
+   * isn't). Used after Auto-prompt fills the rows' depends_on so new edges show immediately.
+   */
+  function refreshGraphIfOpen() {
+    if (graphVisible) {
+      recomputeGraph();
+    }
+  }
+
   /** Briefly show a status message over the graph. */
   function graphToastMsg(text) {
     graphToast.textContent = text;

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omnia.core import envs
-from omnia.plugins.smart_notes.authoring.models import AutoSmartField
+from omnia.plugins.smart_notes.authoring.models import AutoSmartDep, AutoSmartField
 from omnia.plugins.smart_notes.authoring.persona import (
     FLASHCARD_EXPERT_SYSTEM,
     first_json_object,
@@ -35,7 +35,11 @@ _VALID_TYPES = {"text", "image", "tts"}
 
 
 def build_auto_smart_prompt(
-    note_type: str, base_field: str, field_names: list[str]
+    note_type: str,
+    base_field: str,
+    field_names: list[str],
+    *,
+    existing_deps: dict[str, list[AutoSmartDep]] | None = None,
 ) -> str:
     """Build the structured instruction asking the LLM for a type + prompt per field.
 
@@ -43,10 +47,14 @@ def build_auto_smart_prompt(
         note_type: The note type's name (context for the model).
         base_field: The always-present input field (referenced as ``{{<base>}}``).
         field_names: The candidate field names (enabled, not locked, not the base field).
+        existing_deps: The dependency edges already drawn for each field
+            (``{field: [AutoSmartDep, ...]}``). When non-empty the model is told to KEEP these
+            edges and only add missing ones; when empty/absent it proposes the graph fresh.
 
     Returns:
         A single prompt instructing the model to return a JSON object keyed by field name,
-        each value ``{"type": "text|tts|image", "prompt": "<template>"}``.
+        each value ``{"type": "text|tts|image", "prompt": "<template>",
+        "depends_on": [{"field": "<FieldName>", "kind": "hard|soft"}]}``.
     """
     fields_list = "\n".join(f"- {name}" for name in field_names)
     return (
@@ -62,10 +70,38 @@ def build_auto_smart_prompt(
         '  - "prompt": a COMPLETE, production-grade generation template (not a one-liner) '
         f"that references {{{{{base_field}}}}} (and other fields by name where useful), "
         "self-guards when a referenced field may be empty, and pins down concise, "
-        "Anki-friendly output — exactly to the standard set in the system message.\n\n"
+        "Anki-friendly output — exactly to the standard set in the system message.\n"
+        '  - "depends_on": a list of the OTHER fields this field needs, each '
+        '{"field": "<FieldName>", "kind": "hard"|"soft"}. A "hard" dependency means that '
+        'field\'s content is required to generate this one; a "soft" dependency is helpful '
+        "optional context. Only reference fields that exist (the base field or another target "
+        "field), and NEVER create a cycle (no field may depend, directly or transitively, on "
+        "itself).\n\n"
         f"Target fields:\n{fields_list}\n\n"
+        f"{_existing_deps_block(existing_deps)}"
         "Respond with ONLY a JSON object mapping each field name to "
-        '{"type": ..., "prompt": ...}. No prose, no code fences.'
+        '{"type": ..., "prompt": ..., "depends_on": [...]}. No prose, no code fences.'
+    )
+
+
+def _existing_deps_block(existing_deps: dict[str, list[AutoSmartDep]] | None) -> str:
+    """Render the KEEP-these-edges block, or an empty string when no edges exist yet.
+
+    Serializes the current dependency graph so the model respects user-drawn edges instead of
+    clobbering them: it is told to keep every listed edge and only add the missing ones.
+    """
+    if not existing_deps:
+        return ""
+    lines: list[str] = []
+    for field, deps in existing_deps.items():
+        for dep in deps:
+            lines.append(f'  - "{field}" depends on "{dep.field}" ({dep.kind})')
+    if not lines:
+        return ""
+    listing = "\n".join(lines)
+    return (
+        "The dependency graph ALREADY has these edges — KEEP them exactly and only ADD any "
+        f"missing dependencies (do not drop or change these):\n{listing}\n\n"
     )
 
 
@@ -73,8 +109,10 @@ def parse_auto_smart_response(raw: str) -> dict[str, AutoSmartField]:
     """Parse the LLM reply into per-field suggestions, tolerating fences / extra prose.
 
     Extracts the first ``{...}`` JSON object from ``raw`` (so code fences or surrounding
-    commentary don't break parsing), then reads each field's ``type``/``prompt``. An invalid
-    ``type`` falls back to ``"text"``; a missing ``prompt`` falls back to an empty string.
+    commentary don't break parsing), then reads each field's ``type``/``prompt``/``depends_on``.
+    An invalid ``type`` falls back to ``"text"``; a missing ``prompt`` falls back to an empty
+    string; ``depends_on`` is parsed defensively (see :func:`_parse_deps`). No cycle validation
+    happens here — the engine owns that.
 
     Args:
         raw: The model's raw text reply.
@@ -94,8 +132,37 @@ def parse_auto_smart_response(raw: str) -> dict[str, AutoSmartField]:
         if field_type not in _VALID_TYPES:
             field_type = "text"
         prompt = str(value.get("prompt", "") or "")
-        suggestions[str(name)] = AutoSmartField(type=field_type, prompt=prompt)
+        suggestions[str(name)] = AutoSmartField(
+            type=field_type,
+            prompt=prompt,
+            depends_on=_parse_deps(str(name), value.get("depends_on")),
+        )
     return suggestions
+
+
+def _parse_deps(owner: str, value: object) -> tuple[AutoSmartDep, ...]:
+    """Read one field's ``depends_on`` list into ``AutoSmartDep`` entries, tolerantly.
+
+    Each entry needs a non-empty ``field`` (else it is dropped); ``kind`` defaults to ``"hard"``
+    and anything other than ``"soft"`` becomes ``"hard"``; a self-reference (``owner`` naming
+    itself) is ignored. A non-list ``value`` yields no edges.
+    """
+    if not isinstance(value, list):
+        return ()
+    deps: list[AutoSmartDep] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        field = str(entry.get("field", "") or "").strip()
+        if not field or field.lower() == owner.strip().lower():
+            continue
+        kind = (
+            "soft"
+            if str(entry.get("kind", "hard")).strip().lower() == "soft"
+            else "hard"
+        )
+        deps.append(AutoSmartDep(field=field, kind=kind))
+    return tuple(deps)
 
 
 def apply_auto_smart(
@@ -105,7 +172,9 @@ def apply_auto_smart(
 
     ONLY enabled, non-locked fields get their ``type``/``prompt`` overwritten, and only when
     the model returned a suggestion for them. Locked fields, disabled fields, fields with no
-    suggestion, and the base field are left untouched.
+    suggestion, and the base field are left untouched. The suggested ``depends_on`` fills the
+    graph only where a field has NO explicit ``depends_on`` yet — user-drawn/existing edges are
+    preserved (fill gaps, don't clobber).
 
     Args:
         config: The current note-type config.
@@ -115,6 +184,8 @@ def apply_auto_smart(
         A new :class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` (the input is not
         mutated).
     """
+    from omnia.plugins.smart_notes.config import FieldDep
+
     updated: list[SmartNotesFieldConfig] = []
     for field in config.fields:
         suggestion = suggestions.get(field.field)
@@ -124,11 +195,18 @@ def apply_auto_smart(
             and not field.prompt_locked
             and field.field != config.base_field
         ):
-            updated.append(
-                field.copy(
-                    update={"type": suggestion.type, "prompt": suggestion.prompt}
-                )
-            )
+            change: dict[str, object] = {
+                "type": suggestion.type,
+                "prompt": suggestion.prompt,
+            }
+            # Fill the dependency graph only for a field that has no explicit edges yet —
+            # never clobber user-drawn/existing ones.
+            if not field.depends_on and suggestion.depends_on:
+                change["depends_on"] = [
+                    FieldDep(field=dep.field, kind=dep.kind)
+                    for dep in suggestion.depends_on
+                ]
+            updated.append(field.copy(update=change))
         else:
             updated.append(field.copy())
     return config.copy(update={"fields": updated})
@@ -139,6 +217,21 @@ def candidate_fields(config: SmartNotesNoteTypeConfig) -> list[str]:
     return [
         field.field for field in config.generatable_fields() if not field.prompt_locked
     ]
+
+
+def existing_deps(config: SmartNotesNoteTypeConfig) -> dict[str, list[AutoSmartDep]]:
+    """The dependency edges already drawn per field, for seeding the auto-smart prompt.
+
+    Only fields that actually carry explicit ``depends_on`` appear, so an empty graph yields an
+    empty map (the model then proposes the graph fresh).
+    """
+    result: dict[str, list[AutoSmartDep]] = {}
+    for field in config.fields:
+        if field.depends_on:
+            result[field.field] = [
+                AutoSmartDep(field=dep.field, kind=dep.kind) for dep in field.depends_on
+            ]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +345,10 @@ class PromptAuthor:
         if not candidates:
             return config
         prompt = build_auto_smart_prompt(
-            config.note_type, config.base_field, candidates
+            config.note_type,
+            config.base_field,
+            candidates,
+            existing_deps=existing_deps(config),
         )
         raw = self._llm.generate_text(
             prompt,
