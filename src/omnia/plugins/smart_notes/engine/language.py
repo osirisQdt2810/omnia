@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Optional
 
-from omnia.core import envs
+from omnia import envs
 
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub
