@@ -446,6 +446,9 @@ select:disabled { opacity: 0.7; }
   align-items: center; justify-content: center; padding: 24px;
   background: var(--overlay);
 }
+/* The Auto-detect-voices popup opens FROM the Options modal, so it must stack ABOVE it. */
+#sn-autovoices-modal { z-index: 60; }
+.sn-acct-refresh-voices { margin-top: 10px; }
 .sn-modal[hidden] { display: none; }
 .sn-modal-card {
   width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 10px;

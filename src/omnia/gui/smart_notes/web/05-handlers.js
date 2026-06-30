@@ -426,30 +426,14 @@
       "language using the voice you map here.";
     acctAutoVoicesEl.appendChild(head);
 
-    // The section stays compact: a button to open the per-language map (a popup), and Refresh.
-    const row = document.createElement("div");
-    row.className = "sn-acct-test-row";
-
+    // The section stays compact: one button to open the per-language map popup. (Refresh
+    // voices lives in the Default-voice section above.)
     const configure = document.createElement("button");
     configure.type = "button";
     configure.className = "sn-btn sn-btn-magic";
     configure.textContent = "Choose voices…";
     configure.addEventListener("click", openAutoVoices);
-    row.appendChild(configure);
-
-    const refresh = document.createElement("button");
-    refresh.type = "button";
-    refresh.className = "sn-btn sn-acct-refresh-voices";
-    refresh.textContent = "↻ Refresh voices";
-    refresh.title = "Fetch the full edge_tts voice list to enrich the choices";
-    refresh.addEventListener("click", function () {
-      refresh.disabled = true;
-      refresh.textContent = "↻ Refreshing…";
-      send("refresh_voices", {}, null);
-    });
-    row.appendChild(refresh);
-
-    acctAutoVoicesEl.appendChild(row);
+    acctAutoVoicesEl.appendChild(configure);
   }
 
   /** Open the per-language Auto-detect voice-map popup and render its rows. */
@@ -507,7 +491,7 @@
       CATALOG.auto_voice_options = res.auto_voice_options;
     }
     if (acctSubtab === "sound") {
-      renderAutoVoices();  // re-enables the section's Refresh button
+      renderDefaultPicker();  // re-enables the Refresh button in the default-voice section
       if (!autovoicesModal.hidden) {
         renderAutoVoicesList();  // refresh the open popup's dropdowns
       }
@@ -562,6 +546,22 @@
     row.appendChild(prov.label);
     row.appendChild(mdl.label);
     acctDefaultEl.appendChild(row);
+
+    if (isSound) {
+      const refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "sn-btn sn-acct-refresh-voices";
+      refresh.textContent = "↻ Refresh voices";
+      refresh.title =
+        "Re-fetch the provider's full voice list (e.g. edge_tts) so more voices are " +
+        "available to pick — for this default and the Auto-detect map. Needs internet.";
+      refresh.addEventListener("click", function () {
+        refresh.disabled = true;
+        refresh.textContent = "↻ Refreshing…";
+        send("refresh_voices", {}, null);
+      });
+      acctDefaultEl.appendChild(refresh);
+    }
   }
 
   /**
