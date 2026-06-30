@@ -607,7 +607,11 @@ class NativeRuntimeManager:
 
         venv_dir = self.venv_dir(spec)
         _progress(f"creating runtime environment at {venv_dir}")
-        code = self._runner.run([host_python, "-m", "venv", str(venv_dir)])
+        # ``--clear`` rebuilds from scratch: a prior failed install may have left a venv built
+        # by a different (e.g. too-old) interpreter, and ``venv`` without it would REUSE that
+        # stale interpreter's symlinks (only rewriting pyvenv.cfg) — so pip would still run the
+        # old Python and re-hit the version gate. Clearing pins the env to ``host_python``.
+        code = self._runner.run([host_python, "-m", "venv", "--clear", str(venv_dir)])
         if code != 0:
             raise ProviderError(
                 f"{spec.name}: failed to create its runtime environment "
