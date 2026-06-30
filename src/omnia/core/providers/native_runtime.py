@@ -480,6 +480,10 @@ class NativeRuntimeManager:
             )
 
         venv_python = str(self.venv_python(spec))
+        # Best-effort pip upgrade: a fresh venv's pip can be old (e.g. 21.x), which struggles
+        # with VCS installs + heavy resolutions; ignore failure (the existing pip may suffice).
+        _progress("updating pip")
+        self._runner.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
         _progress(f"installing {', '.join(spec.pip_packages)} (this may take a while)")
         code, output = self._runner.run_capture(
             [venv_python, "-m", "pip", "install", *spec.pip_packages],

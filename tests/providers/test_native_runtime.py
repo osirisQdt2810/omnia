@@ -307,7 +307,7 @@ class TestEnsureInstalled:
 
     def test_creates_venv_then_pip_installs_in_order(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(
-            which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 0]
+            which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 0, 0]
         )
         manager = NativeRuntimeManager(tmp_path, runner)
         spec = _server_spec()
@@ -322,7 +322,16 @@ class TestEnsureInstalled:
             "venv",
             str(manager.venv_dir(spec)),
         ]
+        # Best-effort pip upgrade, then the package install.
         assert runner.run_calls[1] == [
+            venv_python,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pip",
+        ]
+        assert runner.run_calls[2] == [
             venv_python,
             "-m",
             "pip",
@@ -347,8 +356,9 @@ class TestEnsureInstalled:
             manager.ensure_installed(_server_spec())
 
     def test_raises_when_pip_install_fails(self, tmp_path: Path) -> None:
+        # run_codes: venv create (0), pip upgrade (0, best-effort), then the package install (1).
         runner = _FakeProcessRunner(
-            which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 1]
+            which_map={"python3": "/usr/bin/python3"}, run_codes=[0, 0, 1]
         )
         # pip's real error (captured via merge_stderr) is surfaced in the message so the user
         # sees WHY — e.g. no matching wheel for their Python.
