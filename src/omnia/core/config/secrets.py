@@ -3,14 +3,14 @@
 API keys / access tokens / credential files must NOT sit as plaintext in the TOML config —
 that file is easy to leak (open it in an editor, paste it in a bug report, sync it by
 accident). Instead the config holds only a *reference*; the real secret lives in a file under
-the add-on's gitignored ``secrets/`` directory.
+the add-on's gitignored ``.secrets/`` directory.
 
 A credential field's value uses one of two reference schemes:
 
-* ``secret:<name>``      — the field's VALUE is the (stripped) content of ``secrets/<name>``.
+* ``secret:<name>``      — the field's VALUE is the (stripped) content of ``.secrets/<name>``.
   Used for api keys / access tokens — the secret is the string itself.
 * ``secret-file:<name>`` — the field is a PATH to a file; it resolves to the absolute path of
-  ``secrets/<name>``. Used for a service-account JSON, which is consumed as a file path.
+  ``.secrets/<name>``. Used for a service-account JSON, which is consumed as a file path.
 
 A bare value with no scheme is treated as a literal — so non-secret fields (``project``,
 ``location``, model ids, base urls) keep living inline in the config, and any pre-existing
@@ -27,7 +27,7 @@ from pathlib import Path
 
 
 class SecretsStore:
-    """Reads/writes secret values + credential files under a gitignored ``secrets/`` dir."""
+    """Reads/writes secret values + credential files under a gitignored ``.secrets/`` dir."""
 
     VALUE_SCHEME = "secret:"
     FILE_SCHEME = "secret-file:"
@@ -51,7 +51,7 @@ class SecretsStore:
 
         ``secret:<name>`` → the file's stripped content (``""`` if the file is missing, so a
         moved-but-not-copied secret surfaces as the provider's clear "missing api_key" error
-        rather than a crash). ``secret-file:<name>`` → the absolute path of ``secrets/<name>``.
+        rather than a crash). ``secret-file:<name>`` → the absolute path of ``.secrets/<name>``.
         """
         if not isinstance(value, str):
             return value
@@ -62,13 +62,13 @@ class SecretsStore:
         return value
 
     def store_value(self, name: str, value: str) -> str:
-        """Write ``value`` to ``secrets/<name>`` and return its ``secret:<name>`` reference."""
+        """Write ``value`` to ``.secrets/<name>`` and return its ``secret:<name>`` reference."""
         self._dir.mkdir(parents=True, exist_ok=True)
         (self._dir / name).write_text(value, encoding="utf-8")
         return f"{self.VALUE_SCHEME}{name}"
 
     def import_file(self, name: str, src_path: str) -> str:
-        """Copy the file at ``src_path`` to ``secrets/<name>``; return its ``secret-file:`` ref.
+        """Copy the file at ``src_path`` to ``.secrets/<name>``; return its ``secret-file:`` ref.
 
         Raises:
             OSError: If ``src_path`` cannot be read/copied (surfaced to the caller, which

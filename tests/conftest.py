@@ -16,17 +16,19 @@ from typing import Optional
 import pytest
 
 # --- make `import omnia` resolve to src/omnia ---------------------------------------
-_SRC = Path(__file__).resolve().parent.parent / "src"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-# Mirror Anki's runtime: the add-on's third-party deps come ONLY from src/omnia/vendor/universal
-# (Anki's bundled Python has no pip packages). Appending it — exactly as the add-on does at
-# startup — means a test that imports a runtime dep (pydantic, tomli_w, rsa, pyasn1) uses the
-# VENDORED copy, so the suite can't falsely pass on a pip package that wouldn't exist in Anki.
-# Only the test RUNNER (pytest) need be installed in the host interpreter. See also the hermetic
-# guard in tests/providers/test_anki_runtime.py, which proves this with site-packages stripped.
-_VENDOR = _SRC / "omnia" / "vendor" / "universal"
+# Mirror Anki's runtime: the add-on's third-party deps come ONLY from the repo-root
+# vendor/universal (Anki's bundled Python has no pip packages). Appending it — exactly as the
+# deployed add-on does at startup — means a test that imports a runtime dep (pydantic, tomli_w,
+# rsa, pyasn1) uses the VENDORED copy, so the suite can't falsely pass on a pip package that
+# wouldn't exist in Anki. Only the test RUNNER (pytest) need be installed in the host
+# interpreter. See also the hermetic guard in tests/providers/test_anki_runtime.py, which
+# proves this with site-packages stripped.
+_VENDOR = _REPO_ROOT / "vendor" / "universal"
 if _VENDOR.is_dir() and str(_VENDOR) not in sys.path:
     sys.path.append(str(_VENDOR))
 
@@ -203,7 +205,7 @@ def _seed_config_dir(dest: Path) -> Path:
     """
     import shutil
 
-    src = _SRC / "omnia" / "config"
+    src = _REPO_ROOT / "config"
     for template in src.glob("*.example.toml"):
         shutil.copy(template, dest / template.name)
     return dest
@@ -330,7 +332,7 @@ class FakeTTSProvider(_TTSProvider):
 
 
 def _real_config_dir() -> Path:
-    return _SRC / "omnia" / "config"
+    return _REPO_ROOT / "config"
 
 
 def llm_sub_has_credentials(provider: str, sub) -> bool:
@@ -375,7 +377,7 @@ def real_llm_provider_or_skip():
 
     * env ``OMNIA_TEST_CONFIG`` → a config DIRECTORY holding your live ``providers.toml`` with
       ``[llm.<provider>]`` creds, or
-    * the add-on's gitignored ``src/omnia/config/providers.toml`` (what the running add-on
+    * the add-on's gitignored ``config/providers.toml`` (what the running add-on
       writes when you configure providers in Anki).
 
     The tracked ``providers.example.toml`` still supplies non-secret defaults (provider, model

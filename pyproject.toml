@@ -9,7 +9,8 @@ target-version = ["py313"]
 # Never format vendored deps or the read-only reference add-ons.
 extend-exclude = '''
 /(
-    src/omnia/vendor
+    vendor
+  | models
   | references
 )/
 '''
@@ -17,7 +18,7 @@ extend-exclude = '''
 [tool.ruff]
 line-length = 88
 target-version = "py313"
-extend-exclude = ["src/omnia/vendor", "references"]
+extend-exclude = ["vendor", "models", "references"]
 
 [tool.ruff.lint]
 # Import sorting (I) is intentionally delegated to standalone isort, not ruff.
@@ -49,7 +50,7 @@ classmethod-decorators = ["pydantic.validator", "validator"]
 
 [tool.isort]
 profile = "black"
-skip_glob = ["src/omnia/vendor/*", "references/*"]
+skip_glob = ["vendor/*", "models/*", "references/*"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -57,7 +58,7 @@ strict = true
 # Anki (anki, aqt, PyQt6) and any vendored libs ship no stubs for strict mode — don't fail
 # on their missing types.
 ignore_missing_imports = true
-exclude = '(^|/)(src/omnia/vendor|references)/'
+exclude = '(^|/)(vendor|models|references)/'
 # Do NOT set `files = [...]` — run mypy explicitly on changed paths (touch-it-fix-it).
 
 [tool.pytest.ini_options]

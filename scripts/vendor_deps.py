@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vendor ``requirements/requirements-vendor.txt`` into ``src/omnia/vendor/universal``.
+"""Vendor ``requirements/requirements-vendor.txt`` into the repo-root ``vendor/universal``.
 
 Anki does not pip-install for users, so runtime deps are bundled with the add-on and added
 to ``sys.path`` at startup. Every vendored dep is **pure-Python and cross-platform** so a
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-VENDOR_DIR = REPO_ROOT / "src" / "omnia" / "vendor"
+VENDOR_DIR = REPO_ROOT / "vendor"
 UNIVERSAL_DIR = VENDOR_DIR / "universal"
 REQ_FILE = REPO_ROOT / "requirements" / "requirements-vendor.txt"
 

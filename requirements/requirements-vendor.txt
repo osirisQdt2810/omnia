@@ -1,4 +1,4 @@
-# Third-party runtime dependencies vendored into src/omnia/vendor/ and added to
+# Third-party runtime dependencies vendored into the repo-root vendor/ and added to
 # sys.path at add-on startup. Anki does NOT pip-install for you, so anything here is
 # bundled with the add-on.
 #
