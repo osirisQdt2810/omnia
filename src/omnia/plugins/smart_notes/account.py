@@ -146,21 +146,29 @@ def default_models(llm: LLMSettings, tts: TTSSettings) -> dict[str, dict]:
         ``{"text": {provider, model}, "image": {...}, "sound": {provider, model}}`` where the
         sound ``model`` is the configured voice ("" = the provider's default).
     """
-    tts_active = tts.active()
     return {
         "text": {"provider": llm.provider, "model": _llm_default_model(llm, "text")},
         "image": {"provider": llm.provider, "model": _llm_default_model(llm, "image")},
-        "sound": {
-            "provider": tts.provider,
-            # voice for most providers; piper has no named voice, so its selectable value is
-            # the .onnx model — fall back to it so the picker reflects what's stored.
-            "model": str(
-                getattr(tts_active, "voice", None)
-                or getattr(tts_active, "model", "")
-                or ""
-            ),
-        },
+        "sound": {"provider": tts.provider, "model": _tts_default_voice(tts.active())},
     }
+
+
+def _tts_default_voice(tts_active: object | None) -> str:
+    """The active TTS provider's stored selectable "voice", mirroring ``_tts_voice_field``.
+
+    Reads the ``voice`` field for providers that have one (a blank voice stays blank — the
+    provider's own built-in default), the ``.onnx`` ``model`` for piper (which has no named
+    voice), and "" for a voice-less provider (google_translate). Preferring ``voice`` keeps a
+    blank voice blank instead of leaking an unrelated ``model`` — e.g. viettts also carries an
+    OpenAI-compat ``model="tts-1"`` that is not a voice.
+    """
+    if tts_active is None:
+        return ""
+    if hasattr(tts_active, "voice"):
+        return str(tts_active.voice or "")
+    if hasattr(tts_active, "model"):
+        return str(tts_active.model or "")
+    return ""
 
 
 # --- key / secret management (Keys subtab) ---------------------------------------------
