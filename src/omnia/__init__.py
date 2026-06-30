@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 _ADDON_DIR = Path(__file__).resolve().parent
 
@@ -49,6 +49,9 @@ from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
 
 _manager: Optional[PluginManager] = None
+# The single Tools → Omnia QAction. Tracked so it can be removed on profile close and not
+# re-appended on the next profile open (profile_did_open fires on every profile switch).
+_menu_action: Optional[Any] = None
 
 
 def addon_user_files_dir() -> Path:
@@ -102,13 +105,23 @@ def _bootstrap() -> None:
 
 
 def _install_menu() -> None:
-    """Add a Tools → Omnia entry that opens the settings dialog."""
+    """Add the single Tools → Omnia entry that opens the settings dialog.
+
+    Idempotent across profile reloads: ``profile_did_open`` fires on every profile switch, so
+    any previously-installed action is removed first — otherwise a duplicate "Omnia" item was
+    appended to the Tools menu on each switch.
+    """
+    global _menu_action
     from aqt import mw
     from aqt.qt import QAction
 
+    if _menu_action is not None:
+        mw.form.menuTools.removeAction(_menu_action)
+        _menu_action = None
     action = QAction("Omnia", mw)
     action.triggered.connect(_open_settings)
     mw.form.menuTools.addAction(action)
+    _menu_action = action
 
 
 def _open_settings() -> None:
@@ -121,7 +134,12 @@ def _open_settings() -> None:
 
 
 def _teardown() -> None:
-    global _manager
+    global _manager, _menu_action
+    if _menu_action is not None:
+        from aqt import mw
+
+        mw.form.menuTools.removeAction(_menu_action)
+        _menu_action = None
     if _manager is not None:
         _manager.teardown()
         _manager = None
