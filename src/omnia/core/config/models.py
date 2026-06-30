@@ -37,7 +37,7 @@ class LLMModelSettings(_Strict):
 
     ``embedding_model`` is reserved for a future embedding feature (no consumer yet).
     ``temperature`` is the per-provider default sampling temperature used for text generation
-    (overridable per process via ``OMNIA_LLM_TEMPERATURE``; see :mod:`omnia.core.envs`).
+    (overridable per process via ``OMNIA_LLM_TEMPERATURE``; see :mod:`omnia.envs`).
     """
 
     text_model: str = ""
