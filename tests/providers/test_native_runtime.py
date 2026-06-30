@@ -103,7 +103,7 @@ class _FakeProcessRunner:
         # Mimic `python -m venv <dir>` materializing the venv interpreter on success, so
         # is_installed (which checks the python exists) reflects a real install.
         if code == 0 and len(argv) >= 3 and argv[1] == "-m" and argv[2] == "venv":
-            venv_python = Path(argv[3]) / (
+            venv_python = Path(argv[-1]) / (
                 "Scripts/python.exe" if native_runtime._IS_WINDOWS else "bin/python"
             )
             venv_python.parent.mkdir(parents=True, exist_ok=True)
@@ -424,6 +424,7 @@ class TestEnsureInstalled:
             "/usr/bin/python3",
             "-m",
             "venv",
+            "--clear",
             str(manager.venv_dir(spec)),
         ]
         # Best-effort pip upgrade, then the package install.
