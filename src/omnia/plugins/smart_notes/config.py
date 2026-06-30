@@ -62,6 +62,11 @@ class SmartNotesFieldRule(_Strict):
 
     note_type: str = ""
     source_field: str = ""
+    # True when ``source_field`` is purely the empty-prompt → base-field fallback (used so a
+    # promptless field can still read the base at generation time). Such a fallback source is
+    # NOT a derived dependency: the graph / ordering / blocking ignore it (the base is always
+    # present), while generation still reads ``source_field`` as before.
+    source_is_base_fallback: bool = False
     target_field: str = ""
     kind: str = Field("text")  # text | image | tts
     prompt: str = ""
