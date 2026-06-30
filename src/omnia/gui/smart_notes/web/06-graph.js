@@ -22,6 +22,19 @@
   const viewGraphBtn = document.getElementById("sn-view-graph");
   const fieldsView = document.getElementById("sn-fields-view");
   const graphView = document.getElementById("sn-graph-view");
+  const reloadBtn = document.getElementById("sn-graph-reload");
+
+  // Graph→prompt diff popover (Feature 2) element handles.
+  const diffPop = document.getElementById("sn-diff-pop");
+  const diffTitle = document.getElementById("sn-diff-title");
+  const diffClose = document.getElementById("sn-diff-close");
+  const diffNotice = document.getElementById("sn-diff-notice");
+  const diffOld = document.getElementById("sn-diff-old");
+  const diffNew = document.getElementById("sn-diff-new");
+  const diffErr = document.getElementById("sn-diff-err");
+  const diffImprove = document.getElementById("sn-diff-improve");
+  const diffDiscard = document.getElementById("sn-diff-discard");
+  const diffApply = document.getElementById("sn-diff-apply");
 
   // Fallback node box size (Python sends w/h per node, but a dangling/legacy payload may not).
   const NODE_W = 180;
@@ -37,6 +50,15 @@
   let graphVisible = false;
   let selectedEdge = null; // {src, dst, derived} of the currently-selected edge
   let posOverride = {}; // name(lower) -> {x, y} ephemeral move overrides (wiped on recompute)
+
+  // The graph→prompt sync baseline: a snapshot of each row's depends_on (the "last synced"
+  // edge state). Taken on load, on save, and after a Feature-1 deps apply; the Sync button
+  // diffs the CURRENT rows against it to find each changed dependent node. {field(lower):
+  // [{field, kind}]}.
+  let lastSyncedDeps = {};
+  // The active diff-popover queue context (null when idle): the topo-ordered list of changed
+  // nodes still to process, the running synced count, and the open popover's field.
+  let syncQueue = null;
 
   // Viewport transform applied to the single <g id="sn-graph-vp">.
   let view = {tx: 0, ty: 0, k: 1};
@@ -64,10 +86,28 @@
         ? graph
         : {nodes: [], edges: [], bounds: {width: 0, height: 0}};
     posOverride = {};
+    // A freshly-loaded note type IS the synced baseline (the rows already match their prompts).
+    snapshotSyncedDeps();
     if (graphVisible) {
       renderGraph();
       fitView();
     }
+  }
+
+  /**
+   * Snapshot every row's CURRENT depends_on as the graph→prompt sync baseline. Called whenever
+   * the rows and their prompts are known to be in sync: on load, on save, and after a Feature-1
+   * (prompt→graph) deps apply. Stored as {field(lower): [{field, kind}]}.
+   */
+  function snapshotSyncedDeps() {
+    lastSyncedDeps = {};
+    Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
+      lastSyncedDeps[(tr.dataset.field || "").toLowerCase()] = readDependsOn(tr).map(
+        function (d) {
+          return {field: d.field, kind: d.kind};
+        }
+      );
+    });
   }
 
   /**
@@ -99,6 +139,11 @@
       return;
     }
     row.dataset.dependsOn = JSON.stringify(deps || []);
+    // The prompt→graph sync just made this field's edges match its prompt, so re-baseline it —
+    // the Sync button must not then treat a classifier-written edge as a user edge change.
+    lastSyncedDeps[(field || "").toLowerCase()] = (deps || []).map(function (d) {
+      return {field: d.field, kind: d.kind};
+    });
     refreshGraphIfOpen();
   }
 
@@ -744,3 +789,541 @@
     }
     return true;
   }
+
+  // --- graph→prompt sync (Feature 2): changed-edge detection + lazy ordered queue ----------
+
+  /** The current effective incoming edges at a field from graphData ({src, kind}[], no self). */
+  function incomingEdges(field) {
+    const lc = (field || "").toLowerCase();
+    const out = [];
+    (graphData.edges || []).forEach(function (e) {
+      if (
+        (e.dst || "").toLowerCase() === lc &&
+        (e.src || "").toLowerCase() !== lc
+      ) {
+        out.push({field: e.src, kind: e.kind});
+      }
+    });
+    return out;
+  }
+
+  /**
+   * Diff a field's baseline depends_on against an "after" {src, kind}[] into EdgeChanges
+   * (add / remove / toggle, case-insensitive). The CANONICAL changed-edge diff — it runs
+   * client-side against the live rows so the lazy per-node sync queue stays order-correct.
+   * @param {!Array<!Object>} before The baseline edges ({field, kind}).
+   * @param {!Array<!Object>} after The current edges ({field, kind}).
+   * @return {!Array<!Object>} EdgeChanges ({action, src, old_kind, new_kind}).
+   */
+  function diffEdges(before, after) {
+    const b = {};
+    before.forEach(function (d) {
+      const k = (d.field || "").toLowerCase();
+      if (k && !b[k]) {
+        b[k] = {src: d.field, kind: d.kind};
+      }
+    });
+    const a = {};
+    after.forEach(function (d) {
+      const k = (d.field || "").toLowerCase();
+      if (k && !a[k]) {
+        a[k] = {src: d.field, kind: d.kind};
+      }
+    });
+    const changes = [];
+    Object.keys(a).forEach(function (k) {
+      if (!b[k]) {
+        changes.push({action: "add", src: a[k].src, old_kind: "", new_kind: a[k].kind});
+      }
+    });
+    Object.keys(b).forEach(function (k) {
+      if (!a[k]) {
+        changes.push({action: "remove", src: b[k].src, old_kind: b[k].kind, new_kind: ""});
+      }
+    });
+    Object.keys(a).forEach(function (k) {
+      if (b[k] && b[k].kind !== a[k].kind) {
+        changes.push({
+          action: "toggle",
+          src: a[k].src,
+          old_kind: b[k].kind,
+          new_kind: a[k].kind
+        });
+      }
+    });
+    return changes;
+  }
+
+  /**
+   * Build the topo-ordered queue of changed dependent nodes: each row whose explicit depends_on
+   * differs from the baseline, ordered so a node comes AFTER any of its (changed) prerequisites.
+   * Each entry is {field, changes:[EdgeChange]}.
+   * @return {!Array<!Object>}
+   */
+  function buildSyncQueue() {
+    const changed = [];
+    Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
+      const field = tr.dataset.field || "";
+      const before = lastSyncedDeps[field.toLowerCase()] || [];
+      const after = readDependsOn(tr).map(function (d) {
+        return {field: d.field, kind: d.kind};
+      });
+      const changes = diffEdges(before, after);
+      if (changes.length) {
+        changed.push({field: field, changes: changes});
+      }
+    });
+    return topoOrderChanged(changed);
+  }
+
+  /**
+   * Order the changed nodes so each comes after any changed node it depends on (a prerequisite).
+   * Uses the current effective graph edges; nodes not in a dependency relation keep their order.
+   * @param {!Array<!Object>} changed The changed nodes ({field, changes}).
+   * @return {!Array<!Object>}
+   */
+  function topoOrderChanged(changed) {
+    const inSet = {};
+    changed.forEach(function (c) {
+      inSet[c.field.toLowerCase()] = c;
+    });
+    // prereqs[x] = the changed fields x depends on (its incoming edges' sources, if also changed).
+    const prereqs = {};
+    changed.forEach(function (c) {
+      const lc = c.field.toLowerCase();
+      prereqs[lc] = incomingEdges(c.field)
+        .map(function (e) {
+          return e.field.toLowerCase();
+        })
+        .filter(function (src) {
+          return inSet[src];
+        });
+    });
+    const ordered = [];
+    const done = {};
+    const onStack = {};
+    function visit(lc) {
+      if (done[lc] || onStack[lc]) {
+        return; // a cycle is impossible (the graph is acyclic), onStack guards regardless
+      }
+      onStack[lc] = true;
+      (prereqs[lc] || []).forEach(visit);
+      onStack[lc] = false;
+      done[lc] = true;
+      ordered.push(inSet[lc]);
+    }
+    changed.forEach(function (c) {
+      visit(c.field.toLowerCase());
+    });
+    return ordered;
+  }
+
+  // The reload control: start the lazy, order-correct rewrite queue.
+  reloadBtn.addEventListener("click", function () {
+    if (syncQueue) {
+      return; // a sync is already running
+    }
+    const queue = buildSyncQueue();
+    if (!queue.length) {
+      graphToastMsg("No edge changes to sync.");
+      return;
+    }
+    syncQueue = {pending: queue, synced: 0, field: ""};
+    processNextSync();
+  });
+
+  /**
+   * Process the next changed node LAZILY: request its rewrite against the CURRENT row state (so a
+   * prior Apply is already reflected), then show the popover. When the queue drains, re-baseline
+   * and toast the count. Computing each node's rewrite only when reached keeps the order correct.
+   */
+  function processNextSync() {
+    if (!syncQueue) {
+      return;
+    }
+    if (!syncQueue.pending.length) {
+      const n = syncQueue.synced;
+      syncQueue = null;
+      snapshotSyncedDeps(); // the rows are now the new synced baseline
+      refreshGraphIfOpen();
+      if (n) {
+        graphToastMsg("Synced " + n + " prompt" + (n === 1 ? "" : "s") + ".");
+      }
+      return;
+    }
+    const node = syncQueue.pending[0];
+    syncQueue.field = node.field;
+    const tr = rowByField(node.field);
+    if (!tr) {
+      syncQueue.pending.shift(); // the field vanished — skip it
+      processNextSync();
+      return;
+    }
+    reloadBtn.disabled = true;
+    setMsg('<span class="sn-spin"></span>Rewriting “' + node.field + "” …", false);
+    const intended = incomingEdges(node.field); // the FULL intended edge set at this node
+    // For a 1-change node the kept_deps are the intended set minus the changed src.
+    const change = node.changes[0];
+    const kept = intended.filter(function (e) {
+      return e.field.toLowerCase() !== (change.src || "").toLowerCase();
+    });
+    send(
+      "rewrite_edges",
+      {
+        note_type: noteTypeSel.value,
+        base_field: baseSel.value,
+        changes: [
+          {
+            target: node.field,
+            old_prompt: tr.dataset.prompt || "",
+            kept_deps: kept,
+            change: change,
+            intended_depends_on: intended
+          }
+        ]
+      },
+      null
+    );
+  }
+
+  /**
+   * Receive the edge-rewrite result (off-thread). Opens the diff popover for the current queued
+   * node with its old→new prompt; a guard-rail failure (ok=false) still opens it (old prompt +
+   * a notice) so the user can hand-edit. An {error} payload aborts the queue with a toast.
+   * @param {?(Array<!Object>|Object)} res [{field, old_prompt, new_prompt, ok, reason}] or {error}.
+   */
+  window.__snRewriteResult = function (res) {
+    reloadBtn.disabled = false;
+    setMsg("");
+    if (!syncQueue) {
+      return;
+    }
+    if (!Array.isArray(res)) {
+      graphToastMsg((res && res.error) || "Rewrite failed — see logs.");
+      abortSync();
+      return;
+    }
+    const node = syncQueue.pending[0];
+    const result =
+      res.find(function (r) {
+        return (r.field || "").toLowerCase() === (node.field || "").toLowerCase();
+      }) || res[0];
+    if (!result) {
+      advanceSync();
+      return;
+    }
+    openDiffPopover({
+      field: node.field,
+      oldPrompt: result.old_prompt || "",
+      newPrompt: result.ok ? result.new_prompt : result.old_prompt || "",
+      intendedDeps: incomingEdges(node.field),
+      notice: result.ok
+        ? ""
+        : "Couldn't auto-rewrite this prompt to match the edge change" +
+          (result.reason ? " (" + esc(result.reason) + ")" : "") +
+          ". Edit it below — Apply unlocks once it matches the dependencies.",
+      onApply: function (text) {
+        applySyncedPrompt(node, text);
+      },
+      onDiscard: advanceSync
+    });
+  };
+
+  /** Abort the running queue (an error/cancel) without re-baselining. */
+  function abortSync() {
+    closeDiffPopover();
+    syncQueue = null;
+  }
+
+  /** Skip the current node and process the next (Discard, or a vanished field). */
+  function advanceSync() {
+    closeDiffPopover();
+    if (!syncQueue) {
+      return;
+    }
+    syncQueue.pending.shift();
+    processNextSync();
+  }
+
+  /**
+   * Apply a reviewed rewrite for the current node: cycle-precheck FIRST (roll back if it would
+   * cycle), then write the prompt AND set depends_on to the intended kinds in LOCKSTEP, recompute
+   * (the server acyclic backstop runs), and advance.
+   * @param {!Object} node The queued node ({field, changes}).
+   * @param {string} text The reviewed Now-prompt to persist.
+   */
+  function applySyncedPrompt(node, text) {
+    const tr = rowByField(node.field);
+    if (!tr) {
+      advanceSync();
+      return;
+    }
+    const intended = incomingEdges(node.field);
+    // Pre-Apply cycle check: an ADD whose source can already reach this node would cycle. Check
+    // every intended edge defensively before writing anything (roll back, do not touch the row).
+    for (let i = 0; i < intended.length; i++) {
+      if (wouldCreateCycle(intended[i].field, node.field)) {
+        graphToastMsg(
+          "Applying this would create a cycle via “" + intended[i].field + "” — skipped."
+        );
+        advanceSync();
+        return;
+      }
+    }
+    tr.dataset.prompt = text;
+    updatePromptSummary(tr);
+    // Lockstep: the explicit depends_on becomes the intended kinds, so kind never drifts
+    // unverified. Keep each existing entry's auto flag where the src is unchanged.
+    setRowDepsLockstep(tr, intended);
+    recomputeGraph(); // server whole-graph validate_acyclic backstop
+    syncQueue.synced += 1;
+    syncQueue.pending.shift();
+    processNextSync();
+  }
+
+  /**
+   * Set a row's explicit depends_on to exactly `intended` ({field, kind}[]), in lockstep with the
+   * just-applied prompt. Preserves the `auto` flag of an existing same-source entry so a
+   * classifier edge stays auto; a brand-new edge is a user edge (auto=false).
+   * @param {!HTMLElement} tr The dependent row.
+   * @param {!Array<!Object>} intended The intended edges ({field, kind}).
+   */
+  function setRowDepsLockstep(tr, intended) {
+    const prev = {};
+    readDependsOn(tr).forEach(function (d) {
+      prev[(d.field || "").toLowerCase()] = d;
+    });
+    const next = intended.map(function (e) {
+      const was = prev[(e.field || "").toLowerCase()];
+      return {field: e.field, kind: e.kind, auto: was ? !!was.auto : false};
+    });
+    tr.dataset.dependsOn = JSON.stringify(next);
+  }
+
+  // --- the reusable diff popover -----------------------------------------------------------
+  let diffState = null; // {field, intendedDeps, timer, improving} while open; null when closed.
+
+  /**
+   * Receive a pinned-improve result on the DEDICATED hook. IGNORED unless the popover is still
+   * open on this field — so a result that returns after the user Discarded/advanced can never
+   * write an unverified prompt onto a row (W1).
+   * @param {string} field The field the improve was for.
+   * @param {?Object} res {prompt, ok, reason} on success, {error} on failure.
+   */
+  window.__snDiffImproveResult = function (field, res) {
+    if (
+      !diffState ||
+      !diffState.improving ||
+      (diffState.field || "").toLowerCase() !== (field || "").toLowerCase()
+    ) {
+      return; // stale / discarded / wrong field — drop it
+    }
+    setDiffImproving(false);
+    if (res && res.prompt) {
+      diffNew.value = res.prompt;
+      diffNotice.hidden = true;
+      if (res.ok === false && res.reason) {
+        showDiffNotice("Improved, but it changed the dependencies — review below.");
+      }
+      validateDiffNow();
+    } else {
+      setDiffErr([(res && res.error) || "Improve failed — see logs."]);
+    }
+  };
+
+  /**
+   * Mark a pinned improve in flight (true) or done (false): while in flight, ALL of the popover's
+   * exits (Improve / Discard / Apply / Close) are disabled so it can't advance mid-improve.
+   * @param {boolean} on Whether an improve is in flight.
+   */
+  function setDiffImproving(on) {
+    if (diffState) {
+      diffState.improving = on;
+    }
+    diffImprove.disabled = on;
+    diffDiscard.disabled = on;
+    diffClose.disabled = on;
+    if (on) {
+      diffApply.disabled = true; // re-gated by validateDiffNow when the result lands
+    }
+  }
+
+  /**
+   * Open the graph→prompt diff popover: a "Was" (old, read-only) over an editable "Now",
+   * gated by a debounced validate so Apply is disabled until the Now prompt derives EXACTLY the
+   * intended dependency set (and has valid {{}} syntax). Anchored near the edited node, clamped
+   * into view.
+   * @param {!Object} o {field, oldPrompt, newPrompt, intendedDeps, notice, onApply, onDiscard}.
+   */
+  function openDiffPopover(o) {
+    diffState = {
+      field: o.field,
+      intendedDeps: o.intendedDeps || [],
+      onApply: o.onApply,
+      onDiscard: o.onDiscard,
+      timer: 0,
+      improving: false
+    };
+    diffTitle.textContent = "Update “" + o.field + "” prompt";
+    diffOld.textContent = o.oldPrompt || "(empty)";
+    diffNew.value = o.newPrompt || "";
+    if (o.notice) {
+      showDiffNotice(o.notice);
+    } else {
+      diffNotice.hidden = true;
+    }
+    diffErr.hidden = true;
+    diffImprove.disabled = false;
+    diffDiscard.disabled = false;
+    diffClose.disabled = false;
+    diffPop.hidden = false;
+    anchorDiffPopover(o.field);
+    validateDiffNow();
+    diffNew.focus();
+  }
+
+  function closeDiffPopover() {
+    if (diffState && diffState.timer) {
+      clearTimeout(diffState.timer);
+    }
+    diffState = null;
+    diffPop.hidden = true;
+  }
+
+  /** Show an HTML-safe notice line in the popover (the guard-rail-failed hand-edit case). */
+  function showDiffNotice(html) {
+    diffNotice.innerHTML = html;
+    diffNotice.hidden = false;
+  }
+
+  /** Position the popover near the node's screen box, clamped inside the viewport. */
+  function anchorDiffPopover(field) {
+    const g = graphSvg.querySelector('[data-node="' + cssAttr(field) + '"]');
+    const margin = 12;
+    const pw = diffPop.offsetWidth || 380;
+    const ph = diffPop.offsetHeight || 320;
+    let left;
+    let top;
+    if (g && g.getBoundingClientRect) {
+      const r = g.getBoundingClientRect();
+      left = r.right + margin;
+      top = r.top;
+      if (left + pw > window.innerWidth - margin) {
+        left = r.left - pw - margin; // flip to the node's left when it won't fit on the right
+      }
+    } else {
+      left = (window.innerWidth - pw) / 2;
+      top = (window.innerHeight - ph) / 2;
+    }
+    left = Math.max(margin, Math.min(left, window.innerWidth - pw - margin));
+    top = Math.max(margin, Math.min(top, window.innerHeight - ph - margin));
+    diffPop.style.left = left + "px";
+    diffPop.style.top = top + "px";
+  }
+
+  /** Escape a field name for a [data-node="…"] attribute selector. */
+  function cssAttr(name) {
+    return String(name).replace(/(["\\])/g, "\\$1");
+  }
+
+  diffNew.addEventListener("input", function () {
+    if (diffState) {
+      clearTimeout(diffState.timer);
+      diffState.timer = setTimeout(validateDiffNow, 250); // debounce the guard-rail validate
+    }
+  });
+
+  /** Run the live guard-rail validate for the current Now text and gate Apply on the result. */
+  function validateDiffNow() {
+    if (!diffState) {
+      return;
+    }
+    const deps = diffState.intendedDeps.map(function (e) {
+      return {field: e.field, kind: e.kind};
+    });
+    send(
+      "validate_prompt",
+      {
+        note_type: noteTypeSel.value,
+        base_field: baseSel.value,
+        target_field: diffState.field,
+        prompt: diffNew.value,
+        intended_depends_on: deps
+      },
+      function (res) {
+        if (!diffState || !res) {
+          return;
+        }
+        if (res.error) {
+          setDiffErr([res.error]);
+          diffApply.disabled = true;
+          return;
+        }
+        const c = res.consistency || {};
+        const msgs = (res.syntax_errors || []).concat(c.messages || []);
+        const ok = c.ok && (res.syntax_errors || []).length === 0;
+        diffApply.disabled = !ok;
+        if (ok) {
+          diffErr.hidden = true;
+        } else {
+          setDiffErr(msgs.length ? msgs : ["This change doesn't match the dependencies."]);
+        }
+      }
+    );
+  }
+
+  /** Render the inline validate error band (consistency messages + syntax errors). */
+  function setDiffErr(messages) {
+    diffErr.innerHTML = (messages || [])
+      .map(function (m) {
+        return esc(m);
+      })
+      .join("<br>");
+    diffErr.hidden = !messages || !messages.length;
+  }
+
+  diffImprove.addEventListener("click", function () {
+    if (!diffState || diffState.improving) {
+      return;
+    }
+    setDiffImproving(true);
+    showDiffNotice('<span class="sn-spin"></span>Improving the wording…');
+    send(
+      "improve_prompt_pinned",
+      {
+        note_type: noteTypeSel.value,
+        base_field: baseSel.value,
+        target_field: diffState.field,
+        prompt: diffNew.value,
+        fixed_deps: diffState.intendedDeps.map(function (e) {
+          return {field: e.field, kind: e.kind};
+        })
+      },
+      null
+    );
+  });
+
+  diffApply.addEventListener("click", function () {
+    if (diffState && !diffState.improving && !diffApply.disabled) {
+      const apply = diffState.onApply;
+      const text = diffNew.value;
+      if (apply) {
+        apply(text);
+      }
+    }
+  });
+
+  /** Exit the popover via Discard / Close: a no-op while a pinned improve is in flight. */
+  function discardDiffPopover() {
+    if (!diffState || diffState.improving) {
+      return;
+    }
+    const discard = diffState.onDiscard;
+    if (discard) {
+      discard();
+    } else {
+      closeDiffPopover();
+    }
+  }
+  diffDiscard.addEventListener("click", discardDiffPopover);
+  diffClose.addEventListener("click", discardDiffPopover);

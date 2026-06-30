@@ -6,6 +6,7 @@ import json
 
 from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
+    cycle_error_for_config,
     field_configs_from_payload,
     graph_payload,
     load_payload,
@@ -134,6 +135,58 @@ class TestGraphPayload:
         assert row_to_payload(cfg.fields[0])["depends_on"] == [
             {"field": "Word", "kind": "hard", "auto": True}
         ]
+
+
+class TestCycleErrorForConfig:
+    """The save-path persistence backstop (W2): reject a config whose deps form a cycle."""
+
+    def test_acyclic_config_has_no_error(self):
+        cfg = note_type_config_from_payload(
+            "Vocab",
+            "Word",
+            [
+                _row(
+                    "Definition",
+                    enabled=True,
+                    prompt="Define {{Word}}",
+                ),
+                _row(
+                    "Example",
+                    enabled=True,
+                    prompt="Use {{Word}} in a sentence",
+                ),
+            ],
+        )
+        assert cycle_error_for_config(cfg) == ""
+
+    def test_cyclic_config_is_rejected(self):
+        # A <-> B via explicit deps forms a cycle the save path must refuse to persist.
+        cfg = note_type_config_from_payload(
+            "Vocab",
+            "Word",
+            [
+                _row(
+                    "A",
+                    enabled=True,
+                    depends_on=[{"field": "B", "kind": "hard"}],
+                ),
+                _row(
+                    "B",
+                    enabled=True,
+                    depends_on=[{"field": "A", "kind": "hard"}],
+                ),
+            ],
+        )
+        msg = cycle_error_for_config(cfg)
+        assert msg and "cycle" in msg.lower()
+
+    def test_self_loop_is_rejected(self):
+        cfg = note_type_config_from_payload(
+            "Vocab",
+            "Word",
+            [_row("A", enabled=True, prompt="Use {{A}}")],
+        )
+        assert cycle_error_for_config(cfg)
 
 
 class TestRowsForNoteType:
@@ -510,3 +563,24 @@ class TestBuildSmartNotesHtml:
         assert "applyDepsMap" in html
         assert "res.deps" in html
         assert "Updated dependency colours for" in html
+
+    def test_graph_to_prompt_ops_and_hooks_wired(self):
+        # Feature 2 (graph → prompt): the Sync-prompts reload posts rewrite_edges; the popover's
+        # live guard rail posts validate_prompt; its ✨ Improve posts improve_prompt_pinned. The
+        # off-thread results push via window.__snRewriteResult / window.__snImproveResult.
+        html = build_smart_notes_html(dark=False)
+        for op in ("validate_prompt", "rewrite_edges", "improve_prompt_pinned"):
+            assert op in html
+        assert "window.__snRewriteResult" in html
+        # The popover's pinned improve uses a DEDICATED hook (not the editor's shared one) so a
+        # stale result can never write an unverified prompt onto a row (W1).
+        assert "window.__snDiffImproveResult" in html
+        assert "openDiffPopover" in html
+        assert "sn-graph-reload" in html  # the reload control next to the graph
+
+    def test_diff_popover_markup_present(self):
+        # The compact floating "Was → Now" diff card (NOT the full-screen modal).
+        html = build_smart_notes_html(dark=False)
+        assert "sn-diff-pop" in html and "sn-diff-card" in html
+        assert "sn-diff-old" in html and "sn-diff-new" in html
+        assert "sn-diff-apply" in html and "sn-diff-improve" in html
