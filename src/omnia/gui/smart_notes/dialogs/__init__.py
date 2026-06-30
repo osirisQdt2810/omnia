@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from omnia.gui.smart_notes.dialogs.config_dialog import SmartNotesDialog
-from omnia.gui.smart_notes.dialogs.custom_prompt import CustomPromptDialog
+from omnia.gui.smart_notes.dialogs.prompt import CustomPromptDialog
+from omnia.gui.smart_notes.dialogs.studio import SmartNotesDialog
 
 __all__ = ["CustomPromptDialog", "SmartNotesDialog"]
