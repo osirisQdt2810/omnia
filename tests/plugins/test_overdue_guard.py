@@ -56,6 +56,26 @@ class TestOverdueGuardPlugin:
         card = FakeCard(ivl=100, id=1)
         assert OverdueGuardPlugin._forced_ease(rule, card, 3) == 2  # forced Hard
 
+    def test_plugin_does_not_flag_on_time_review(self, monkeypatch):
+        # Regression: late_days is days PAST DUE, not elapsed-since-last-review. A card reviewed
+        # exactly when due (elapsed == interval) is 0 days late and must NOT be forced.
+        from conftest import FakeCard
+
+        from omnia.core import anki_compat
+
+        now_ms = 100 * 86_400_000  # reviewed 100 days ago, interval is 100 -> due today
+        monkeypatch.setattr(anki_compat, "card_last_review_ms", lambda card: 0)
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, ease: 5 * 86_400
+        )
+        monkeypatch.setattr("time.time", lambda: now_ms / 1000)
+
+        rule = OverdueRule(ratio=0.8, min_days=2, force_again_after_days=0)
+        card = FakeCard(ivl=100, id=1)
+        assert (
+            OverdueGuardPlugin._forced_ease(rule, card, 3) is None
+        )  # on time, not overdue
+
     def test_disable_removes_transformer(self):
         import types
 

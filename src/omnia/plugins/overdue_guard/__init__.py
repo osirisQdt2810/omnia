@@ -30,7 +30,13 @@ class OverdueGuardPlugin(FeaturePlugin):
         "Caps the grade for very overdue cards (forces Hard/Again). "
         "Cooperates with Typing Accuracy: Typing Accuracy sets the grade first, "
         "then Overdue Guard caps it when a card is overdue. Both can be on together — "
-        "they run in order through the shared ease pipeline, not against each other."
+        "they run in order through the shared ease pipeline, not against each other. "
+        "How “overdue” is measured: a card’s interval (ivl) is the gap Anki scheduled "
+        "between reviews, and days-late is how far past the due date you actually review it "
+        "(reviewing on time = 0 days late). A card is overdue when days-late ÷ interval ≥ "
+        "Ratio, once it is at least Min days late. Example: interval = 10 days and you review "
+        "it 8 days after it came due → 8 ÷ 10 = 0.8, so at the default Ratio 0.8 the card is "
+        "overdue and capped to Hard. The same card reviewed on time → 0 ÷ 10 = 0 → never overdue."
     )
     order = 40
     config_model = OverdueGuardSettings
@@ -58,6 +64,11 @@ class OverdueGuardPlugin(FeaturePlugin):
         if last_review_ms is None:
             return None
         ivl_days = float(getattr(card, "ivl", 0))
-        late_days = (time.time() * 1000 - last_review_ms) / _MS_PER_DAY
+        # late_days is days PAST DUE = elapsed-since-last-review minus the scheduled interval.
+        # (Reviewing on time => ~0.) The rule's ratio/min_days are defined against days-past-due,
+        # matching the config tooltip ("0.8 ≈ 80% past due") and OverdueRule's docstring — not
+        # raw elapsed days, which would flag every on-time mature card.
+        elapsed_days = (time.time() * 1000 - last_review_ms) / _MS_PER_DAY
+        late_days = elapsed_days - ivl_days
         hard_secs = anki_compat.next_interval_seconds(card, 2) or 0
         return rule.forced_ease(ease, ivl_days, late_days, hard_secs / _SECS_PER_DAY)
