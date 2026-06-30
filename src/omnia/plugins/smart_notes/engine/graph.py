@@ -13,12 +13,15 @@ module makes that graph EXPLICIT and adds hard/soft semantics:
 
 :meth:`FieldGraph.from_config` constructs the graph; :meth:`FieldGraph.validate_acyclic` /
 :meth:`FieldGraph.would_create_cycle` guard against cycles (over edges of BOTH kinds);
-:meth:`FieldGraph.laid_out` assigns deterministic ``column``/``row`` coordinates for a renderer;
-and :meth:`FieldGraph.node_edge_set` returns the incoming dependency edges at one field.
+:meth:`FieldGraph.laid_out` assigns deterministic integer ``column``/``row`` coordinates;
+:meth:`FieldGraph.flow_layout` produces balanced grid-wrapped pixel geometry (a
+:class:`LayoutResult` of :class:`NodeLayout`) for the interactive canvas; and
+:meth:`FieldGraph.node_edge_set` returns the incoming dependency edges at one field.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -66,6 +69,48 @@ class FieldNode:
     generatable: bool
     column: int = 0
     row: int = 0
+
+
+@dataclass(frozen=True)
+class NodeLayout:
+    """Per-node pixel geometry for the flow renderer.
+
+    ``x``/``y`` are the top-left corner; ``w``/``h`` the node box size. ``column`` is the
+    longest-path layer (as in :meth:`FieldGraph.laid_out`) and ``lane`` is the sub-column a node
+    falls into when a tall layer is grid-wrapped (0 for the first lane).
+    """
+
+    name: str
+    x: float
+    y: float
+    w: float
+    h: float
+    column: int
+    lane: int
+
+
+@dataclass(frozen=True)
+class LayoutResult:
+    """The result of :meth:`FieldGraph.flow_layout`: per-node geometry + the canvas bounds.
+
+    ``nodes`` is keyed by node order (same order as :attr:`FieldGraph.nodes`); ``width``/``height``
+    are the pixel extent the renderer should frame (``fitView``).
+    """
+
+    nodes: list[NodeLayout]
+    width: float
+    height: float
+
+
+# Flow-layout geometry (px). A node box is ~180 wide; columns are layered by longest-path depth
+# and a tall column grid-WRAPS into lanes so a base with many dependents fans out instead of
+# stacking into one giant column.
+_NODE_W = 180.0
+_NODE_H = 46.0
+_COL_GAP = 96.0  # horizontal gap between layers (and between lanes within a layer)
+_ROW_GAP = 26.0  # vertical gap between stacked nodes
+_PAD = 40.0  # canvas padding around the whole graph
+_LANE_TARGET = 8  # wrap a column into more lanes once it exceeds this many rows
 
 
 def _field_is_generatable(field: SmartNotesFieldConfig, base_lower: str) -> bool:
@@ -230,16 +275,16 @@ class FieldGraph:
             stack.extend(adjacency.get(node, []))
         return False
 
-    def laid_out(self) -> FieldGraph:
-        """Return a copy of the graph with each node assigned a ``column`` and ``row``.
+    def _layered_columns(self) -> dict[str, int]:
+        """Return ``name_lower -> column`` by longest-path topological depth from a root.
 
-        ``column`` is the longest-path topological depth from a root (a node with no incoming
-        edge): roots are column 0, and a node's column is one more than the deepest prerequisite.
-        ``row`` is the node's stable index WITHIN its column, preserving config (node-list) order.
-        Deterministic and integer-only; terminates on any valid DAG.
+        Roots (no incoming edge) are column 0; a node's column is one more than its deepest
+        prerequisite. The single source of truth for layering — shared by :meth:`laid_out` (which
+        adds the within-column row) and :meth:`flow_layout` (which adds pixel geometry). Considers
+        edges of BOTH kinds and ignores edges to/from unknown fields.
 
         Returns:
-            A new :class:`FieldGraph` with the same nodes (coordinates set) and the same edges.
+            ``name_lower -> column`` for every node, in no particular dict order.
 
         Raises:
             SmartNotesCycleError: If the graph contains a cycle (layering cannot terminate).
@@ -266,6 +311,25 @@ class FieldGraph:
 
         for name in order:
             depth(name)
+        return column
+
+    def laid_out(self) -> FieldGraph:
+        """Return a copy of the graph with each node assigned a ``column`` and ``row``.
+
+        ``column`` is the longest-path topological depth from a root (a node with no incoming
+        edge): roots are column 0, and a node's column is one more than the deepest prerequisite.
+        ``row`` is the node's stable index WITHIN its column, preserving config (node-list) order.
+        Deterministic and integer-only; terminates on any valid DAG.
+
+        Returns:
+            A new :class:`FieldGraph` with the same nodes (coordinates set) and the same edges.
+
+        Raises:
+            SmartNotesCycleError: If the graph contains a cycle (layering cannot terminate).
+        """
+        order = [node.name.strip().lower() for node in self.nodes]
+        rank = {name: index for index, name in enumerate(order)}
+        column = self._layered_columns()
 
         # Stable within-column row: nodes in a column keep their config order.
         by_column: dict[int, list[str]] = {}
@@ -285,6 +349,84 @@ class FieldGraph:
             for node in self.nodes
         ]
         return FieldGraph(nodes=placed, edges=list(self.edges))
+
+    def flow_layout(self) -> LayoutResult:
+        """Compute balanced pixel geometry for the flow renderer.
+
+        Lays the nodes out left-to-right by longest-path layer (:meth:`_layered_columns`), but a
+        TALL layer is grid-WRAPPED into ``ceil(count / _LANE_TARGET)`` sub-columns (lanes) so a
+        base field with many dependents fans out instead of stacking into one giant column — the
+        react-flow/n8n look. Within a layer, nodes fill each lane top-to-bottom in config order;
+        each layer's block is then vertically CENTERED against the tallest layer so the canvas is
+        balanced. Deterministic; pixel coordinates derive from the shared integer layering.
+
+        Returns:
+            A :class:`LayoutResult` with one :class:`NodeLayout` per node (config order) and the
+            canvas ``width``/``height`` the renderer frames.
+
+        Raises:
+            SmartNotesCycleError: If the graph contains a cycle (layering cannot terminate).
+        """
+        order = [node.name.strip().lower() for node in self.nodes]
+        rank = {name: index for index, name in enumerate(order)}
+        column = self._layered_columns()
+
+        # Group node names per layer in config order; a layer wraps into `lanes` sub-columns.
+        by_column: dict[int, list[str]] = {}
+        for name in sorted(order, key=lambda n: rank[n]):
+            by_column.setdefault(column[name], []).append(name)
+
+        lanes_in: dict[int, int] = {}
+        rows_per_lane: dict[int, int] = {}
+        for col, names in by_column.items():
+            lanes = max(1, math.ceil(len(names) / _LANE_TARGET))
+            lanes_in[col] = lanes
+            rows_per_lane[col] = max(1, math.ceil(len(names) / lanes))
+
+        # The tallest layer (in rows) sets the canvas height; shorter layers center against it.
+        max_rows = max((rows_per_lane[c] for c in by_column), default=1)
+        block_h = max_rows * _NODE_H + (max_rows - 1) * _ROW_GAP if max_rows else 0.0
+
+        # Left edge (x) of each layer: sum of all prior layers' lane widths + gaps.
+        col_x: dict[int, float] = {}
+        cursor = _PAD
+        for col in sorted(by_column):
+            col_x[col] = cursor
+            lane_span = lanes_in[col] * _NODE_W + (lanes_in[col] - 1) * _COL_GAP
+            cursor += lane_span + _COL_GAP
+        total_w = cursor - _COL_GAP + _PAD if by_column else _PAD * 2
+
+        # name_lower -> (lane, row-within-lane), filling each lane top-to-bottom.
+        slot: dict[str, tuple[int, int]] = {}
+        for col, names in by_column.items():
+            per_lane = rows_per_lane[col]
+            for index, name in enumerate(names):
+                slot[name] = (index // per_lane, index % per_lane)
+
+        layouts: list[NodeLayout] = []
+        for node in self.nodes:
+            key = node.name.strip().lower()
+            col = column[key]
+            lane, row = slot[key]
+            rows_here = rows_per_lane[col]
+            layer_h = rows_here * _NODE_H + (rows_here - 1) * _ROW_GAP
+            top = _PAD + (block_h - layer_h) / 2.0  # vertical centering
+            x = col_x[col] + lane * (_NODE_W + _COL_GAP)
+            y = top + row * (_NODE_H + _ROW_GAP)
+            layouts.append(
+                NodeLayout(
+                    name=node.name,
+                    x=x,
+                    y=y,
+                    w=_NODE_W,
+                    h=_NODE_H,
+                    column=col,
+                    lane=lane,
+                )
+            )
+
+        total_h = block_h + _PAD * 2 if self.nodes else _PAD * 2
+        return LayoutResult(nodes=layouts, width=total_w, height=total_h)
 
     def node_edge_set(self, target_field: str) -> NodeEdgeSet:
         """Return the incoming dependency edges at ``target_field`` in this graph.

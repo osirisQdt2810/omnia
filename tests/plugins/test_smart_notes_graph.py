@@ -385,3 +385,110 @@ class TestLayeredLayout:
         )
         with pytest.raises(SmartNotesCycleError):
             graph.laid_out()
+
+
+def _fan_out(count: int) -> SmartNotesNoteTypeConfig:
+    """A base with ``count`` dependents that each {{ref}} only the base — one tall layer."""
+    fields = [
+        (f"D{i}", dict(enabled=True, type="text", prompt="{{Word}}"))
+        for i in range(count)
+    ]
+    return _config("Word", fields)
+
+
+class TestFlowLayout:
+    def test_fan_out_wraps_into_lanes_not_one_column(self):
+        # The bug this kills: 33 dependents in ONE column. They must spread across >1 lane and
+        # therefore occupy more than one distinct x coordinate.
+        flow = FieldGraph.from_config(_fan_out(33)).flow_layout()
+        by_name = {n.name: n for n in flow.nodes}
+        dependents = [by_name[f"D{i}"] for i in range(33)]
+        # All dependents share the same longest-path column...
+        assert {n.column for n in dependents} == {1}
+        # ...but are wrapped into multiple lanes / x positions (no 33-high stack).
+        assert max(n.lane for n in dependents) >= 1
+        assert len({round(n.x, 3) for n in dependents}) > 1
+
+    def test_bounds_are_positive(self):
+        flow = FieldGraph.from_config(_fan_out(33)).flow_layout()
+        assert flow.width > 0
+        assert flow.height > 0
+
+    def test_node_geometry_has_size(self):
+        flow = FieldGraph.from_config(
+            _config(
+                "Word", [("Def", dict(enabled=True, type="text", prompt="{{Word}}"))]
+            )
+        ).flow_layout()
+        node = next(n for n in flow.nodes if n.name == "Def")
+        assert node.w > 0 and node.h > 0
+
+    def test_layers_advance_in_x(self):
+        flow = FieldGraph.from_config(
+            _config(
+                "Word",
+                [
+                    ("A", dict(enabled=True, type="text", prompt="{{Word}}")),
+                    ("B", dict(enabled=True, type="text", prompt="{{A}}")),
+                ],
+            )
+        ).flow_layout()
+        by_name = {n.name: n for n in flow.nodes}
+        assert by_name["Word"].x < by_name["A"].x < by_name["B"].x
+
+    def test_cycle_raises(self):
+        graph = FieldGraph(
+            nodes=FieldGraph.from_config(
+                _config(
+                    "Word",
+                    [
+                        ("A", dict(enabled=True, type="text")),
+                        ("B", dict(enabled=True, type="text")),
+                    ],
+                )
+            ).nodes,
+            edges=[
+                GraphEdge(src="A", dst="B", kind="hard", derived=True),
+                GraphEdge(src="B", dst="A", kind="hard", derived=True),
+            ],
+        )
+        with pytest.raises(SmartNotesCycleError):
+            graph.flow_layout()
+
+    def test_empty_and_single_node_layouts_are_safe(self):
+        # No div-by-zero on the degenerate shapes; bounds stay positive.
+        empty = FieldGraph(nodes=[], edges=[]).flow_layout()
+        assert empty.nodes == [] and empty.width > 0 and empty.height > 0
+        single = FieldGraph.from_config(_config("Word", [])).flow_layout()
+        assert [n.name for n in single.nodes] == ["Word"]
+        assert single.width > 0 and single.height > 0
+
+    def test_short_layer_is_centered_not_top_aligned(self):
+        # The visual heart of the redesign: a 1-node base column is vertically CENTERED against
+        # the tall dependent block, not pinned to the top.
+        flow = FieldGraph.from_config(_fan_out(33)).flow_layout()
+        by_name = {n.name: n for n in flow.nodes}
+        word = by_name["Word"]
+        deps = [by_name[f"D{i}"] for i in range(33)]
+        top = min(n.y for n in deps)
+        bottom = max(n.y + n.h for n in deps)
+        word_center = word.y + word.h / 2
+        assert top < word_center < bottom  # sits in the middle band
+        assert word.y > top  # not top-aligned with the dependents
+
+
+class TestLayeredColumnsHelper:
+    def test_helper_matches_laid_out_columns(self):
+        # The factored longest-path helper must yield the SAME columns laid_out() exposes.
+        config = _config(
+            "A",
+            [
+                ("B", dict(enabled=True, type="text", prompt="{{A}}")),
+                ("C", dict(enabled=True, type="text", prompt="{{A}}")),
+                ("D", dict(enabled=True, type="text", prompt="{{B}} {{C}}")),
+            ],
+        )
+        graph = FieldGraph.from_config(config)
+        helper = graph._layered_columns()
+        laid = {n.name.strip().lower(): n.column for n in graph.laid_out().nodes}
+        assert helper == laid
