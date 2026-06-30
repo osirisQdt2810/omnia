@@ -21,6 +21,28 @@ class _Strict(BaseModel):
 
 
 _GENERATION_TYPES = {"text", "image", "tts"}
+_DEP_KINDS = {"hard", "soft"}
+
+
+class FieldDep(_Strict):
+    """An explicit dependency edge from one field onto a prerequisite ``field``.
+
+    ``kind`` carries the semantics: a ``"hard"`` dependency both orders generation AND
+    blocks (the dependent is skipped when the prerequisite is empty/failed); a ``"soft"``
+    dependency orders only and never blocks. An explicit entry for an edge already derived
+    from a prompt ``{{ref}}`` overrides that edge's (default ``"hard"``) kind. The model layer
+    intentionally does NOT validate self/unknown references — a field may legitimately depend
+    on a not-yet-created field; whole-note-type checks live in the engine.
+    """
+
+    field: str
+    kind: str = "hard"
+
+    @validator("kind")
+    def _validate_kind(cls, value: str) -> str:
+        if value not in _DEP_KINDS:
+            raise ValueError("kind must be 'hard' or 'soft'")
+        return value
 
 
 class SmartNotesFieldRule(_Strict):
@@ -54,6 +76,9 @@ class SmartNotesFieldRule(_Strict):
     # Per-rule overwrite (the note-type config carries the real overwrite flag; the engine
     # threads it onto the compiled rule so skip logic can read it per field).
     overwrite: bool = False
+    # Explicit dependency edges threaded from the field config (union with derived {{refs}});
+    # ordering + blocking read these alongside the derived edges.
+    depends_on: list[FieldDep] = Field(default_factory=list)
 
     @validator("kind")
     def _validate_kind(cls, value: str) -> str:
@@ -85,6 +110,10 @@ class SmartNotesFieldConfig(_Strict):
     # TTS language code (e.g. "vi"); empty = auto-detect the spoken text's language.
     language: str = ""
     overwrite: bool = False
+    # Explicit dependency edges onto prerequisite fields (union with derived {{refs}}); a
+    # "hard" dep both orders and blocks, a "soft" dep orders only. An explicit entry overrides
+    # the kind of a derived edge for the same prerequisite.
+    depends_on: list[FieldDep] = Field(default_factory=list)
 
     @validator("type")
     def _validate_type(cls, value: str) -> str:
