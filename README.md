@@ -34,7 +34,7 @@ pip install -r requirements/requirements-dev.txt
 pre-commit install
 
 pytest tests/ -vv                 # logic tests (Anki is stubbed)
-python scripts/install_dev.py     # symlink into local Anki for manual testing
+python scripts/install_addon.py   # assemble into local Anki for manual testing
 python scripts/build_addon.py     # -> dist/omnia.ankiaddon
 ```
 

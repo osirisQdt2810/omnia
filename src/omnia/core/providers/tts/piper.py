@@ -1,7 +1,7 @@
 """Piper TTS — local, offline, open-source (WAV output).
 
 Piper is a CPU-friendly neural TTS that runs fully offline from an ONNX voice model. The model
-itself is plain data and ships in the add-on under ``src/omnia/models/piper/`` (a ``<voice>.onnx``
+itself is plain data and ships in the add-on under ``models/piper/`` (a ``<voice>.onnx``
 + ``<voice>.onnx.json`` pair); a sound field's "voice" is either a bundled voice NAME
 (resolved to that dir) or an absolute ``.onnx`` path. The runtime, however, is the
 ``piper-tts`` package, which wraps **native** ``onnxruntime`` — a compiled, platform-specific
@@ -38,9 +38,33 @@ from omnia.core.providers.tts.registry import register_tts
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient
 
-# Bundled voice models live next to the add-on package: src/omnia/models/piper/<voice>.onnx
-# (piper.py is at src/omnia/core/providers/tts/piper.py → parents[3] is src/omnia).
-_MODELS_DIR = Path(__file__).resolve().parents[3] / "models" / "piper"
+
+def _resolve_models_dir() -> Path:
+    """Locate the bundled ``models/piper`` dir across the deploy and dev layouts.
+
+    ``models`` is NOT inside the source package — it sits at the repo/add-on root. Two layouts
+    resolve differently from ``__file__`` (``<root>/core/providers/tts/piper.py``):
+
+    * Deployed (per-item symlinks): ``models`` is a symlinked SIBLING of the package items, so
+      it is ``parents[3]/models`` — using the un-resolved path so the ``core`` symlink isn't
+      chased back into ``src/omnia`` (where no ``models`` sibling exists).
+    * Dev/headless (``src/omnia`` package, repo-root ``models``): it is ``parents[5]/models``.
+
+    Prefer whichever ``models/piper`` actually exists; fall back to the deploy location so a
+    fresh install still produces a sensible "voice model not found" message.
+    """
+    here = Path(__file__)
+    candidates = (
+        here.parents[3] / "models" / "piper",  # deployed add-on root sibling
+        here.parents[5] / "models" / "piper",  # dev repo root
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate.resolve(strict=False)
+    return candidates[0].resolve(strict=False)
+
+
+_MODELS_DIR = _resolve_models_dir()
 _DEFAULT_VOICE = "vi_VN-vais1000-medium"  # the bundled Vietnamese voice
 
 # The managed-venv spec (ADR-005): a one-shot CLI run in the venv via piper's console script.

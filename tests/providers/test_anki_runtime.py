@@ -1,4 +1,4 @@
-"""Hermetic guard: the add-on must work with ONLY stdlib + ``src/omnia/vendor/universal``.
+"""Hermetic guard: the add-on must work with ONLY stdlib + the repo-root ``vendor/universal``.
 
 This is the test that would have caught the ``edge_tts`` regression where a provider quietly
 depended on a pip package (``edge-tts``) that exists in the dev venv but NOT in Anki's bundled
@@ -20,7 +20,7 @@ from conftest import _can_reach
 
 _REPO = Path(__file__).resolve().parents[2]
 _SRC = _REPO / "src"
-_VENDOR = _SRC / "omnia" / "vendor" / "universal"
+_VENDOR = _REPO / "vendor" / "universal"
 
 # Prologue every child runs: become an Anki-like interpreter — drop site-packages / the dev
 # venv, keep stdlib, and add only the add-on source + its vendored (pure-Python) deps.

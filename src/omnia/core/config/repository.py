@@ -42,9 +42,9 @@ class ConfigRepository:
         self, loader: ConfigLoader, secrets: Optional[SecretsStore] = None
     ) -> None:
         self._loader = loader
-        # Secrets live next to the config dir (``<addon>/secrets``) unless one is injected
+        # Secrets live next to the config dir (``<addon>/.secrets``) unless one is injected
         # (tests pass their own). The reference scheme keeps keys/JSON out of providers.toml.
-        self._secrets = secrets or SecretsStore(loader.config_dir.parent / "secrets")
+        self._secrets = secrets or SecretsStore(loader.config_dir.parent / ".secrets")
         self._config: OmniaConfig = loader.load()
         self._resolve_secrets()
         # Retained so a plugin's namespace can be validated by its own config_model.
@@ -218,7 +218,7 @@ class ConfigRepository:
     ) -> str:
         """Import a credential file into the secrets store; return the resolved absolute path.
 
-        Copies ``src_path`` into ``secrets/<provider>__<field><ext>`` and writes a
+        Copies ``src_path`` into ``.secrets/<provider>__<field><ext>`` and writes a
         ``secret-file:`` reference to the TOML, so the JSON itself never lives in the config
         dir and the stored value is portable (it follows the add-on, not the source path).
         """

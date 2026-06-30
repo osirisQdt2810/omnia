@@ -5,7 +5,7 @@
 # RUNTIME dependency of the add-on.
 #
 # WHY: Anki does not pip-install for you. At runtime the add-on's third-party deps come solely
-# from src/omnia/vendor/universal (added to sys.path at startup; see requirements-vendor.txt).
+# from the repo-root vendor/universal (added to sys.path at startup; see requirements-vendor.txt).
 # The test suite mirrors that exactly — tests/conftest.py appends that same vendor dir to
 # sys.path — so pip-installing pydantic / rsa / pyasn1 / tomli-w here would only SHADOW the
 # vendored copies and hide vendoring bugs. Keep them out. The hermetic guard in

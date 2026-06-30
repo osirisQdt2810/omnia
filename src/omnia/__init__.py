@@ -11,7 +11,11 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-_ADDON_DIR = Path(__file__).resolve().parent
+# Resolve the DIRECTORY, not the file: with the per-item-symlink deploy, ``__init__.py`` is a
+# symlink back into the repo's ``src/omnia``. Resolving the file would follow it there (where
+# the runtime siblings vendor/, models/, config/, .secrets/ do NOT exist); resolving the parent
+# instead keeps ``_ADDON_DIR`` at the real add-on folder where those siblings are assembled.
+_ADDON_DIR = Path(__file__).parent.resolve(strict=False)
 
 # Anki loads an add-on under its *folder* name (the numeric AnkiWeb id once published, e.g.
 # "123456"), so this package's __name__ is that id, not "omnia". Alias "omnia" to this
@@ -84,7 +88,7 @@ def _bootstrap() -> None:
 
     usage.set_default_recorder(usage.JsonUsageRecorder(user_files / "usage.json"))
     config_dir = _ADDON_DIR / "config"
-    (_ADDON_DIR / "secrets").mkdir(parents=True, exist_ok=True)
+    (_ADDON_DIR / ".secrets").mkdir(parents=True, exist_ok=True)
     paths = AddonPaths(
         addon_dir=_ADDON_DIR,
         web_dir=_ADDON_DIR / "web",
