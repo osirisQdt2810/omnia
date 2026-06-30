@@ -342,10 +342,11 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
 def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
     """Build the field dependency graph payload (nodes + edges) the SVG view renders.
 
-    Computes the effective graph for ``config`` (:func:`build_field_graph`) and the deterministic
-    layered layout (:func:`layered_layout`), then serializes both for the page. The layout
-    (``column``/``row``) is the single source of truth — it is always computed in Python so the
-    JS never re-implements longest-path; the page only places nodes by these coordinates.
+    Computes the effective graph for ``config`` (:meth:`FieldGraph.from_config`) and the
+    deterministic layered layout (:meth:`FieldGraph.laid_out`), then serializes both for the
+    page. The layout (``column``/``row``) is the single source of truth — it is always computed
+    in Python so the JS never re-implements longest-path; the page only places nodes by these
+    coordinates.
 
     Args:
         config: The note type's smart-notes config (with each field's ``depends_on``).
@@ -354,12 +355,9 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
         ``{"nodes": [{name, is_base, generatable, column, row}, ...],
         "edges": [{src, dst, kind, derived}, ...]}``.
     """
-    from omnia.plugins.smart_notes.engine.graph import (
-        build_field_graph,
-        layered_layout,
-    )
+    from omnia.plugins.smart_notes.engine.graph import FieldGraph
 
-    graph = layered_layout(build_field_graph(config))
+    graph = FieldGraph.from_config(config).laid_out()
     return {
         "nodes": [
             {
