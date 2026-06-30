@@ -152,7 +152,13 @@ def default_models(llm: LLMSettings, tts: TTSSettings) -> dict[str, dict]:
         "image": {"provider": llm.provider, "model": _llm_default_model(llm, "image")},
         "sound": {
             "provider": tts.provider,
-            "model": str(getattr(tts_active, "voice", "") or ""),
+            # voice for most providers; piper has no named voice, so its selectable value is
+            # the .onnx model — fall back to it so the picker reflects what's stored.
+            "model": str(
+                getattr(tts_active, "voice", None)
+                or getattr(tts_active, "model", "")
+                or ""
+            ),
         },
     }
 
