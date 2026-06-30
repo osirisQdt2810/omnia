@@ -178,6 +178,15 @@ select:disabled { opacity: 0.7; }
 }
 .sn-acct-default-sel { min-width: 200px; }
 
+/* The Auto-detect voice map lives in its own popup: a scrollable column of language → voice
+   rows (full-width selects), instead of dumping ~40 dropdowns into the Account pane. */
+.sn-autovoices-list {
+  max-height: 56vh; overflow: auto; padding: 2px 2px 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sn-acct-autovoice-row { width: 100%; }
+.sn-acct-autovoice-sel { width: 100%; }
+
 /* Keys subtab: a fancy card per managed provider — masked credential fields with an eye
    reveal, an inline Save / Browse, an honest quota story (a real bar for OpenRouter; a note
    for providers whose quota lives in their console), and a console link. */

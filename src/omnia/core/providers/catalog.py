@@ -65,8 +65,17 @@ _LANGUAGE_LABELS: dict[str, str] = {lang["code"]: lang["label"] for lang in LANG
 
 
 def providers_for(kind: str) -> list[str]:
-    """Return the provider names offered for a generation ``kind`` (text/image → LLM, tts → TTS)."""
-    return list(TTS_PROVIDERS) if kind == KIND_TTS else list(LLM_PROVIDERS)
+    """Return the provider names offered for a generation ``kind``.
+
+    text → every LLM provider; image → only the LLM providers that ACTUALLY generate images
+    (the keys of ``_IMAGE_MODELS`` — e.g. openrouter has no image endpoint, so it's excluded
+    and never offered for an image field); tts → the TTS providers.
+    """
+    if kind == KIND_TTS:
+        return list(TTS_PROVIDERS)
+    if kind == KIND_IMAGE:
+        return list(_IMAGE_MODELS)
+    return list(LLM_PROVIDERS)
 
 
 def text_models(provider: str) -> list[str]:
@@ -180,6 +189,7 @@ def catalog_payload(
     all_voices = [v for voices in voices_by_provider.values() for v in voices]
     return {
         "llm_providers": list(LLM_PROVIDERS),
+        "image_providers": providers_for(KIND_IMAGE),
         "tts_providers": list(TTS_PROVIDERS),
         "languages": [dict(lang) for lang in LANGUAGES],
         "auto_voice_options": {
