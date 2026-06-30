@@ -23,6 +23,10 @@
     tr.dataset.model = row.model || "";
     tr.dataset.voice = row.voice || "";
     tr.dataset.language = row.language || "";
+    // Explicit dependency edges ({field, kind}[]) edited in the Dependencies view; stored as
+    // JSON on the row so collectRows reads them as the single source of truth alongside the
+    // other editable state.
+    tr.dataset.dependsOn = JSON.stringify(row.depends_on || []);
 
     const tdName = cell("sn-fieldname");
     tdName.textContent = row.field;
@@ -525,6 +529,20 @@
   }
 
   /**
+   * Parse a row's stored dependency list (JSON on its data-depends-on attribute).
+   * @param {!HTMLElement} tr The row.
+   * @return {!Array<!Object>} The depends_on entries ({field, kind}); [] if unset/invalid.
+   */
+  function readDependsOn(tr) {
+    try {
+      const parsed = JSON.parse(tr.dataset.dependsOn || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
    * Read every table row back into a list of row payloads.
    * @return {!Array<!Object>}
    */
@@ -543,7 +561,8 @@
         model: sound ? "" : tr.dataset.model || "",
         voice: sound ? tr.dataset.voice || "" : "",
         language: sound ? tr.dataset.language || "" : "",
-        overwrite: tr.querySelector(".sn-overwrite").checked
+        overwrite: tr.querySelector(".sn-overwrite").checked,
+        depends_on: readDependsOn(tr)
       });
     });
     return rows;

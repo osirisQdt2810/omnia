@@ -7,6 +7,7 @@ import json
 from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
     field_configs_from_payload,
+    graph_payload,
     load_payload,
     merge_note_type_into,
     note_type_config_from_payload,
@@ -16,6 +17,7 @@ from omnia.gui.smart_notes.html import (
 )
 from omnia.plugins.smart_notes.authoring import AutoSmartField, apply_auto_smart
 from omnia.plugins.smart_notes.config import (
+    FieldDep,
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
@@ -39,9 +41,75 @@ def _row(field: str, **kw) -> dict:
         "voice": "",
         "language": "",
         "overwrite": False,
+        "depends_on": [],
     }
     base.update(kw)
     return base
+
+
+class TestGraphPayload:
+    def test_nodes_and_derived_edge(self):
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}}",
+                )
+            ],
+        )
+        gp = graph_payload(cfg)
+        names = {n["name"] for n in gp["nodes"]}
+        assert {"Word", "Definition"} <= names
+        base = next(n for n in gp["nodes"] if n["name"] == "Word")
+        assert base["is_base"] is True
+        # the {{Word}} reference yields a derived, default-hard edge Word -> Definition
+        assert {
+            "src": "Word",
+            "dst": "Definition",
+            "kind": "hard",
+            "derived": True,
+        } in gp["edges"]
+        # every node carries a layout column/row (computed in Python)
+        assert all("column" in n and "row" in n for n in gp["nodes"])
+
+    def test_explicit_soft_overrides_derived_hard(self):
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}}",
+                    depends_on=[FieldDep(field="Word", kind="soft")],
+                )
+            ],
+        )
+        edge = next(
+            e
+            for e in graph_payload(cfg)["edges"]
+            if e["dst"] == "Definition" and e["src"] == "Word"
+        )
+        assert edge["kind"] == "soft"
+
+    def test_depends_on_round_trips_through_payload(self):
+        rows = [
+            _row(
+                "Definition",
+                enabled=True,
+                type="text",
+                depends_on=[{"field": "Word", "kind": "soft"}],
+            )
+        ]
+        cfg = note_type_config_from_payload("Vocab", "Word", rows)
+        field = cfg.fields[0]
+        assert [(d.field, d.kind) for d in field.depends_on] == [("Word", "soft")]
+        assert row_to_payload(field)["depends_on"] == [
+            {"field": "Word", "kind": "soft"}
+        ]
 
 
 class TestRowsForNoteType:

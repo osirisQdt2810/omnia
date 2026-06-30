@@ -490,3 +490,40 @@ select:disabled { opacity: 0.7; }
 }
 .sn-lightbox[hidden] { display: none; }
 .sn-lightbox img { max-width: 96vw; max-height: 96vh; display: block; }
+
+/* --- Field dependency graph (Fields ⇄ Dependencies view) ------------------------------- */
+.sn-viewswitch { display: flex; gap: 6px; margin: 4px 0 8px; }
+.sn-view-btn {
+  border: 1px solid var(--card-border); background: transparent; color: var(--muted);
+  border-radius: 999px; padding: 4px 14px; font-size: 12px; cursor: pointer;
+}
+.sn-view-btn.sn-view-active {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.sn-graph-wrap { position: relative; }
+.sn-graph-wrap[hidden] { display: none; }
+.sn-graph-hint { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.sn-edge-hard { color: #e5484d; }
+.sn-edge-soft { color: #30a46c; }
+.sn-graph-scroll {
+  overflow: auto; max-height: 60vh; border: 1px solid var(--card-border);
+  border-radius: 10px; background: var(--input-bg);
+}
+.sn-graph-svg { display: block; user-select: none; }
+.sn-node { cursor: grab; }
+.sn-node rect { fill: var(--card-top); stroke: var(--card-border); stroke-width: 1.5; }
+.sn-node text { fill: var(--fg); font-size: 12px; pointer-events: none; }
+.sn-node:hover rect { stroke: var(--accent); }
+.sn-node-base rect { fill: var(--accent); stroke: transparent; }
+.sn-node-base text { fill: #fff; }
+.sn-node-ng rect { stroke-dasharray: 4,3; opacity: 0.7; }
+.sn-edge { cursor: pointer; }
+.sn-edge:hover { stroke-width: 3; }
+.sn-drag-line { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4,4; pointer-events: none; }
+.sn-graph-toast {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.82); color: #fff; padding: 6px 12px; border-radius: 8px;
+  font-size: 12px; pointer-events: none; max-width: 80%;
+}
+.sn-graph-toast[hidden] { display: none; }

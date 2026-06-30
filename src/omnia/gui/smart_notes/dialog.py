@@ -36,6 +36,7 @@ from omnia.core.providers.catalog import catalog_payload
 from omnia.core.providers.native_runtime import default_manager
 from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
+    graph_payload,
     load_payload,
     merge_note_type_into,
     native_runtimes_payload,
@@ -81,6 +82,7 @@ class SmartNotesDialog(WebDialog):
                 "load": self._on_load,
                 "set_base_field": self._on_set_base_field,
                 "create_field": self._on_create_field,
+                "graph_recompute": self._on_graph_recompute,
                 "auto_smart": self._on_auto_smart,
                 "improve_prompt": self._on_improve_prompt,
                 "improve_all": self._on_improve_all,
@@ -149,16 +151,43 @@ class SmartNotesDialog(WebDialog):
         config = self._settings().note_type_config(note_type)
         all_fields = anki_compat.note_type_field_names(note_type)
         rows = rows_for_note_type(config, all_fields, base_field)
+        row_payloads = [row_to_payload(row) for row in rows]
         return {
             "note_type": note_type,
             "base_field": base_field,
             "all_fields": all_fields,
-            "rows": [row_to_payload(row) for row in rows],
+            "rows": row_payloads,
             "providers": available_llm_providers(),
             "decks": list(config.decks) if config else [],
             "all_decks": self._all_decks(),
             "options": self._options_payload(),
+            "graph": graph_payload(
+                note_type_config_from_payload(note_type, base_field, row_payloads)
+            ),
         }
+
+    def _on_graph_recompute(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Re-lay out the field dependency graph from the page's current rows.
+
+        The JS posts the live rows (including each row's ``depends_on``) after every structural
+        edge edit and on first opening the Dependencies view; this builds a config and returns a
+        freshly laid-out :func:`graph_payload` so the layout is always computed in Python. A
+        cycle (the server-side backstop via :func:`build_field_graph` / ``layered_layout``) or any
+        other failure returns ``{error}`` so the dialog never crashes and the page can revert the
+        optimistic change.
+        """
+        config = note_type_config_from_payload(
+            str(data.get("note_type", "")),
+            str(data.get("base_field", "")),
+            list(data.get("rows", [])),
+        )
+        try:
+            return {"graph": graph_payload(config)}
+        except (
+            Exception
+        ) as exc:  # boundary: a cycle/bad payload must not crash the dialog
+            logger.exception("smart_notes: failed to recompute field graph")
+            return {"error": f"Could not lay out the graph: {exc}"}
 
     def _on_create_field(self, data: dict[str, Any]) -> dict[str, Any]:
         note_type = str(data.get("note_type", ""))
