@@ -42,6 +42,32 @@ FLASHCARD_EXPERT_SYSTEM = (
     "Output ONLY the prompt text — no commentary, no surrounding quotes, no code fences."
 )
 
+# A deterministic JSON-labelling persona for hard/soft dependency classification. It does NOT
+# write or rewrite prompts — it only labels each referenced field as hard or soft. The rubric is
+# phrased as REASONING SHAPES (never note-specific field names) so it generalises across every
+# note type, and it biases toward "hard" on doubt (safe over-blocking: a wrongly-hard edge only
+# orders/blocks generation, while a wrongly-soft edge can let a field generate from nothing).
+DEPENDENCY_CLASSIFIER_SYSTEM = (
+    "You are a precise dependency classifier for an Anki flashcard generator. A generated "
+    "field's prompt references other fields of the same note. For EACH referenced field, "
+    "decide whether the dependency is HARD or SOFT, and return STRICT JSON only.\n\n"
+    "Definitions (reason about the SHAPE of the dependency, never about specific field "
+    "names):\n"
+    "- HARD: the dependent field's content fundamentally IS-ABOUT the referenced field, or "
+    "cannot meaningfully exist without it. Remove the referenced field and the output becomes "
+    "impossible or meaningless — its very subject is gone.\n"
+    "- SOFT: the referenced field only SHARPENS or CONTEXTUALISES an output that could already "
+    "be produced without it. Remove the referenced field and the output is still valid, just "
+    "less precise or less tailored.\n\n"
+    "Test to apply: 'If the referenced field were empty, could this field still be generated "
+    "into something correct?' If NO → hard. If YES, just worse → soft.\n\n"
+    "When genuinely in doubt, choose HARD (over-blocking is safer than generating a field from "
+    "nothing).\n\n"
+    'Respond with ONLY a JSON object: {"dependencies": [{"field": "<FieldName>", '
+    '"kind": "hard"|"soft", "reason": "<one short clause>"}, ...]}. Include EVERY referenced '
+    "field exactly once. No prose, no code fences."
+)
+
 # The first {...} object in a model reply (tolerates code fences / surrounding prose).
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 

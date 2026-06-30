@@ -10,18 +10,29 @@ turns those pure pieces into the three authoring actions. This module imports no
 
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING
 
 from omnia.core import envs
-from omnia.plugins.smart_notes.authoring.models import AutoSmartDep, AutoSmartField
+from omnia.plugins.smart_notes.authoring.models import (
+    AutoSmartDep,
+    AutoSmartField,
+    EdgeChange,
+    EdgeKinding,
+    PromptRewrite,
+)
 from omnia.plugins.smart_notes.authoring.persona import (
+    DEPENDENCY_CLASSIFIER_SYSTEM,
     FLASHCARD_EXPERT_SYSTEM,
     first_json_object,
 )
+from omnia.plugins.smart_notes.engine.consistency import NodeEdgeSet
 
 if TYPE_CHECKING:
     from omnia.core.providers.llm.base import LLMProvider
     from omnia.plugins.smart_notes.config import (
+        FieldDep,
         SmartNotesFieldConfig,
         SmartNotesNoteTypeConfig,
     )
@@ -315,6 +326,238 @@ def parse_improved_prompts(raw: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Two-way sync: dependency classification + edge-change / pinned rewrites.
+# ---------------------------------------------------------------------------
+
+
+def build_classify_deps_message(
+    note_type: str,
+    base_field: str,
+    target_field: str,
+    prompt: str,
+    refs: list[str],
+) -> str:
+    """Build the message asking the model to label each referenced field hard/soft.
+
+    Generic across note types: it names the note type, the base field, the field being
+    generated, the prompt under inspection, and the referenced fields to classify, but bakes no
+    note-specific rule into the wording (the hard/soft rubric lives in
+    :data:`~omnia.plugins.smart_notes.authoring.persona.DEPENDENCY_CLASSIFIER_SYSTEM`).
+
+    Args:
+        note_type: The note type's name (context for the model).
+        base_field: The always-present input field, referenced as ``{{<base>}}``.
+        target_field: The field this prompt generates.
+        prompt: The prompt template whose references are being classified.
+        refs: The referenced field names to classify (each labelled exactly once).
+
+    Returns:
+        A single user message asking for ``{"dependencies": [{"field", "kind", "reason"}]}``.
+    """
+    refs_list = "\n".join(f"- {name}" for name in refs)
+    return (
+        f'Note type: "{note_type}". Base (input) field: {{{{{base_field}}}}}. '
+        f'Field being generated: "{target_field}".\n\n'
+        "This field's generation prompt is:\n"
+        f'"""\n{prompt.strip()}\n"""\n\n'
+        "Classify how the generated field depends on EACH of these referenced fields "
+        "(hard = its content fundamentally is-about / cannot exist without the reference; "
+        "soft = the reference only sharpens an output already producible without it):\n"
+        f"{refs_list}\n\n"
+        'Respond with ONLY {"dependencies": [{"field": "<name>", "kind": "hard"|"soft", '
+        '"reason": "<short>"}]}. No prose, no code fences.'
+    )
+
+
+def parse_classified_deps(raw: str) -> tuple[EdgeKinding, ...]:
+    """Parse the classifier reply into per-ref hard/soft verdicts, tolerantly.
+
+    Accepts either the ``{"dependencies": [...]}`` wrapper or a bare JSON array of entries.
+    Mirrors :func:`_parse_deps`'s defensive style: an entry needs a non-empty ``field`` (else
+    dropped); ``kind`` defaults to ``"hard"`` and anything other than ``"soft"`` becomes
+    ``"hard"``; entries are de-duplicated case-insensitively (first wins). Self-references
+    cannot be excluded here (no owner is known) — the caller passes only cross-field refs.
+
+    Args:
+        raw: The model's raw text reply.
+
+    Returns:
+        One :class:`EdgeKinding` per distinct referenced field.
+
+    Raises:
+        ProviderError: When no JSON object/array can be extracted from ``raw``.
+    """
+    entries = _classified_entries(raw)
+    kindings: list[EdgeKinding] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        field = str(entry.get("field", "") or "").strip()
+        lower = field.lower()
+        if not field or lower in seen:
+            continue
+        seen.add(lower)
+        kind = (
+            "soft"
+            if str(entry.get("kind", "hard")).strip().lower() == "soft"
+            else "hard"
+        )
+        reason = str(entry.get("reason", "") or "").strip()
+        kindings.append(EdgeKinding(field=field, kind=kind, reason=reason))
+    return tuple(kindings)
+
+
+def _classified_entries(raw: str) -> list[object]:
+    """Read the classifier reply's entry list from the wrapper key or a bare array.
+
+    The shared :func:`first_json_object` extractor only yields ``{...}`` objects, so a bare
+    ``[...]`` array reply is parsed here directly (with the same fence/prose tolerance) before
+    falling back to the ``"dependencies"`` wrapper key.
+    """
+    array_match = re.search(r"\[.*\]", raw or "", re.DOTALL)
+    object_match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+    # Prefer a bare array only when it is not merely the wrapper object's inner list.
+    if array_match and (
+        object_match is None or array_match.start() < object_match.start()
+    ):
+        try:
+            data = json.loads(array_match.group(0))
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, list):
+            return list(data)
+    wrapper = first_json_object(raw)
+    deps = wrapper.get("dependencies")
+    return list(deps) if isinstance(deps, list) else []
+
+
+def _deps_listing(deps: list[FieldDep]) -> str:
+    """Render the KEEP-these-deps block for an edge-change / pinned rewrite message."""
+    if not deps:
+        return "(none)"
+    return ", ".join(f"{{{{{dep.field}}}}} ({dep.kind})" for dep in deps)
+
+
+def _synthetic_prompt(deps: list[FieldDep]) -> str:
+    """A prompt of ``{{Field}}`` refs for each dep, so the intended edge set derives exactly it.
+
+    The guard rail derives the INTENDED :class:`NodeEdgeSet` from this synthetic prompt UNIONed
+    with ``deps``; referencing every dep's field guarantees the intended ref set is precisely the
+    deps' fields, while ``deps`` overrides each edge's kind (so a soft dep yields a soft edge).
+    """
+    return " ".join(f"{{{{{dep.field}}}}}" for dep in deps)
+
+
+def build_edge_change_message(
+    note_type: str,
+    base_field: str,
+    target_field: str,
+    old_prompt: str,
+    kept_deps: list[FieldDep],
+    change: EdgeChange,
+) -> str:
+    """Build the message rewriting a prompt to reflect ONE graph edge change.
+
+    The model keeps every OTHER dependency intact and stays close to the old wording, applying
+    only the single edit described by ``change``. The hard/soft/add/remove intuitions are given
+    GENERICALLY (reasoning shapes, with cross-domain examples) so no field name becomes a rule.
+
+    Args:
+        note_type: The note type's name (context for the model).
+        base_field: The always-present input field, referenced as ``{{<base>}}``.
+        target_field: The field this prompt generates.
+        old_prompt: The current prompt to edit minimally.
+        kept_deps: The dependencies (besides the change) that must remain referenced as-is.
+        change: The single add/remove/toggle edit to apply.
+
+    Returns:
+        A single user message instructing the one-edit rewrite (output is the prompt only).
+    """
+    instruction = _edge_change_instruction(change)
+    return (
+        f'Note type: "{note_type}". Base (input) field: {{{{{base_field}}}}}. '
+        f'Field to generate: "{target_field}".\n\n'
+        "Current prompt:\n"
+        f'"""\n{old_prompt.strip()}\n"""\n\n'
+        "Apply EXACTLY this one dependency change and nothing else, staying as close to the "
+        f"current wording as possible:\n{instruction}\n\n"
+        f"Keep every OTHER dependency exactly as it is: {_deps_listing(kept_deps)}.\n\n"
+        "General intuitions (apply the SHAPE, do not treat any field name as a rule): a HARD "
+        "reference is one the output fundamentally is-about — the prompt must genuinely require "
+        "that field; a SOFT reference is optional metadata that only sharpens the output — use "
+        "it when present and self-guard (produce a valid result anyway) when it is empty. For "
+        "example, an output can be produced from a single source field alone, but a richer "
+        "related field can be woven in as optional context that makes it more precise.\n\n"
+        "Output ONLY the rewritten prompt text — no commentary, no quotes, no code fences."
+    )
+
+
+def _edge_change_instruction(change: EdgeChange) -> str:
+    """The one-line, generic instruction for a single add/remove/toggle edge change."""
+    ref = f"{{{{{change.src}}}}}"
+    if change.action == "add":
+        if change.new_kind == "soft":
+            return (
+                f"Add a SOFT reference to {ref}: weave it in as optional metadata that sharpens "
+                "the output, and self-guard so the field still produces a valid result when "
+                f"{ref} is empty."
+            )
+        return (
+            f"Add a HARD reference to {ref}: the field now genuinely requires it — make the "
+            "output fundamentally about / grounded in that field."
+        )
+    if change.action == "remove":
+        return (
+            f"Stop depending on {ref}: remove its reference entirely from the prompt."
+        )
+    # toggle
+    if change.new_kind == "soft":
+        return (
+            f"Make the existing reference to {ref} SOFT: keep using it when present, but "
+            "self-guard so the field still produces a valid result when it is empty."
+        )
+    return (
+        f"Make the existing reference to {ref} HARD: the field now genuinely requires it "
+        "rather than using it as optional context."
+    )
+
+
+def build_improve_in_popover_message(
+    note_type: str,
+    base_field: str,
+    target_field: str,
+    prompt: str,
+    fixed_deps: list[FieldDep],
+) -> str:
+    """Build the message improving a prompt's wording while PINNING its dependency set.
+
+    The model may polish phrasing/guards/output rules but must reference EXACTLY the fields in
+    ``fixed_deps`` — it may not add a new ``{{ref}}`` or drop an existing one.
+
+    Args:
+        note_type: The note type's name (context for the model).
+        base_field: The always-present input field, referenced as ``{{<base>}}``.
+        target_field: The field this prompt generates.
+        prompt: The current prompt to polish.
+        fixed_deps: The exact dependency set the rewrite must keep (no additions, no removals).
+
+    Returns:
+        A single user message instructing the pinned improvement (output is the prompt only).
+    """
+    return (
+        f'Note type: "{note_type}". Base (input) field: {{{{{base_field}}}}}. '
+        f'Field to generate: "{target_field}".\n\n'
+        "Current prompt:\n"
+        f'"""\n{prompt.strip()}\n"""\n\n'
+        "Improve ONLY the wording — clarity, self-guards around empty fields, and Anki-friendly "
+        "output rules. You MUST reference EXACTLY these fields and no others (do not add a new "
+        f"field reference, do not drop one): {_deps_listing(fixed_deps)}.\n\n"
+        "Output ONLY the improved prompt text — no commentary, no quotes, no code fences."
+    )
+
+
+# ---------------------------------------------------------------------------
 # PromptAuthor: the LLM-backed authoring object (DIP).
 # ---------------------------------------------------------------------------
 
@@ -409,3 +652,162 @@ class PromptAuthor:
             temperature=envs.OMNIA_SMART_NOTES_IMPROVE_ALL_TEMPERATURE,
         )
         return parse_improved_prompts(raw)
+
+    # -- two-way sync ------------------------------------------------------
+
+    def classify_dependencies(
+        self,
+        *,
+        note_type: str,
+        base_field: str,
+        target_field: str,
+        prompt: str,
+        refs: list[str],
+    ) -> tuple[EdgeKinding, ...]:
+        """Label each of ``refs`` as a hard or soft dependency of ``target_field``.
+
+        Returns ``()`` immediately — WITHOUT calling the LLM — when ``refs`` is empty (nothing
+        to classify). Otherwise builds the classifier message, calls the model at the
+        deterministic classify temperature, and parses the reply.
+
+        Raises:
+            ProviderError: On a provider failure or an unparseable reply.
+        """
+        if not refs:
+            return ()
+        message = build_classify_deps_message(
+            note_type, base_field, target_field, prompt, refs
+        )
+        raw = self._llm.generate_text(
+            message,
+            system=DEPENDENCY_CLASSIFIER_SYSTEM,
+            temperature=envs.OMNIA_SMART_NOTES_CLASSIFY_DEPS_TEMPERATURE,
+        )
+        return parse_classified_deps(raw)
+
+    def rewrite_for_edge_change(
+        self,
+        *,
+        note_type: str,
+        base_field: str,
+        target_field: str,
+        old_prompt: str,
+        kept_deps: list[FieldDep],
+        change: EdgeChange,
+        known_fields: list[str],
+        intended_depends_on: list[FieldDep],
+    ) -> PromptRewrite:
+        """Rewrite a prompt to reflect ONE graph edge change, guarded at the Python boundary.
+
+        Asks the model to apply ``change`` (keeping ``kept_deps``), then VERIFIES the rewrite
+        derives the INTENDED dependency edge set before accepting it. The intended set is derived
+        from ``intended_depends_on`` (which already carries the change's kind — e.g. a soft add
+        carries the soft kind), so a soft edge is validated against soft and does not falsely
+        fail just because a bare derived ref defaults to hard. On a mismatch / bad syntax it does
+        ONE bounded repair retry; if still inconsistent it returns the unchanged ``old_prompt``
+        with ``ok=False``.
+
+        Raises:
+            ProviderError: On a provider/network failure.
+        """
+        message = build_edge_change_message(
+            note_type, base_field, target_field, old_prompt, kept_deps, change
+        )
+        return self._guarded_rewrite(
+            message=message,
+            old_prompt=old_prompt,
+            target_field=target_field,
+            intended_depends_on=intended_depends_on,
+            known_fields=known_fields,
+            temperature=envs.OMNIA_SMART_NOTES_REWRITE_EDGE_TEMPERATURE,
+        )
+
+    def improve_in_popover(
+        self,
+        *,
+        note_type: str,
+        base_field: str,
+        target_field: str,
+        prompt: str,
+        fixed_deps: list[FieldDep],
+        known_fields: list[str],
+    ) -> PromptRewrite:
+        """Improve a prompt's wording while PINNING its dependency set, guarded at the boundary.
+
+        Same consistency gate as :meth:`rewrite_for_edge_change`, but the intended edge set is
+        ``fixed_deps`` itself: a rewrite that adds or drops a field reference fails the gate and
+        the unchanged ``prompt`` is returned with ``ok=False``. Reuses the existing improve
+        temperature (``OMNIA_SMART_NOTES_IMPROVE_PROMPT_TEMPERATURE``) — the in-popover improve
+        is the same single-prompt polish task, just with a pinned dependency set.
+
+        Raises:
+            ProviderError: On a provider/network failure.
+        """
+        message = build_improve_in_popover_message(
+            note_type, base_field, target_field, prompt, fixed_deps
+        )
+        return self._guarded_rewrite(
+            message=message,
+            old_prompt=prompt,
+            target_field=target_field,
+            intended_depends_on=fixed_deps,
+            known_fields=known_fields,
+            temperature=envs.OMNIA_SMART_NOTES_IMPROVE_PROMPT_TEMPERATURE,
+        )
+
+    def _guarded_rewrite(
+        self,
+        *,
+        message: str,
+        old_prompt: str,
+        target_field: str,
+        intended_depends_on: list[FieldDep],
+        known_fields: list[str],
+        temperature: float,
+    ) -> PromptRewrite:
+        """Run a rewrite request through the consistency gate with one bounded repair retry.
+
+        The INTENDED edge set is derived ONCE from a synthetic prompt that references every field
+        in ``intended_depends_on`` (so the full intended REF set is captured) UNIONed with
+        ``intended_depends_on`` itself (so each edge carries its intended kind — a soft add is
+        validated against soft). Each candidate prompt is then derived FROM ITS OWN ``{{refs}}``
+        ONLY (no explicit deps) and diffed against the intended set: the gate passes when no ref
+        was added or removed and the candidate's braces are well-formed. A KIND difference does
+        NOT fail the gate (:class:`~omnia.plugins.smart_notes.engine.consistency.ConsistencyResult`
+        leaves ``ok`` True on a kind change), which is exactly why a soft add — whose prompt ref
+        derives a default-hard edge — does not falsely fail. A first failure re-asks the model
+        once with the violation appended; a second failure returns ``old_prompt`` with
+        ``ok=False``.
+        """
+        intended = NodeEdgeSet.derive(
+            target_field,
+            _synthetic_prompt(intended_depends_on),
+            intended_depends_on,
+            known_fields,
+        )
+        retry_message = message
+        last_messages: tuple[str, ...] = ()
+        for attempt in range(2):
+            candidate = self._llm.generate_text(
+                retry_message,
+                system=FLASHCARD_EXPERT_SYSTEM,
+                temperature=temperature,
+            ).strip()
+            after = NodeEdgeSet.derive(target_field, candidate, [], known_fields)
+            result = intended.diff(after)
+            if result.ok:
+                return PromptRewrite(prompt=candidate, ok=True)
+            last_messages = result.messages
+            if attempt == 0:
+                retry_message = (
+                    f"{message}\n\nYour previous rewrite was rejected because it changed the "
+                    "dependency set. Fix EXACTLY these issues and reference precisely the "
+                    f"intended fields: {'; '.join(result.messages) or 'inconsistent references'}."
+                )
+        return PromptRewrite(
+            prompt=old_prompt,
+            ok=False,
+            old_prompt=old_prompt,
+            reason="; ".join(last_messages)
+            or "rewrite did not match the intended dependencies",
+        )

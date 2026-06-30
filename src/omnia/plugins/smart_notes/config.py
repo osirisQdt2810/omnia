@@ -33,10 +33,17 @@ class FieldDep(_Strict):
     from a prompt ``{{ref}}`` overrides that edge's (default ``"hard"``) kind. The model layer
     intentionally does NOT validate self/unknown references — a field may legitimately depend
     on a not-yet-created field; whole-note-type checks live in the engine.
+
+    ``auto`` is provenance metadata only: ``False`` (the back-compat default) marks a
+    user/explicit edge, ``True`` marks one written by the dependency classifier. It does NOT
+    affect the edge's kind — the graph and engine read only ``field``/``kind`` — but the
+    prompt↔graph reconciler uses it to decide which stale edges it may safely drop (a vanished
+    auto edge is cleaned; a user edge is preserved).
     """
 
     field: str
     kind: str = "hard"
+    auto: bool = False
 
     @validator("kind")
     def _validate_kind(cls, value: str) -> str:

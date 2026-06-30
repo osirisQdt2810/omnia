@@ -21,6 +21,7 @@ from omnia.plugins.smart_notes.engine.interpolation import (
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
+        FieldDep,
         SmartNotesFieldConfig,
         SmartNotesFieldRule,
         SmartNotesNoteTypeConfig,
@@ -78,6 +79,75 @@ def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
         seen.add(lower)
         prerequisites.append((dep.field.strip(), dep.kind))
     return prerequisites
+
+
+def reconcile_field_deps(
+    prompt: str, classified: dict[str, str], current_deps: list[FieldDep]
+) -> list[FieldDep]:
+    """Rebuild ONE field's ``depends_on`` after its prompt changed (the prompt→graph sync).
+
+    Pure and deterministic. The field's incoming edges are the union of its prompt ``{{refs}}``
+    and its explicit ``depends_on``; when the prompt's refs change we reconcile the explicit
+    list so the persisted edges stay consistent without clobbering anything the user set:
+
+    * Each CURRENT dep whose field is still referenced is KEPT unchanged (respect the existing
+      kind — decision B2: the classifier never re-colours an edge that already has an entry).
+    * A current dep whose field VANISHED from the prompt is dropped iff it is an auto edge
+      (``auto=True``, a stale classifier edge whose ref is gone); a user edge (``auto=False``)
+      is kept (an explicit-only edge, or a user edge whose ref was removed — the user removes it
+      in the graph, not us).
+    * Each NEWLY referenced field that has NO current entry gets a fresh classifier edge
+      ``FieldDep(field=<original-case ref>, kind=classified[ref], auto=True)`` (defaulting to
+      ``"hard"`` when the classifier returned no kind for it).
+
+    Only newly referenced fields receive a (classifier) kind; existing refs/edges are preserved
+    and vanished auto edges are cleaned. The persisted classifier kind survives
+    :meth:`~omnia.plugins.smart_notes.engine.graph.FieldGraph.from_config`'s recompute precisely
+    because it is an EXPLICIT entry (a bare derived ref defaults to hard) — decision B1.
+
+    Args:
+        prompt: The field's NEW prompt template (its ``{{refs}}`` define the live edge set).
+        classified: ``{ref_field_name: kind}`` for the NEWLY classified refs only
+            (case-insensitive keys; missing/blank kind defaults to ``"hard"``).
+        current_deps: The field's existing ``depends_on`` entries.
+
+    Returns:
+        The reconciled ``depends_on`` list (kept entries in their original order, then the
+        newly classified entries in the prompt's reference order).
+    """
+    from omnia.plugins.smart_notes.config import FieldDep
+
+    refs = extract_field_refs(prompt)
+    ref_lower_to_display: dict[str, str] = {}
+    for ref in refs:
+        lower = ref.strip().lower()
+        if lower and lower not in ref_lower_to_display:
+            ref_lower_to_display[lower] = ref.strip()
+    ref_lowers = set(ref_lower_to_display)
+    classified_lower = {
+        name.strip().lower(): (kind or "hard") for name, kind in classified.items()
+    }
+
+    kept: list[FieldDep] = []
+    have_lowers: set[str] = set()
+    for dep in current_deps:
+        lower = dep.field.strip().lower()
+        if lower in ref_lowers:
+            kept.append(dep)  # still referenced → respect the existing kind (B2)
+            have_lowers.add(lower)
+        elif not dep.auto:
+            kept.append(dep)  # user/explicit edge whose ref vanished → preserve
+            have_lowers.add(lower)
+        # else: a stale auto edge whose ref vanished → drop
+
+    added: list[FieldDep] = []
+    for lower, display in ref_lower_to_display.items():
+        if lower in have_lowers:
+            continue  # an existing edge already covers this ref (kept above)
+        added.append(
+            FieldDep(field=display, kind=classified_lower.get(lower, "hard"), auto=True)
+        )
+    return kept + added
 
 
 def should_skip_rule(

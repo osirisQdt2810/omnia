@@ -84,6 +84,29 @@ class TestFromConfigDeriveAgreement:
             ), f"drift at {field.field}: {from_graph} != {from_prompt}"
 
 
+class TestAutoProvenanceSurvivesRecompute:
+    """B1: a classifier-written (auto=True) SOFT edge must survive FieldGraph.from_config as
+    soft — NOT revert to the derived-default hard. This locks the persistence contract the
+    prompt→graph classifier relies on against future `auto`-handling changes."""
+
+    def test_auto_soft_edge_round_trips_as_soft(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Vocab",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}}",  # {{Word}} would derive HARD by default
+                    depends_on=[FieldDep(field="Word", kind="soft", auto=True)],
+                )
+            ],
+        )
+        edges = FieldGraph.from_config(config).node_edge_set("Definition").edges
+        assert edges == frozenset({("word", "soft")})
+
+
 class TestValidatePromptSyntax:
     def test_unclosed_open_braces_error(self):
         assert validate_prompt_syntax("{{FIELD") != []
