@@ -1,17 +1,19 @@
-"""Tests for the SmartNotesDialog prompt→graph dependency sync (Feature 1) glue.
+"""Tests for the Smart Notes controllers' prompt↔graph dependency sync glue.
 
-The off-thread classify + main-thread reconcile + push live on the dialog. The dialog's
-``WebDialog`` base needs a real Qt stack, so these tests exercise ONLY the pure-ish glue
-methods (``_plan_dep_classification`` / ``_reconcile_rows``) on an instance built WITHOUT
-running ``__init__`` — they touch just ``self._deps_memo`` plus pure omnia imports, so they
-run headless. The extra ``aqt`` symbols ``web_dialog`` imports at module load are stubbed
-here before importing the dialog.
+The off-thread classify + main-thread reconcile + push live on the
+:class:`~omnia.gui.smart_notes.controllers.graph.GraphController` (Features 1 & 2); the save
+cycle guard lives on the :class:`~omnia.gui.smart_notes.controllers.config.ConfigController`.
+Both take a shared ``SmartNotesContext``; here we hand them a tiny fake context (a
+``SimpleNamespace`` exposing just ``eval_js`` / ``build_hub`` / ``friendly`` / ``store`` as each
+test needs) so the pure-ish glue runs headless — no Qt stack, no real dialog. The extra ``aqt``
+symbols the controllers import at module load are stubbed here before importing them.
 """
 
 from __future__ import annotations
 
 import sys
 import types
+from typing import Any
 
 # --- stub the extra aqt symbols dialog.py / web_dialog.py import at module load ----------
 _theme_mod = types.ModuleType("aqt.theme")
@@ -33,14 +35,95 @@ _webview_mod.AnkiWebView = type("AnkiWebView", (), {})
 sys.modules.setdefault("aqt.webview", _webview_mod)
 aqt.webview = _webview_mod
 
-from omnia.gui.smart_notes.dialog import SmartNotesDialog, _DepPlan  # noqa: E402
+from omnia.gui.smart_notes.controllers.account import (  # noqa: E402
+    AccountController,
+)
+from omnia.gui.smart_notes.controllers.authoring import (  # noqa: E402
+    AuthoringController,
+)
+from omnia.gui.smart_notes.controllers.config import ConfigController  # noqa: E402
+from omnia.gui.smart_notes.controllers.graph import (  # noqa: E402
+    GraphController,
+    _DepPlan,
+)
+from omnia.gui.smart_notes.controllers.native_runtime import (  # noqa: E402
+    NativeRuntimeController,
+)
 
 
-def _dialog() -> SmartNotesDialog:
-    """A dialog instance with only the deps memo set (no Qt ``__init__``)."""
-    dlg = object.__new__(SmartNotesDialog)
-    dlg._deps_memo = {}
-    return dlg
+def _fake_ctx(**overrides: Any) -> types.SimpleNamespace:
+    """A minimal stand-in for ``SmartNotesContext`` (only the helpers a test touches).
+
+    ``friendly`` mirrors the real generic-message branch so error-path assertions stay honest;
+    ``eval_js`` / ``build_hub`` / ``store`` default to inert stubs and are overridden per test.
+    """
+    ctx = types.SimpleNamespace(
+        eval_js=lambda js: None,
+        build_hub=lambda: None,
+        friendly=lambda exc, prefix: f"{prefix} — see logs.",
+    )
+    for key, value in overrides.items():
+        setattr(ctx, key, value)
+    return ctx
+
+
+def _graph(**overrides: Any) -> GraphController:
+    """A graph controller over a fake context with an empty deps memo."""
+    return GraphController(_fake_ctx(**overrides))
+
+
+class TestOpRegistryCompleteness:
+    """Lock the decomposition invariant: the 5 controllers together register EXACTLY the op set
+    the page calls, with no op dropped, duplicated, or accidentally re-registered across two
+    controllers. Guards future drift when handlers move between controllers."""
+
+    _EXPECTED_OPS = {
+        "list_note_types",
+        "load",
+        "set_base_field",
+        "create_field",
+        "save",
+        "cancel",
+        "graph_recompute",
+        "classify_deps",
+        "validate_prompt",
+        "rewrite_edges",
+        "improve_prompt_pinned",
+        "auto_smart",
+        "improve_prompt",
+        "improve_all",
+        "preview",
+        "account_data",
+        "account_credit",
+        "account_test",
+        "account_keys",
+        "account_keys_credit",
+        "set_default_model",
+        "set_auto_voice",
+        "refresh_voices",
+        "set_secrets",
+        "browse_file",
+        "open_url",
+        "replay_audio",
+        "native_runtimes",
+        "set_native_runtime",
+    }
+
+    def test_controllers_cover_every_op_exactly_once(self):
+        ctx = _fake_ctx()
+        graph = GraphController(ctx)
+        controllers = [
+            ConfigController(ctx, reject=lambda: None),
+            graph,
+            AuthoringController(ctx, graph),
+            AccountController(ctx),
+            NativeRuntimeController(ctx),
+        ]
+        keys: list[str] = []
+        for controller in controllers:
+            keys.extend(controller.ops().keys())
+        assert len(keys) == len(set(keys)), "an op is registered by two controllers"
+        assert set(keys) == self._EXPECTED_OPS
 
 
 def _row(field: str, prompt: str, depends_on=None) -> dict:
@@ -49,7 +132,7 @@ def _row(field: str, prompt: str, depends_on=None) -> dict:
 
 class TestPlanDepClassification:
     def test_only_new_refs_become_uncached_items(self):
-        dlg = _dialog()
+        ctrl = _graph()
         rows = [
             _row(
                 "Example",
@@ -57,7 +140,7 @@ class TestPlanDepClassification:
                 [{"field": "Reading", "kind": "soft", "auto": False}],
             )
         ]
-        plan = dlg._plan_dep_classification("Vocab", "Kanji", rows)
+        plan = ctrl._plan_dep_classification("Vocab", "Kanji", rows)
         # Reading already has an entry → not new; only Kanji needs classifying.
         assert plan.uncached_items == [
             ("Example", "Use {{Kanji}} and {{Reading}}.", ["Kanji"])
@@ -65,26 +148,26 @@ class TestPlanDepClassification:
         assert plan.cached == {}
 
     def test_row_with_no_new_refs_is_omitted(self):
-        dlg = _dialog()
+        ctrl = _graph()
         rows = [_row("Example", "Plain prompt, no refs.")]
-        plan = dlg._plan_dep_classification("Vocab", "Kanji", rows)
+        plan = ctrl._plan_dep_classification("Vocab", "Kanji", rows)
         assert plan == _DepPlan()
 
     def test_memo_hit_skips_the_llm_item(self):
-        dlg = _dialog()
+        ctrl = _graph()
         # Pre-seed the memo for this exact (field, prompt) — a prior classify this session.
-        dlg._deps_memo[("Vocab", "Kanji", "Example", "Use {{Kanji}}.")] = {
+        ctrl._deps_memo[("Vocab", "Kanji", "Example", "Use {{Kanji}}.")] = {
             "Kanji": "hard"
         }
         rows = [_row("Example", "Use {{Kanji}}.")]
-        plan = dlg._plan_dep_classification("Vocab", "Kanji", rows)
+        plan = ctrl._plan_dep_classification("Vocab", "Kanji", rows)
         assert plan.uncached_items == []  # no LLM call needed
         assert plan.cached == {"Example": {"Kanji": "hard"}}
 
 
 class TestReconcileRows:
     def test_fresh_classification_adds_auto_edges(self):
-        dlg = _dialog()
+        ctrl = _graph()
         from omnia.plugins.smart_notes.authoring import EdgeKinding
 
         rows = [_row("Example", "Use {{Kanji}}.")]
@@ -92,7 +175,7 @@ class TestReconcileRows:
             uncached_items=[("Example", "Use {{Kanji}}.", ["Kanji"])], cached={}
         )
         classified = {"Example": (EdgeKinding(field="Kanji", kind="soft"),)}
-        items = dlg._reconcile_rows("Vocab", "Kanji", rows, plan, classified)
+        items = ctrl._reconcile_rows("Vocab", "Kanji", rows, plan, classified)
         assert items == [
             {
                 "field": "Example",
@@ -100,15 +183,15 @@ class TestReconcileRows:
             }
         ]
         # The fresh verdict is memoised by (field, prompt) for a later re-save.
-        assert dlg._deps_memo[("Vocab", "Kanji", "Example", "Use {{Kanji}}.")] == {
+        assert ctrl._deps_memo[("Vocab", "Kanji", "Example", "Use {{Kanji}}.")] == {
             "Kanji": "soft"
         }
 
     def test_memo_cached_verdicts_are_used_without_classification(self):
-        dlg = _dialog()
+        ctrl = _graph()
         rows = [_row("Example", "Use {{Kanji}}.")]
         plan = _DepPlan(uncached_items=[], cached={"Example": {"Kanji": "hard"}})
-        items = dlg._reconcile_rows("Vocab", "Kanji", rows, plan, {})
+        items = ctrl._reconcile_rows("Vocab", "Kanji", rows, plan, {})
         assert items == [
             {
                 "field": "Example",
@@ -118,7 +201,7 @@ class TestReconcileRows:
 
     def test_existing_kind_is_kept_disjoint_from_classification(self):
         # Reading already user-set soft; reconcile keeps it even though the classifier said hard.
-        dlg = _dialog()
+        ctrl = _graph()
         from omnia.plugins.smart_notes.authoring import EdgeKinding
 
         rows = [
@@ -137,13 +220,13 @@ class TestReconcileRows:
                 EdgeKinding(field="Reading", kind="hard"),
             )
         }
-        items = dlg._reconcile_rows("Vocab", "Kanji", rows, plan, classified)
+        items = ctrl._reconcile_rows("Vocab", "Kanji", rows, plan, classified)
         deps = {d["field"]: d for d in items[0]["depends_on"]}
         assert deps["Reading"] == {"field": "Reading", "kind": "soft", "auto": False}
         assert deps["Kanji"] == {"field": "Kanji", "kind": "hard", "auto": True}
 
     def test_vanished_auto_edge_is_dropped_with_no_classification(self):
-        dlg = _dialog()
+        ctrl = _graph()
         rows = [
             _row(
                 "Example",
@@ -153,12 +236,12 @@ class TestReconcileRows:
         ]
         # No new refs → no classify; reconcile still drops the stale auto edge.
         plan = _DepPlan()
-        items = dlg._reconcile_rows("Vocab", "Kanji", rows, plan, {})
+        items = ctrl._reconcile_rows("Vocab", "Kanji", rows, plan, {})
         assert items == [{"field": "Example", "depends_on": []}]
 
 
 class TestValidatePromptBoundary:
-    """The graph→prompt popover's live guard rail (``_on_validate_prompt``): SYNCHRONOUS, no LLM.
+    """The graph→prompt popover's live guard rail (``on_validate_prompt``): SYNCHRONOUS, no LLM.
     A candidate must derive EXACTLY the full intended dependency edge set at the node.
     """
 
@@ -168,8 +251,8 @@ class TestValidatePromptBoundary:
         monkeypatch.setattr(
             anki_compat, "note_type_field_names", lambda nt: list(known)
         )
-        dlg = _dialog()
-        return dlg._on_validate_prompt(
+        ctrl = _graph()
+        return ctrl.on_validate_prompt(
             {
                 "note_type": "Vocab",
                 "base_field": "Word",
@@ -245,14 +328,15 @@ class TestRewriteEdgesThreadRouting:
 
         monkeypatch.setattr(anki_compat, "run_in_background", fake_run)
 
-        dlg = _dialog()
         evals: list[str] = []
-        dlg.eval_js = lambda js: evals.append(js)
-        dlg._build_hub = lambda: types.SimpleNamespace(
-            llm=lambda: FakeLLMProvider(text="Define {{Word}} clearly.")
+        ctrl = _graph(
+            eval_js=lambda js: evals.append(js),
+            build_hub=lambda: types.SimpleNamespace(
+                llm=lambda: FakeLLMProvider(text="Define {{Word}} clearly.")
+            ),
         )
 
-        dlg._on_rewrite_edges(
+        ctrl.on_rewrite_edges(
             {
                 "note_type": "Vocab",
                 "base_field": "Word",
@@ -297,14 +381,15 @@ class TestImprovePinnedThreadRouting:
 
         monkeypatch.setattr(anki_compat, "run_in_background", fake_run)
 
-        dlg = _dialog()
         evals: list[str] = []
-        dlg.eval_js = lambda js: evals.append(js)
-        dlg._build_hub = lambda: types.SimpleNamespace(
-            llm=lambda: FakeLLMProvider(text="Define {{Word}} concisely.")
+        ctrl = _graph(
+            eval_js=lambda js: evals.append(js),
+            build_hub=lambda: types.SimpleNamespace(
+                llm=lambda: FakeLLMProvider(text="Define {{Word}} concisely.")
+            ),
         )
 
-        dlg._on_improve_prompt_pinned(
+        ctrl.on_improve_prompt_pinned(
             {
                 "note_type": "Vocab",
                 "base_field": "Word",
@@ -329,9 +414,8 @@ class TestSaveCycleGuard:
     """The save-path persistence backstop (W2): a cyclic config is refused, not persisted."""
 
     def _save(self, rows):
-        dlg = _dialog()
         saved: list = []
-        dlg._store = types.SimpleNamespace(
+        store = types.SimpleNamespace(
             load=lambda: types.SimpleNamespace(
                 note_types=[],
                 generate_at_review=False,
@@ -341,7 +425,8 @@ class TestSaveCycleGuard:
             ),
             save=lambda settings: saved.append(settings),
         )
-        result = dlg._on_save(
+        ctrl = ConfigController(_fake_ctx(store=store), reject=lambda: None)
+        result = ctrl.on_save(
             {"note_type": "Vocab", "base_field": "Word", "rows": rows, "decks": []}
         )
         return result, saved
@@ -383,16 +468,17 @@ class TestClassifyDepsThreadRouting:
 
         monkeypatch.setattr(anki_compat, "run_in_background", fake_run)
 
-        dlg = _dialog()
         evals: list[str] = []
-        dlg.eval_js = lambda js: evals.append(js)
-        dlg._build_hub = lambda: types.SimpleNamespace(
-            llm=lambda: FakeLLMProvider(
-                text='{"Example": [{"field": "Kanji", "kind": "hard"}]}'
-            )
+        ctrl = _graph(
+            eval_js=lambda js: evals.append(js),
+            build_hub=lambda: types.SimpleNamespace(
+                llm=lambda: FakeLLMProvider(
+                    text='{"Example": [{"field": "Kanji", "kind": "hard"}]}'
+                )
+            ),
         )
 
-        dlg._on_classify_deps(
+        ctrl.on_classify_deps(
             {
                 "note_type": "Vocab",
                 "base_field": "Kanji",
