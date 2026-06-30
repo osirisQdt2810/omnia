@@ -23,6 +23,17 @@ Python through the WebDialog bridge with these ops:
 * ``classify_deps`` ``{note_type, base_field, rows:[{field, prompt, depends_on}]}`` → the
   prompt→graph sync: off-thread, classifies each row's NEW refs hard/soft and reconciles, then
   pushes ``window.__snDepsResult([{field, depends_on:[{field, kind, auto}]}])``
+* ``validate_prompt`` ``{note_type, base_field, target_field, prompt, intended_depends_on:
+  [{field, kind}]}`` → the graph→prompt popover's live guard rail: SYNCHRONOUS, no LLM, returns
+  ``{syntax_errors:[...], consistency:{ok, added_fields, removed_fields, kind_changes,
+  messages}}`` — the candidate must derive the SAME edge set as the full intended deps
+* ``rewrite_edges`` ``{note_type, base_field, changes:[{target, old_prompt, kept_deps,
+  change:{action,src,old_kind,new_kind}, intended_depends_on}]}`` → the graph→prompt sync:
+  off-thread, rewrites each changed node's prompt (guard-railed), pushes
+  ``window.__snRewriteResult([{field, old_prompt, new_prompt, ok, reason}])``
+* ``improve_prompt_pinned`` ``{note_type, base_field, target_field, prompt, fixed_deps}`` → the
+  popover's ✨ Improve: off-thread, polishes wording while PINNING the dep set, pushes
+  ``window.__snImproveResult(field, {prompt, ok, reason})`` (shared with the prompt editor)
 * ``preview`` ``{note_type, base_field, field, type, prompt, provider, model, voice}`` → a
   generated sample for a random note (pushed)
 * ``account_data`` → ``{models: {kind: [...]}, defaults: {kind: {provider, model}}}``
@@ -348,6 +359,32 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
             for dep in row.depends_on
         ],
     }
+
+
+def cycle_error_for_config(config: SmartNotesNoteTypeConfig) -> str:
+    """Return a user-facing message if ``config``'s field dependencies form a cycle, else ``""``.
+
+    The persistence backstop for the graph→prompt sync (Feature 2): the client-side
+    ``would_create_cycle`` precheck on Apply is complete given a fresh graph, but a cyclic
+    prompt+deps could still land in a row via any bug / stale graph. The save path calls this so a
+    cyclic config is never persisted. Pure: builds the effective :class:`FieldGraph` and runs its
+    :meth:`~omnia.plugins.smart_notes.engine.graph.FieldGraph.validate_acyclic` guard (over edges
+    of both kinds), so it unit-tests headless.
+
+    Args:
+        config: The note type's smart-notes config (with each field's ``depends_on``).
+
+    Returns:
+        A ready-to-show error string when a cycle exists, or ``""`` when the graph is a DAG.
+    """
+    from omnia.plugins.smart_notes.engine.graph import FieldGraph
+    from omnia.plugins.smart_notes.engine.ordering import SmartNotesCycleError
+
+    try:
+        FieldGraph.from_config(config).validate_acyclic()
+    except SmartNotesCycleError as exc:
+        return f"Can't save — the field dependencies form a cycle: {exc}."
+    return ""
 
 
 def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:

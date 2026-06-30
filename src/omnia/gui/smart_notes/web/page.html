@@ -49,7 +49,10 @@
     <div id="sn-empty" class="sn-empty"></div>
   </div>
   <div id="sn-graph-view" class="sn-graph-wrap" hidden>
-    <div class="sn-graph-hint">Drag a field's right-edge <b>dot</b> onto another field to add a dependency. Drag a node to rearrange, scroll to zoom, drag the canvas to pan. Click an edge to toggle <b class="sn-edge-hard">hard</b> ↔ <b class="sn-edge-soft">soft</b>; select it and press Delete to remove.</div>
+    <div class="sn-graph-bar">
+      <div class="sn-graph-hint">Drag a field's right-edge <b>dot</b> onto another field to add a dependency. Drag a node to rearrange, scroll to zoom, drag the canvas to pan. Click an edge to toggle <b class="sn-edge-hard">hard</b> ↔ <b class="sn-edge-soft">soft</b>; select it and press Delete to remove.</div>
+      <button id="sn-graph-reload" class="sn-btn sn-btn-magic sn-graph-reload" type="button" title="Apply your edge edits to each affected field's prompt — review each rewrite before it's saved.">↻ Sync prompts</button>
+    </div>
     <div id="sn-graph-scroll" class="sn-graph-scroll">
       <svg id="sn-graph-svg" class="sn-graph-svg" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
@@ -88,6 +91,32 @@
     <div class="sn-modal-foot">
       <button id="sn-modal-cancel" class="sn-btn">Cancel</button>
       <button id="sn-modal-save" class="sn-btn sn-btn-primary">Save prompt</button>
+    </div>
+  </div>
+</div>
+
+<div id="sn-diff-pop" class="sn-diff-pop" hidden>
+  <div class="sn-diff-card">
+    <div class="sn-diff-head">
+      <div class="sn-diff-title" id="sn-diff-title">Update prompt</div>
+      <button id="sn-diff-close" class="sn-iconbtn" title="Discard">✕</button>
+    </div>
+    <div id="sn-diff-notice" class="sn-diff-notice" hidden></div>
+    <div class="sn-diff-section">
+      <div class="sn-diff-label">Was</div>
+      <div id="sn-diff-old" class="sn-diff-old"></div>
+    </div>
+    <div class="sn-diff-chevron" aria-hidden="true">⌄</div>
+    <div class="sn-diff-section">
+      <div class="sn-diff-label">Now</div>
+      <textarea id="sn-diff-new" class="sn-diff-new" spellcheck="false"></textarea>
+    </div>
+    <div id="sn-diff-err" class="sn-diff-err" hidden></div>
+    <div class="sn-diff-foot">
+      <button id="sn-diff-improve" class="sn-btn sn-btn-magic">✨ Improve</button>
+      <span class="sn-diff-spacer"></span>
+      <button id="sn-diff-discard" class="sn-btn">Discard</button>
+      <button id="sn-diff-apply" class="sn-btn sn-btn-primary">Apply</button>
     </div>
   </div>
 </div>

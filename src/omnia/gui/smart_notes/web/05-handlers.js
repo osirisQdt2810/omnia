@@ -1235,6 +1235,8 @@
       function (res) {
         saveBtn.disabled = false;
         if (res && res.ok) {
+          // A successful save makes the current edges the new graph→prompt sync baseline.
+          snapshotSyncedDeps();
           setMsg("Saved.", false);
         } else {
           setMsg((res && res.error) || "Could not save — see logs.", true);

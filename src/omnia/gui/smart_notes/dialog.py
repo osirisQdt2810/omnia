@@ -38,6 +38,7 @@ from omnia.core.providers.catalog import catalog_payload
 from omnia.core.providers.native_runtime import default_manager
 from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
+    cycle_error_for_config,
     graph_payload,
     load_payload,
     merge_note_type_into,
@@ -109,6 +110,9 @@ class SmartNotesDialog(WebDialog):
                 "create_field": self._on_create_field,
                 "graph_recompute": self._on_graph_recompute,
                 "classify_deps": self._on_classify_deps,
+                "validate_prompt": self._on_validate_prompt,
+                "rewrite_edges": self._on_rewrite_edges,
+                "improve_prompt_pinned": self._on_improve_prompt_pinned,
                 "auto_smart": self._on_auto_smart,
                 "improve_prompt": self._on_improve_prompt,
                 "improve_all": self._on_improve_all,
@@ -415,6 +419,233 @@ class SmartNotesDialog(WebDialog):
                 for dep in reconciled
             ]
         return result
+
+    # --- graph→prompt dependency sync (Feature 2) ------------------------------------
+    def _on_validate_prompt(self, data: dict[str, Any]) -> dict[str, Any]:
+        """The popover's live guard rail: does a candidate prompt still derive the SAME edges?
+
+        Feature 2 (graph → prompt): SYNCHRONOUS, no LLM — the diff popover's Now textarea calls
+        this (debounced) on every keystroke to gate Apply. The candidate must derive EXACTLY the
+        full intended dependency edge set at the node (all of B's edges, not just the changed
+        one): we derive the intended set from ``intended_depends_on`` (its own ``{{refs}}`` are
+        irrelevant — the deps fix the set + kinds) and diff the candidate's own ``{{refs}}``
+        against it. A candidate that adds/removes a field ref, or breaks ``{{}}`` syntax, comes
+        back ``ok=False`` so the page disables Apply.
+
+        Args:
+            data: ``{note_type, base_field, target_field, prompt, intended_depends_on:[{field,
+                kind}]}``.
+
+        Returns:
+            ``{syntax_errors:[...], consistency:{ok, added_fields, removed_fields, kind_changes,
+            messages}}``, or ``{error}`` on a malformed request.
+        """
+        from omnia.plugins.smart_notes.engine import NodeEdgeSet, validate_prompt_syntax
+
+        try:
+            target = str(data.get("target_field", ""))
+            candidate = str(data.get("prompt", ""))
+            intended = self._deps_from_payload_pairs(
+                data.get("intended_depends_on", [])
+            )
+            known = anki_compat.note_type_field_names(str(data.get("note_type", "")))
+            # The intended edge set: derive from a synthetic prompt that references every intended
+            # dep (so the full intended REF set is captured) UNIONed with the deps (so each edge
+            # carries its intended kind), mirroring PromptAuthor._guarded_rewrite's gate.
+            synthetic = " ".join(f"{{{{{dep.field}}}}}" for dep in intended)
+            before = NodeEdgeSet.derive(target, synthetic, intended, known)
+            after = NodeEdgeSet.derive(target, candidate, [], known)
+            result = before.diff(after)
+            return {
+                "syntax_errors": list(validate_prompt_syntax(candidate)),
+                "consistency": {
+                    "ok": result.ok,
+                    "added_fields": list(result.added_fields),
+                    "removed_fields": list(result.removed_fields),
+                    "kind_changes": [list(kc) for kc in result.kind_changes],
+                    "messages": list(result.messages),
+                },
+            }
+        except Exception:  # boundary: a malformed payload must not crash the dialog
+            logger.exception("smart_notes: validate_prompt failed")
+            return {"error": "Could not validate the prompt — see logs."}
+
+    def _on_rewrite_edges(self, data: dict[str, Any]) -> None:
+        """Rewrite each changed dependent node's prompt to reflect its graph edge change (off-thread).
+
+        Feature 2 (graph → prompt): for EACH change the page posts, asks
+        :meth:`PromptAuthor.rewrite_for_edge_change` to apply that one edit (guard-railed: the new
+        prompt must derive the node's intended edge set, with one repair retry, else ``ok=False``
+        and the old prompt). All changes run in ONE :func:`run_in_background`; the result is pushed
+        from the SUCCESS callback (main thread) via ``window.__snRewriteResult`` — never inside the
+        worker (off-thread ``eval_js`` hard-crashes Qt). The JS sends ONE change at a time for
+        order-correctness, so this works for a single-element list.
+
+        Args:
+            data: ``{note_type, base_field, changes:[{target, old_prompt, kept_deps:[{field,kind}],
+                change:{action,src,old_kind,new_kind}, intended_depends_on:[{field,kind}]}]}``.
+        """
+        note_type = str(data.get("note_type", ""))
+        base_field = str(data.get("base_field", ""))
+        changes = list(data.get("changes", []))
+        if not changes:
+            self._push_rewrite(results=[])
+            return
+        hub = self._build_hub()
+        if hub is None:
+            self._push_rewrite(error="Provider config error — see logs.")
+            return
+        known = anki_compat.note_type_field_names(note_type)
+
+        from omnia.plugins.smart_notes.authoring import PromptAuthor
+
+        def work() -> list[dict[str, Any]]:
+            author = PromptAuthor(hub.llm())
+            results: list[dict[str, Any]] = []
+            for item in changes:
+                target = str(item.get("target", ""))
+                old_prompt = str(item.get("old_prompt", ""))
+                kept_deps = self._deps_from_payload_pairs(item.get("kept_deps", []))
+                intended = self._deps_from_payload_pairs(
+                    item.get("intended_depends_on", [])
+                )
+                change = self._edge_change_from_payload(item.get("change", {}))
+                rewrite = author.rewrite_for_edge_change(
+                    note_type=note_type,
+                    base_field=base_field,
+                    target_field=target,
+                    old_prompt=old_prompt,
+                    kept_deps=kept_deps,
+                    change=change,
+                    known_fields=known,
+                    intended_depends_on=intended,
+                )
+                results.append(
+                    {
+                        "field": target,
+                        "old_prompt": rewrite.old_prompt or old_prompt,
+                        "new_prompt": rewrite.prompt,
+                        "ok": rewrite.ok,
+                        "reason": rewrite.reason,
+                    }
+                )
+            return results
+
+        anki_compat.run_in_background(
+            work,
+            on_success=lambda results: self._push_rewrite(results=results),
+            on_failure=lambda exc: self._push_rewrite(
+                error=self._friendly(exc, "Rewrite failed")
+            ),
+            label="Omnia: rewriting prompts…",
+        )
+
+    def _on_improve_prompt_pinned(self, data: dict[str, Any]) -> None:
+        """Improve a prompt's wording inside the popover while PINNING its dependency set (off-thread).
+
+        Feature 2 (graph → prompt): the popover's ✨ Improve button calls
+        :meth:`PromptAuthor.improve_in_popover`, which may polish phrasing but must reference
+        EXACTLY ``fixed_deps`` (no added/dropped ref). The result is pushed from the SUCCESS
+        callback (main thread) via the DEDICATED ``window.__snDiffImproveResult`` hook (NOT the
+        prompt editor's shared ``window.__snImproveResult``) — never inside the worker. The
+        dedicated hook + the popover's own field-guard ensure a stale/discarded improve can never
+        fall through to the editor path and write an UNVERIFIED prompt onto a row.
+
+        Args:
+            data: ``{note_type, base_field, target_field, prompt, fixed_deps:[{field,kind}]}``.
+        """
+        note_type = str(data.get("note_type", ""))
+        base_field = str(data.get("base_field", ""))
+        field = str(data.get("target_field", ""))
+        prompt = str(data.get("prompt", ""))
+        if not prompt.strip():
+            self._push_improve_pinned(
+                field, error="Write a prompt first, then Improve it."
+            )
+            return
+        hub = self._build_hub()
+        if hub is None:
+            self._push_improve_pinned(field, error="Provider config error — see logs.")
+            return
+        fixed_deps = self._deps_from_payload_pairs(data.get("fixed_deps", []))
+        known = anki_compat.note_type_field_names(note_type)
+
+        from omnia.plugins.smart_notes.authoring import PromptAuthor
+
+        anki_compat.run_in_background(
+            lambda: PromptAuthor(hub.llm()).improve_in_popover(
+                note_type=note_type,
+                base_field=base_field,
+                target_field=field,
+                prompt=prompt,
+                fixed_deps=fixed_deps,
+                known_fields=known,
+            ),
+            on_success=lambda rewrite: self._push_improve_pinned(
+                field, prompt=rewrite.prompt, ok=rewrite.ok, reason=rewrite.reason
+            ),
+            on_failure=lambda exc: self._push_improve_pinned(
+                field, error=self._friendly(exc, "Improve failed")
+            ),
+            label="Omnia: improving prompt…",
+        )
+
+    @staticmethod
+    def _deps_from_payload_pairs(deps: Any) -> list[Any]:
+        """Build :class:`FieldDep`s from a posted ``[{field, kind}]`` list (the popover shape)."""
+        from omnia.gui.smart_notes.html import _deps_from_payload
+
+        return _deps_from_payload(deps)
+
+    @staticmethod
+    def _edge_change_from_payload(change: Any) -> Any:
+        """Build an :class:`EdgeChange` from the posted ``{action, src, old_kind, new_kind}`` dict."""
+        from omnia.plugins.smart_notes.authoring import EdgeChange
+
+        data = change if isinstance(change, dict) else {}
+        return EdgeChange(
+            action=str(data.get("action", "")),
+            src=str(data.get("src", "")),
+            old_kind=str(data.get("old_kind", "")),
+            new_kind=str(data.get("new_kind", "")),
+        )
+
+    def _push_rewrite(
+        self, *, results: Optional[list[dict[str, Any]]] = None, error: str = ""
+    ) -> None:
+        """Send the edge-rewrite outcome to ``window.__snRewriteResult``.
+
+        On success a list of ``{field, old_prompt, new_prompt, ok, reason}`` (one per change); on
+        error an ``{error}`` object the page surfaces on the graph toast.
+        """
+        payload: list[dict[str, Any]] | dict[str, Any]
+        payload = {"error": error} if error else (results or [])
+        self.eval_js(f"window.__snRewriteResult({json.dumps(payload)});")
+
+    def _push_improve_pinned(
+        self,
+        field: str,
+        *,
+        prompt: str = "",
+        ok: bool = True,
+        reason: str = "",
+        error: str = "",
+    ) -> None:
+        """Send a pinned-improve outcome to the DEDICATED ``window.__snDiffImproveResult`` hook.
+
+        Kept separate from the prompt editor's ``window.__snImproveResult`` so a stale/discarded
+        pinned improve can never fall through to the editor path and write an unverified prompt
+        onto a row (W1). Carries ``ok``/``reason`` so the popover can surface a guard-rail failure;
+        the popover ignores it unless it is still open on this ``field``.
+        """
+        result: dict[str, Any] = (
+            {"error": error}
+            if error
+            else {"prompt": prompt, "ok": ok, "reason": reason}
+        )
+        self.eval_js(
+            f"window.__snDiffImproveResult({json.dumps(field)}, {json.dumps(result)});"
+        )
 
     def _on_create_field(self, data: dict[str, Any]) -> dict[str, Any]:
         note_type = str(data.get("note_type", ""))
@@ -1071,6 +1302,12 @@ class SmartNotesDialog(WebDialog):
         )
         if not config.note_type:
             return {"error": "Pick a note type first."}
+        # Persistence backstop (W2): never save a config whose field dependencies form a cycle
+        # (the client cycle-precheck is complete given a fresh graph, but a stale graph / bug
+        # must not slip a cyclic prompt+deps into a row).
+        cycle = cycle_error_for_config(config)
+        if cycle:
+            return {"error": cycle}
         # Per-note-type rules persist in the COLLECTION (synced), not the TOML config. The
         # global option flags ride along on the same SmartNotesSettings.
         settings = self._store.load()
