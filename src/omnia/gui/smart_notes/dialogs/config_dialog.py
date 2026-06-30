@@ -11,7 +11,7 @@ Overwrite column header toggles that column for ALL rows. A ⚙ Options modal ed
 flags (generate-at-review, regenerate-when-batching, allow-empty-sources).
 
 This module is now a THIN shell: it builds the shared
-:class:`~omnia.gui.smart_notes.context.SmartNotesContext` + the responsibility-grouped
+:class:`~omnia.gui.smart_notes.dialogs.context.SmartNotesContext` + the responsibility-grouped
 controllers (config table, prompt↔graph sync, authoring, account, native runtimes) and assembles
 their ``ops()`` maps into the single ``pycmd`` handler dict. The pure row↔config mapping +
 page markup live in ``html.py``; each controller is the thin Qt/Anki glue for its slice. Only
@@ -28,8 +28,8 @@ from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.providers.catalog import catalog_payload
 from omnia.core.providers.native_runtime import default_manager
-from omnia.gui.smart_notes.context import SmartNotesContext
-from omnia.gui.smart_notes.controllers import (
+from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
+from omnia.gui.smart_notes.dialogs.controllers import (
     AccountController,
     AuthoringController,
     ConfigController,

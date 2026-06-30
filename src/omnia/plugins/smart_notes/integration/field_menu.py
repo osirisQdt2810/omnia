@@ -3,7 +3,7 @@
 Adds, on the field the cursor is in: "✨ Generate this field" (runs that field's rule(s) on
 demand, even when disabled for batching) plus 💬/🔈/🖼️ one-off custom-prompt palettes that
 generate into the field without saving a rule. Thin Anki glue; the per-field selection logic
-lives in ``engine.rules`` and the palettes in ``gui/smart_notes/custom_prompt``.
+lives in ``engine.rules`` and the palettes in ``gui/smart_notes/dialogs/custom_prompt``.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def _open_custom_prompt(
     field: str,
     kind: str,
 ) -> None:
-    from omnia.gui.smart_notes.custom_prompt import CustomPromptDialog
+    from omnia.gui.smart_notes.dialogs import CustomPromptDialog
 
     def on_save(value: str) -> None:
         if field not in note:

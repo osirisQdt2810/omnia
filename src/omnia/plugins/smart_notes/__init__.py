@@ -87,7 +87,7 @@ class SmartNotesPlugin(FeaturePlugin):
     # --- bespoke settings dialog -----------------------------------------------------
     def custom_config_dialog(self, repo: Any, parent: Any) -> Optional[Any]:
         # The per-note-type field table (base field + per-field generation config + ✨ auto-smart).
-        from omnia.gui.smart_notes.dialog import SmartNotesDialog
+        from omnia.gui.smart_notes.dialogs import SmartNotesDialog
 
         return SmartNotesDialog(repo, parent)
 

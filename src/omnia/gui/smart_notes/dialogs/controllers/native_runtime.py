@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.gui.smart_notes.context import SmartNotesContext
+from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.gui.smart_notes.html import native_runtimes_payload, set_native_runtime
 
 logger = get_logger("smart_notes")

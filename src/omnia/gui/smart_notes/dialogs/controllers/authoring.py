@@ -8,7 +8,7 @@ callback (never the worker — off-main ``eval_js`` hard-crashes Qt).
 
 Auto-prompt and Improve-all fold in the Feature-1 prompt→graph classify so the new/improved
 prompts' refs are coloured hard/soft in the graph; that one cross-controller call goes through
-the injected :class:`~omnia.gui.smart_notes.controllers.graph.GraphController`. Only loaded
+the injected :class:`~omnia.gui.smart_notes.dialogs.controllers.graph.GraphController`. Only loaded
 inside Anki.
 """
 
@@ -19,8 +19,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core import anki_compat
-from omnia.gui.smart_notes.context import SmartNotesContext
-from omnia.gui.smart_notes.controllers.graph import GraphController
+from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
+from omnia.gui.smart_notes.dialogs.controllers.graph import GraphController
 from omnia.gui.smart_notes.html import note_type_config_from_payload, row_to_payload
 
 if TYPE_CHECKING:

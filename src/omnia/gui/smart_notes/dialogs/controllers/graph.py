@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.gui.smart_notes.context import SmartNotesContext
+from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.gui.smart_notes.html import graph_payload, note_type_config_from_payload
 
 logger = get_logger("smart_notes")
