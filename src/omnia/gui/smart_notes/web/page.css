@@ -528,7 +528,8 @@ select:disabled { opacity: 0.7; }
 .sn-node text {
   fill: var(--fg); font-size: 12.5px; font-weight: 500; pointer-events: none;
 }
-.sn-node:hover .sn-node-box { stroke: var(--accent); stroke-width: 2; }
+/* Hovering a node brightens its border to read as "drag from the border to connect". */
+.sn-node:hover .sn-node-box { stroke: var(--accent); stroke-width: 2.5; }
 .sn-node-base .sn-node-box {
   fill: var(--accent); stroke: var(--accent-2); stroke-width: 2;
 }
@@ -536,13 +537,40 @@ select:disabled { opacity: 0.7; }
 .sn-node-ng .sn-node-box { stroke-dasharray: 5,4; opacity: 0.78; }
 .sn-node-moving .sn-node-box, .sn-dragging .sn-node-box { stroke: var(--accent-2); stroke-width: 2.5; }
 
-/* Connector handle (port): a small dot on the right edge that grows + brightens on hover. */
-.sn-handle {
-  fill: var(--accent); stroke: var(--card-top); stroke-width: 1.5;
-  opacity: 0.55; cursor: crosshair;
-  transition: r 0.12s ease, opacity 0.12s ease;
+/* A locked field: dimmed + dashed box, a lock badge, and a hover-revealed unlock button. */
+.sn-node-locked .sn-node-box { opacity: 0.6; stroke-dasharray: 4,3; }
+.sn-lock-badge { font-size: 13px; }
+.sn-unlock-btn { cursor: pointer; opacity: 0; transition: opacity 0.12s ease; }
+.sn-node-locked:hover .sn-unlock-btn { opacity: 1; }
+.sn-unlock-circle { fill: var(--card-top); stroke: var(--accent); stroke-width: 1.5; }
+.sn-unlock-btn:hover .sn-unlock-circle { fill: var(--accent); }
+.sn-unlock-glyph { font-size: 11px; pointer-events: none; }
+
+/* Prompt tooltip (Feature 1): a floating glass card shown on node hover (replaces <title>). A
+   long prompt would overflow the viewport, so the card is INTERACTIVE + SCROLLABLE — its
+   max-height is set dynamically (JS) to the space available, pointer-events are on so the user
+   can move in and scroll, and `overscroll-behavior: contain` keeps the wheel inside the card. The
+   field-name header stays pinned (sticky) while the body scrolls. */
+.sn-node-tip {
+  position: fixed; z-index: 30; max-width: 360px; overflow-y: auto; overscroll-behavior: contain;
+  padding: 0 12px 10px; border-radius: 10px; font-size: 12px; line-height: 1.45;
+  color: var(--fg);
+  background: linear-gradient(160deg, rgba(40,44,60,0.94), rgba(24,26,38,0.94));
+  border: 1px solid var(--card-border); box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+  backdrop-filter: blur(6px); pointer-events: auto; white-space: pre-wrap;
 }
-.sn-node:hover .sn-handle, .sn-handle:hover { opacity: 1; r: 9; }
+.sn-node-tip[hidden] { display: none; }
+.sn-node-tip .sn-tip-name {
+  position: sticky; top: 0; z-index: 1; font-weight: 700; color: var(--accent);
+  margin: 0 -12px 6px; padding: 9px 12px 6px;
+  background: linear-gradient(160deg, rgba(40,44,60,0.97), rgba(30,33,46,0.97));
+  border-bottom: 1px solid var(--card-border);
+}
+.sn-node-tip::-webkit-scrollbar { width: 9px; }
+.sn-node-tip::-webkit-scrollbar-thumb {
+  background: var(--card-border); border-radius: 6px; border: 2px solid transparent;
+  background-clip: padding-box;
+}
 
 /* Edges: gradient stroke, dashed when derived; a wide transparent hit-twin makes clicking easy;
    the selected edge gets a translucent under-stroke glow (NO SVG filter). */
@@ -556,6 +584,14 @@ select:disabled { opacity: 0.7; }
   fill: none; stroke: transparent; stroke-width: 16; cursor: pointer;
 }
 .sn-edge-glow { fill: none; stroke-width: 9; opacity: 0.28; }
+/* An edge on a dependency cycle: generation needs a loop-free graph, so flag it in solid AMBER
+   — a hue that stands out from BOTH the red (hard) and green (soft) edges even in a dense graph
+   (CSS stroke beats the gradient set as a presentation attribute). The layout still renders the
+   whole cyclic graph; the user clicks an amber edge + Delete to break the loop. */
+.sn-edge-cycle {
+  stroke: #ffb020 !important; stroke-width: 5; stroke-dasharray: none !important;
+}
+.sn-edge-cycle.sn-edge-selected { stroke-width: 6; }
 .sn-drag-line {
   fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6,5;
   pointer-events: none;
@@ -567,10 +603,16 @@ select:disabled { opacity: 0.7; }
 }
 .sn-graph-toast[hidden] { display: none; }
 
-/* The graph view's top bar: the hint on the left, the Sync-prompts reload on the right. */
+/* Persistent cycle warning banner (above the canvas) — shown whenever the graph has a cycle. */
+.sn-graph-warn {
+  margin: 0 0 6px; padding: 7px 11px; border-radius: 8px; font-size: 12px; line-height: 1.4;
+  color: #ffd7d5; background: rgba(229, 72, 77, 0.16); border: 1px solid rgba(229, 72, 77, 0.5);
+}
+.sn-graph-warn[hidden] { display: none; }
+
+/* The graph view's top bar: just the interaction hint. */
 .sn-graph-bar { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
 .sn-graph-bar .sn-graph-hint { margin-bottom: 0; flex: 1; }
-.sn-graph-reload { flex: none; white-space: nowrap; }
 
 /* --- Graph→prompt diff popover (Feature 2) -----------------------------------------------
    A compact floating card anchored near the edited node: a muted read-only "Was" over an

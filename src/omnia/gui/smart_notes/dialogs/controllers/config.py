@@ -115,6 +115,7 @@ class ConfigController:
             str(data.get("base_field", "")),
             list(data.get("rows", [])),
             list(data.get("decks", [])),
+            positions=dict(data.get("positions", {})),
         )
         if not config.note_type:
             return {"error": "Pick a note type first."}

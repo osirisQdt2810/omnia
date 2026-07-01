@@ -81,6 +81,7 @@ class GraphController:
             str(data.get("note_type", "")),
             str(data.get("base_field", "")),
             list(data.get("rows", [])),
+            positions=dict(data.get("positions", {})),
         )
         try:
             return {"graph": graph_payload(config)}

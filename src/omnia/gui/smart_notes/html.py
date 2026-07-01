@@ -318,13 +318,23 @@ def note_type_config_from_payload(
     base_field: str,
     rows: list[dict[str, object]],
     decks: list[int] | None = None,
+    positions: dict[str, object] | None = None,
 ) -> SmartNotesNoteTypeConfig:
-    """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, rows, decks."""
+    """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, rows, decks.
+
+    ``positions`` is the page's pinned-node map (``{field: [x, y]}``); malformed entries (a
+    value that is not a two-element list/tuple) are dropped so a bad payload can't raise.
+    """
     return SmartNotesNoteTypeConfig(
         note_type=note_type,
         base_field=base_field,
         fields=field_configs_from_payload(rows),
         decks=[int(d) for d in (decks or [])],
+        node_positions={
+            str(name): [float(value[0]), float(value[1])]
+            for name, value in (positions or {}).items()
+            if isinstance(value, (list, tuple)) and len(value) == 2
+        },
     )
 
 
@@ -362,20 +372,21 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
 
 
 def cycle_error_for_config(config: SmartNotesNoteTypeConfig) -> str:
-    """Return a user-facing message if ``config``'s field dependencies form a cycle, else ``""``.
+    """Return a user-facing message if ``config``'s HARD dependencies form a cycle, else ``""``.
 
     The persistence backstop for the graph→prompt sync (Feature 2): the client-side
     ``would_create_cycle`` precheck on Apply is complete given a fresh graph, but a cyclic
     prompt+deps could still land in a row via any bug / stale graph. The save path calls this so a
-    cyclic config is never persisted. Pure: builds the effective :class:`FieldGraph` and runs its
-    :meth:`~omnia.plugins.smart_notes.engine.graph.FieldGraph.validate_acyclic` guard (over edges
-    of both kinds), so it unit-tests headless.
+    deadlocking config is never persisted. Pure: builds the effective :class:`FieldGraph` and runs
+    its :meth:`~omnia.plugins.smart_notes.engine.graph.FieldGraph.validate_acyclic` guard, which
+    considers only HARD edges — a soft cycle (two fields that optionally reference each other) is
+    generatable and must NOT block saving. Unit-tests headless.
 
     Args:
         config: The note type's smart-notes config (with each field's ``depends_on``).
 
     Returns:
-        A ready-to-show error string when a cycle exists, or ``""`` when the graph is a DAG.
+        A ready-to-show error string when the HARD edges form a cycle, or ``""`` otherwise.
     """
     from omnia.plugins.smart_notes.engine.graph import FieldGraph
     from omnia.plugins.smart_notes.engine.ordering import SmartNotesCycleError
@@ -400,42 +411,83 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
     Args:
         config: The note type's smart-notes config (with each field's ``depends_on``).
 
+    A field the user has moved (:attr:`config.node_positions`) overrides its flow ``x``/``y``
+    (case-insensitive on the field name); ``bounds`` is then re-grown to include every override
+    and ``node_positions`` echoes the (original-case) pinned map so the canvas can seed which
+    nodes are user-pinned. Each node also carries ``locked`` (its field's ``prompt_locked`` — the
+    base node and any unknown field are ``False``) so the canvas can badge/guard locked fields.
+
     Returns:
-        ``{"nodes": [{name, is_base, generatable, column, row, x, y, w, h, lane}, ...],
-        "edges": [{src, dst, kind, derived}, ...], "bounds": {width, height}}``.
+        ``{"nodes": [{name, is_base, generatable, locked, column, row, x, y, w, h, lane}, ...],
+        "edges": [{src, dst, kind, derived, cycle}, ...], "bounds": {width, height},
+        "node_positions": {name: [x, y]}, "has_cycle": bool}``. ``cycle`` flags an edge that lies
+        on a dependency loop and ``has_cycle`` is True when any do — the canvas highlights them and
+        warns, but the graph still lays out (generation/save reject cycles separately).
     """
-    from omnia.plugins.smart_notes.engine.graph import FieldGraph
+    from omnia.plugins.smart_notes.engine.graph import _PAD, FieldGraph
 
     graph = FieldGraph.from_config(config)
     laid = graph.laid_out()
     flow = graph.flow_layout()
     geometry = {layout.name: layout for layout in flow.nodes}
-    return {
-        "nodes": [
+    cycle_keys = graph.cycle_edge_keys()
+    # Case-insensitive user-pinned position overrides ({name_lower: (x, y)}), plus the
+    # original-case echo the page seeds from.
+    overrides: dict[str, tuple[float, float]] = {}
+    pinned: dict[str, list[float]] = {}
+    for name, value in config.node_positions.items():
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            overrides[name.strip().lower()] = (float(value[0]), float(value[1]))
+            pinned[name] = [float(value[0]), float(value[1])]
+
+    nodes: list[dict[str, object]] = []
+    locked_by_field = {
+        field.field.strip().lower(): field.prompt_locked for field in config.fields
+    }
+    max_right = 0.0
+    max_bottom = 0.0
+    for node in laid.nodes:
+        layout = geometry[node.name]
+        override = overrides.get(node.name.strip().lower())
+        x = override[0] if override else layout.x
+        y = override[1] if override else layout.y
+        max_right = max(max_right, x + layout.w)
+        max_bottom = max(max_bottom, y + layout.h)
+        nodes.append(
             {
                 "name": node.name,
                 "is_base": node.is_base,
                 "generatable": node.generatable,
+                "locked": locked_by_field.get(node.name.strip().lower(), False),
                 "column": node.column,
                 "row": node.row,
-                "x": geometry[node.name].x,
-                "y": geometry[node.name].y,
-                "w": geometry[node.name].w,
-                "h": geometry[node.name].h,
-                "lane": geometry[node.name].lane,
+                "x": x,
+                "y": y,
+                "w": layout.w,
+                "h": layout.h,
+                "lane": layout.lane,
             }
-            for node in laid.nodes
-        ],
+        )
+
+    return {
+        "nodes": nodes,
         "edges": [
             {
                 "src": edge.src,
                 "dst": edge.dst,
                 "kind": edge.kind,
                 "derived": edge.derived,
+                "cycle": (edge.src.strip().lower(), edge.dst.strip().lower())
+                in cycle_keys,
             }
             for edge in laid.edges
         ],
-        "bounds": {"width": flow.width, "height": flow.height},
+        "bounds": {
+            "width": max(1.0, max(flow.width, max_right + _PAD)),
+            "height": max(1.0, max(flow.height, max_bottom + _PAD)),
+        },
+        "node_positions": pinned,
+        "has_cycle": bool(cycle_keys),
     }
 
 
@@ -463,7 +515,10 @@ def load_payload(
         "all_decks": all_decks or [],
         "graph": graph_payload(
             note_type_config_from_payload(
-                note_type, base_field, [row_to_payload(row) for row in rows]
+                note_type,
+                base_field,
+                [row_to_payload(row) for row in rows],
+                positions=config.node_positions if config else {},
             )
         ),
     }

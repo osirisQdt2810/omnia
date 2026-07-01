@@ -207,7 +207,28 @@ class TestValidateAcyclic:
         with pytest.raises(SmartNotesCycleError):
             graph.validate_acyclic()
 
-    def test_two_cycle_raises(self):
+    def test_hard_two_cycle_raises(self):
+        graph = FieldGraph(
+            nodes=FieldGraph.from_config(
+                _config(
+                    "Word",
+                    [
+                        ("A", dict(enabled=True, type="text")),
+                        ("B", dict(enabled=True, type="text")),
+                    ],
+                )
+            ).nodes,
+            edges=[
+                GraphEdge(src="A", dst="B", kind="hard", derived=True),
+                GraphEdge(src="B", dst="A", kind="hard", derived=True),
+            ],
+        )
+        with pytest.raises(SmartNotesCycleError):
+            graph.validate_acyclic()
+
+    def test_cycle_with_a_soft_edge_does_not_raise(self):
+        # A hard edge A->B plus a SOFT back-edge B->A is generatable (generate A first without B's
+        # optional value, then B): only the HARD subgraph must be acyclic, so this must NOT raise.
         graph = FieldGraph(
             nodes=FieldGraph.from_config(
                 _config(
@@ -223,8 +244,29 @@ class TestValidateAcyclic:
                 GraphEdge(src="B", dst="A", kind="soft", derived=False),
             ],
         )
-        with pytest.raises(SmartNotesCycleError):
-            graph.validate_acyclic()
+        graph.validate_acyclic()  # no raise
+        # ...and the soft back-edge is NOT flagged as a (hard) cycle edge for the canvas.
+        assert graph.cycle_edge_keys() == set()
+
+    def test_all_soft_two_cycle_does_not_raise(self):
+        # Two fields that softly reference each other (Auto-prompt's POS <-> Definition) — valid.
+        graph = FieldGraph(
+            nodes=FieldGraph.from_config(
+                _config(
+                    "Word",
+                    [
+                        ("A", dict(enabled=True, type="text")),
+                        ("B", dict(enabled=True, type="text")),
+                    ],
+                )
+            ).nodes,
+            edges=[
+                GraphEdge(src="A", dst="B", kind="soft", derived=False),
+                GraphEdge(src="B", dst="A", kind="soft", derived=False),
+            ],
+        )
+        graph.validate_acyclic()  # no raise
+        assert graph.cycle_edge_keys() == set()
 
     def test_longer_cycle_raises(self):
         graph = FieldGraph(
@@ -367,7 +409,10 @@ class TestLayeredLayout:
         col = {node.name: node.column for node in graph.nodes}
         assert col["F32"] == 33
 
-    def test_cycle_raises(self):
+    def test_cycle_is_tolerated_and_flagged(self):
+        # A DISPLAY layout must render a cyclic graph (the canvas is how the user breaks the
+        # cycle that e.g. Auto-prompt wrote): laid_out no longer raises, every node still gets a
+        # column, and both edges of the A<->B loop are reported by cycle_edge_keys to highlight.
         graph = FieldGraph(
             nodes=FieldGraph.from_config(
                 _config(
@@ -383,8 +428,10 @@ class TestLayeredLayout:
                 GraphEdge(src="B", dst="A", kind="hard", derived=True),
             ],
         )
-        with pytest.raises(SmartNotesCycleError):
-            graph.laid_out()
+        laid = graph.laid_out()  # no raise
+        assert {n.name for n in laid.nodes} == {"Word", "A", "B"}
+        assert all(isinstance(n.column, int) for n in laid.nodes)
+        assert graph.cycle_edge_keys() == {("a", "b"), ("b", "a")}
 
 
 def _fan_out(count: int) -> SmartNotesNoteTypeConfig:
@@ -436,7 +483,9 @@ class TestFlowLayout:
         by_name = {n.name: n for n in flow.nodes}
         assert by_name["Word"].x < by_name["A"].x < by_name["B"].x
 
-    def test_cycle_raises(self):
+    def test_cycle_is_tolerated(self):
+        # flow_layout must also render a cyclic graph (no raise) with positive bounds + every node
+        # placed, so the canvas always draws and the user can see + break the loop.
         graph = FieldGraph(
             nodes=FieldGraph.from_config(
                 _config(
@@ -452,8 +501,9 @@ class TestFlowLayout:
                 GraphEdge(src="B", dst="A", kind="hard", derived=True),
             ],
         )
-        with pytest.raises(SmartNotesCycleError):
-            graph.flow_layout()
+        flow = graph.flow_layout()  # no raise
+        assert {n.name for n in flow.nodes} == {"Word", "A", "B"}
+        assert flow.width > 0 and flow.height > 0
 
     def test_empty_and_single_node_layouts_are_safe(self):
         # No div-by-zero on the degenerate shapes; bounds stay positive.

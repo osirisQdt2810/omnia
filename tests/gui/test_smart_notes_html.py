@@ -72,6 +72,7 @@ class TestGraphPayload:
             "dst": "Definition",
             "kind": "hard",
             "derived": True,
+            "cycle": False,
         } in gp["edges"]
         # every node carries a layout column/row (computed in Python)
         assert all("column" in n and "row" in n for n in gp["nodes"])
@@ -101,6 +102,87 @@ class TestGraphPayload:
         )
         assert edge["kind"] == "soft"
 
+    def test_cyclic_config_renders_with_flag(self):
+        # Auto-prompt can write two prompts that reference each other (POS <-> Definition). The
+        # graph MUST still lay out — it's how the user sees and breaks the cycle — so graph_payload
+        # does not raise, sets has_cycle, and flags exactly the looping edges with cycle=True.
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="POS",
+                    enabled=True,
+                    type="text",
+                    prompt="Part of speech of {{Word}} as a {{Definition}}",
+                ),
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}} ({{POS}})",
+                ),
+            ],
+        )
+        gp = graph_payload(cfg)  # no raise
+        assert gp["has_cycle"] is True
+        cyclic = {(e["src"], e["dst"]) for e in gp["edges"] if e["cycle"]}
+        assert ("Definition", "POS") in cyclic
+        assert ("POS", "Definition") in cyclic
+        # the acyclic Word -> POS / Word -> Definition edges are NOT flagged
+        assert all(not e["cycle"] for e in gp["edges"] if e["src"] == "Word")
+        # every node is still placed (the whole graph renders)
+        assert {"Word", "POS", "Definition"} <= {n["name"] for n in gp["nodes"]}
+        # these derived refs default to HARD, so it IS a real (blocking) cycle — save is rejected.
+        assert cycle_error_for_config(cfg) != ""
+
+    def test_soft_cycle_is_not_flagged_or_blocked(self):
+        # POS and Definition SOFTLY reference each other (the classifier labelled the mutual refs
+        # soft, as Auto-prompt does). A soft edge is optional metadata the generator can break, so
+        # the cycle is generatable: graph_payload must NOT flag it and save must NOT be blocked.
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="POS",
+                    enabled=True,
+                    type="text",
+                    prompt="POS of {{Word}} using {{Definition}}",
+                    depends_on=[FieldDep(field="Definition", kind="soft")],
+                ),
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}} ({{POS}})",
+                    depends_on=[FieldDep(field="POS", kind="soft")],
+                ),
+            ],
+        )
+        gp = graph_payload(cfg)
+        assert gp["has_cycle"] is False
+        assert all(not e["cycle"] for e in gp["edges"])
+        kinds = {(e["src"], e["dst"]): e["kind"] for e in gp["edges"]}
+        assert kinds.get(("Definition", "POS")) == "soft"
+        assert kinds.get(("POS", "Definition")) == "soft"
+        # the hard Word -> POS / Word -> Definition edges keep it a valid DAG → save allowed.
+        assert cycle_error_for_config(cfg) == ""
+
+    def test_acyclic_config_has_no_cycle_flag(self):
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}}",
+                )
+            ],
+        )
+        gp = graph_payload(cfg)
+        assert gp["has_cycle"] is False
+        assert all(e["cycle"] is False for e in gp["edges"])
+
     def test_depends_on_round_trips_through_payload(self):
         rows = [
             _row(
@@ -117,6 +199,53 @@ class TestGraphPayload:
         assert row_to_payload(field)["depends_on"] == [
             {"field": "Word", "kind": "soft", "auto": False}
         ]
+
+    def test_node_carries_locked_flag_from_field_config(self):
+        # A locked field's node reports locked=True; every other node (incl. the base) is False.
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}}",
+                    prompt_locked=True,
+                ),
+                SmartNotesFieldConfig(
+                    field="Example",
+                    enabled=True,
+                    type="text",
+                    prompt="Use {{Word}}",
+                ),
+            ],
+        )
+        by_name = {n["name"]: n for n in graph_payload(cfg)["nodes"]}
+        assert by_name["Definition"]["locked"] is True
+        assert by_name["Example"]["locked"] is False
+        assert by_name["Word"]["locked"] is False
+
+    def test_node_positions_override_layout_and_grow_bounds(self):
+        # A pinned position replaces the node's flow x/y, is echoed in node_positions, and grows
+        # the canvas bounds to include it (case-insensitive on the field name).
+        cfg = _config(
+            base="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt="Define {{Word}}",
+                )
+            ],
+        ).copy(update={"node_positions": {"Definition": [500.0, 300.0]}})
+        gp = graph_payload(cfg)
+        node = next(n for n in gp["nodes"] if n["name"] == "Definition")
+        assert node["x"] == 500.0 and node["y"] == 300.0
+        assert gp["node_positions"] == {"Definition": [500.0, 300.0]}
+        # bounds grow to include the moved node (its right/bottom edge + padding).
+        assert gp["bounds"]["width"] >= 500.0 + node["w"]
+        assert gp["bounds"]["height"] >= 300.0 + node["h"]
 
     def test_auto_flag_round_trips_so_classifier_kind_is_not_downgraded(self):
         # A classifier-written edge carries auto=True; the page must preserve it through
@@ -377,6 +506,37 @@ class TestNoteTypeConfigDecks:
         assert config.decks == []
 
 
+class TestNoteTypeConfigPositions:
+    def test_positions_passed_through_as_floats(self):
+        config = note_type_config_from_payload(
+            "Vocab",
+            "Word",
+            [_row("Meaning", enabled=True)],
+            positions={"X": [1, 2]},
+        )
+        assert config.node_positions == {"X": [1.0, 2.0]}
+
+    def test_malformed_positions_dropped(self):
+        config = note_type_config_from_payload(
+            "Vocab",
+            "Word",
+            [_row("Meaning", enabled=True)],
+            positions={
+                "Ok": [3, 4],
+                "TooShort": [5],
+                "TooLong": [6, 7, 8],
+                "NotAList": "nope",
+            },
+        )
+        assert config.node_positions == {"Ok": [3.0, 4.0]}
+
+    def test_positions_default_empty(self):
+        config = note_type_config_from_payload(
+            "Vocab", "Word", [_row("Meaning", enabled=True)]
+        )
+        assert config.node_positions == {}
+
+
 class TestMergeNoteTypeInto:
     def test_replaces_same_name(self):
         existing = [
@@ -565,7 +725,7 @@ class TestBuildSmartNotesHtml:
         assert "Updated dependency colours for" in html
 
     def test_graph_to_prompt_ops_and_hooks_wired(self):
-        # Feature 2 (graph → prompt): the Sync-prompts reload posts rewrite_edges; the popover's
+        # Feature 2 (graph → prompt): Save reconciles changed edges via rewrite_edges; the popover's
         # live guard rail posts validate_prompt; its ✨ Improve posts improve_prompt_pinned. The
         # off-thread results push via window.__snRewriteResult / window.__snImproveResult.
         html = build_smart_notes_html(dark=False)
@@ -576,7 +736,17 @@ class TestBuildSmartNotesHtml:
         # stale result can never write an unverified prompt onto a row (W1).
         assert "window.__snDiffImproveResult" in html
         assert "openDiffPopover" in html
-        assert "sn-graph-reload" in html  # the reload control next to the graph
+
+    def test_save_folds_in_edge_sync(self):
+        # The former "↻ Sync prompts" button is gone; Save (beginSaveWithSync) reconciles any
+        # changed edges — including pending derived deletions (removedEdges) — before performSave
+        # persists the config.
+        html = build_smart_notes_html(dark=False)
+        assert "sn-graph-reload" not in html  # the separate Sync-prompts control is removed
+        assert "removedEdges" in html
+        assert "function beginSaveWithSync" in html
+        assert "function performSave" in html
+        assert "beginSaveWithSync" in html  # wired as the Save click handler
 
     def test_diff_popover_markup_present(self):
         # The compact floating "Was → Now" diff card (NOT the full-screen modal).
@@ -584,3 +754,34 @@ class TestBuildSmartNotesHtml:
         assert "sn-diff-pop" in html and "sn-diff-card" in html
         assert "sn-diff-old" in html and "sn-diff-new" in html
         assert "sn-diff-apply" in html and "sn-diff-improve" in html
+
+    def test_node_prompt_tooltip_present(self):
+        # Feature 1: a styled hover tooltip (its element + CSS + the show helper) replaces <title>.
+        html = build_smart_notes_html(dark=False)
+        assert 'id="sn-node-tip"' in html and "sn-tip-name" in html
+        assert "showNodeTip" in html and ".sn-node-tip" in html
+
+    def test_node_positions_persisted_in_payloads(self):
+        # Feature 2: positions ride on graph_recompute + save; collectPositions is the hoisted
+        # source, seeded from the graph's node_positions.
+        html = build_smart_notes_html(dark=False)
+        assert "function collectPositions" in html
+        assert "savedPositions" in html
+        assert "positions: collectPositions()" in html
+        assert "node_positions" in html
+
+    def test_border_connect_and_routing_present(self):
+        # Feature 3: dynamic border anchoring + the text-zone interaction (drag the label to move,
+        # drag elsewhere to connect); no fixed connector port.
+        html = build_smart_notes_html(dark=False)
+        assert "borderPoint" in html and "nodeCenter" in html
+        assert "function isOverText" in html  # the label = move zone, elsewhere = connect + tip
+        assert "sn-handle" not in html  # the fixed connector dot is gone
+        assert "border" in html  # the updated hint text
+
+    def test_lock_integration_present(self):
+        # Feature 4: lock badge + unlock control, edge-edit guard, and the unlock helper.
+        html = build_smart_notes_html(dark=False)
+        assert "sn-node-locked" in html and "sn-unlock-btn" in html
+        assert "function unlockField" in html and "function isFieldLocked" in html
+        assert "is locked — unlock it to change its dependencies." in html

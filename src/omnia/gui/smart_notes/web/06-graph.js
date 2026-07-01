@@ -2,27 +2,32 @@
   /**
    * Smart Notes config page — the field dependency-graph canvas (a MIDDLE fragment of the page
    * IIFE; it neither opens nor closes it). Renders the Python-laid-out graph as ONE pannable /
-   * zoomable SVG viewport and edits edges: drag a node's connector handle → another node adds a
-   * hard edge, clicking an edge toggles hard↔soft, and Delete removes the selected one. Layout
-   * (pixel x/y + bounds) is ALWAYS computed server-side (the `graph_recompute` op), so this
-   * fragment never re-implements longest-path; it draws, pans/zooms, and mutates each row's
-   * `depends_on` (the single source of truth `collectRows` reads, so the existing Save persists
-   * it). Node MOVES are visual-only (an ephemeral posOverride map, wiped on recompute).
+   * zoomable SVG viewport and edits edges: drag from a node's BORDER → another node adds a hard
+   * edge, clicking an edge toggles hard↔soft, and Delete removes the selected one. Layout (pixel
+   * x/y + bounds) is ALWAYS computed server-side (the `graph_recompute` op), so this fragment
+   * never re-implements longest-path; it draws, pans/zooms, and mutates each row's `depends_on`
+   * (the single source of truth `collectRows` reads, so the existing Save persists it). Node MOVES
+   * persist per note type: a live drag writes `posOverride`, committed on drop into `savedPositions`
+   * (seeded from the graph's `node_positions`) and sent back with recompute/save so a moved node
+   * survives tab switch AND Save. A locked field can't be edited from the graph (its edges are
+   * guarded; a hover unlock control flips its row lock off).
    *
    * CSP-safe: vanilla SVG + CSS only, no external libs. NO SVG <filter> drop-shadows and NO
    * overflow:auto scroller — both blank the page on QtWebEngine/macOS Metal; depth/pan/zoom use
    * stroke/opacity/gradients and a single <g> transform instead. Hoisted `function seedGraph` is
-   * called by applyLoad in 05-handlers.js.
+   * called by applyLoad in 05-handlers.js; hoisted `function collectPositions` is called by the
+   * Save handler in 05-handlers.js (function declarations hoist across the whole IIFE).
    */
 
   const SVGNS = "http://www.w3.org/2000/svg";
   const graphSvg = document.getElementById("sn-graph-svg");
   const graphToast = document.getElementById("sn-graph-toast");
+  const graphWarn = document.getElementById("sn-graph-warn");
   const viewFieldsBtn = document.getElementById("sn-view-fields");
   const viewGraphBtn = document.getElementById("sn-view-graph");
   const fieldsView = document.getElementById("sn-fields-view");
   const graphView = document.getElementById("sn-graph-view");
-  const reloadBtn = document.getElementById("sn-graph-reload");
+  const nodeTip = document.getElementById("sn-node-tip");
 
   // Graph→prompt diff popover (Feature 2) element handles.
   const diffPop = document.getElementById("sn-diff-pop");
@@ -39,8 +44,9 @@
   // Fallback node box size (Python sends w/h per node, but a dangling/legacy payload may not).
   const NODE_W = 180;
   const NODE_H = 46;
-  const HANDLE_R = 7; // connector port radius (grows on hover via CSS)
   const MOVE_THRESHOLD = 4; // px a body-drag must travel before it's a MOVE (else a click)
+  const TEXT_HIT_PAD = 6; // px grace around a node's LABEL: over it = MOVE, outside = CONNECT + tip
+  const TIP_DELAY = 250; // ms hover before the prompt tooltip appears
   const MIN_K = 0.3;
   const MAX_K = 2.2;
   const HARD_COLOR = "#e5484d";
@@ -49,16 +55,47 @@
   let graphData = {nodes: [], edges: [], bounds: {width: 0, height: 0}};
   let graphVisible = false;
   let selectedEdge = null; // {src, dst, derived} of the currently-selected edge
-  let posOverride = {}; // name(lower) -> {x, y} ephemeral move overrides (wiped on recompute)
+  let posOverride = {}; // name(lower) -> {x, y} LIVE move overrides (committed to savedPositions on drop)
+  // Persistent user-pinned node positions (name(lower) -> {x, y, name}); seeded from the graph's
+  // node_positions and sent back on recompute/save so a moved node survives tab switch + Save.
+  let savedPositions = {};
+  let tipTimer = 0; // pending hover-tooltip show delay timer
+  let tipHideTimer = 0; // pending tooltip hide (grace delay so the cursor can reach the tooltip)
+  let tipNode = ""; // node name the tooltip is currently scheduled/shown for (the non-text zone)
 
   // The graph→prompt sync baseline: a snapshot of each row's depends_on (the "last synced"
-  // edge state). Taken on load, on save, and after a Feature-1 deps apply; the Sync button
+  // edge state). Taken on load, on save, and after a Feature-1 deps apply; Save
   // diffs the CURRENT rows against it to find each changed dependent node. {field(lower):
   // [{field, kind}]}.
   let lastSyncedDeps = {};
   // The active diff-popover queue context (null when idle): the topo-ordered list of changed
   // nodes still to process, the running synced count, and the open popover's field.
   let syncQueue = null;
+  // Client-side pending edge deletions: keys "<dstLower>|<srcLower>" → true. An edge the user
+  // deleted that is STILL derivable from the dependent's prompt ({{ref}}), so graphData.edges
+  // still returns it. Pending until Save rewrites the prompt to drop the reference; used to hide
+  // the edge immediately and to queue a purely-derived delete for reconciliation.
+  let removedEdges = {};
+
+  /** The removedEdges key for an edge (case-insensitive on both endpoints). */
+  function edgeRemKey(dst, src) {
+    return (dst || "").toLowerCase() + "|" + (src || "").toLowerCase();
+  }
+
+  /** Whether the edge dst←src is pending deletion. */
+  function isEdgeRemoved(dst, src) {
+    return !!removedEdges[edgeRemKey(dst, src)];
+  }
+
+  /** Drop every pending deletion targeting `field` (its prompt now reflects them, or it was skipped). */
+  function clearRemovedFor(field) {
+    const p = (field || "").toLowerCase() + "|";
+    Object.keys(removedEdges).forEach(function (k) {
+      if (k.indexOf(p) === 0) {
+        delete removedEdges[k];
+      }
+    });
+  }
 
   // Viewport transform applied to the single <g id="sn-graph-vp">.
   let view = {tx: 0, ty: 0, k: 1};
@@ -76,9 +113,10 @@
 
   /**
    * Store the server-laid-out graph (nodes carry pixel x/y/w/h + a top-level bounds) and redraw
-   * if the view is open. Clears any ephemeral move overrides — positions are visual-only and the
-   * server is the source of truth on each (re)seed.
-   * @param {?Object} graph {nodes:[{name,is_base,generatable,column,row,x,y,w,h,lane}], edges:[...], bounds:{width,height}}.
+   * if the view is open. Clears the LIVE (in-progress drag) overrides and re-seeds the PERSISTENT
+   * pinned positions from the graph's node_positions — the moved nodes the user has committed and
+   * saved.
+   * @param {?Object} graph {nodes:[{name,is_base,generatable,locked,column,row,x,y,w,h,lane}], edges:[...], bounds:{width,height}, node_positions:{name:[x,y]}}.
    */
   function seedGraph(graph) {
     graphData =
@@ -86,12 +124,47 @@
         ? graph
         : {nodes: [], edges: [], bounds: {width: 0, height: 0}};
     posOverride = {};
+    // A freshly-loaded note type has no pending deletions (its rows already match their prompts).
+    removedEdges = {};
+    seedSavedPositions(graphData.node_positions);
     // A freshly-loaded note type IS the synced baseline (the rows already match their prompts).
     snapshotSyncedDeps();
     if (graphVisible) {
       renderGraph();
       fitView();
     }
+  }
+
+  /**
+   * Seed the persistent pinned-position map from a graph payload's node_positions ({name: [x,y]},
+   * original case). Stored keyed by lower-case name but keeping the original case so
+   * collectPositions can emit the config-facing map.
+   * @param {?Object} positions The graph payload's node_positions map (or null/absent).
+   */
+  function seedSavedPositions(positions) {
+    savedPositions = {};
+    const map = positions || {};
+    Object.keys(map).forEach(function (name) {
+      const p = map[name];
+      if (Array.isArray(p) && p.length === 2) {
+        savedPositions[name.toLowerCase()] = {x: p[0], y: p[1], name: name};
+      }
+    });
+  }
+
+  /**
+   * The user-pinned node positions to persist ({name: [x, y]}, original case) — sent with every
+   * graph_recompute and the Save op so a moved node survives tab switch AND Save. HOISTED so the
+   * Save handler in 05-handlers.js (concatenated before this file) can call it at click time.
+   * @return {!Object}
+   */
+  function collectPositions() {
+    const out = {};
+    Object.keys(savedPositions).forEach(function (lc) {
+      const p = savedPositions[lc];
+      out[p.name] = [p.x, p.y];
+    });
+    return out;
   }
 
   /**
@@ -140,7 +213,7 @@
     }
     row.dataset.dependsOn = JSON.stringify(deps || []);
     // The prompt→graph sync just made this field's edges match its prompt, so re-baseline it —
-    // the Sync button must not then treat a classifier-written edge as a user edge change.
+    // Save must not then treat a classifier-written edge as a user edge change.
     lastSyncedDeps[(field || "").toLowerCase()] = (deps || []).map(function (d) {
       return {field: d.field, kind: d.kind};
     });
@@ -179,6 +252,7 @@
 
   /** Switch between the Fields table and the Dependencies graph. */
   function switchView(toGraph) {
+    hideNodeTip();
     graphVisible = toGraph;
     viewGraphBtn.classList.toggle("sn-view-active", toGraph);
     viewFieldsBtn.classList.toggle("sn-view-active", !toGraph);
@@ -205,7 +279,8 @@
       {
         note_type: noteTypeSel.value,
         base_field: baseSel.value,
-        rows: collectRows()
+        rows: collectRows(),
+        positions: collectPositions()
       },
       function (res) {
         if (res && res.error) {
@@ -218,7 +293,10 @@
         }
         if (res && res.graph) {
           graphData = res.graph;
-          posOverride = {}; // positions are visual-only — the fresh layout is authoritative
+          // The pinned positions were echoed back baked into the fresh layout — re-seed from the
+          // response and drop the LIVE drag overrides (now committed into savedPositions/graph).
+          seedSavedPositions(res.graph.node_positions);
+          posOverride = {};
         }
         renderGraph();
         fitView();
@@ -243,6 +321,9 @@
     const lc = (node.name || "").toLowerCase();
     if (posOverride[lc]) {
       return {x: posOverride[lc].x, y: posOverride[lc].y};
+    }
+    if (savedPositions[lc]) {
+      return {x: savedPositions[lc].x, y: savedPositions[lc].y};
     }
     return {x: node.x || 0, y: node.y || 0};
   }
@@ -274,6 +355,9 @@
     graphSvg.appendChild(viewport);
 
     edges.forEach(function (e) {
+      if (isEdgeRemoved(e.dst, e.src)) {
+        return; // pending-deleted (still derivable from the prompt) — hide until Save rewrites it
+      }
       const wrap = edgeGroup(e);
       if (wrap) {
         viewport.appendChild(wrap);
@@ -282,6 +366,11 @@
     nodes.forEach(function (n) {
       viewport.appendChild(nodeGroup(n));
     });
+    if (graphWarn) {
+      // The cyclic edges are flagged red (sn-edge-cycle); show the persistent banner so the user
+      // knows generation/save need the loop broken (the graph still renders the whole cycle).
+      graphWarn.hidden = !(graphData && graphData.has_cycle);
+    }
   }
 
   function applyViewTransform() {
@@ -327,8 +416,8 @@
     m.setAttribute("viewBox", "0 0 10 10");
     m.setAttribute("refX", "9");
     m.setAttribute("refY", "5");
-    m.setAttribute("markerWidth", "7");
-    m.setAttribute("markerHeight", "7");
+    m.setAttribute("markerWidth", "5");
+    m.setAttribute("markerHeight", "5");
     m.setAttribute("orient", "auto-start-reverse");
     const p = svgEl("path");
     p.setAttribute("d", "M0,0 L10,5 L0,10 z");
@@ -337,20 +426,58 @@
     return m;
   }
 
-  /** The bezier `d` for an edge from src's right port to dst's left port. */
+  /** The centre point of a node's box in world coords. */
+  function nodeCenter(node) {
+    const p = nodePos(node);
+    const s = nodeSize(node);
+    return {x: p.x + s.w / 2, y: p.y + s.h / 2};
+  }
+
+  /**
+   * The point on a node's border rect where the ray from its centre toward (tx, ty) exits — so an
+   * edge attaches to the nearest border point instead of a fixed port.
+   * @param {!Object} node The node.
+   * @param {number} tx Target x (world coords).
+   * @param {number} ty Target y (world coords).
+   * @return {{x: number, y: number}}
+   */
+  function borderPoint(node, tx, ty) {
+    const p = nodePos(node);
+    const s = nodeSize(node);
+    const cx = p.x + s.w / 2;
+    const cy = p.y + s.h / 2;
+    const dx = tx - cx;
+    const dy = ty - cy;
+    if (dx === 0 && dy === 0) {
+      return {x: cx + s.w / 2, y: cy};
+    }
+    const tX = dx !== 0 ? s.w / 2 / Math.abs(dx) : Infinity;
+    const tY = dy !== 0 ? s.h / 2 / Math.abs(dy) : Infinity;
+    const t = Math.min(tX, tY);
+    return {x: cx + dx * t, y: cy + dy * t};
+  }
+
+  /**
+   * The S-curve `d` for an edge, attaching to each node's border point along the line between
+   * their centres. Control points follow the dominant axis so a mostly-horizontal edge bends
+   * horizontally and a mostly-vertical one bends vertically.
+   */
   function edgeD(s, d) {
-    const sp = nodePos(s);
-    const dp = nodePos(d);
-    const ss = nodeSize(s);
-    const ds = nodeSize(d);
-    const sx = sp.x + ss.w;
-    const sy = sp.y + ss.h / 2;
-    const ex = dp.x;
-    const ey = dp.y + ds.h / 2;
-    const dx = Math.max(40, Math.abs(ex - sx) / 2);
+    const sc = nodeCenter(s);
+    const dc = nodeCenter(d);
+    const a = borderPoint(s, dc.x, dc.y);
+    const b = borderPoint(d, sc.x, sc.y);
+    if (Math.abs(b.x - a.x) >= Math.abs(b.y - a.y)) {
+      const mx = (a.x + b.x) / 2;
+      return (
+        "M" + a.x + "," + a.y + " C" + mx + "," + a.y + " " +
+        mx + "," + b.y + " " + b.x + "," + b.y
+      );
+    }
+    const my = (a.y + b.y) / 2;
     return (
-      "M" + sx + "," + sy + " C" + (sx + dx) + "," + sy + " " +
-      (ex - dx) + "," + ey + " " + ex + "," + ey
+      "M" + a.x + "," + a.y + " C" + a.x + "," + my + " " +
+      b.x + "," + my + " " + b.x + "," + b.y
     );
   }
 
@@ -391,7 +518,10 @@
     path.setAttribute("d", dd);
     path.setAttribute(
       "class",
-      "sn-edge " + (soft ? "sn-edge-soft" : "sn-edge-hard") + (sel ? " sn-edge-selected" : "")
+      "sn-edge " +
+        (soft ? "sn-edge-soft" : "sn-edge-hard") +
+        (sel ? " sn-edge-selected" : "") +
+        (e.cycle ? " sn-edge-cycle" : "")
     );
     path.setAttribute("stroke", "url(#" + (soft ? "sn-grad-soft" : "sn-grad-hard") + ")");
     if (e.derived) {
@@ -413,7 +543,10 @@
     const g = svgEl("g");
     g.setAttribute(
       "class",
-      "sn-node" + (n.is_base ? " sn-node-base" : "") + (n.generatable ? "" : " sn-node-ng")
+      "sn-node" +
+        (n.is_base ? " sn-node-base" : "") +
+        (n.generatable ? "" : " sn-node-ng") +
+        (n.locked ? " sn-node-locked" : "")
     );
     g.setAttribute("data-node", n.name);
     const p = nodePos(n);
@@ -435,30 +568,231 @@
     text.setAttribute("dominant-baseline", "central");
     text.textContent = n.name.length > 22 ? n.name.slice(0, 21) + "…" : n.name;
 
-    // The connector port on the right edge — mousedown here starts an EDGE CREATE.
-    const handle = svgEl("circle");
-    handle.setAttribute("cx", String(sz.w));
-    handle.setAttribute("cy", String(sz.h / 2));
-    handle.setAttribute("r", String(HANDLE_R));
-    handle.setAttribute("class", "sn-handle");
-    handle.addEventListener("mousedown", function (ev) {
-      ev.preventDefault();
-      ev.stopPropagation();
-      startConnect(n.name, ev);
-    });
-
-    const title = svgEl("title");
-    title.textContent =
-      n.name + (n.is_base ? " (base / input)" : n.generatable ? "" : " (not generated)");
-
     g.appendChild(rect);
     g.appendChild(text);
-    g.appendChild(handle);
-    g.appendChild(title);
+    if (n.locked) {
+      appendLockControls(g, n, sz);
+    }
+
+    // Text-zone interaction model: the LABEL is the grab handle (drag it to MOVE the node), the
+    // rest of the box is the CONNECT zone (drag to add an edge) and shows the prompt tooltip on
+    // hover. So dragging a node no longer fights the tooltip, and reading the prompt no longer
+    // fights a move. `text` is measured live (its width depends on the label).
     g.addEventListener("mousedown", function (ev) {
-      startMove(n.name, ev);
+      if (ev.button !== 0) {
+        return;
+      }
+      if (isOverText(text, ev)) {
+        startMove(n.name, ev); // over the label → move the node
+      } else {
+        ev.preventDefault();
+        ev.stopPropagation();
+        hideNodeTip();
+        startConnect(n.name, ev); // outside the label → drag to connect
+      }
     });
+    // Cursor + tooltip by zone: over the label → grab cursor, no tooltip; outside → crosshair and
+    // the prompt tooltip (scheduled once per entry into the non-text zone, not reset each move).
+    g.addEventListener("mousemove", function (ev) {
+      if (isOverText(text, ev)) {
+        g.style.cursor = "grab";
+        if (tipNode === n.name) {
+          hideNodeTip();
+        }
+      } else {
+        g.style.cursor = "crosshair";
+        if (tipNode !== n.name) {
+          tipNode = n.name;
+          scheduleNodeTip(n, g);
+        }
+      }
+    });
+    // Returning to the node cancels a pending hide; leaving it hides after the grace delay.
+    g.addEventListener("mouseenter", cancelTipHide);
+    g.addEventListener("mouseleave", scheduleTipHide);
     return g;
+  }
+
+  /**
+   * Add a locked field's badge + a hover-revealed unlock control to its node group. The badge is
+   * a small 🔒 near the top-right; the unlock control (a circle + 🔓, shown on hover via CSS)
+   * flips the row's lock off when clicked.
+   * @param {!SVGGElement} g The node group.
+   * @param {!Object} n The node payload.
+   * @param {!Object} sz The node box size ({w, h}).
+   */
+  function appendLockControls(g, n, sz) {
+    const badge = svgEl("text");
+    badge.setAttribute("x", String(sz.w - 14));
+    badge.setAttribute("y", "13");
+    badge.setAttribute("class", "sn-lock-badge");
+    badge.setAttribute("pointer-events", "none");
+    badge.textContent = "🔒";
+    g.appendChild(badge);
+
+    const unlock = svgEl("g");
+    unlock.setAttribute("class", "sn-unlock-btn");
+    unlock.setAttribute(
+      "transform",
+      "translate(" + (sz.w - 14) + ",13)"
+    );
+    const circle = svgEl("circle");
+    circle.setAttribute("cx", "0");
+    circle.setAttribute("cy", "0");
+    circle.setAttribute("r", "11");
+    circle.setAttribute("class", "sn-unlock-circle");
+    const glyph = svgEl("text");
+    glyph.setAttribute("x", "0");
+    glyph.setAttribute("y", "0");
+    glyph.setAttribute("text-anchor", "middle");
+    glyph.setAttribute("dominant-baseline", "central");
+    glyph.setAttribute("class", "sn-unlock-glyph");
+    glyph.textContent = "🔓";
+    unlock.appendChild(circle);
+    unlock.appendChild(glyph);
+    unlock.addEventListener("mousedown", function (ev) {
+      ev.stopPropagation(); // don't start a move/connect gesture
+    });
+    unlock.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      unlockField(n.name);
+    });
+    g.appendChild(unlock);
+  }
+
+  // --- prompt tooltip (Feature 1) -------------------------------------------------------
+  /**
+   * Whether the pointer is over a node's LABEL (its ``<text>``), with a small grace pad. The label
+   * is the move handle; everywhere else in the box connects + shows the tooltip.
+   * @param {!SVGTextElement} textEl The node's label element.
+   * @param {!MouseEvent} ev The pointer event.
+   * @return {boolean}
+   */
+  function isOverText(textEl, ev) {
+    const b = textEl.getBoundingClientRect();
+    return (
+      ev.clientX >= b.left - TEXT_HIT_PAD &&
+      ev.clientX <= b.right + TEXT_HIT_PAD &&
+      ev.clientY >= b.top - TEXT_HIT_PAD &&
+      ev.clientY <= b.bottom + TEXT_HIT_PAD
+    );
+  }
+
+  /** Schedule the hover prompt tooltip for a node after a short delay. */
+  function scheduleNodeTip(n, g) {
+    cancelTipHide(); // moving onto a node cancels a pending hide from the previous one
+    clearTimeout(tipTimer);
+    tipTimer = setTimeout(function () {
+      showNodeTip(n, g);
+    }, TIP_DELAY);
+  }
+
+  /**
+   * Show the styled prompt tooltip for a node, positioned to the right of its screen rect (flipped
+   * left when it would overflow), clamped within the window with an 8px margin. A long prompt is
+   * capped to the available viewport height and scrolls inside the card (the card is interactive),
+   * so it is never cut off by the window edge.
+   * @param {!Object} n The node payload.
+   * @param {!SVGGElement} g The node group.
+   */
+  function showNodeTip(n, g) {
+    if (!nodeTip) {
+      return;
+    }
+    cancelTipHide();
+    const row = rowByField(n.name);
+    const prompt = row ? row.dataset.prompt || "" : "";
+    nodeTip.innerHTML =
+      '<div class="sn-tip-name">' +
+      esc(n.name) +
+      "</div>" +
+      (prompt
+        ? esc(prompt)
+        : '<span style="opacity:.6">(no prompt yet)</span>');
+    nodeTip.hidden = false;
+
+    const margin = 8;
+    // Cap the card to the viewport (never taller than the space we allow) so a long prompt
+    // scrolls INSIDE it instead of running off the bottom edge. Set inline so it always wins.
+    const maxH = Math.min(window.innerHeight - 2 * margin, 460);
+    nodeTip.style.maxHeight = maxH + "px";
+
+    const r = g.getBoundingClientRect();
+    const tw = nodeTip.offsetWidth || 340;
+    const th = nodeTip.offsetHeight || 120; // already clamped by maxHeight
+    let left = r.right + margin;
+    if (left + tw > window.innerWidth - margin) {
+      left = r.left - tw - margin; // flip to the node's left when it won't fit on the right
+    }
+    let top = r.top;
+    left = Math.max(margin, Math.min(left, window.innerWidth - tw - margin));
+    top = Math.max(margin, Math.min(top, window.innerHeight - th - margin));
+    nodeTip.style.left = left + "px";
+    nodeTip.style.top = top + "px";
+  }
+
+  /** Hide the prompt tooltip after a short grace delay (lets the cursor travel onto the card). */
+  function scheduleTipHide() {
+    clearTimeout(tipHideTimer);
+    tipHideTimer = setTimeout(hideNodeTip, 160);
+  }
+
+  /** Cancel a pending hide (the cursor reached a node or the tooltip). */
+  function cancelTipHide() {
+    clearTimeout(tipHideTimer);
+  }
+
+  /** Hide the prompt tooltip now and cancel any pending show/hide. */
+  function hideNodeTip() {
+    clearTimeout(tipTimer);
+    clearTimeout(tipHideTimer);
+    tipNode = "";
+    if (nodeTip) {
+      nodeTip.hidden = true;
+    }
+  }
+
+  // The tooltip is interactive (scrollable): keep it open while the cursor is over it, hide when
+  // the cursor leaves it.
+  if (nodeTip) {
+    nodeTip.addEventListener("mouseenter", cancelTipHide);
+    nodeTip.addEventListener("mouseleave", hideNodeTip);
+  }
+
+  /**
+   * Whether a field is locked — the ROW's live lock state is the source of truth (the table owns
+   * the lock), falling back to the node's `locked` flag when there is no row (e.g. the base node).
+   * @param {string} name The field name.
+   * @return {boolean}
+   */
+  function isFieldLocked(name) {
+    const row = rowByField(name);
+    if (row) {
+      const lock = row.querySelector(".sn-lock");
+      return !!(lock && lock.classList.contains("sn-locked"));
+    }
+    const node = nodeByName(name);
+    return !!(node && node.locked);
+  }
+
+  /**
+   * Unlock a field FROM THE GRAPH: flip its table row's lock cell off exactly as the row's own
+   * lock click does (remove `sn-locked`, restore the 🔓 glyph, re-apply the row lock state), then
+   * recompute so the node re-renders unlocked.
+   * @param {string} name The field to unlock.
+   */
+  function unlockField(name) {
+    const row = rowByField(name);
+    if (!row) {
+      return;
+    }
+    const lock = row.querySelector(".sn-lock");
+    if (lock) {
+      lock.classList.remove("sn-locked");
+      lock.textContent = "🔓";
+      applyLockState(row);
+    }
+    recomputeGraph();
   }
 
   // --- coordinate mapping ---------------------------------------------------------------
@@ -518,6 +852,7 @@
     if (ev.target !== graphSvg || ev.button !== 0) {
       return;
     }
+    hideNodeTip();
     pan = {x0: ev.clientX, y0: ev.clientY, tx0: view.tx, ty0: view.ty};
     graphSvg.classList.add("sn-dragging");
     if (selectedEdge) {
@@ -572,9 +907,13 @@
 
   // --- editing: connect to create, move to reposition, click to toggle, Delete to remove ----
   function startConnect(srcName, ev) {
+    hideNodeTip();
     connect = {src: srcName, line: svgEl("path")};
     connect.line.setAttribute("class", "sn-drag-line");
-    const a = anchorRight(srcName);
+    // Start the drag line at the source border point nearest the cursor.
+    const src = nodeByName(srcName);
+    const c = screenToWorld(ev);
+    const a = borderPoint(src, c.x, c.y);
     connect.line.setAttribute("d", "M" + a.x + "," + a.y + " L" + a.x + "," + a.y);
     viewport.appendChild(connect.line);
     document.addEventListener("mousemove", onConnectMove);
@@ -584,14 +923,25 @@
     if (!connect) {
       return;
     }
-    const a = anchorRight(connect.src);
+    const src = nodeByName(connect.src);
     const p = screenToWorld(ev);
-    const dx = Math.max(40, Math.abs(p.x - a.x) / 2);
-    connect.line.setAttribute(
-      "d",
-      "M" + a.x + "," + a.y + " C" + (a.x + dx) + "," + a.y + " " +
-      (p.x - dx) + "," + p.y + " " + p.x + "," + p.y
-    );
+    // The source anchor slides along its border toward the current cursor each move.
+    const a = borderPoint(src, p.x, p.y);
+    if (Math.abs(p.x - a.x) >= Math.abs(p.y - a.y)) {
+      const mx = (a.x + p.x) / 2;
+      connect.line.setAttribute(
+        "d",
+        "M" + a.x + "," + a.y + " C" + mx + "," + a.y + " " +
+        mx + "," + p.y + " " + p.x + "," + p.y
+      );
+    } else {
+      const my = (a.y + p.y) / 2;
+      connect.line.setAttribute(
+        "d",
+        "M" + a.x + "," + a.y + " C" + a.x + "," + my + " " +
+        p.x + "," + my + " " + p.x + "," + p.y
+      );
+    }
   }
   function onConnectEnd(ev) {
     document.removeEventListener("mousemove", onConnectMove);
@@ -611,15 +961,16 @@
   }
 
   /**
-   * mousedown on a node BODY: start a MOVE that only "arms" once the pointer travels past
+   * mousedown on a node's INTERIOR: start a MOVE that only "arms" once the pointer travels past
    * MOVE_THRESHOLD; under threshold + a quick mouseup is treated as a click/select (no move). A
-   * move writes the ephemeral posOverride map — node positions are visual-only, not persisted.
+   * move writes the LIVE posOverride map, committed into savedPositions on drop so it persists.
    */
   function startMove(name, ev) {
     if (ev.button !== 0) {
       return;
     }
     ev.preventDefault();
+    hideNodeTip();
     const n = nodeByName(name);
     const p = nodePos(n);
     move = {
@@ -659,6 +1010,15 @@
     document.removeEventListener("mousemove", onMoveDrag);
     document.removeEventListener("mouseup", onMoveEnd);
     graphSvg.classList.remove("sn-dragging");
+    // Commit the live drag override into the persistent pinned map so it survives tab switch +
+    // Save; keep savedPositions (do NOT clear it — other nodes stay pinned).
+    if (move && move.started) {
+      const lc = move.name.toLowerCase();
+      const live = posOverride[lc];
+      if (live) {
+        savedPositions[lc] = {x: live.x, y: live.y, name: move.name};
+      }
+    }
     move = null;
   }
 
@@ -667,14 +1027,11 @@
     renderGraph();
   }
 
-  function anchorRight(name) {
-    const n = nodeByName(name);
-    const p = nodePos(n);
-    const sz = nodeSize(n);
-    return {x: p.x + sz.w, y: p.y + sz.h / 2};
-  }
-
   function addEdge(src, dst) {
+    if (isFieldLocked(dst)) {
+      graphToastMsg("“" + dst + "” is locked — unlock it to change its dependencies.");
+      return;
+    }
     if (dst.toLowerCase() === (baseSel.value || "").toLowerCase()) {
       graphToastMsg("The base field is the input — it can’t depend on another field.");
       return;
@@ -694,6 +1051,10 @@
   function onEdgeClick(e) {
     // Click toggles hard↔soft AND selects (so Delete can then remove it). Toggling a derived
     // edge writes an explicit override entry on the dependent's row.
+    if (isFieldLocked(e.dst)) {
+      graphToastMsg("“" + e.dst + "” is locked — unlock it to change its dependencies.");
+      return;
+    }
     const newKind = e.kind === "soft" ? "hard" : "soft";
     updateRowDep(e.dst, e.src, newKind);
     selectedEdge = {src: e.src, dst: e.dst, derived: e.derived};
@@ -701,13 +1062,19 @@
   }
 
   function removeEdge(sel) {
-    updateRowDep(sel.dst, sel.src, null);
-    const wasDerived = sel.derived;
+    if (isFieldLocked(sel.dst)) {
+      graphToastMsg("“" + sel.dst + "” is locked — unlock it to change its dependencies.");
+      return;
+    }
+    // Deleting any edge just hides it; the prompt is reconciled later, at Save.
+    updateRowDep(sel.dst, sel.src, null); // drop any explicit entry
+    if (sel.derived) {
+      // Still derivable from the prompt's {{ref}} — mark it pending so it stays hidden until Save
+      // rewrites the prompt to drop the reference.
+      removedEdges[edgeRemKey(sel.dst, sel.src)] = true;
+    }
     selectedEdge = null;
     recomputeGraph();
-    if (wasDerived) {
-      graphToastMsg("That edge comes from a {{…}} reference in the field’s prompt — edit the prompt to remove it.");
-    }
   }
 
   document.addEventListener("keydown", function (e) {
@@ -721,12 +1088,18 @@
   });
 
   /**
-   * Detect whether adding the edge src→dst would create a cycle: true if dst can already reach
-   * src by following existing edges (a→b = a is a prerequisite of b).
+   * Detect whether adding the (hard) edge src→dst would create a HARD cycle: true if dst can
+   * already reach src by following existing HARD edges (a→b = a is a prerequisite of b). A new
+   * graph edge is hard, and only hard edges deadlock — reaching src via soft edges is fine (that
+   * cycle stays breakable), so soft edges are ignored here, mirroring the server's hard-only
+   * validity check.
    */
   function wouldCreateCycle(src, dst) {
     const adj = {};
     (graphData.edges || []).forEach(function (e) {
+      if (e.kind !== "hard") {
+        return; // soft edges never form a real (blocking) cycle
+      }
       const a = e.src.toLowerCase();
       (adj[a] = adj[a] || []).push(e.dst.toLowerCase());
     });
@@ -799,7 +1172,8 @@
     (graphData.edges || []).forEach(function (e) {
       if (
         (e.dst || "").toLowerCase() === lc &&
-        (e.src || "").toLowerCase() !== lc
+        (e.src || "").toLowerCase() !== lc &&
+        !isEdgeRemoved(field, e.src) // a pending-deleted edge is not part of the intended set
       ) {
         out.push({field: e.src, kind: e.kind});
       }
@@ -855,22 +1229,69 @@
   }
 
   /**
+   * The pending derived-deletion changes for a field NOT already covered by `changes`. A purely
+   * derived edge lives only in the prompt's {{ref}} (not in depends_on), so diffEdges can't see its
+   * deletion — recover each pending "<field>|<src>" as a remove change, reading the original-case
+   * src + its kind from graphData.edges (falling back to the lower-cased src / "hard").
+   * @param {string} field The dependent field.
+   * @param {!Array<!Object>} changes The changes diffEdges already produced for this field.
+   * @return {!Array<!Object>} The extra remove changes to append.
+   */
+  function derivedDeletionChanges(field, changes) {
+    const covered = {};
+    changes.forEach(function (c) {
+      covered[(c.src || "").toLowerCase()] = true;
+    });
+    const prefix = field.toLowerCase() + "|";
+    const extra = [];
+    Object.keys(removedEdges).forEach(function (key) {
+      if (key.indexOf(prefix) !== 0) {
+        return;
+      }
+      const srcLower = key.slice(prefix.length);
+      if (covered[srcLower]) {
+        return; // an explicit remove/toggle already accounts for this src
+      }
+      let src = srcLower;
+      let oldKind = "hard";
+      (graphData.edges || []).forEach(function (e) {
+        if (
+          (e.dst || "").toLowerCase() === field.toLowerCase() &&
+          (e.src || "").toLowerCase() === srcLower
+        ) {
+          src = e.src;
+          oldKind = e.kind || "hard";
+        }
+      });
+      extra.push({action: "remove", src: src, old_kind: oldKind, new_kind: ""});
+    });
+    return extra;
+  }
+
+  /**
    * Build the topo-ordered queue of changed dependent nodes: each row whose explicit depends_on
-   * differs from the baseline, ordered so a node comes AFTER any of its (changed) prerequisites.
-   * Each entry is {field, changes:[EdgeChange]}.
+   * differs from the baseline OR has a pending derived-edge deletion, ordered so a node comes AFTER
+   * any of its (changed) prerequisites. Each entry is {field, changes:[EdgeChange]}.
    * @return {!Array<!Object>}
    */
   function buildSyncQueue() {
     const changed = [];
     Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
       const field = tr.dataset.field || "";
+      // A locked field's prompt must never be rewritten by the sync — skip it entirely.
+      if (isFieldLocked(field)) {
+        return;
+      }
       const before = lastSyncedDeps[field.toLowerCase()] || [];
       const after = readDependsOn(tr).map(function (d) {
         return {field: d.field, kind: d.kind};
       });
       const changes = diffEdges(before, after);
-      if (changes.length) {
-        changed.push({field: field, changes: changes});
+      // Fold in purely-derived deletions (in the prompt only, so invisible to diffEdges).
+      const extra = derivedDeletionChanges(field, changes);
+      const all = changes.concat(extra);
+      if (all.length) {
+        changed.push({field: field, changes: all});
       }
     });
     return topoOrderChanged(changed);
@@ -918,37 +1339,68 @@
     return ordered;
   }
 
-  // The reload control: start the lazy, order-correct rewrite queue.
-  reloadBtn.addEventListener("click", function () {
+  /**
+   * Save entry point (folds the former "↻ Sync prompts" flow into the bottom Save button):
+   * reconcile any changed edges through the review popovers FIRST, then persist. If nothing
+   * changed, persist directly. HOISTED so the Save handler in 05-handlers.js can call it.
+   */
+  function beginSaveWithSync() {
     if (syncQueue) {
-      return; // a sync is already running
+      return; // a save/sync is already running
     }
     const queue = buildSyncQueue();
     if (!queue.length) {
-      graphToastMsg("No edge changes to sync.");
+      performSave(); // nothing to reconcile → just persist
       return;
     }
     syncQueue = {pending: queue, synced: 0, field: ""};
-    processNextSync();
-  });
+    processNextSync(); // runs the review popovers; the drain branch calls performSave()
+  }
+
+  /**
+   * Persist the config through the `save` op, then re-baseline. Called directly (no edge changes)
+   * or after the sync queue drains. HOISTED so the Save handler in 05-handlers.js can call it.
+   */
+  function performSave() {
+    saveBtn.disabled = true;
+    send(
+      "save",
+      {
+        note_type: noteTypeSel.value,
+        base_field: baseSel.value,
+        rows: collectRows(),
+        decks: selectedDeckIds(),
+        options: collectOptions(),
+        // Persist the user-pinned graph node positions (collectPositions is hoisted from this file).
+        positions: collectPositions()
+      },
+      function (res) {
+        saveBtn.disabled = false;
+        if (res && res.ok) {
+          // A successful save makes the current edges the new graph→prompt sync baseline.
+          removedEdges = {};
+          snapshotSyncedDeps();
+          setMsg("Saved.", false);
+        } else {
+          setMsg((res && res.error) || "Could not save — see logs.", true);
+        }
+      }
+    );
+  }
 
   /**
    * Process the next changed node LAZILY: request its rewrite against the CURRENT row state (so a
-   * prior Apply is already reflected), then show the popover. When the queue drains, re-baseline
-   * and toast the count. Computing each node's rewrite only when reached keeps the order correct.
+   * prior Apply is already reflected), then show the popover. When the queue drains, persist the
+   * config. Computing each node's rewrite only when reached keeps the order correct.
    */
   function processNextSync() {
     if (!syncQueue) {
       return;
     }
     if (!syncQueue.pending.length) {
-      const n = syncQueue.synced;
       syncQueue = null;
-      snapshotSyncedDeps(); // the rows are now the new synced baseline
-      refreshGraphIfOpen();
-      if (n) {
-        graphToastMsg("Synced " + n + " prompt" + (n === 1 ? "" : "s") + ".");
-      }
+      closeDiffPopover(); // the queue drained — a final Apply must dismiss the popover too
+      performSave(); // reconciliation done — persist (performSave re-baselines on success)
       return;
     }
     const node = syncQueue.pending[0];
@@ -959,7 +1411,7 @@
       processNextSync();
       return;
     }
-    reloadBtn.disabled = true;
+    saveBtn.disabled = true;
     setMsg('<span class="sn-spin"></span>Rewriting “' + node.field + "” …", false);
     const intended = incomingEdges(node.field); // the FULL intended edge set at this node
     // For a 1-change node the kept_deps are the intended set minus the changed src.
@@ -993,7 +1445,7 @@
    * @param {?(Array<!Object>|Object)} res [{field, old_prompt, new_prompt, ok, reason}] or {error}.
    */
   window.__snRewriteResult = function (res) {
-    reloadBtn.disabled = false;
+    saveBtn.disabled = false;
     setMsg("");
     if (!syncQueue) {
       return;
@@ -1041,7 +1493,14 @@
     if (!syncQueue) {
       return;
     }
+    const node = syncQueue.pending[0];
     syncQueue.pending.shift();
+    if (node) {
+      // A discarded/skipped node keeps its prompt, so revert its pending derived deletions — the
+      // deleted edge comes back (it's still derivable from the unchanged prompt).
+      clearRemovedFor(node.field);
+      recomputeGraph();
+    }
     processNextSync();
   }
 
@@ -1075,6 +1534,8 @@
     // Lockstep: the explicit depends_on becomes the intended kinds, so kind never drifts
     // unverified. Keep each existing entry's auto flag where the src is unchanged.
     setRowDepsLockstep(tr, intended);
+    // The rewritten prompt now reflects any pending derived deletions for this node, so drop them.
+    clearRemovedFor(node.field);
     recomputeGraph(); // server whole-graph validate_acyclic backstop
     syncQueue.synced += 1;
     syncQueue.pending.shift();
