@@ -26,7 +26,7 @@
   </div>
   <div class="sn-viewswitch" role="tablist">
     <button id="sn-view-fields" class="sn-view-btn sn-view-active" type="button" data-view="fields">Fields</button>
-    <button id="sn-view-graph" class="sn-view-btn" type="button" data-view="graph" title="Visualise and edit how each field depends on the others — drag a field's right-edge dot onto another field to add an edge, drag a node to rearrange, scroll to zoom, click an edge to toggle hard/soft, Delete to remove.">Dependencies</button>
+    <button id="sn-view-graph" class="sn-view-btn" type="button" data-view="graph" title="Visualise and edit how each field depends on the others — drag from a field's border onto another field to add an edge, drag a node's centre to move it, scroll to zoom, click an edge to toggle hard/soft, Delete to remove.">Dependencies</button>
   </div>
   <div id="sn-fields-view" class="sn-table-wrap">
     <table class="sn-table">
@@ -50,12 +50,13 @@
   </div>
   <div id="sn-graph-view" class="sn-graph-wrap" hidden>
     <div class="sn-graph-bar">
-      <div class="sn-graph-hint">Drag a field's right-edge <b>dot</b> onto another field to add a dependency. Drag a node to rearrange, scroll to zoom, drag the canvas to pan. Click an edge to toggle <b class="sn-edge-hard">hard</b> ↔ <b class="sn-edge-soft">soft</b>; select it and press Delete to remove.</div>
-      <button id="sn-graph-reload" class="sn-btn sn-btn-magic sn-graph-reload" type="button" title="Apply your edge edits to each affected field's prompt — review each rewrite before it's saved.">↻ Sync prompts</button>
+      <div class="sn-graph-hint">Drag from a field's <b>border</b> onto another field to add a dependency. Drag a node's centre to move it, scroll to zoom, drag the canvas to pan. Click an edge to toggle <b class="sn-edge-hard">hard</b> ↔ <b class="sn-edge-soft">soft</b>; select it and press Delete to remove.</div>
     </div>
+    <div id="sn-graph-warn" class="sn-graph-warn" hidden>⚠ These fields reference each other in a cycle (the thick <b>amber</b> edges). Generation runs in dependency order, which needs a loop-free graph — click an amber edge and press Delete to break the cycle before saving.</div>
     <div id="sn-graph-scroll" class="sn-graph-scroll">
       <svg id="sn-graph-svg" class="sn-graph-svg" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
+    <div id="sn-node-tip" class="sn-node-tip" hidden></div>
     <div id="sn-graph-toast" class="sn-graph-toast" hidden></div>
   </div>
   <footer class="sn-footer">

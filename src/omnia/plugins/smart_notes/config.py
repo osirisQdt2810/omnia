@@ -150,6 +150,10 @@ class SmartNotesNoteTypeConfig(_Strict):
     decks: list[int] = Field(
         default_factory=list
     )  # deck ids this config applies to; [] = all decks
+    # User-pinned node positions for the dependency-graph canvas: a field name (original
+    # case, incl. the base field which has no row) -> its [x, y] top-left pixel coords. An
+    # entry overrides the auto-computed flow layout so a moved node survives tab switch + save.
+    node_positions: dict[str, list[float]] = Field(default_factory=dict)
 
     def generatable_fields(self) -> list[SmartNotesFieldConfig]:
         """Return the fields eligible for generation: enabled and not the base field."""

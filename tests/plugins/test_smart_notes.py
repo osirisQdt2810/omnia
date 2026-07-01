@@ -421,6 +421,35 @@ class TestOrderRules:
         with pytest.raises(SmartNotesCycleError):
             order_rules([a, b])
 
+    def test_all_soft_cycle_is_generatable(self):
+        # Two fields that SOFTLY reference each other (Auto-prompt's POS <-> Definition): a soft
+        # edge is optional metadata the ordering can break, so this must NOT raise — one field is
+        # generated first (without the other's optional value), then the second uses it.
+        a = SmartNotesFieldRule(
+            target_field="A",
+            prompt="uses {{B}}",
+            depends_on=[FieldDep(field="B", kind="soft")],
+        )
+        b = SmartNotesFieldRule(
+            target_field="B",
+            prompt="uses {{A}}",
+            depends_on=[FieldDep(field="A", kind="soft")],
+        )
+        ordered = [r.target_field for r in order_rules([a, b])]  # no raise
+        assert set(ordered) == {"A", "B"}
+
+    def test_soft_back_edge_dropped_hard_forward_kept(self):
+        # A --hard--> B with a SOFT back-edge B --soft--> A: the hard edge orders A before B and
+        # the soft back-edge is dropped (broken) so ordering still terminates.
+        a = SmartNotesFieldRule(
+            target_field="A",
+            prompt="uses {{B}}",
+            depends_on=[FieldDep(field="B", kind="soft")],
+        )
+        b = _rule("B", prompt="uses {{A}}")  # derived hard dep on A
+        ordered = [r.target_field for r in order_rules([a, b])]
+        assert ordered == ["A", "B"]  # hard A->B wins; soft B->A broken
+
 
 class TestShouldSkipRule:
     def test_skips_when_all_sources_blank(self):
@@ -1030,12 +1059,33 @@ class TestAutoSmartApply:
         suggestions = {
             "Example": AutoSmartField(
                 type="text",
-                prompt="p",
+                prompt="Use {{Meaning}} in a sentence",  # the prompt references the dep
                 depends_on=(AutoSmartDep(field="Meaning", kind="soft"),),
             )
         }
         updated = apply_auto_smart(config, suggestions)
         assert updated.fields[0].depends_on == [FieldDep(field="Meaning", kind="soft")]
+
+    def test_suggested_dep_not_in_prompt_is_dropped(self):
+        # A suggested dep the generated prompt does NOT reference is a dead edge (it would order/
+        # block but pass no value), so apply_auto_smart drops it — every edge maps to a {{ref}}.
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[SmartNotesFieldConfig(field="Example", enabled=True)],
+        )
+        suggestions = {
+            "Example": AutoSmartField(
+                type="text",
+                prompt="Write a sentence with {{Word}}",  # references Word, NOT Meaning
+                depends_on=(
+                    AutoSmartDep(field="Word", kind="hard"),
+                    AutoSmartDep(field="Meaning", kind="soft"),  # not in the prompt → dropped
+                ),
+            )
+        }
+        updated = apply_auto_smart(config, suggestions)
+        assert updated.fields[0].depends_on == [FieldDep(field="Word", kind="hard")]
 
     def test_existing_depends_on_is_preserved_not_clobbered(self):
         config = SmartNotesNoteTypeConfig(

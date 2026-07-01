@@ -185,7 +185,10 @@ def apply_auto_smart(
     the model returned a suggestion for them. Locked fields, disabled fields, fields with no
     suggestion, and the base field are left untouched. The suggested ``depends_on`` fills the
     graph only where a field has NO explicit ``depends_on`` yet — user-drawn/existing edges are
-    preserved (fill gaps, don't clobber).
+    preserved (fill gaps, don't clobber) — AND only for deps the generated prompt actually
+    references (``{{Field}}``). A suggested dep the prompt does not interpolate would be a
+    dead edge (it orders/blocks but passes no value to the LLM), so it is dropped; every edge
+    then reflects a real prompt reference.
 
     Args:
         config: The current note-type config.
@@ -210,13 +213,26 @@ def apply_auto_smart(
                 "type": suggestion.type,
                 "prompt": suggestion.prompt,
             }
-            # Fill the dependency graph only for a field that has no explicit edges yet —
-            # never clobber user-drawn/existing ones.
+            # Fill the dependency graph only for a field that has no explicit edges yet (never
+            # clobber user-drawn/existing ones) AND only for deps the generated prompt actually
+            # references — a suggested dep the prompt doesn't interpolate would be a dead edge
+            # (orders/blocks but passes no value), so drop it. Every kept edge maps to a {{ref}}.
             if not field.depends_on and suggestion.depends_on:
-                change["depends_on"] = [
+                from omnia.plugins.smart_notes.engine.interpolation import (
+                    extract_field_refs,
+                )
+
+                refs = {
+                    ref.strip().lower()
+                    for ref in extract_field_refs(suggestion.prompt)
+                }
+                kept = [
                     FieldDep(field=dep.field, kind=dep.kind)
                     for dep in suggestion.depends_on
+                    if dep.field.strip().lower() in refs
                 ]
+                if kept:
+                    change["depends_on"] = kept
             updated.append(field.copy(update=change))
         else:
             updated.append(field.copy())
