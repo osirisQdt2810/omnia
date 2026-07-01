@@ -118,6 +118,7 @@ class AuthoringController:
         base_field = str(data.get("base_field", ""))
         field = str(data.get("field", ""))
         rough = str(data.get("prompt", ""))
+        kind = str(data.get("type", "text"))
         if not rough.strip():
             self._push_improve(
                 field, error="Type a rough prompt first, then Improve it."
@@ -142,6 +143,7 @@ class AuthoringController:
                 target_field=field,
                 rough=rough,
                 other_fields=other_fields,
+                kind=kind,
             ),
             on_success=lambda text: self._push_improve(field, prompt=text),
             on_failure=lambda exc: self._push_improve(
