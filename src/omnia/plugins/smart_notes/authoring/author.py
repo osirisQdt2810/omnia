@@ -227,7 +227,7 @@ def apply_auto_smart(
                     for ref in extract_field_refs(suggestion.prompt)
                 }
                 kept = [
-                    FieldDep(field=dep.field, kind=dep.kind)
+                    FieldDep(field=dep.field, kind=dep.kind, auto=True)
                     for dep in suggestion.depends_on
                     if dep.field.strip().lower() in refs
                 ]

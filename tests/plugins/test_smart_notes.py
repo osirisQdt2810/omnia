@@ -1064,7 +1064,10 @@ class TestAutoSmartApply:
             )
         }
         updated = apply_auto_smart(config, suggestions)
-        assert updated.fields[0].depends_on == [FieldDep(field="Meaning", kind="soft")]
+        # machine-suggested → auto=True (so reconcile self-cleans it if a later prompt drops the ref)
+        assert updated.fields[0].depends_on == [
+            FieldDep(field="Meaning", kind="soft", auto=True)
+        ]
 
     def test_suggested_dep_not_in_prompt_is_dropped(self):
         # A suggested dep the generated prompt does NOT reference is a dead edge (it would order/
@@ -1085,7 +1088,9 @@ class TestAutoSmartApply:
             )
         }
         updated = apply_auto_smart(config, suggestions)
-        assert updated.fields[0].depends_on == [FieldDep(field="Word", kind="hard")]
+        assert updated.fields[0].depends_on == [
+            FieldDep(field="Word", kind="hard", auto=True)
+        ]
 
     def test_existing_depends_on_is_preserved_not_clobbered(self):
         config = SmartNotesNoteTypeConfig(
