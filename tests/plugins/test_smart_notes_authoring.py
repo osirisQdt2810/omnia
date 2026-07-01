@@ -378,11 +378,13 @@ class TestReconcileFieldDeps:
         )
         assert out == [FieldDep(field="Reading", kind="soft", auto=True)]
 
-    def test_existing_ref_is_kept_unchanged(self):
-        # The user already set Reading=hard; even though the classifier says soft, B2 keeps it.
+    def test_existing_ref_is_reclassified_to_prompt_semantic(self):
+        # The prompt is the source of truth: an existing edge is RE-COLOURED to the fresh
+        # classification (a prompt edit that flips required↔optional flips hard↔soft). The auto
+        # flag (existence) is preserved; only the kind changes.
         existing = [FieldDep(field="Reading", kind="hard", auto=False)]
         out = reconcile_field_deps("Use {{Reading}}.", {"Reading": "soft"}, existing)
-        assert out == existing
+        assert out == [FieldDep(field="Reading", kind="soft", auto=False)]
 
     def test_auto_edge_whose_ref_vanished_is_dropped(self):
         out = reconcile_field_deps(
@@ -590,21 +592,19 @@ class TestMessageBuildersAreGeneric:
 
 
 # ---------------------------------------------------------------------------
-# Two-way sync: the auto/improve fold is disjoint — reconcile after apply_auto_smart only
-# classifies genuinely-new refs and never overwrites a kind apply_auto_smart already wrote (B2).
+# Two-way sync: the auto/improve fold re-classifies ALL refs (the prompt is the source of truth
+# for hard/soft), so reconcile re-colours existing edges to the classifier — no longer disjoint.
 # ---------------------------------------------------------------------------
 
 
-class TestAutoSmartReconcileDisjoint:
-    def test_reconcile_keeps_kind_apply_auto_smart_wrote(self):
+class TestAutoSmartReconcileReclassifies:
+    def test_fold_recolours_existing_edges_to_classifier(self):
         from omnia.plugins.smart_notes.config import (
             SmartNotesFieldConfig,
             SmartNotesNoteTypeConfig,
         )
 
-        # Auto-smart proposes Example soft-depends on Reading (and writes the prompt referencing
-        # it). The fold then classifies, but Reading is NOT a NEW ref (apply_auto_smart already
-        # set it), so reconcile keeps soft even though the classifier (here) would say hard.
+        # Auto-smart proposes Example depends on Reading and writes the prompt referencing it.
         config = SmartNotesNoteTypeConfig(
             note_type="Kanji",
             base_field="Kanji",
@@ -619,23 +619,18 @@ class TestAutoSmartReconcileDisjoint:
         }
         applied = apply_auto_smart(config, suggestions)
         field = applied.fields[0]
-        # apply_auto_smart wrote Reading=soft as an explicit (non-auto) edge.
+        # apply_auto_smart seeds Reading=soft (only the {{ref}}-matching dep is kept).
         reading = next(d for d in field.depends_on if d.field == "Reading")
         assert reading.kind == "soft"
 
-        # The fold's NEW refs are only those WITHOUT an existing depends_on entry. Reading already
-        # has one, so it isn't passed to the classifier — only {{Kanji}} is new.
-        have = {d.field.lower() for d in field.depends_on}
-        new_refs = [ref for ref in ("Kanji", "Reading") if ref.lower() not in have]
-        assert new_refs == ["Kanji"]
-
-        # Even if the classifier (wrongly) said Reading=hard, reconcile keeps soft (B2) and only
-        # adds the genuinely-new Kanji edge.
+        # The fold classifies ALL refs and reconcile RE-COLOURS every referenced edge to the
+        # classifier — the prompt is the source of truth (no longer disjoint / B2). Here the
+        # classifier says both are hard, so Reading flips soft→hard and Kanji is added hard.
         reconciled = reconcile_field_deps(
             field.prompt,
             {"Kanji": "hard", "Reading": "hard"},
             list(field.depends_on),
         )
         by_field = {d.field: d for d in reconciled}
-        assert by_field["Reading"].kind == "soft"  # untouched — disjoint
+        assert by_field["Reading"].kind == "hard"  # re-coloured to the fresh classification
         assert by_field["Kanji"].kind == "hard" and by_field["Kanji"].auto is True

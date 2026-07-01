@@ -146,7 +146,7 @@ def _row(field: str, prompt: str, depends_on=None) -> dict:
 
 
 class TestPlanDepClassification:
-    def test_only_new_refs_become_uncached_items(self):
+    def test_all_refs_become_uncached_items(self):
         ctrl = _graph()
         rows = [
             _row(
@@ -156,9 +156,10 @@ class TestPlanDepClassification:
             )
         ]
         plan = ctrl._plan_dep_classification("Vocab", "Kanji", rows)
-        # Reading already has an entry → not new; only Kanji needs classifying.
+        # ALL refs are (re)classified — the prompt is the source of truth for hard/soft, so an
+        # existing edge (Reading) is re-read too, not only genuinely-new refs.
         assert plan.uncached_items == [
-            ("Example", "Use {{Kanji}} and {{Reading}}.", ["Kanji"])
+            ("Example", "Use {{Kanji}} and {{Reading}}.", ["Kanji", "Reading"])
         ]
         assert plan.cached == {}
 
@@ -214,8 +215,9 @@ class TestReconcileRows:
             }
         ]
 
-    def test_existing_kind_is_kept_disjoint_from_classification(self):
-        # Reading already user-set soft; reconcile keeps it even though the classifier said hard.
+    def test_existing_edge_is_recoloured_to_classification(self):
+        # The prompt is the source of truth: reconcile RE-COLOURS Reading soft→hard per the fresh
+        # classification (its auto=False existence is preserved; only the kind changes).
         ctrl = _graph()
         from omnia.plugins.smart_notes.authoring import EdgeKinding
 
@@ -227,7 +229,8 @@ class TestReconcileRows:
             )
         ]
         plan = _DepPlan(
-            uncached_items=[("Example", rows[0]["prompt"], ["Kanji"])], cached={}
+            uncached_items=[("Example", rows[0]["prompt"], ["Kanji", "Reading"])],
+            cached={},
         )
         classified = {
             "Example": (
@@ -237,7 +240,7 @@ class TestReconcileRows:
         }
         items = ctrl._reconcile_rows("Vocab", "Kanji", rows, plan, classified)
         deps = {d["field"]: d for d in items[0]["depends_on"]}
-        assert deps["Reading"] == {"field": "Reading", "kind": "soft", "auto": False}
+        assert deps["Reading"] == {"field": "Reading", "kind": "hard", "auto": False}
         assert deps["Kanji"] == {"field": "Kanji", "kind": "hard", "auto": True}
 
     def test_vanished_auto_edge_is_dropped_with_no_classification(self):
