@@ -265,6 +265,12 @@
    * @param {string} kind The new type value.
    */
   function onKindChange(tr, kind) {
+    // The old model/voice belong to the PREVIOUS kind and don't apply to the new one (a text
+    // model can't generate an image, etc.). Reset both to "(inherit)" so a stale value can't leak
+    // across the switch — otherwise fillCellSelect would preserve it as a "(saved)" option and the
+    // row would preview/generate with an incompatible model. Provider already resets (preset "").
+    tr.dataset.model = "";
+    tr.dataset.voice = "";
     rebuildProvider(tr, kind, "");
     applyKindState(tr, kind);
     updateSoundColumns();

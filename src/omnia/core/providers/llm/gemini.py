@@ -13,13 +13,17 @@ and overrides just those two hooks — same wire format, different host + bearer
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any, Optional
 
+from omnia.core.logging import get_logger
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm.base import LLMProvider
 
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+_logger = get_logger("gemini")
 
 
 def _usage_from_gemini(resp: Any) -> Optional[dict[str, int]]:
@@ -135,9 +139,23 @@ class GeminiProvider(LLMProvider):
                     raise ProviderError(
                         "Gemini returned an undecodable inline image"
                     ) from exc
-        reason = resp["candidates"][0].get("finishReason", "")
+        # No inline image part. Surface WHY: the finishReason and what DID come back (part kinds +
+        # any text the model returned instead), so the failure is diagnosable rather than opaque.
+        candidate = resp["candidates"][0]
+        reason = candidate.get("finishReason", "")
+        part_kinds = sorted({k for part in (parts or []) for k in part})
+        returned_text = "".join(
+            str(part.get("text", "")) for part in (parts or [])
+        ).strip()
+        _logger.info(
+            "gemini image: no inline image; raw response = %s", json.dumps(resp)
+        )
+        detail = f"parts={part_kinds or 'none'}"
+        if returned_text:
+            snippet = returned_text[:200] + ("…" if len(returned_text) > 200 else "")
+            detail += f'; returned text instead: "{snippet}"'
         raise ProviderError(
-            f"Gemini returned no image data (finishReason={reason!r}); "
+            f"Gemini returned no image data (finishReason={reason!r}; {detail}); "
             "check the configured image_model supports image output"
         )
 
