@@ -24,8 +24,17 @@ from omnia.gui.smart_notes.dialogs.controllers.graph import GraphController
 from omnia.gui.smart_notes.html import note_type_config_from_payload, row_to_payload
 
 if TYPE_CHECKING:
-    from omnia.plugins.smart_notes.config import SmartNotesNoteTypeConfig
+    from omnia.plugins.smart_notes.config import (
+        SmartNotesFieldRule,
+        SmartNotesNoteTypeConfig,
+    )
     from omnia.plugins.smart_notes.engine import GenerationResult
+
+
+def _truncate(value: str, limit: int = 120) -> str:
+    """Collapse whitespace and cap length so a long field body can't bloat the preview payload."""
+    text = " ".join(value.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 class AuthoringController:
@@ -230,6 +239,9 @@ class AuthoringController:
             language=str(data.get("language", "")),
         )
         fields = self._preview_fields(note_type, base_field)
+        # The input fields (+ sample values) this preview reads, so the result shows WHAT it ran
+        # against — not only the generated output. Computed here (main thread) and echoed on success.
+        inputs = self._preview_inputs(rule, fields)
         hub = self._ctx.build_hub()
         if hub is None:
             self._push_preview(field, error="Provider config error — see logs.")
@@ -238,12 +250,40 @@ class AuthoringController:
 
         anki_compat.run_in_background(
             lambda: service.generate(rule, fields),
-            on_success=lambda result: self._push_preview(field, result=result),
+            on_success=lambda result: self._push_preview(
+                field, result=result, inputs=inputs
+            ),
             on_failure=lambda exc: self._push_preview(
                 field, error=self._ctx.friendly(exc, "Preview failed")
             ),
             label="Omnia: preview…",
         )
+
+    def _preview_inputs(
+        self, rule: SmartNotesFieldRule, fields: dict[str, str]
+    ) -> list[dict[str, str]]:
+        """The input fields a preview reads (the prompt's ``{{refs}}``, or the source/base field
+        when there is no prompt), paired with their sample values from :meth:`_preview_fields`.
+
+        Reuses :func:`rule_source_fields` (the same "what does this field read" util the graph and
+        ordering use) so the shown inputs exactly match the real dependency set. Values are looked
+        up case-insensitively (Anki field names are) and truncated.
+        """
+        from omnia.plugins.smart_notes.engine.rules import rule_source_fields
+
+        lower = {name.strip().lower(): value for name, value in fields.items()}
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for name in rule_source_fields(rule):
+            key = name.strip().lower()
+            if key in seen:  # a prompt may reference the same field twice — show it once
+                continue
+            seen.add(key)
+            value = fields.get(name)
+            if value is None:
+                value = lower.get(key, "")
+            out.append({"field": name, "value": _truncate(str(value))})
+        return out
 
     def _preview_fields(self, note_type: str, base_field: str) -> dict[str, str]:
         """The field values a preview runs against.
@@ -322,12 +362,15 @@ class AuthoringController:
         field: str,
         *,
         result: Optional[GenerationResult] = None,
+        inputs: Optional[list[dict[str, str]]] = None,
         error: str = "",
     ) -> None:
         """Send a Preview outcome to the page's ``window.__snPreviewResult`` hook.
 
         Text previews carry the rendered HTML; audio is played here and reported as a note;
-        an image is reported as generated (not inserted — this is only a preview).
+        an image is reported as generated (not inserted — this is only a preview). On success the
+        payload also carries ``inputs`` (``[{field, value}]``) — the fields the preview read — so
+        the page can show what it ran against. Error paths carry no inputs.
         """
         if error:
             payload: dict[str, Any] = {"error": error}
@@ -335,6 +378,7 @@ class AuthoringController:
             payload = {"error": "Preview produced no result."}
         else:
             payload = self._ctx.result_payload(result)
+            payload["inputs"] = inputs or []
         self._ctx.eval_js(
             f"window.__snPreviewResult({json.dumps(field)}, {json.dumps(payload)});"
         )
