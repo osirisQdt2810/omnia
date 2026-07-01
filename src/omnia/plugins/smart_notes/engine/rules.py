@@ -87,28 +87,31 @@ def reconcile_field_deps(
     """Rebuild ONE field's ``depends_on`` after its prompt changed (the prompt→graph sync).
 
     Pure and deterministic. The field's incoming edges are the union of its prompt ``{{refs}}``
-    and its explicit ``depends_on``; when the prompt's refs change we reconcile the explicit
-    list so the persisted edges stay consistent without clobbering anything the user set:
+    and its explicit ``depends_on``. The PROMPT is the source of truth for hard/soft, so every
+    referenced edge is re-coloured to the fresh classification (the LLM re-reads the prompt's
+    semantics on each change — graph and prompt stay 100% in sync):
 
-    * Each CURRENT dep whose field is still referenced is KEPT unchanged (respect the existing
-      kind — decision B2: the classifier never re-colours an edge that already has an entry).
+    * Each CURRENT dep whose field is still referenced is KEPT, re-coloured to the fresh
+      ``classified`` kind when one is given for it (else its kind is unchanged). This REPLACES the
+      old decision B2 ("never re-colour an existing edge"): a prompt edit that makes a dependency
+      optional/required now flips the edge soft/hard accordingly.
     * A current dep whose field VANISHED from the prompt is dropped iff it is an auto edge
       (``auto=True``, a stale classifier edge whose ref is gone); a user edge (``auto=False``)
       is kept (an explicit-only edge, or a user edge whose ref was removed — the user removes it
-      in the graph, not us).
+      in the graph, not us). The ``auto`` flag governs EXISTENCE, not kind.
     * Each NEWLY referenced field that has NO current entry gets a fresh classifier edge
       ``FieldDep(field=<original-case ref>, kind=classified[ref], auto=True)`` (defaulting to
       ``"hard"`` when the classifier returned no kind for it).
 
-    Only newly referenced fields receive a (classifier) kind; existing refs/edges are preserved
-    and vanished auto edges are cleaned. The persisted classifier kind survives
+    The persisted classifier kind survives
     :meth:`~omnia.plugins.smart_notes.engine.graph.FieldGraph.from_config`'s recompute precisely
     because it is an EXPLICIT entry (a bare derived ref defaults to hard) — decision B1.
 
     Args:
         prompt: The field's NEW prompt template (its ``{{refs}}`` define the live edge set).
-        classified: ``{ref_field_name: kind}`` for the NEWLY classified refs only
-            (case-insensitive keys; missing/blank kind defaults to ``"hard"``).
+        classified: ``{ref_field_name: kind}`` for the (re)classified refs (case-insensitive
+            keys; missing/blank kind defaults to ``"hard"``). Callers now classify ALL of the
+            prompt's refs, so an existing edge is re-coloured to its entry here.
         current_deps: The field's existing ``depends_on`` entries.
 
     Returns:
@@ -133,7 +136,12 @@ def reconcile_field_deps(
     for dep in current_deps:
         lower = dep.field.strip().lower()
         if lower in ref_lowers:
-            kept.append(dep)  # still referenced → respect the existing kind (B2)
+            # Still referenced → re-colour to the fresh classification (prompt is the truth); keep
+            # the current kind only when this ref wasn't (re)classified this round.
+            new_kind = classified_lower.get(lower, dep.kind)
+            kept.append(
+                dep if new_kind == dep.kind else dep.copy(update={"kind": new_kind})
+            )
             have_lowers.add(lower)
         elif not dep.auto:
             kept.append(dep)  # user/explicit edge whose ref vanished → preserve
