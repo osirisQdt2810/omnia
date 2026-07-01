@@ -46,12 +46,14 @@ _TEXT_MODELS: dict[str, list[str]] = {
     "openrouter": list(_OPENROUTER_TEXT_MODELS),
 }
 
-# Image models per LLM provider (only those that actually generate images).
+# Image models per LLM provider — ONLY ids that actually return an inline image through the
+# implemented ``:generateContent`` + ``responseModalities`` path (verified live against Vertex).
+# Deliberately excluded: "gemini-3.0-flash-image" (404 — not a served model id) and
+# "imagen-3.0-generate-002" (Imagen is a ``:predict``-only model, not a generateContent model, so
+# it 404s on this path; add it back only alongside a dedicated :predict implementation).
 _GEMINI_IMAGE_MODELS: list[str] = [
     "gemini-3.1-flash-image",
-    "gemini-3.0-flash-image",
     "gemini-2.5-flash-image",
-    "imagen-3.0-generate-002",
 ]
 # Only providers that actually generate images via the implemented path. OpenRouter is
 # deliberately absent: it has no OpenAI-style /images/generations endpoint (image output is
