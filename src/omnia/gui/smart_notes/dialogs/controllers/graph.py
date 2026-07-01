@@ -32,10 +32,12 @@ logger = get_logger("smart_notes")
 class _DepPlan:
     """What a ``classify_deps`` request must do per row: classify, reuse a memo, or just reconcile.
 
-    ``uncached_items`` are the ``(field, prompt, new_refs)`` triples whose new refs need a fresh
-    LLM classify (no memo hit); ``cached`` is ``{field: {ref: kind}}`` for rows whose identical
-    prompt was already classified this session (the memo). Rows with no new refs appear in
-    neither — they still reconcile (to drop a vanished derived edge) with no verdicts.
+    ``uncached_items`` are the ``(field, prompt, refs)`` triples whose (all) refs need a fresh LLM
+    classify (no memo hit) — the prompt is the source of truth for hard/soft, so EVERY ref is
+    re-classified, not only newly-added ones; ``cached`` is ``{field: {ref: kind}}`` for rows whose
+    identical prompt was already classified this session (the memo — an unchanged prompt costs no
+    LLM call). Rows with no refs appear in neither — they still reconcile (to drop a vanished
+    derived edge) with no verdicts.
     """
 
     uncached_items: list[tuple[str, str, list[str]]] = dataclass_field(
@@ -93,15 +95,17 @@ class GraphController:
 
     # --- prompt→graph dependency sync (Feature 1) ------------------------------------
     def on_classify_deps(self, data: dict[str, Any]) -> None:
-        """Classify a changed field's NEW refs hard/soft off-thread, then recolour the graph.
+        """Classify a changed field's refs hard/soft off-thread, then recolour the graph.
 
         Feature 1 (prompt → graph): when a field's prompt changes the page posts that field (and
-        its live ``depends_on``) here. For each row we derive its prompt ``{{refs}}`` and the
-        subset with no existing ``depends_on`` entry — those are the ONLY refs the classifier
-        labels (:meth:`reconcile_field_deps` keeps existing kinds — B2). The single batched LLM
-        call runs in ONE :func:`run_in_background`; the SUCCESS callback (main thread) reconciles
-        each row and pushes the recoloured ``depends_on`` via ``window.__snDepsResult`` — the push
-        MUST happen there, never inside the worker (off-thread ``eval_js`` hard-crashes Qt).
+        its live ``depends_on``) here. The prompt is the SOURCE OF TRUTH for hard/soft, so ALL of
+        its ``{{refs}}`` are (re)classified — :meth:`reconcile_field_deps` re-colours each existing
+        edge to the fresh verdict (a prompt edit that flips required↔optional flips hard↔soft). The
+        page's guard rail already blocked junk refs (fields that don't exist) before Save, so the
+        classifier only ever sees real field edges. The single batched LLM call runs in ONE
+        :func:`run_in_background`; the SUCCESS callback (main thread) reconciles each row and pushes
+        the recoloured ``depends_on`` via ``window.__snDepsResult`` — the push MUST happen there,
+        never inside the worker (off-thread ``eval_js`` hard-crashes Qt).
 
         A row whose prompt references nothing still reconciles (to DROP a now-vanished derived
         edge) — that path needs no LLM. A per-instance memo keyed by
@@ -146,12 +150,12 @@ class GraphController:
     def _plan_dep_classification(
         self, note_type: str, base_field: str, rows: list[Any]
     ) -> _DepPlan:
-        """Decide, per row, which refs need a (fresh) classify vs. a memo/known hit.
+        """Decide, per row, whether its refs need a (fresh) classify vs. a memo hit.
 
-        Returns the batch items to send the LLM (only rows with genuinely-new, uncached refs) and
-        the memo-cached verdicts to fold in without a call. See :class:`_DepPlan`.
+        ALL of a row's refs are (re)classified (the prompt is the source of truth for hard/soft),
+        so a row goes to the LLM (``uncached_items``) unless its exact prompt was already classified
+        this session (memo hit → ``cached``). See :class:`_DepPlan`.
         """
-        from omnia.gui.smart_notes.html import _deps_from_payload
         from omnia.plugins.smart_notes.engine.interpolation import extract_field_refs
 
         uncached_items: list[tuple[str, str, list[str]]] = []
@@ -159,22 +163,18 @@ class GraphController:
         for row in rows:
             field = str(row.get("field", ""))
             prompt = str(row.get("prompt", ""))
-            have = {
-                dep.field.strip().lower()
-                for dep in _deps_from_payload(row.get("depends_on", []))
-            }
-            new_refs = [
-                ref
-                for ref in extract_field_refs(prompt)
-                if ref.strip().lower() not in have
-            ]
-            if not new_refs:
-                continue
+            # Classify ALL of the prompt's refs (not just newly-added ones): the prompt is the
+            # source of truth for hard/soft, so an existing edge is re-coloured when the prompt's
+            # semantics around it change. The per-prompt memo means an UNCHANGED prompt still
+            # costs no LLM call.
+            refs = extract_field_refs(prompt)
+            if not refs:
+                continue  # no field refs — nothing to classify (reconcile still drops vanished)
             memo = self._deps_memo.get((note_type, base_field, field, prompt))
             if memo is not None:
                 cached[field] = memo
             else:
-                uncached_items.append((field, prompt, new_refs))
+                uncached_items.append((field, prompt, refs))
         return _DepPlan(uncached_items=uncached_items, cached=cached)
 
     def _reconcile_rows(
@@ -248,9 +248,9 @@ class GraphController:
         Called from INSIDE an existing ``run_in_background`` worker (auto-smart / improve-all),
         so the LLM call here is already off the main thread — it must NOT push to the page. It
         returns ``{field: [{field, kind, auto}]}`` for the affected fields, which the caller folds
-        into its single pushed payload. Disjointness (B2): the classifier only labels NEW refs and
-        :func:`reconcile_field_deps` keeps existing kinds, so this never overwrites a kind that
-        apply_auto_smart or the user already set.
+        into its single pushed payload. The prompt is the source of truth for hard/soft: it
+        classifies ALL refs and :func:`reconcile_field_deps` re-colours every edge to the fresh
+        verdict (so the just-written auto-prompt / improved prompts drive the graph's colours).
         """
         from omnia.gui.smart_notes.html import _deps_from_payload
         from omnia.plugins.smart_notes.authoring import PromptAuthor
@@ -260,16 +260,10 @@ class GraphController:
         items: list[tuple[str, str, list[str]]] = []
         for row in rows:
             prompt = str(row.get("prompt", ""))
-            have = {
-                dep.field.strip().lower()
-                for dep in _deps_from_payload(row.get("depends_on", []))
-            }
-            new_refs = [
-                ref
-                for ref in extract_field_refs(prompt)
-                if ref.strip().lower() not in have
-            ]
-            items.append((str(row.get("field", "")), prompt, new_refs))
+            # Classify ALL refs so the fold re-colours existing edges to the prompt's semantics
+            # (the prompt is the source of truth), not only genuinely-new refs.
+            refs = extract_field_refs(prompt)
+            items.append((str(row.get("field", "")), prompt, refs))
         hub = self._ctx.build_hub()
         if hub is None:
             return {}
