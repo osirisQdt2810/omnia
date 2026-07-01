@@ -12,7 +12,8 @@ module makes that graph EXPLICIT and adds hard/soft semantics:
   keep their original case. Edges referencing a field not present in the note type are dropped.
 
 :meth:`FieldGraph.from_config` constructs the graph; :meth:`FieldGraph.validate_acyclic` /
-:meth:`FieldGraph.would_create_cycle` guard against cycles (over edges of BOTH kinds);
+:meth:`FieldGraph.would_create_cycle` guard against cycles (over the HARD subgraph — only hard
+edges deadlock; soft edges are optional metadata the generator can break);
 :meth:`FieldGraph.laid_out` assigns deterministic integer ``column``/``row`` coordinates;
 :meth:`FieldGraph.flow_layout` produces balanced grid-wrapped pixel geometry (a
 :class:`LayoutResult` of :class:`NodeLayout`) for the interactive canvas; and
@@ -205,27 +206,40 @@ class FieldGraph:
 
         return cls(nodes=nodes, edges=list(edges.values()))
 
-    def _adjacency(self) -> dict[str, list[str]]:
-        """Return ``src_lower -> [dst_lower, ...]`` over edges of BOTH kinds."""
+    def _adjacency(self, *, hard_only: bool = False) -> dict[str, list[str]]:
+        """Return ``src_lower -> [dst_lower, ...]``.
+
+        With ``hard_only`` only HARD edges are included. Hard edges are the strict constraints —
+        they both ORDER and BLOCK generation, so only a cycle in the hard subgraph is a real
+        deadlock. A SOFT edge is optional metadata the ordering can break (generate the dependent
+        without the not-yet-available soft value), so cycles that involve soft edges are still
+        generatable and must NOT count as invalid — validity/cycle checks pass ``hard_only=True``.
+        """
         adjacency: dict[str, list[str]] = {
             node.name.strip().lower(): [] for node in self.nodes
         }
         for edge in self.edges:
+            if hard_only and edge.kind != "hard":
+                continue
             adjacency.setdefault(edge.src.strip().lower(), []).append(
                 edge.dst.strip().lower()
             )
         return adjacency
 
     def validate_acyclic(self) -> None:
-        """Raise :class:`SmartNotesCycleError` if the graph contains a cycle or self-loop.
+        """Raise :class:`SmartNotesCycleError` if the HARD subgraph has a cycle or hard self-loop.
 
-        Considers edges of BOTH kinds (hard and soft both order generation, so either can form a
-        cycle). A DAG returns ``None``.
+        Only HARD edges are considered: a hard edge both orders AND blocks, so a cycle among hard
+        edges is a real deadlock (each field waits on the next). A SOFT edge is optional metadata
+        the generator can break — a cycle that involves a soft edge is still generatable (drop the
+        soft edge for ordering), so it is NOT an error. Two fields that softly reference each other
+        (e.g. Auto-prompt's "use {{Definition}} if present" ↔ "use {{POS}} if present") are valid.
+        A DAG in the hard subgraph returns ``None``.
 
         Raises:
-            SmartNotesCycleError: If any cycle (including a self-loop) exists.
+            SmartNotesCycleError: If the HARD edges form any cycle (including a hard self-loop).
         """
-        adjacency = self._adjacency()
+        adjacency = self._adjacency(hard_only=True)
         # 0 = unvisited, 1 = on the current DFS stack, 2 = fully explored.
         state: dict[str, int] = {name: 0 for name in adjacency}
 
@@ -245,24 +259,26 @@ class FieldGraph:
                 visit(name)
 
     def would_create_cycle(self, src: str, dst: str) -> bool:
-        """Return whether adding edge ``src -> dst`` to the graph would create a cycle.
+        """Return whether adding a HARD edge ``src -> dst`` would create a (hard) cycle.
 
-        A client-side precheck mirror of :meth:`validate_acyclic`: a self-loop (``src == dst``,
-        case-insensitive) always would; otherwise the edge closes a cycle iff ``src`` is already
-        reachable from ``dst`` along existing edges of either kind.
+        A precheck mirror of :meth:`validate_acyclic`: newly-added graph edges are hard, and only
+        hard edges deadlock, so this reasons over the HARD subgraph. A self-loop (``src == dst``,
+        case-insensitive) always would; otherwise the edge closes a hard cycle iff ``src`` is
+        already reachable from ``dst`` along existing HARD edges. (Reaching ``src`` only via soft
+        edges is fine — that cycle stays breakable.)
 
         Args:
             src: The prerequisite field of the proposed edge.
             dst: The dependent field of the proposed edge.
 
         Returns:
-            ``True`` if adding the edge would introduce a cycle, ``False`` otherwise.
+            ``True`` if adding the hard edge would introduce a hard cycle, ``False`` otherwise.
         """
         src_lower = src.strip().lower()
         dst_lower = dst.strip().lower()
         if src_lower == dst_lower:
             return True
-        adjacency = self._adjacency()
+        adjacency = self._adjacency(hard_only=True)
         stack = [dst_lower]
         seen: set[str] = set()
         while stack:
@@ -283,13 +299,17 @@ class FieldGraph:
         adds the within-column row) and :meth:`flow_layout` (which adds pixel geometry). Considers
         edges of BOTH kinds and ignores edges to/from unknown fields.
 
+        Cycle-TOLERANT: this feeds the DISPLAY layout, so a cyclic graph must still lay out — the
+        canvas is precisely how the user SEES and breaks the cycle (e.g. Auto-prompt wrote two
+        prompts that reference each other). A back-edge — a prerequisite still on the current DFS
+        stack — is skipped for the depth, so layering always terminates and every node gets a
+        column. Generation ordering (:func:`~omnia.plugins.smart_notes.engine.ordering.order_rules`)
+        and the save backstop (:func:`~omnia.gui.smart_notes.html.cycle_error_for_config` →
+        :meth:`validate_acyclic`) reject cycles separately, so correctness never relies on this.
+
         Returns:
             ``name_lower -> column`` for every node, in no particular dict order.
-
-        Raises:
-            SmartNotesCycleError: If the graph contains a cycle (layering cannot terminate).
         """
-        self.validate_acyclic()
         order = [node.name.strip().lower() for node in self.nodes]
         rank = {name: index for index, name in enumerate(order)}
 
@@ -301,17 +321,66 @@ class FieldGraph:
                 incoming[dst].append(src)
 
         column: dict[str, int] = {}
+        on_stack: set[str] = set()
 
         def depth(name: str) -> int:
             if name in column:
                 return column[name]
-            preds = incoming.get(name, [])
-            column[name] = 0 if not preds else 1 + max(depth(pred) for pred in preds)
-            return column[name]
+            on_stack.add(name)
+            best = 0
+            for pred in incoming.get(name, []):
+                if pred in on_stack:
+                    continue  # back-edge (cycle) — skip so the layering terminates
+                best = max(best, 1 + depth(pred))
+            on_stack.discard(name)
+            column[name] = best
+            return best
 
         for name in order:
             depth(name)
         return column
+
+    def cycle_edge_keys(self) -> set[tuple[str, str]]:
+        """Return ``(src_lower, dst_lower)`` for every HARD edge on a cycle in the HARD subgraph.
+
+        Only a HARD cycle is a real problem (a deadlock): the display payload
+        (:func:`~omnia.gui.smart_notes.html.graph_payload`) flags exactly these so the canvas
+        highlights the edges the user must break, and save rejects them. A SOFT edge is optional
+        metadata the ordering can break, so a soft/mixed cycle is generatable and is NOT flagged
+        (two fields that softly reference each other render as ordinary green edges). A hard edge
+        ``s -> d`` is on a cycle when ``d`` can already reach ``s`` along HARD edges, or it is a
+        hard self-loop. Pure; reachability over the hard subgraph is cached per source.
+
+        Returns:
+            The lower-cased ``(src, dst)`` keys of every HARD edge on a hard cycle (empty when the
+            hard subgraph is a DAG).
+        """
+        adjacency = self._adjacency(hard_only=True)
+        reach: dict[str, set[str]] = {}
+
+        def reachable(start: str) -> set[str]:
+            if start in reach:
+                return reach[start]
+            seen: set[str] = set()
+            stack = list(adjacency.get(start, []))
+            while stack:
+                node = stack.pop()
+                if node in seen:
+                    continue
+                seen.add(node)
+                stack.extend(adjacency.get(node, []))
+            reach[start] = seen
+            return seen
+
+        keys: set[tuple[str, str]] = set()
+        for edge in self.edges:
+            if edge.kind != "hard":
+                continue
+            src = edge.src.strip().lower()
+            dst = edge.dst.strip().lower()
+            if src == dst or src in reachable(dst):
+                keys.add((src, dst))
+        return keys
 
     def laid_out(self) -> FieldGraph:
         """Return a copy of the graph with each node assigned a ``column`` and ``row``.
@@ -324,8 +393,8 @@ class FieldGraph:
         Returns:
             A new :class:`FieldGraph` with the same nodes (coordinates set) and the same edges.
 
-        Raises:
-            SmartNotesCycleError: If the graph contains a cycle (layering cannot terminate).
+        Cycle-tolerant (a display layout): a cyclic graph still lays out — see
+        :meth:`_layered_columns`.
         """
         order = [node.name.strip().lower() for node in self.nodes]
         rank = {name: index for index, name in enumerate(order)}
@@ -364,8 +433,8 @@ class FieldGraph:
             A :class:`LayoutResult` with one :class:`NodeLayout` per node (config order) and the
             canvas ``width``/``height`` the renderer frames.
 
-        Raises:
-            SmartNotesCycleError: If the graph contains a cycle (layering cannot terminate).
+        Cycle-tolerant (a display layout): a cyclic graph still lays out — see
+        :meth:`_layered_columns`.
         """
         order = [node.name.strip().lower() for node in self.nodes]
         rank = {name: index for index, name in enumerate(order)}

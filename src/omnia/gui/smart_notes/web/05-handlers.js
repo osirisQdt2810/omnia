@@ -1221,29 +1221,10 @@
     );
   });
 
-  saveBtn.addEventListener("click", function () {
-    saveBtn.disabled = true;
-    send(
-      "save",
-      {
-        note_type: noteTypeSel.value,
-        base_field: baseSel.value,
-        rows: collectRows(),
-        decks: selectedDeckIds(),
-        options: collectOptions()
-      },
-      function (res) {
-        saveBtn.disabled = false;
-        if (res && res.ok) {
-          // A successful save makes the current edges the new graph→prompt sync baseline.
-          snapshotSyncedDeps();
-          setMsg("Saved.", false);
-        } else {
-          setMsg((res && res.error) || "Could not save — see logs.", true);
-        }
-      }
-    );
-  });
+  // Save first reconciles any changed edges through the review popovers, then persists.
+  // beginSaveWithSync/performSave are hoisted function declarations in 06-graph.js (which is
+  // concatenated after this file), so hoisting makes them callable here.
+  saveBtn.addEventListener("click", beginSaveWithSync);
 
   document.getElementById("sn-cancel").addEventListener("click", function () {
     send("cancel", {}, null);
