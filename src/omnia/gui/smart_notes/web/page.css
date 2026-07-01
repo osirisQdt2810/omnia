@@ -489,6 +489,26 @@ select:disabled { opacity: 0.7; }
 .sn-modal-result.sn-err { color: var(--fail); }
 .sn-modal-foot { display: flex; justify-content: flex-end; gap: 10px; }
 
+/* Preview "inputs" block: the fields (+ sample values) a preview ran against, shown above the
+   generated output so the user sees the INPUT, not just the result. */
+.sn-preview-inputs {
+  margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px dashed var(--card-border);
+  white-space: normal;
+}
+.sn-preview-inputs-label {
+  text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px;
+  color: var(--muted); margin-bottom: 4px;
+}
+.sn-preview-input { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; font-size: 12px; }
+.sn-preview-input-field {
+  flex: none; color: var(--accent); font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+.sn-preview-input-value {
+  color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sn-preview-input-empty { color: var(--muted); font-style: italic; }
+.sn-preview-output { white-space: pre-wrap; word-break: break-word; }
+
 /* Full-screen, borderless image lightbox — sits ABOVE the modals (z 50) so a preview opened
    from the prompt editor still shows on top. Click anywhere (zoom-out cursor) or Esc to close. */
 .sn-lightbox {

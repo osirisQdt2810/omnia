@@ -65,6 +65,45 @@
   }
 
   /**
+   * Build the "inputs" block for a preview result: the fields this generation READ ({{Field}}) and
+   * the sample values it ran against — so the user sees the INPUT, not just the output. Values are
+   * user content, so they go in via textContent (never innerHTML). Returns null when there are no
+   * inputs (e.g. an empty-prompt field with no source) so callers can skip it.
+   * @param {?Array<!Object>} inputs [{field, value}] from the preview payload.
+   * @return {?HTMLElement}
+   */
+  function inputsResultNode(inputs) {
+    if (!inputs || !inputs.length) {
+      return null;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "sn-preview-inputs";
+    const label = document.createElement("div");
+    label.className = "sn-preview-inputs-label";
+    label.textContent = "Ran on these input fields:";
+    wrap.appendChild(label);
+    inputs.forEach(function (inp) {
+      const row = document.createElement("div");
+      row.className = "sn-preview-input";
+      const name = document.createElement("span");
+      name.className = "sn-preview-input-field";
+      name.textContent = "{{" + inp.field + "}}";
+      const val = document.createElement("span");
+      val.className = "sn-preview-input-value";
+      if (inp.value) {
+        val.textContent = inp.value;
+      } else {
+        val.textContent = "(empty)";
+        val.classList.add("sn-preview-input-empty");
+      }
+      row.appendChild(name);
+      row.appendChild(val);
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+
+  /**
    * Open the prompt editor for a row: seed the textarea + the {{Field}} reference hint.
    * @param {!HTMLTableRowElement} tr The row whose prompt is being edited.
    */
@@ -356,34 +395,43 @@
   window.__snPreviewResult = function (field, res) {
     modalPreview.disabled = false;
     const inModal = modalRow && modalRow.dataset.field === field && !modal.hidden;
-    const show = function (html, isErr) {
+    if (!res || res.error) {
+      const msg = (res && res.error) || "Preview failed — see logs.";
       if (inModal) {
         setModalMsg("", false);
-        setModalResult(html, isErr);
+        setModalResult(msg, true);
       } else {
-        setMsg(html, isErr);
+        setMsg(msg, true);
       }
-    };
-    if (!res || res.error) {
-      show((res && res.error) || "Preview failed — see logs.", true);
       return;
     }
-    if (res.kind === "text") {
-      show(res.text || "(empty result)", false);
-    } else if (res.kind === "tts") {
-      show("🔊 " + (res.message || "Audio preview played."), false);
-    } else if (res.kind === "image") {
-      // Don't inline the (often huge) image — show a line + a Preview button (lightbox).
-      const container = inModal ? modalResult : msgEl;
-      if (inModal) {
-        setModalMsg("", false);
-        modalResult.className = "sn-modal-result";
-      } else {
-        msgEl.className = "sn-msg";
-      }
-      container.innerHTML = "";
-      container.appendChild(imageResultNode(res));
+    // Success: render the INPUT fields it ran on (when present) ABOVE the generated output, as DOM
+    // nodes so user field values are safely escaped. Same layout in the modal and on the footer.
+    const container = inModal ? modalResult : msgEl;
+    if (inModal) {
+      setModalMsg("", false);
+      modalResult.className = "sn-modal-result";
     } else {
-      show("🖼️ " + (res.message || "Image generated."), false);
+      msgEl.className = "sn-msg";
     }
+    container.innerHTML = "";
+    const inputsNode = inputsResultNode(res.inputs);
+    if (inputsNode) {
+      container.appendChild(inputsNode);
+    }
+    if (res.kind === "image") {
+      // Don't inline the (often huge) image — a line + a Preview button (lightbox).
+      container.appendChild(imageResultNode(res));
+      return;
+    }
+    const out = document.createElement("div");
+    out.className = "sn-preview-output";
+    if (res.kind === "text") {
+      out.innerHTML = res.text || "(empty result)"; // server-rendered HTML
+    } else if (res.kind === "tts") {
+      out.textContent = "🔊 " + (res.message || "Audio preview played.");
+    } else {
+      out.textContent = "🖼️ " + (res.message || "Image generated.");
+    }
+    container.appendChild(out);
   };
