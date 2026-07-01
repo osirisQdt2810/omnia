@@ -1496,6 +1496,21 @@
     const node = syncQueue.pending[0];
     syncQueue.pending.shift();
     if (node) {
+      // A discarded/skipped node keeps its prompt UNCHANGED, so its depends_on must be reconciled
+      // back to what that unchanged prompt implies — otherwise a change whose prompt rewrite was
+      // declined leaves the graph and the prompt disagreeing. Revert the changes that needed a
+      // rewrite: undo ADDs (drop the explicit dep — a freshly-drawn edge with no {{ref}} would
+      // otherwise persist as a dead edge) and toggles (restore the pre-toggle kind so a kind change
+      // never sticks without the prompt backing it). REMOVALS stand: a deletion is already
+      // consistent with the unchanged prompt (no {{ref}} → no edge), and this keeps the sanctioned
+      // way to delete an unreferenced edge working; derived deletions are restored just below.
+      (node.changes || []).forEach(function (c) {
+        if (c.action === "add") {
+          updateRowDep(node.field, c.src, null);
+        } else if (c.action === "toggle") {
+          updateRowDep(node.field, c.src, c.old_kind || "hard");
+        }
+      });
       // A discarded/skipped node keeps its prompt, so revert its pending derived deletions — the
       // deleted edge comes back (it's still derivable from the unchanged prompt).
       clearRemovedFor(node.field);
