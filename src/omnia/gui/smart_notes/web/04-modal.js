@@ -393,7 +393,8 @@
         note_type: noteTypeSel.value,
         base_field: baseSel.value,
         field: modalRow.dataset.field,
-        prompt: modalPrompt.value
+        prompt: modalPrompt.value,
+        type: modalKind()
       },
       null
     );
@@ -410,6 +411,7 @@
     if (res && res.prompt) {
       if (modalRow && modalRow.dataset.field === field && !modal.hidden) {
         modalPrompt.value = res.prompt;
+        refreshModalWarn(); // the prompt just changed — re-evaluate the guard band, don't leave it stale
         setModalMsg("Improved — review and Save prompt.", false);
       } else {
         const tr = rowByField(field);

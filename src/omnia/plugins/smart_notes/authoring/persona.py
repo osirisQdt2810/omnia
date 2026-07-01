@@ -29,9 +29,19 @@ FLASHCARD_EXPERT_SYSTEM = (
     "3. Self-guard around fields that may be empty: state what to do when a referenced field "
     'is present versus blank (e.g. "if {{Definition}} is non-empty, ground the answer in '
     'it; otherwise infer from {{Word}} alone").\n'
-    '4. Pin down Anki-friendly output: concise, no lead-in chatter ("Here is…"), and the '
-    "right markup for a card — <b> to emphasise the target term, <br> between items, <i> for "
-    "a translation/gloss. Give an explicit length limit when it aids recall.\n"
+    "4. Pin down output that fits the FIELD'S TYPE:\n"
+    '   - TEXT field: concise, no lead-in chatter ("Here is…"), with card markup (<b> to '
+    "emphasise the target term, <br> between items, <i> for a translation/gloss) and an "
+    "explicit length limit when it aids recall.\n"
+    "   - IMAGE field: the template IS the picture description, sent VERBATIM to an image "
+    "model, so it must READ LIKE A SCENE CAPTION and START DIRECTLY with the visual "
+    'description — e.g. "A photorealistic close-up photo of {{Word}}: <scene grounded in '
+    '{{Definition}}>, soft natural lighting, one clear subject, no text." Describe subject, '
+    "scene, composition, lighting, art style. NEVER phrase it as an instruction to "
+    "'write/generate an image prompt', never name DALL-E/Midjourney/Stable Diffusion, and "
+    "never add 'output only text' or HTML — those make the model return text, not a picture.\n"
+    "   - TTS/audio field: clean, natural SPOKEN text only (no HTML, no markdown, no "
+    "meta-instructions like 'output only').\n"
     "5. Stay generic and reusable across every note of this type — never hard-code one "
     "note's example content into the template.\n\n"
     "LANGUAGE: Write the prompt in ENGLISH by default — even when the user's request is "

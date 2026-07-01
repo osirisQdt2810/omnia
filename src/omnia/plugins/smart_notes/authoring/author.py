@@ -80,8 +80,11 @@ def build_auto_smart_prompt(
         "(meaning, definition, example, IPA, translation, etc.).\n"
         '  - "prompt": a COMPLETE, production-grade generation template (not a one-liner) '
         f"that references {{{{{base_field}}}}} (and other fields by name where useful), "
-        "self-guards when a referenced field may be empty, and pins down concise, "
-        "Anki-friendly output — exactly to the standard set in the system message.\n"
+        "self-guards when a referenced field may be empty, and pins down output to the "
+        "standard in the system message FOR THE TYPE YOU CHOSE. In particular, for an "
+        '"image" field write a DIRECT visual description of the picture to render (it is sent '
+        "VERBATIM to an image model) — never an instruction to 'write an image prompt', never "
+        "name DALL-E/Midjourney, and no 'output only text'/HTML.\n"
         '  - "depends_on": a list of the OTHER fields this field needs, each '
         '{"field": "<FieldName>", "kind": "hard"|"soft"}. A "hard" dependency means that '
         'field\'s content is required to generate this one; a "soft" dependency is helpful '
@@ -272,12 +275,40 @@ def _field_ref_list(other_fields: list[str]) -> str:
     return ", ".join(refs) if refs else "(no other fields available)"
 
 
+def _kind_output_clause(kind: str) -> str:
+    """A one-line reminder of what a field's generation prompt must OUTPUT, by kind.
+
+    So Improve rewrites an image field's prompt into a direct visual description (not a
+    text meta-prompt) and a tts field's into clean spoken text. Empty for text (the default
+    persona rules already cover it).
+    """
+    if kind == "image":
+        return (
+            " This is an IMAGE field: the prompt you output IS the picture description, sent "
+            "VERBATIM to an image model, so it must READ LIKE A SCENE CAPTION and START DIRECTLY "
+            'with the visual description — e.g. "A photorealistic close-up photo of {{Word}}: '
+            '<scene grounded in {{Definition}}>, soft natural lighting, one clear subject, no '
+            'text." Even if the rough request is phrased as \'write/generate an image prompt for '
+            "DALL-E/Midjourney', treat that as a MISTAKE and output the description itself. Your "
+            "output must contain NONE of: 'write a prompt', 'image prompt', 'text-to-image', "
+            "'for an/the image model', 'DALL-E', 'Midjourney', 'Stable Diffusion', 'output only', "
+            "or HTML tags."
+        )
+    if kind == "tts":
+        return (
+            " This is a TTS/audio field: write the prompt so its result is clean, natural "
+            "SPOKEN text — no HTML, no markdown, no 'output only' meta-instructions."
+        )
+    return ""
+
+
 def build_improve_prompt_message(
     note_type: str,
     base_field: str,
     target_field: str,
     rough: str,
     other_fields: list[str],
+    kind: str = "text",
 ) -> str:
     """Build the user message asking the model to rewrite ONE rough prompt.
 
@@ -287,6 +318,8 @@ def build_improve_prompt_message(
         target_field: The field this prompt will generate.
         rough: The user's short/rough description of what they want for the field.
         other_fields: Field names available to reference (excluding the target).
+        kind: The field's generation kind (``text``/``image``/``tts``); steers the output
+            form so an image field's prompt is a direct visual description, not a text prompt.
 
     Returns:
         A single user message (the persona/rules live in
@@ -300,7 +333,8 @@ def build_improve_prompt_message(
         f'"""\n{rough.strip()}\n"""\n\n'
         "Rewrite it into ONE complete, production-grade generation prompt that follows your "
         "rules. Decide for yourself which fields the prompt should reference and how to "
-        "self-guard when they are empty. Output ONLY the prompt text."
+        "self-guard when they are empty." + _kind_output_clause(kind) + " Output ONLY the "
+        "prompt text."
     )
 
 
@@ -703,10 +737,13 @@ class PromptAuthor:
         target_field: str,
         rough: str,
         other_fields: list[str],
+        kind: str = "text",
     ) -> str:
         """Rewrite one field's rough prompt into a polished one (best result text).
 
         Returns the original ``rough`` text unchanged when it is blank (nothing to improve).
+        ``kind`` (``text``/``image``/``tts``) steers the output form so an image field's
+        prompt becomes a direct visual description, not a text meta-prompt.
 
         Raises:
             ProviderError: On a provider/network failure.
@@ -714,7 +751,7 @@ class PromptAuthor:
         if not rough.strip():
             return rough
         message = build_improve_prompt_message(
-            note_type, base_field, target_field, rough, other_fields
+            note_type, base_field, target_field, rough, other_fields, kind
         )
         out = self._llm.generate_text(
             message,
