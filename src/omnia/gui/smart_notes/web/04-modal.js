@@ -75,6 +75,7 @@
     setModalMsg("", false);
     setModalResult("", false);
     modalFields.textContent = fieldRefHint(tr.dataset.field);
+    refreshModalWarn(); // surface a bad {{ref}} / brace right away on an already-saved prompt
     modal.hidden = false;
     modalPrompt.focus();
   }
@@ -103,6 +104,80 @@
         return "{{" + n + "}}";
       });
     return refs.length ? "Reference fields: " + refs.join("  ") : "";
+  }
+
+  /** A lower-cased set of every field name that exists on this note type (base + all rows). */
+  function knownFieldsLower() {
+    const set = {};
+    const add = function (name) {
+      const key = (name || "").trim().toLowerCase();
+      if (key) {
+        set[key] = true;
+      }
+    };
+    add(baseSel.value);
+    Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
+      add(tr.dataset.field);
+    });
+    return set;
+  }
+
+  /**
+   * Validate the editor's prompt (the guard rail for direct prompt edits): report ``{{Field}}``
+   * references to fields that DON'T exist on this note type, and unbalanced ``{{ }}`` braces.
+   * Cloze markers (``{{c1::…}}``) are not field refs and are ignored.
+   * @param {string} prompt The prompt text to validate.
+   * @return {!Object} ``{unknown: [displayRef, ...], syntaxBad: boolean}``.
+   */
+  function promptRefIssues(prompt) {
+    const text = prompt || "";
+    const known = knownFieldsLower();
+    const unknown = [];
+    const seen = {};
+    const re = /\{\{(?!c\d+::)([^{}]+)\}\}/g;
+    let match;
+    while ((match = re.exec(text))) {
+      const name = match[1].trim();
+      const lc = name.toLowerCase();
+      if (!lc || known[lc] || seen[lc]) {
+        continue;
+      }
+      seen[lc] = true;
+      unknown.push("{{" + name + "}}");
+    }
+    const opens = (text.match(/\{\{/g) || []).length;
+    const closes = (text.match(/\}\}/g) || []).length;
+    return {unknown: unknown, syntaxBad: opens !== closes};
+  }
+
+  /**
+   * Refresh the editor's guard-rail warning band from the current prompt. Returns true when there
+   * is a BLOCKING issue (an unknown field ref or unbalanced braces), so Save can refuse.
+   * @return {boolean}
+   */
+  function refreshModalWarn() {
+    if (!modalWarn) {
+      return false;
+    }
+    const issues = promptRefIssues(modalPrompt.value);
+    const parts = [];
+    if (issues.syntaxBad) {
+      parts.push("Unbalanced <b>{{ }}</b> — check the braces.");
+    }
+    if (issues.unknown.length) {
+      parts.push(
+        "Not a field on this note type: <b>" +
+          issues.unknown.map(esc).join(" ") +
+          "</b> — fix or remove it (it won’t be filled in)."
+      );
+    }
+    if (parts.length) {
+      modalWarn.innerHTML = "⚠ " + parts.join("<br>⚠ ");
+      modalWarn.hidden = false;
+      return true;
+    }
+    modalWarn.hidden = true;
+    return false;
   }
 
   /**
@@ -163,6 +238,8 @@
 
   modalClose.addEventListener("click", closeModal);
   modalCancel.addEventListener("click", closeModal);
+  // Live guard rail: re-validate the prompt's refs/braces as the user types.
+  modalPrompt.addEventListener("input", refreshModalWarn);
   modal.addEventListener("click", function (e) {
     if (e.target === modal) {
       closeModal();
@@ -170,6 +247,11 @@
   });
 
   modalSave.addEventListener("click", function () {
+    // Guard rail: refuse to save a prompt that references a non-existent field or has unbalanced
+    // {{ }} — the warning band says what's wrong; fix it (or remove the ref) and Save again.
+    if (modalRow && refreshModalWarn()) {
+      return;
+    }
     if (modalRow) {
       const oldPrompt = modalRow.dataset.prompt || "";
       const newPrompt = modalPrompt.value;
