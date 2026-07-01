@@ -86,6 +86,7 @@
   const modalTitle = document.getElementById("sn-modal-title");
   const modalPrompt = document.getElementById("sn-modal-prompt");
   const modalFields = document.getElementById("sn-modal-fields");
+  const modalWarn = document.getElementById("sn-modal-warn");
   const modalMsg = document.getElementById("sn-modal-msg");
   const modalResult = document.getElementById("sn-modal-result");
   const modalImprove = document.getElementById("sn-modal-improve");

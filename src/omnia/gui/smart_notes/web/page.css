@@ -469,6 +469,14 @@ select:disabled { opacity: 0.7; }
   width: 100%; min-height: 150px; resize: vertical; line-height: 1.5; font-size: 13px;
 }
 .sn-modal-fields { color: var(--muted); font-size: 12px; word-break: break-word; }
+/* Prompt-editor guard rail: warns about {{refs}} to non-existent fields / unbalanced braces
+   before Save (Save is blocked while shown). */
+.sn-modal-warn {
+  font-size: 12px; line-height: 1.45; color: #ffd7d5; margin: 2px 0;
+  background: rgba(229, 72, 77, 0.16); border: 1px solid rgba(229, 72, 77, 0.5);
+  border-radius: 8px; padding: 7px 10px;
+}
+.sn-modal-warn[hidden] { display: none; }
 .sn-modal-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sn-modal-result {
   max-height: 200px; overflow: auto; font-size: 13px; line-height: 1.5;

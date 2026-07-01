@@ -785,3 +785,11 @@ class TestBuildSmartNotesHtml:
         assert "sn-node-locked" in html and "sn-unlock-btn" in html
         assert "function unlockField" in html and "function isFieldLocked" in html
         assert "is locked — unlock it to change its dependencies." in html
+
+    def test_prompt_editor_guard_rail_present(self):
+        # Direct prompt-editor guard rail: warns + blocks Save on a {{ref}} to a non-existent
+        # field or unbalanced braces.
+        html = build_smart_notes_html(dark=False)
+        assert "sn-modal-warn" in html
+        assert "function promptRefIssues" in html and "function refreshModalWarn" in html
+        assert "Not a field on this note type" in html
