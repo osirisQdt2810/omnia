@@ -190,6 +190,41 @@
   }
 
   /**
+   * Guard for an IMAGE field's prompt. An image field's prompt is sent VERBATIM to the image model
+   * as the picture description, so it must DESCRIBE the image — not instruct the model to WRITE OUT
+   * a text prompt. Auto-prompt/Improve, being text-oriented, tend to produce "meta-prompts" ("…
+   * generate an image generation prompt … output ONLY the prompt text") that make the image model
+   * return text instead of a picture (finishReason=STOP). Flag the tell-tale phrasings.
+   * @param {string} prompt The prompt text.
+   * @return {string} A short problem clause, or "" when the prompt looks like a real image brief.
+   */
+  function imagePromptIssue(prompt) {
+    const text = (prompt || "").toLowerCase();
+    if (!text.trim()) {
+      return "";
+    }
+    if (/output\s+only\b[^.]{0,60}\b(prompt|text)\b/.test(text)) {
+      return "it tells the model to “output only … text/prompt”";
+    }
+    if (/\bimage[\s-]?(generation\s+)?prompt\b/.test(text)) {
+      return "it asks the model to write an image PROMPT (text)";
+    }
+    if (/\b(dall[\s-]?e|dall·e|midjourney|stable\s+diffusion)\b/.test(text)) {
+      return "it writes a prompt for another image tool (DALL·E / Midjourney)";
+    }
+    return "";
+  }
+
+  /** The kind (text|image|tts) of the row being edited, from its Type picker ("" if none). */
+  function modalKind() {
+    if (!modalRow) {
+      return "";
+    }
+    const sel = modalRow.querySelector(".sn-type");
+    return sel ? sel.value : "";
+  }
+
+  /**
    * Refresh the editor's guard-rail warning band from the current prompt. Returns true when there
    * is a BLOCKING issue (an unknown field ref or unbalanced braces), so Save can refuse.
    * @return {boolean}
@@ -209,6 +244,18 @@
           issues.unknown.map(esc).join(" ") +
           "</b> — fix or remove it (it won’t be filled in)."
       );
+    }
+    if (modalKind() === "image") {
+      const imgIssue = imagePromptIssue(modalPrompt.value);
+      if (imgIssue) {
+        parts.push(
+          "This is an <b>image</b> field — its prompt is sent to the image model AS the picture " +
+            "description, but this one reads like a text prompt (" +
+            esc(imgIssue) +
+            "), so the model returns text, not a picture. Describe the image directly, e.g. " +
+            "“A photorealistic photo of {{Word}} …”."
+        );
+      }
     }
     if (parts.length) {
       modalWarn.innerHTML = "⚠ " + parts.join("<br>⚠ ");
