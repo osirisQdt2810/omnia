@@ -229,6 +229,10 @@ function gpOpen() {
   gpReplay.hidden = true;
   gpPlay.disabled = false;
   gpPanel.hidden = false;
+  const wrap = document.getElementById("sn-graph-view");
+  if (wrap) {
+    wrap.classList.add("sn-gp-open"); // shrink the canvas so the inline panel never covers it
+  }
 }
 
 /** Exit the preview: cancel, clear visuals, hide the panel. */
@@ -237,6 +241,10 @@ function gpExit() {
   gpResetVisuals();
   if (gpPanel) {
     gpPanel.hidden = true;
+  }
+  const wrap = document.getElementById("sn-graph-view");
+  if (wrap) {
+    wrap.classList.remove("sn-gp-open"); // restore the full-height canvas
   }
 }
 
