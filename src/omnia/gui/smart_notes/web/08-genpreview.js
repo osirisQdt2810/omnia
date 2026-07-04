@@ -52,8 +52,10 @@ function gpPrereqs(name, kind) {
  * @return {!Array<!Object>} The ordered non-base node payloads.
  */
 function gpComputeOrder() {
+  // Only ENABLED (Generate-on) non-base fields are generated — mirrors config.generatable_fields.
+  // Generate-off fields are excluded from the order entirely (shown as "won't generate").
   const nodes = (graphData.nodes || []).filter(function (n) {
-    return !n.is_base;
+    return !n.is_base && n.enabled;
   });
   const idx = {};
   nodes.forEach(function (n, i) {
@@ -171,7 +173,8 @@ function gpResetVisuals() {
       "sn-gp-given",
       "sn-gp-pending",
       "sn-gp-gen",
-      "sn-gp-blocked"
+      "sn-gp-blocked",
+      "sn-gp-off"
     );
   });
   document.querySelectorAll("#sn-graph-svg .sn-edge-g").forEach(function (g) {
@@ -259,9 +262,13 @@ function gpPlay_() {
     if (!el) {
       return;
     }
-    el.classList.add(
-      nd.is_base || seed[nd.name.toLowerCase()] ? "sn-gp-given" : "sn-gp-pending"
-    );
+    if (nd.is_base || seed[nd.name.toLowerCase()]) {
+      el.classList.add("sn-gp-given"); // provided input
+    } else if (!nd.enabled) {
+      el.classList.add("sn-gp-off"); // Generate off → excluded, never in the order
+    } else {
+      el.classList.add("sn-gp-pending"); // will generate when its turn comes
+    }
   });
 
   const working = {};
