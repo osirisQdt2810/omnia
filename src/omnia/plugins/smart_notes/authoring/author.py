@@ -296,8 +296,9 @@ def _kind_output_clause(kind: str) -> str:
         )
     if kind == "tts":
         return (
-            " This is a TTS/audio field: write the prompt so its result is clean, natural "
-            "SPOKEN text — no HTML, no markdown, no 'output only' meta-instructions."
+            " This is a TTS/audio field: output ONLY the field placeholder(s) to be spoken, e.g. "
+            "{{Word}} — NOT an instruction, NOT 'You are a TTS expert', no prose and no HTML. Only "
+            "the placeholder's field content is read aloud."
         )
     return ""
 
