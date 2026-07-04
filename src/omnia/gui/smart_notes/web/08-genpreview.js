@@ -138,20 +138,33 @@ function gpComputeOrder() {
   });
 }
 
-/** Pulse a "flowing" animation along every edge feeding INTO `name` (its incoming edges). */
-function gpPulseEdgesInto(name) {
+/** Dim EVERY edge (preview starts with all edges dark; used ones light up as fields generate). */
+function gpDimAllEdges() {
+  document.querySelectorAll("#sn-graph-svg .sn-edge-g").forEach(function (g) {
+    g.classList.add("sn-gp-edge-dim");
+    g.classList.remove("sn-gp-edge-live");
+  });
+}
+
+/**
+ * Light (permanently) + pulse every edge feeding INTO `name`: they were just "used" to generate
+ * the field, so they brighten and stay lit; edges that never light (feeding blocked/ungenerated
+ * fields) remain dark, making the unused dependencies visible.
+ */
+function gpLightEdgesInto(name) {
   const lc = (name || "").toLowerCase();
   document.querySelectorAll("#sn-graph-svg .sn-edge-g").forEach(function (g) {
     if ((g.getAttribute("data-dst") || "").toLowerCase() === lc) {
-      g.classList.add("sn-edge-flow");
+      g.classList.remove("sn-gp-edge-dim");
+      g.classList.add("sn-gp-edge-live", "sn-edge-flow");
       setTimeout(function () {
-        g.classList.remove("sn-edge-flow");
+        g.classList.remove("sn-edge-flow"); // the flow pulse is transient; "live" stays
       }, GP_STEP_MS);
     }
   });
 }
 
-/** Strip every preview visual (node states + edge flow) so the normal graph shows through. */
+/** Strip every preview visual (node states + edge dim/live/flow) so the normal graph shows. */
 function gpResetVisuals() {
   document.querySelectorAll("#sn-graph-svg [data-node]").forEach(function (g) {
     g.classList.remove(
@@ -161,8 +174,8 @@ function gpResetVisuals() {
       "sn-gp-blocked"
     );
   });
-  document.querySelectorAll("#sn-graph-svg .sn-edge-flow").forEach(function (g) {
-    g.classList.remove("sn-edge-flow");
+  document.querySelectorAll("#sn-graph-svg .sn-edge-g").forEach(function (g) {
+    g.classList.remove("sn-gp-edge-dim", "sn-gp-edge-live", "sn-edge-flow");
   });
 }
 
@@ -240,6 +253,7 @@ function gpPlay_() {
 
   const order = gpComputeOrder();
   gpResetVisuals();
+  gpDimAllEdges(); // start with every edge dark; each generated field lights the edges it uses
   (graphData.nodes || []).forEach(function (nd) {
     const el = gpNodeEl(nd.name);
     if (!el) {
@@ -295,7 +309,7 @@ function gpPlay_() {
     } else {
       if (el) {
         el.classList.add("sn-gp-gen");
-        gpPulseEdgesInto(node.name);
+        gpLightEdgesInto(node.name);
       }
       working[node.name.toLowerCase()] = true;
       const soft = gpPrereqs(node.name, "soft").filter(function (p) {
