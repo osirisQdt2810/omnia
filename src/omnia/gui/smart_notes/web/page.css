@@ -565,14 +565,19 @@ select:disabled { opacity: 0.7; }
 .sn-node-ng .sn-node-box { stroke-dasharray: 5,4; opacity: 0.78; }
 .sn-node-moving .sn-node-box, .sn-dragging .sn-node-box { stroke: var(--accent-2); stroke-width: 2.5; }
 
-/* A locked field: dimmed + dashed box, a lock badge, and a hover-revealed unlock button. */
+/* A locked field: dimmed + dashed box (the persistent lock toggle sits top-right). */
 .sn-node-locked .sn-node-box { opacity: 0.6; stroke-dasharray: 4,3; }
-.sn-lock-badge { font-size: 13px; }
-.sn-unlock-btn { cursor: pointer; opacity: 0; transition: opacity 0.12s ease; }
-.sn-node-locked:hover .sn-unlock-btn { opacity: 1; }
-.sn-unlock-circle { fill: var(--card-top); stroke: var(--accent); stroke-width: 1.5; }
-.sn-unlock-btn:hover .sn-unlock-circle { fill: var(--accent); }
-.sn-unlock-glyph { font-size: 11px; pointer-events: none; }
+
+/* Per-node Lock toggle (top-right corner): a 🔒/🔓 that locks AND unlocks and stays visible in
+   either state — accent-highlighted when locked, faint when unlocked; hover brightens. */
+.sn-lock-btn { cursor: pointer; transition: opacity 0.12s ease; }
+.sn-lock-on { opacity: 1; }
+.sn-lock-off { opacity: 0.4; }
+.sn-node:hover .sn-lock-btn { opacity: 1; }
+.sn-lock-circle { fill: var(--card-top); stroke: var(--card-border); stroke-width: 1.5; }
+.sn-lock-on .sn-lock-circle { stroke: var(--accent); fill: var(--head); }
+.sn-lock-btn:hover .sn-lock-circle { stroke: var(--accent); }
+.sn-lock-glyph { font-size: 10px; pointer-events: none; }
 
 /* A field that WILL be generated (Generate toggle on): green-outlined + glowing box so the set of
    fields producing content stands out at a glance. Hover still shows the blue "connect" border. */
