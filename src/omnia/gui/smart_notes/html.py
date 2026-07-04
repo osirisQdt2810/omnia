@@ -83,6 +83,7 @@ _PAGE_JS_PARTS = [
     "04-modal.js",
     "05-handlers.js",
     "06-graph.js",
+    "08-genpreview.js",
     "07-init.js",
 ]
 
