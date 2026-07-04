@@ -51,8 +51,24 @@
   <div id="sn-graph-view" class="sn-graph-wrap" hidden>
     <div class="sn-graph-bar">
       <div class="sn-graph-hint">Drag from a field's <b>border</b> onto another field to add a dependency. Drag a node's centre to move it, scroll to zoom, drag the canvas to pan. Click an edge to toggle <b class="sn-edge-hard">hard</b> ↔ <b class="sn-edge-soft">soft</b>; select it and press Delete to remove.</div>
+      <button id="sn-genpreview-btn" class="sn-btn" type="button" title="Animate the order fields are generated in, from a Word (+ optional Context) seed">▶ Preview gen order</button>
     </div>
     <div id="sn-graph-warn" class="sn-graph-warn" hidden>⚠ These fields reference each other in a cycle (the thick <b>amber</b> edges). Generation runs in dependency order, which needs a loop-free graph — click an amber edge and press Delete to break the cycle before saving.</div>
+    <div id="sn-genpreview-panel" class="sn-gp-panel" hidden>
+      <div class="sn-gp-head">
+        <span class="sn-gp-title">▶ Generation-order preview</span>
+        <button id="sn-gp-close" class="sn-iconbtn" type="button" title="Exit preview">✕</button>
+      </div>
+      <div class="sn-gp-seedwrap">
+        <div class="sn-gp-seed-hint">Seed you'll provide (Word is always given — tick Context / any other input):</div>
+        <div id="sn-gp-seed-list" class="sn-gp-seed-list"></div>
+      </div>
+      <div class="sn-gp-controls">
+        <button id="sn-gp-play" class="sn-btn sn-btn-primary" type="button">▶ Play</button>
+        <button id="sn-gp-replay" class="sn-btn" type="button" hidden>↻ Replay</button>
+        <span id="sn-gp-status" class="sn-gp-status"></span>
+      </div>
+    </div>
     <div id="sn-graph-scroll" class="sn-graph-scroll">
       <svg id="sn-graph-svg" class="sn-graph-svg" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>

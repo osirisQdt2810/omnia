@@ -598,6 +598,57 @@ select:disabled { opacity: 0.7; }
 .sn-gen-btn:hover .sn-gen-circle { stroke: var(--accent); }
 .sn-gen-glyph { font-size: 10px; pointer-events: none; }
 
+/* ── Generation-order preview (▶ Preview gen order) ─────────────────────────────────────────
+   A floating control card + animated node/edge states that replay the gen route. */
+.sn-graph-bar { display: flex; align-items: flex-start; gap: 12px; }
+.sn-graph-bar .sn-graph-hint { flex: 1; }
+#sn-genpreview-btn { flex: 0 0 auto; white-space: nowrap; }
+
+.sn-gp-panel {
+  position: absolute; z-index: 6; top: 8px; left: 8px; width: 320px; max-width: calc(100% - 16px);
+  background: var(--card-top); border: 1px solid var(--card-border); border-radius: 12px;
+  box-shadow: 0 10px 30px var(--shadow); padding: 12px 13px; backdrop-filter: blur(6px);
+}
+.sn-gp-panel[hidden] { display: none; }
+.sn-gp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sn-gp-title { font-weight: 700; font-size: 13px; color: var(--fg); }
+.sn-gp-seed-hint { font-size: 11px; color: var(--muted); margin-bottom: 6px; line-height: 1.4; }
+.sn-gp-seed-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 132px; overflow: auto; margin-bottom: 10px; }
+.sn-gp-seed-base {
+  font-size: 11px; font-weight: 600; color: var(--accent);
+  background: var(--head); border: 1px solid var(--card-border); border-radius: 999px; padding: 2px 9px;
+}
+.sn-gp-seed-item {
+  display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--fg);
+  border: 1px solid var(--card-border); border-radius: 999px; padding: 2px 9px 2px 6px; cursor: pointer;
+}
+.sn-gp-seed-item:hover { border-color: var(--accent); }
+.sn-gp-controls { display: flex; align-items: center; gap: 10px; }
+.sn-gp-status { font-size: 11px; color: var(--muted); line-height: 1.35; flex: 1; }
+.sn-gp-status b { color: var(--fg); }
+
+/* Node states during the animation. transform-box/origin keep the pop centred on each node box. */
+.sn-gp-pending .sn-node-box { opacity: 0.3; }
+.sn-gp-pending text { opacity: 0.4; }
+.sn-gp-given .sn-node-box { stroke: var(--accent); stroke-width: 2.5; fill: var(--head); }
+.sn-gp-gen .sn-node-box {
+  stroke: #22c55e; stroke-width: 3; fill: var(--card-top);
+  filter: drop-shadow(0 0 7px rgba(34,197,94,0.75));
+  transform-box: fill-box; transform-origin: center; animation: sn-gp-pop 0.5s ease;
+}
+.sn-gp-blocked .sn-node-box { stroke: #ef4444; stroke-width: 2; stroke-dasharray: 4,3; opacity: 0.55; }
+.sn-gp-blocked text { opacity: 0.5; }
+@keyframes sn-gp-pop {
+  0% { transform: scale(0.82); } 55% { transform: scale(1.14); } 100% { transform: scale(1); }
+}
+
+/* A pulse of "flow" along an edge feeding the field being generated. */
+.sn-edge-flow .sn-edge {
+  stroke-dasharray: 9 6 !important; stroke-width: 3.5;
+  animation: sn-edge-flow-anim 0.7s linear;
+}
+@keyframes sn-edge-flow-anim { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
+
 /* Prompt tooltip (Feature 1): a floating glass card shown on node hover (replaces <title>). A
    long prompt would overflow the viewport, so the card is INTERACTIVE + SCROLLABLE — its
    max-height is set dynamically (JS) to the space available, pointer-events are on so the user

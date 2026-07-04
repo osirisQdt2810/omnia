@@ -496,6 +496,8 @@
     const sel = isSelected(e);
     const g = svgEl("g");
     g.setAttribute("class", "sn-edge-g");
+    g.setAttribute("data-src", e.src);
+    g.setAttribute("data-dst", e.dst);
 
     const hit = svgEl("path");
     hit.setAttribute("d", dd);
