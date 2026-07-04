@@ -642,6 +642,11 @@ select:disabled { opacity: 0.7; }
   0% { transform: scale(0.82); } 55% { transform: scale(1.14); } 100% { transform: scale(1); }
 }
 
+/* During preview every edge starts DARK; the edges a generated field uses light up and stay lit,
+   so edges that never brighten (feeding blocked / never-generated fields) read as "unused". */
+.sn-edge-g.sn-gp-edge-dim { opacity: 0.1; transition: opacity 0.3s ease; }
+.sn-edge-g.sn-gp-edge-live { opacity: 1; transition: opacity 0.3s ease; }
+
 /* A pulse of "flow" along an edge feeding the field being generated. */
 .sn-edge-flow .sn-edge {
   stroke-dasharray: 9 6 !important; stroke-width: 3.5;
