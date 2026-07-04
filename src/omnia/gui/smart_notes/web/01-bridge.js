@@ -20,6 +20,12 @@
   // Field-name sort direction for the table: 0 none, 1 ascending, -1 descending.
   let sortDir = 0;
 
+  // Per-column memory for the header "toggle all" (Generate / Lock / Overwrite): the set of
+  // field names that were ACTIVE (enabled / unlocked / overwrite-on) at the last turn-off, so
+  // re-activating restores THAT selection instead of blindly activating every field. Reset on
+  // every renderRows (a new note type). Keyed by column → {fieldNameLower: true}.
+  let toggleMemory = {};
+
   // Decks picker handles (a note-type-level scope: which decks this config applies to). The
   // button opens a modal with a search box + a multi-column grid of deck checkboxes.
   const decksBtn = document.getElementById("sn-decks-btn");
