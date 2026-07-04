@@ -90,16 +90,38 @@
     const block = nearestBlockElement(range.commonAncestorContainer);
     const blockText = block ? collapseWhitespace(block.innerText || block.textContent || '') : '';
 
-    const sentence = extractSentence(blockText, selectedText) || selectedText;
+    const sentence = clip(
+      extractSentence(blockText, selectedText) || selectedText,
+      MAX_SENTENCE_CHARS,
+    );
     const context = clip(blockText || selectedText, MAX_CONTEXT_CHARS);
 
     return {
       selection: selectedText,
-      sentence: clip(sentence, MAX_SENTENCE_CHARS),
+      sentence: sentence,
       context: context,
+      // Combined disambiguation input: the exact sentence first (precise usage), then the
+      // surrounding paragraph — map THIS single key to one note field to give the generator
+      // both without needing two fields. Deduped when the block is just the sentence.
+      context_full: combineContext(sentence, context),
       pageTitle: document.title || '',
       url: location.href,
     };
+  }
+
+  /**
+   * Merge the exact sentence and the surrounding context into one snippet, sentence first for
+   * emphasis. Falls back to whichever exists; avoids duplicating the sentence when it already
+   * equals the context.
+   * @param {string} sentence The exact containing sentence.
+   * @param {string} context The surrounding paragraph/block.
+   * @return {string} The combined snippet.
+   */
+  function combineContext(sentence, context) {
+    if (sentence && context && sentence !== context) {
+      return sentence + '\n\n' + context;
+    }
+    return context || sentence || '';
   }
 
   /**

@@ -16,7 +16,14 @@
 
   const {loadSettings, saveSettings, ankiConnect} = self.OmniaClipper;
 
-  const CAPTURE_KEYS = ['selection', 'sentence', 'context', 'url', 'pageTitle'];
+  const CAPTURE_KEYS = [
+    'selection',
+    'sentence',
+    'context',
+    'context_full',
+    'url',
+    'pageTitle',
+  ];
   const SKIP_LABEL = '(skip)';
 
   const el = (id) => document.getElementById(id);

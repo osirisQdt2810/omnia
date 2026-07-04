@@ -27,6 +27,7 @@
       selection: 'Front', // the base field (the word OR phrase Omnia generates from)
       sentence: '', // e.g. "Sentence" or "Context"
       context: '', // e.g. "Context"
+      context_full: '', // sentence + context combined — map to ONE "Context" field (recommended)
       url: '', // e.g. "Source"
       pageTitle: '', // e.g. "Title"
     },

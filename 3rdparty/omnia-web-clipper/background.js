@@ -86,6 +86,7 @@ function requestContext(tabId, selectionText) {
     selection: (selectionText || '').replace(/\s+/g, ' ').trim(),
     sentence: '',
     context: '',
+    context_full: '',
     pageTitle: '',
     url: '',
   };
