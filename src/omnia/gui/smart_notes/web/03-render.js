@@ -333,6 +333,7 @@
    */
   function renderRows(rows) {
     tbody.innerHTML = "";
+    toggleMemory = {}; // a new field set — forget the previous note type's toggle-all selection
     rows.forEach(function (row) {
       tbody.appendChild(renderRow(row));
     });
@@ -500,38 +501,70 @@
   }
 
   /**
-   * Toggle a whole column from its header: flip every row's control for `col` to a single
-   * shared state (if any is "off", turn all on; otherwise all off).
+   * Toggle a whole column from its header, PRESERVING the user's per-field selection:
+   * if ANY applicable field is active, turn the column OFF but REMEMBER which fields were active;
+   * if none is active, RESTORE only the remembered set (fall back to all when there's no memory).
+   * So turning a column off and back on brings back exactly the fields you had — it never
+   * activates a field you deliberately left off. For "lock", "active" means UNLOCKED (a lock-all
+   * remembers which fields were open, and unlock-all reopens only those).
    * @param {string} col "generate" | "lock" | "overwrite"
    */
   function toggleAllColumn(col) {
-    const rows = tbody.querySelectorAll("tr");
+    const rows = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
+    let items;
     if (col === "lock") {
-      const turnOn = Array.prototype.some.call(rows, function (tr) {
-        return !tr.querySelector(".sn-lock").classList.contains("sn-locked");
-      });
-      Array.prototype.forEach.call(rows, function (tr) {
+      items = rows.map(function (tr) {
         const lock = tr.querySelector(".sn-lock");
-        lock.classList.toggle("sn-locked", turnOn);
-        lock.textContent = turnOn ? "🔒" : "🔓";
-        applyLockState(tr);
+        return {
+          field: (tr.dataset.field || "").toLowerCase(),
+          isActive: function () {
+            return !lock.classList.contains("sn-locked");
+          },
+          setActive: function (on) {
+            lock.classList.toggle("sn-locked", !on);
+            lock.textContent = on ? "🔓" : "🔒";
+            applyLockState(tr);
+          }
+        };
       });
-      return;
+    } else {
+      const sel = col === "generate" ? ".sn-enabled" : ".sn-overwrite";
+      items = [];
+      rows.forEach(function (tr) {
+        const box = tr.querySelector(sel);
+        if (box && !box.disabled) {
+          items.push({
+            field: (tr.dataset.field || "").toLowerCase(),
+            isActive: function () {
+              return box.checked;
+            },
+            setActive: function (on) {
+              box.checked = on;
+            }
+          });
+        }
+      });
     }
-    const sel = col === "generate" ? ".sn-enabled" : ".sn-overwrite";
-    const boxes = [];
-    Array.prototype.forEach.call(rows, function (tr) {
-      const box = tr.querySelector(sel);
-      if (box && !box.disabled) {
-        boxes.push(box);
-      }
+    const anyActive = items.some(function (i) {
+      return i.isActive();
     });
-    const turnOn = boxes.some(function (box) {
-      return !box.checked;
-    });
-    boxes.forEach(function (box) {
-      box.checked = turnOn;
-    });
+    if (anyActive) {
+      // Turning OFF: snapshot exactly which fields were active, then deactivate all.
+      toggleMemory[col] = {};
+      items.forEach(function (i) {
+        if (i.isActive()) {
+          toggleMemory[col][i.field] = true;
+        }
+        i.setActive(false);
+      });
+    } else {
+      // Turning ON: restore only the remembered set; with no memory yet, activate all.
+      const mem = toggleMemory[col];
+      const hasMem = mem && Object.keys(mem).length > 0;
+      items.forEach(function (i) {
+        i.setActive(hasMem ? !!mem[i.field] : true);
+      });
+    }
   }
 
   /**
