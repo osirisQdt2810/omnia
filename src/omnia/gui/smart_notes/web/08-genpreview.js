@@ -229,9 +229,16 @@ function gpOpen() {
   gpReplay.hidden = true;
   gpPlay.disabled = false;
   gpPanel.hidden = false;
-  const wrap = document.getElementById("sn-graph-view");
-  if (wrap) {
-    wrap.classList.add("sn-gp-open"); // shrink the canvas so the inline panel never covers it
+  // Default position (only until the user drags it): top-right of the graph area. position:fixed →
+  // viewport coords, so it can then be dragged anywhere in the window.
+  if (!gpPanel.dataset.moved) {
+    const wrap = document.getElementById("sn-graph-view");
+    const wr = wrap
+      ? wrap.getBoundingClientRect()
+      : {right: window.innerWidth, top: 8};
+    gpPanel.style.left =
+      Math.max(6, wr.right - gpPanel.offsetWidth - 8) + "px";
+    gpPanel.style.top = Math.max(6, wr.top) + "px";
   }
 }
 
@@ -377,12 +384,12 @@ if (gpClose) {
   let startLeft = 0;
   let startTop = 0;
   function onMove(ev) {
-    const wrap = document.getElementById("sn-graph-view");
-    const wr = wrap.getBoundingClientRect();
+    // position:fixed → clamp to the WINDOW (not the graph area) so the panel can be dragged
+    // anywhere in the dialog. Keep the header on-screen (a small margin so it's always grabbable).
     let nx = startLeft + (ev.clientX - sx);
     let ny = startTop + (ev.clientY - sy);
-    nx = Math.max(0, Math.min(nx, wr.width - gpPanel.offsetWidth));
-    ny = Math.max(0, Math.min(ny, wr.height - 36));
+    nx = Math.max(-gpPanel.offsetWidth + 60, Math.min(nx, window.innerWidth - 60));
+    ny = Math.max(0, Math.min(ny, window.innerHeight - 34));
     gpPanel.style.left = nx + "px";
     gpPanel.style.top = ny + "px";
   }
@@ -394,14 +401,13 @@ if (gpClose) {
     if (ev.button !== 0 || (ev.target.closest && ev.target.closest("#sn-gp-close"))) {
       return; // left-button only; never start a drag from the ✕ close button
     }
-    const wrap = document.getElementById("sn-graph-view");
-    const pr = gpPanel.getBoundingClientRect();
-    const wr = wrap.getBoundingClientRect();
-    startLeft = pr.left - wr.left;
-    startTop = pr.top - wr.top;
+    const pr = gpPanel.getBoundingClientRect(); // fixed → these are viewport coords
+    startLeft = pr.left;
+    startTop = pr.top;
     sx = ev.clientX;
     sy = ev.clientY;
-    gpPanel.style.right = "auto"; // hand off from the CSS right-anchor to explicit left/top
+    gpPanel.dataset.moved = "1"; // remember the user's placement across open/close
+    gpPanel.style.right = "auto";
     gpPanel.style.left = startLeft + "px";
     gpPanel.style.top = startTop + "px";
     ev.preventDefault();

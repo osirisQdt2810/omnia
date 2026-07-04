@@ -605,12 +605,12 @@ select:disabled { opacity: 0.7; }
 #sn-genpreview-btn { flex: 0 0 auto; white-space: nowrap; }
 
 .sn-gp-panel {
-  /* Overlay anchored to the TOP-RIGHT of the graph area, over the Preview button (covering it is
-     fine). It floats above the canvas WITHOUT resizing it — absolute inside .sn-graph-wrap
-     (position: relative) so it stays put when the dialog is moved/resized. */
-  position: absolute; z-index: 7; top: 0; right: 0; width: 340px; max-width: calc(100% - 12px);
+  /* Floats above the WHOLE dialog (position: fixed) so it can be dragged anywhere in the Smart
+     Notes window, not just over the graph. Its position is set in JS on open (top-right of the
+     graph by default) and by dragging its header; clamped to the window, remembered across opens. */
+  position: fixed; z-index: 50; width: 340px; max-width: calc(100vw - 12px);
   background: var(--card-top); border: 1px solid var(--card-border); border-radius: 12px;
-  box-shadow: 0 10px 30px var(--shadow); padding: 12px 13px; backdrop-filter: blur(6px);
+  box-shadow: 0 12px 34px var(--shadow); padding: 12px 13px; backdrop-filter: blur(6px);
 }
 .sn-gp-panel[hidden] { display: none; }
 .sn-gp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; cursor: move; user-select: none; }
