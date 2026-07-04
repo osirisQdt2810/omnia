@@ -414,11 +414,12 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
     A field the user has moved (:attr:`config.node_positions`) overrides its flow ``x``/``y``
     (case-insensitive on the field name); ``bounds`` is then re-grown to include every override
     and ``node_positions`` echoes the (original-case) pinned map so the canvas can seed which
-    nodes are user-pinned. Each node also carries ``locked`` (its field's ``prompt_locked`` — the
-    base node and any unknown field are ``False``) so the canvas can badge/guard locked fields.
+    nodes are user-pinned. Each node also carries ``locked`` (its field's ``prompt_locked``) and
+    ``enabled`` (its Generate toggle) — the base node and any unknown field are ``False`` — so the
+    canvas can badge/guard locked fields and highlight/toggle the ones that will be generated.
 
     Returns:
-        ``{"nodes": [{name, is_base, generatable, locked, column, row, x, y, w, h, lane}, ...],
+        ``{"nodes": [{name, is_base, generatable, locked, enabled, column, row, x, y, w, h, lane}, ...],
         "edges": [{src, dst, kind, derived, cycle}, ...], "bounds": {width, height},
         "node_positions": {name: [x, y]}, "has_cycle": bool}``. ``cycle`` flags an edge that lies
         on a dependency loop and ``has_cycle`` is True when any do — the canvas highlights them and
@@ -444,6 +445,9 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
     locked_by_field = {
         field.field.strip().lower(): field.prompt_locked for field in config.fields
     }
+    enabled_by_field = {
+        field.field.strip().lower(): field.enabled for field in config.fields
+    }
     max_right = 0.0
     max_bottom = 0.0
     for node in laid.nodes:
@@ -459,6 +463,7 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
                 "is_base": node.is_base,
                 "generatable": node.generatable,
                 "locked": locked_by_field.get(node.name.strip().lower(), False),
+                "enabled": enabled_by_field.get(node.name.strip().lower(), False),
                 "column": node.column,
                 "row": node.row,
                 "x": x,

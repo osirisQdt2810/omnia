@@ -116,7 +116,7 @@
    * if the view is open. Clears the LIVE (in-progress drag) overrides and re-seeds the PERSISTENT
    * pinned positions from the graph's node_positions — the moved nodes the user has committed and
    * saved.
-   * @param {?Object} graph {nodes:[{name,is_base,generatable,locked,column,row,x,y,w,h,lane}], edges:[...], bounds:{width,height}, node_positions:{name:[x,y]}}.
+   * @param {?Object} graph {nodes:[{name,is_base,generatable,locked,enabled,column,row,x,y,w,h,lane}], edges:[...], bounds:{width,height}, node_positions:{name:[x,y]}}.
    */
   function seedGraph(graph) {
     graphData =
@@ -546,7 +546,9 @@
       "sn-node" +
         (n.is_base ? " sn-node-base" : "") +
         (n.generatable ? "" : " sn-node-ng") +
-        (n.locked ? " sn-node-locked" : "")
+        (n.locked ? " sn-node-locked" : "") +
+        // Highlight fields that WILL be generated (Generate toggle on), excluding the base input.
+        (n.enabled && !n.is_base ? " sn-node-gen" : "")
     );
     g.setAttribute("data-node", n.name);
     const p = nodePos(n);
@@ -572,6 +574,11 @@
     g.appendChild(text);
     if (n.locked) {
       appendLockControls(g, n, sz);
+    }
+    // Every non-base node gets a Generate toggle in the TOP-LEFT corner (mirrors the lock badge
+    // top-right), so the user can turn generation on/off for a field straight from the graph.
+    if (!n.is_base) {
+      appendGenerateControl(g, n, sz);
     }
 
     // Text-zone interaction model: the LABEL is the grab handle (drag it to MOVE the node), the
@@ -610,6 +617,26 @@
     // Returning to the node cancels a pending hide; leaving it hides after the grace delay.
     g.addEventListener("mouseenter", cancelTipHide);
     g.addEventListener("mouseleave", scheduleTipHide);
+    // Double-click (outside the text zone, which is the move handle) opens the SAME full prompt
+    // editor as clicking the row in the Fields tab — Improve / Preview / references and all — but
+    // only for an UNLOCKED, non-base field. A locked field must be unlocked first.
+    g.addEventListener("dblclick", function (ev) {
+      if (n.is_base || isOverText(text, ev)) {
+        return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancelConnect(); // a dblclick fires two mousedowns → drop any transient connect gesture
+      hideNodeTip();
+      if (isFieldLocked(n.name)) {
+        graphToastMsg("“" + n.name + "” is locked — unlock it to edit its prompt.");
+        return;
+      }
+      const row = rowByField(n.name);
+      if (row) {
+        openPromptEditor(row);
+      }
+    });
     return g;
   }
 
@@ -658,6 +685,72 @@
       unlockField(n.name);
     });
     g.appendChild(unlock);
+  }
+
+  /**
+   * Add a Generate toggle to the node's TOP-LEFT corner (mirrors the lock badge top-right). A ⚡
+   * glyph, highlighted when generation is ON and dimmed when OFF; clicking flips the field's
+   * Generate switch (the row's ``.sn-enabled``) and recomputes so the node's highlight updates.
+   * @param {!SVGGElement} g The node group.
+   * @param {!Object} n The node payload.
+   * @param {!Object} sz The node box size ({w, h}).
+   */
+  function appendGenerateControl(g, n, sz) {
+    const ctrl = svgEl("g");
+    ctrl.setAttribute(
+      "class",
+      "sn-gen-btn " + (n.enabled ? "sn-gen-on" : "sn-gen-off")
+    );
+    ctrl.setAttribute("transform", "translate(14,13)");
+    const circle = svgEl("circle");
+    circle.setAttribute("cx", "0");
+    circle.setAttribute("cy", "0");
+    circle.setAttribute("r", "11");
+    circle.setAttribute("class", "sn-gen-circle");
+    const glyph = svgEl("text");
+    glyph.setAttribute("x", "0");
+    glyph.setAttribute("y", "0");
+    glyph.setAttribute("text-anchor", "middle");
+    glyph.setAttribute("dominant-baseline", "central");
+    glyph.setAttribute("class", "sn-gen-glyph");
+    glyph.textContent = "⚡";
+    const tip = svgEl("title");
+    tip.textContent = n.enabled
+      ? "Generation ON — click to turn off"
+      : "Generation OFF — click to turn on";
+    ctrl.appendChild(circle);
+    ctrl.appendChild(glyph);
+    ctrl.appendChild(tip);
+    // Swallow the drag/dblclick gestures so the toggle never starts a move/connect or opens the editor.
+    ctrl.addEventListener("mousedown", function (ev) {
+      ev.stopPropagation();
+    });
+    ctrl.addEventListener("dblclick", function (ev) {
+      ev.stopPropagation();
+    });
+    ctrl.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      toggleFieldGenerate(n.name);
+    });
+    g.appendChild(ctrl);
+  }
+
+  /**
+   * Toggle a field's Generate switch FROM THE GRAPH: flip its row's ``.sn-enabled`` checkbox (the
+   * single source of truth collectRows persists), then recompute so the node re-renders with the
+   * updated highlight + toggle glyph.
+   * @param {string} name The field to toggle.
+   */
+  function toggleFieldGenerate(name) {
+    const row = rowByField(name);
+    if (!row) {
+      return;
+    }
+    const box = row.querySelector(".sn-enabled");
+    if (box) {
+      box.checked = !box.checked;
+      recomputeGraph();
+    }
   }
 
   // --- prompt tooltip (Feature 1) -------------------------------------------------------
@@ -957,6 +1050,18 @@
     connect = null;
     if (target && src && target.toLowerCase() !== src.toLowerCase()) {
       addEdge(src, target);
+    }
+  }
+
+  /** Drop any in-progress connect gesture (its drag line + listeners) without adding an edge. */
+  function cancelConnect() {
+    document.removeEventListener("mousemove", onConnectMove);
+    document.removeEventListener("mouseup", onConnectEnd);
+    if (connect) {
+      if (connect.line && connect.line.parentNode) {
+        connect.line.parentNode.removeChild(connect.line);
+      }
+      connect = null;
     }
   }
 
