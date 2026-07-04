@@ -843,14 +843,16 @@ class TestPerFieldOverrides:
         # An image rule pins the IMAGE model (so generate_image targets it), not the text model.
         assert hub.llm_overrides == [("", "", "img-model")]
 
-    def test_tts_rule_voice_override_and_interpolated_prompt(self):
+    def test_tts_rule_voice_override_speaks_only_referenced_field(self):
+        # A TTS field voices only its {{refs}}' content, never the prompt's prose — so
+        # "hello {{Word}}" speaks just the Word value ("cat"), not the literal "hello".
         tts = _RecordingTTS()
         service = GenerationService(_stub_hub(tts=tts))
         rule = SmartNotesFieldRule(
             kind="tts", prompt="hello {{Word}}", target_field="Audio", voice="en-US-X"
         )
         service.generate(rule, {"Word": "cat"})
-        assert tts.calls == [("hello cat", "en-US-X")]
+        assert tts.calls == [("cat", "en-US-X")]
 
     def test_tts_concrete_voice_builds_the_rules_provider(self):
         tts = _RecordingTTS()

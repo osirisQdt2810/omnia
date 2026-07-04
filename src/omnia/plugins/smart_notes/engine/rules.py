@@ -296,7 +296,26 @@ def prompt_for(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
 
 
 def tts_text(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
-    """The text a tts rule speaks: the interpolated prompt, else the source field value."""
+    """The text a tts rule SPEAKS — its referenced field(s), never the prompt's prose.
+
+    A TTS field only voices field content, so when a prompt is given we extract its ``{{refs}}``
+    and speak ONLY their resolved values (deduped, in order). This means a verbose
+    "You are a TTS expert… {{Word}}" prompt speaks just {{Word}}'s value — the instruction text is
+    never read aloud. A prompt that contains NO field ref is a literal line, so it is spoken as
+    written; with no prompt at all, the source field's value is spoken.
+    """
     if rule.prompt:
-        return interpolate(rule.prompt, fields)
+        seen: set[str] = set()
+        refs: list[str] = []
+        for ref in extract_field_refs(rule.prompt):
+            key = ref.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                refs.append(ref)
+        if refs:
+            # Speak only the referenced fields' content (empty when blank — never the prose).
+            return interpolate(
+                " ".join("{{" + ref + "}}" for ref in refs), fields
+            ).strip()
+        return interpolate(rule.prompt, fields).strip()
     return interpolate(fields.get(rule.source_field, ""), fields)
