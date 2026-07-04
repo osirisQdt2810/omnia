@@ -780,10 +780,10 @@ class TestBuildSmartNotesHtml:
         assert "border" in html  # the updated hint text
 
     def test_lock_integration_present(self):
-        # Feature 4: lock badge + unlock control, edge-edit guard, and the unlock helper.
+        # Feature 4: persistent lock toggle, edge-edit guard, and the lock helpers.
         html = build_smart_notes_html(dark=False)
-        assert "sn-node-locked" in html and "sn-unlock-btn" in html
-        assert "function unlockField" in html and "function isFieldLocked" in html
+        assert "sn-node-locked" in html and "sn-lock-btn" in html
+        assert "function toggleFieldLock" in html and "function isFieldLocked" in html
         assert "is locked — unlock it to change its dependencies." in html
 
     def test_prompt_editor_guard_rail_present(self):
