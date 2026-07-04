@@ -363,3 +363,49 @@ if (gpReplay) {
 if (gpClose) {
   gpClose.addEventListener("click", gpExit);
 }
+
+// Make the panel DRAGGABLE by its header so the user can move it off the graph (it defaults to
+// top-right but isn't pinned there). Dragging switches it to left/top positioning; the position
+// persists across open/close. Clamped so the header always stays inside the graph area.
+(function gpDraggable() {
+  const head = gpPanel ? gpPanel.querySelector(".sn-gp-head") : null;
+  if (!head) {
+    return;
+  }
+  let sx = 0;
+  let sy = 0;
+  let startLeft = 0;
+  let startTop = 0;
+  function onMove(ev) {
+    const wrap = document.getElementById("sn-graph-view");
+    const wr = wrap.getBoundingClientRect();
+    let nx = startLeft + (ev.clientX - sx);
+    let ny = startTop + (ev.clientY - sy);
+    nx = Math.max(0, Math.min(nx, wr.width - gpPanel.offsetWidth));
+    ny = Math.max(0, Math.min(ny, wr.height - 36));
+    gpPanel.style.left = nx + "px";
+    gpPanel.style.top = ny + "px";
+  }
+  function onUp() {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+  head.addEventListener("mousedown", function (ev) {
+    if (ev.button !== 0 || (ev.target.closest && ev.target.closest("#sn-gp-close"))) {
+      return; // left-button only; never start a drag from the ✕ close button
+    }
+    const wrap = document.getElementById("sn-graph-view");
+    const pr = gpPanel.getBoundingClientRect();
+    const wr = wrap.getBoundingClientRect();
+    startLeft = pr.left - wr.left;
+    startTop = pr.top - wr.top;
+    sx = ev.clientX;
+    sy = ev.clientY;
+    gpPanel.style.right = "auto"; // hand off from the CSS right-anchor to explicit left/top
+    gpPanel.style.left = startLeft + "px";
+    gpPanel.style.top = startTop + "px";
+    ev.preventDefault();
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+})();
