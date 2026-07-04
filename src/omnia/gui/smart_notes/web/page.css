@@ -605,13 +605,18 @@ select:disabled { opacity: 0.7; }
 #sn-genpreview-btn { flex: 0 0 auto; white-space: nowrap; }
 
 .sn-gp-panel {
-  /* Anchored top-RIGHT of the graph area (over the Preview button). Absolute inside
-     .sn-graph-wrap (position: relative) so it stays put when the dialog is moved/resized. */
-  position: absolute; z-index: 7; top: 6px; right: 6px; width: 320px; max-width: calc(100% - 16px);
+  /* An INLINE section (not a popup): a right-aligned card that sits ABOVE the graph, so it never
+     covers the canvas. When it opens, .sn-gp-open shrinks the graph height to make room. */
+  margin: 0 0 8px auto; width: 340px; max-width: 100%;
   background: var(--card-top); border: 1px solid var(--card-border); border-radius: 12px;
-  box-shadow: 0 10px 30px var(--shadow); padding: 12px 13px; backdrop-filter: blur(6px);
+  box-shadow: 0 6px 20px var(--shadow); padding: 12px 13px;
 }
 .sn-gp-panel[hidden] { display: none; }
+/* Preview open → the graph area becomes a fixed-height flex column so the canvas flexes to fill
+   whatever space the inline panel leaves (no empty gap, never overlapping). node-tip/toast are
+   absolute so they're unaffected. */
+.sn-graph-wrap.sn-gp-open { display: flex; flex-direction: column; height: 66vh; }
+.sn-graph-wrap.sn-gp-open .sn-graph-scroll { flex: 1 1 auto; height: auto; min-height: 220px; }
 .sn-gp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .sn-gp-title { font-weight: 700; font-size: 13px; color: var(--fg); }
 .sn-gp-seed-hint { font-size: 11px; color: var(--muted); margin-bottom: 6px; line-height: 1.4; }
