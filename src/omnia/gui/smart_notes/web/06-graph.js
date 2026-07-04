@@ -572,13 +572,12 @@
 
     g.appendChild(rect);
     g.appendChild(text);
-    if (n.locked) {
-      appendLockControls(g, n, sz);
-    }
-    // Every non-base node gets a Generate toggle in the TOP-LEFT corner (mirrors the lock badge
-    // top-right), so the user can turn generation on/off for a field straight from the graph.
+    // Every non-base node gets two persistent corner toggles: Generate (top-left) and Lock
+    // (top-right). Both flip their field's row control and stay visible in either state, so you
+    // can lock AND unlock (and enable/disable generation) straight from the graph.
     if (!n.is_base) {
       appendGenerateControl(g, n, sz);
+      appendLockControls(g, n, sz);
     }
 
     // Text-zone interaction model: the LABEL is the grab handle (drag it to MOVE the node), the
@@ -641,50 +640,50 @@
   }
 
   /**
-   * Add a locked field's badge + a hover-revealed unlock control to its node group. The badge is
-   * a small 🔒 near the top-right; the unlock control (a circle + 🔓, shown on hover via CSS)
-   * flips the row's lock off when clicked.
+   * Add a persistent Lock toggle to the node's TOP-RIGHT corner: a 🔒/🔓 that flips the field's
+   * row lock BOTH ways (lock and unlock) and stays visible in either state — highlighted when
+   * locked, faint when unlocked. Replaces the old lock-only badge that vanished after unlocking.
    * @param {!SVGGElement} g The node group.
    * @param {!Object} n The node payload.
    * @param {!Object} sz The node box size ({w, h}).
    */
   function appendLockControls(g, n, sz) {
-    const badge = svgEl("text");
-    badge.setAttribute("x", String(sz.w - 14));
-    badge.setAttribute("y", "13");
-    badge.setAttribute("class", "sn-lock-badge");
-    badge.setAttribute("pointer-events", "none");
-    badge.textContent = "🔒";
-    g.appendChild(badge);
-
-    const unlock = svgEl("g");
-    unlock.setAttribute("class", "sn-unlock-btn");
-    unlock.setAttribute(
-      "transform",
-      "translate(" + (sz.w - 14) + ",13)"
+    const ctrl = svgEl("g");
+    ctrl.setAttribute(
+      "class",
+      "sn-lock-btn " + (n.locked ? "sn-lock-on" : "sn-lock-off")
     );
+    ctrl.setAttribute("transform", "translate(" + (sz.w - 14) + ",13)");
     const circle = svgEl("circle");
     circle.setAttribute("cx", "0");
     circle.setAttribute("cy", "0");
     circle.setAttribute("r", "11");
-    circle.setAttribute("class", "sn-unlock-circle");
+    circle.setAttribute("class", "sn-lock-circle");
     const glyph = svgEl("text");
     glyph.setAttribute("x", "0");
     glyph.setAttribute("y", "0");
     glyph.setAttribute("text-anchor", "middle");
     glyph.setAttribute("dominant-baseline", "central");
-    glyph.setAttribute("class", "sn-unlock-glyph");
-    glyph.textContent = "🔓";
-    unlock.appendChild(circle);
-    unlock.appendChild(glyph);
-    unlock.addEventListener("mousedown", function (ev) {
-      ev.stopPropagation(); // don't start a move/connect gesture
-    });
-    unlock.addEventListener("click", function (ev) {
+    glyph.setAttribute("class", "sn-lock-glyph");
+    glyph.textContent = n.locked ? "🔒" : "🔓";
+    const tip = svgEl("title");
+    tip.textContent = n.locked
+      ? "Locked — click to unlock"
+      : "Unlocked — click to lock";
+    ctrl.appendChild(circle);
+    ctrl.appendChild(glyph);
+    ctrl.appendChild(tip);
+    ctrl.addEventListener("mousedown", function (ev) {
       ev.stopPropagation();
-      unlockField(n.name);
     });
-    g.appendChild(unlock);
+    ctrl.addEventListener("dblclick", function (ev) {
+      ev.stopPropagation();
+    });
+    ctrl.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      toggleFieldLock(n.name);
+    });
+    g.appendChild(ctrl);
   }
 
   /**
@@ -869,20 +868,20 @@
   }
 
   /**
-   * Unlock a field FROM THE GRAPH: flip its table row's lock cell off exactly as the row's own
-   * lock click does (remove `sn-locked`, restore the 🔓 glyph, re-apply the row lock state), then
-   * recompute so the node re-renders unlocked.
-   * @param {string} name The field to unlock.
+   * Toggle a field's lock FROM THE GRAPH: flip its table row's lock cell exactly as the row's own
+   * lock click does (toggle `sn-locked`, swap the 🔒/🔓 glyph, re-apply the row lock state), then
+   * recompute so the node re-renders in its new state.
+   * @param {string} name The field to lock/unlock.
    */
-  function unlockField(name) {
+  function toggleFieldLock(name) {
     const row = rowByField(name);
     if (!row) {
       return;
     }
     const lock = row.querySelector(".sn-lock");
     if (lock) {
-      lock.classList.remove("sn-locked");
-      lock.textContent = "🔓";
+      const nowLocked = lock.classList.toggle("sn-locked");
+      lock.textContent = nowLocked ? "🔒" : "🔓";
       applyLockState(row);
     }
     recomputeGraph();
