@@ -18,6 +18,7 @@
     apiKey: '', // AnkiConnect "apiKey" option; empty when AnkiConnect apiKey is null.
     enabled: true, // Master on/off. When false, no "+" and no context-menu action.
     mouseEnabled: true, // Double-click "+" tooltip on/off (the right-click menu is unaffected).
+    autogen: true, // Caller guard: tag clipped notes "omnia-autogen" so Omnia can auto-generate.
     deckName: 'Omnia Capture',
     modelName: 'Basic',
     allowDuplicate: true,

@@ -132,6 +132,7 @@
 
     el('enabledToggle').setAttribute('aria-checked', String(s.enabled !== false));
     el('mouseToggle').setAttribute('aria-checked', String(s.mouseEnabled !== false));
+    el('autogen').checked = s.autogen !== false;
 
     // Seed the dropdowns with the stored values so the page is usable even
     // before a successful connection; Test connection replaces these lists.
@@ -162,6 +163,7 @@
       apiKey: el('apiKey').value,
       enabled: el('enabledToggle').getAttribute('aria-checked') === 'true',
       mouseEnabled: el('mouseToggle').getAttribute('aria-checked') === 'true',
+      autogen: el('autogen').checked,
       deckName: el('deckName').value.trim() || 'Omnia Capture',
       modelName: el('modelName').value.trim() || 'Basic',
       allowDuplicate: el('allowDuplicate').checked,

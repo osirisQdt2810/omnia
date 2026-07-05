@@ -25,6 +25,18 @@
 (() => {
   'use strict';
 
+  // Double-injection guard. On extension reload the background re-injects this script into open
+  // tabs (chrome.scripting) — which, for a reload (same extension id), runs in the SAME isolated
+  // world as the previous instance. Tear that stale instance's listeners down before we re-init so
+  // we don't end up with two "+" handlers fighting over one page.
+  if (window.__omniaClipperTeardown) {
+    try {
+      window.__omniaClipperTeardown();
+    } catch (_e) {
+      // ignore — the previous instance may already be dead
+    }
+  }
+
   const TOOLTIP_ID = 'omnia-clipper-tooltip';
   const TOAST_ID = 'omnia-clipper-toast';
   // Cap the context snippet so we never ship a whole article into a note field.
@@ -41,19 +53,71 @@
   let enabled = true;
   let mouseEnabled = true;
 
+  // When the extension is reloaded/updated/disabled, THIS content script keeps running in an
+  // already-open tab but loses its extension context: any chrome.* call then throws
+  // "Extension context invalidated". Without guarding, clicking "+" hangs forever on the
+  // "Sending…" toast (the callback never fires) and throws an uncaught error. We detect the dead
+  // context, tell the user to reload the page, and stop reacting.
+  let contextGone = false;
+
+  /** Whether this content script's extension context is still valid (chrome.* usable). */
+  function extensionAlive() {
+    if (contextGone) {
+      return false;
+    }
+    try {
+      return !!(chrome.runtime && chrome.runtime.id);
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  /** Detach on a dead context: remove the "+" and stop the selection handlers firing. */
+  function handleContextGone() {
+    if (contextGone) {
+      return;
+    }
+    contextGone = true;
+    removeTooltip();
+    document.removeEventListener('mouseup', onSelectionEvent, true);
+    document.removeEventListener('dblclick', onSelectionEvent, true);
+    document.removeEventListener('scroll', removeTooltip, true);
+    // Also detach the remaining listeners so a re-injection (extension reload) leaves no orphans.
+    document.removeEventListener('mousedown', onOutsideMousedown, true);
+    document.removeEventListener('keydown', onEscapeKeydown);
+    try {
+      chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+    } catch (_e) {
+      // The context may already be torn down (chrome.* unusable) — nothing left to detach.
+    }
+  }
+
+  const RELOAD_MSG = 'Omnia was updated — reload this page (F5) to keep clipping.';
+
   // -------------------------------------------------------------------------
   // Enable flags (master toggle + double-click toggle)
   // -------------------------------------------------------------------------
 
   /** Load the enable flags from storage into the module-level cache. */
   function refreshFlags() {
-    chrome.storage.sync.get({enabled: true, mouseEnabled: true}, (stored) => {
-      enabled = stored.enabled !== false;
-      mouseEnabled = stored.mouseEnabled !== false;
-      if (!enabled || !mouseEnabled) {
-        removeTooltip();
-      }
-    });
+    if (!extensionAlive()) {
+      handleContextGone();
+      return;
+    }
+    try {
+      chrome.storage.sync.get({enabled: true, mouseEnabled: true}, (stored) => {
+        if (chrome.runtime.lastError) {
+          return;
+        }
+        enabled = stored.enabled !== false;
+        mouseEnabled = stored.mouseEnabled !== false;
+        if (!enabled || !mouseEnabled) {
+          removeTooltip();
+        }
+      });
+    } catch (_e) {
+      handleContextGone();
+    }
   }
 
   if (chrome.storage && chrome.storage.onChanged) {
@@ -303,23 +367,36 @@
     }
     const capture = pendingCapture;
     removeTooltip();
+    // The extension may have been reloaded since this script was injected — check BEFORE the
+    // "Sending…" toast so a dead context shows an actionable message, not a permanent "Sending…".
+    if (!extensionAlive()) {
+      showToast(RELOAD_MSG, 'error');
+      handleContextGone();
+      return;
+    }
     showToast('Sending to Anki…', 'pending');
 
-    chrome.runtime.sendMessage({type: 'omnia-capture', payload: capture}, (response) => {
-      if (chrome.runtime.lastError) {
-        showToast('Extension error: ' + chrome.runtime.lastError.message, 'error');
-        return;
-      }
-      if (!response) {
-        showToast('No response from background worker.', 'error');
-        return;
-      }
-      if (response.ok) {
-        showToast('Added to Anki: “' + truncateForToast(capture.selection) + '”', 'success');
-      } else {
-        showToast(response.error || 'Failed to add note.', 'error');
-      }
-    });
+    try {
+      chrome.runtime.sendMessage({type: 'omnia-capture', payload: capture}, (response) => {
+        if (chrome.runtime.lastError) {
+          showToast('Extension error: ' + chrome.runtime.lastError.message, 'error');
+          return;
+        }
+        if (!response) {
+          showToast('No response from background worker.', 'error');
+          return;
+        }
+        if (response.ok) {
+          showToast('Added to Anki: “' + truncateForToast(capture.selection) + '”', 'success');
+        } else {
+          showToast(response.error || 'Failed to add note.', 'error');
+        }
+      });
+    } catch (_e) {
+      // The context died between the check and the call (or sendMessage threw synchronously).
+      showToast(RELOAD_MSG, 'error');
+      handleContextGone();
+    }
   }
 
   /**
@@ -384,7 +461,8 @@
   // Messages from the background worker (context-menu path)
   // -------------------------------------------------------------------------
 
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  /** Background-worker message handler (named so handleContextGone can removeListener it). */
+  function onRuntimeMessage(message, _sender, sendResponse) {
     if (!message) {
       return false;
     }
@@ -406,7 +484,9 @@
       return false;
     }
     return false;
-  });
+  }
+
+  chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
   // -------------------------------------------------------------------------
   // Event wiring
@@ -438,23 +518,25 @@
   document.addEventListener('mouseup', onSelectionEvent, true);
   document.addEventListener('dblclick', onSelectionEvent, true);
 
-  // Dismiss the tooltip on an outside click or Escape.
-  document.addEventListener(
-    'mousedown',
-    (event) => {
-      const tooltip = document.getElementById(TOOLTIP_ID);
-      if (tooltip && event.target !== tooltip) {
-        removeTooltip();
-      }
-    },
-    true,
-  );
-  document.addEventListener('keydown', (event) => {
+  // Dismiss the tooltip on an outside click or Escape. Named (not anonymous) so
+  // handleContextGone can removeEventListener them on a re-injection.
+  function onOutsideMousedown(event) {
+    const tooltip = document.getElementById(TOOLTIP_ID);
+    if (tooltip && event.target !== tooltip) {
+      removeTooltip();
+    }
+  }
+  function onEscapeKeydown(event) {
     if (event.key === 'Escape') {
       removeTooltip();
     }
-  });
+  }
+  document.addEventListener('mousedown', onOutsideMousedown, true);
+  document.addEventListener('keydown', onEscapeKeydown);
   document.addEventListener('scroll', removeTooltip, true);
+
+  // Expose this instance's teardown so a later re-injection (extension reload) can detach us first.
+  window.__omniaClipperTeardown = handleContextGone;
 
   // Seed the enable flags as soon as the script loads.
   refreshFlags();
