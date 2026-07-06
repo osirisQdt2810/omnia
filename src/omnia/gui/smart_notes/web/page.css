@@ -629,14 +629,16 @@ select:disabled { opacity: 0.7; }
   border: 1px solid var(--card-border); border-radius: 999px; padding: 2px 9px 2px 6px; cursor: pointer;
 }
 .sn-gp-seed-item:hover { border-color: var(--accent); }
-.sn-gp-controls { display: flex; align-items: center; gap: 10px; }
+.sn-gp-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sn-gp-speed {
   display: inline-flex; align-items: center; gap: 6px; flex: none;
   font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
   color: var(--muted); user-select: none; white-space: nowrap;
 }
 .sn-gp-speed input[type="range"] { width: 96px; accent-color: var(--accent); cursor: pointer; }
-.sn-gp-status { font-size: 11px; color: var(--muted); line-height: 1.35; flex: 1; }
+/* Its own full-width line UNDER the controls — otherwise the Speed slider squeezes it into an
+   ugly one-word-per-line column. */
+.sn-gp-status { font-size: 11px; color: var(--muted); line-height: 1.35; margin-top: 8px; }
 .sn-gp-status b { color: var(--fg); }
 
 /* Node states during the animation. transform-box/origin keep the pop centred on each node box. */
