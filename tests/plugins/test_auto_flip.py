@@ -218,6 +218,9 @@ class TestAutoFlipPlugin:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(object())
         assert schedule and schedule[-1][0] == 3000  # scheduled with question delay
@@ -249,6 +252,9 @@ class TestAutoFlipPlugin:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(object())
         # Scheduling happened but no countdown was built.
@@ -271,6 +277,9 @@ class TestAutoFlipPlugin:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(types.SimpleNamespace(did=99))
         # Override disables this deck -> nothing scheduled.
@@ -288,6 +297,9 @@ class TestAutoFlipPlugin:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(object())
         pending = schedule[-1][2]
@@ -308,6 +320,9 @@ class TestAutoFlipPlugin:
         ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False))
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
         assert gui_hooks.reviewer_did_show_question.count() == 1
         plugin.on_disable(ctx)
         for hook in (
@@ -330,6 +345,9 @@ class TestAudioAwareArming:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         # An empty sounds list on the will-play hook -> arm right away.
         gui_hooks.reviewer_will_play_question_sounds.fire(object(), [])
@@ -347,6 +365,9 @@ class TestAudioAwareArming:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._active = (
+            True  # activate WITHOUT rearming — this test drives the audio-hook path
+        )
 
         # A card WITH audio: nothing is scheduled until the audio queue drains.
         gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["snd.mp3"])
@@ -369,6 +390,9 @@ class TestAudioAwareArming:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._active = (
+            True  # activate WITHOUT rearming — this test drives the audio-hook path
+        )
         gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["a.mp3", "b.mp3"])
 
         # First clip ends but another remains queued -> still don't arm.
@@ -390,6 +414,9 @@ class TestAudioAwareArming:
         ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=True))
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
         assert gui_hooks.reviewer_did_show_question.count() == 0
         assert gui_hooks.reviewer_will_play_question_sounds.count() == 1
         assert gui_hooks.av_player_did_end_playing.count() == 1
@@ -420,6 +447,9 @@ class TestFilteredDeckResolution:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(card)
         # The home deck (odid=42) disables auto-flip -> nothing scheduled.
@@ -441,6 +471,9 @@ class TestFilteredDeckResolution:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(card)
         assert schedule == []
@@ -465,6 +498,9 @@ class TestMpvRangeWiring:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         gui_hooks.reviewer_did_show_question.fire(card)
         # 2s base delay + 3s clip duration = 5000 ms.
@@ -484,6 +520,9 @@ class TestRuntimeToggle:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
         gui_hooks.reviewer_did_show_question.fire(object())
         pending = schedule[-1][2]
 
@@ -508,6 +547,9 @@ class TestRuntimeToggle:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
         plugin._on_toggle(False)
         plugin._on_toggle(True)  # mid-card resume -> re-arm the answer side
 
@@ -530,6 +572,9 @@ class TestTwoStageEnterCancel:
         )
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
         gui_hooks.reviewer_did_show_question.fire(object())
         pending = schedule[-1][2]
 
@@ -557,6 +602,9 @@ class TestTwoStageEnterCancel:
         ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False))
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
 
         reviewer = aqt.reviewer.Reviewer()
         before = reviewer.enter_calls
@@ -576,6 +624,9 @@ class TestTwoStageEnterCancel:
         ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False))
         plugin = AutoFlipPlugin()
         plugin.on_enable(ctx)
+        plugin._on_toggle(
+            True
+        )  # auto-flip starts suspended each session; Ctrl+J on for the test
         assert aqt.reviewer.Reviewer.onEnterKey is not original
         plugin.on_disable(ctx)
         assert aqt.reviewer.Reviewer.onEnterKey is original
