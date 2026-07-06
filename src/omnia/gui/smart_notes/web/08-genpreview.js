@@ -17,8 +17,22 @@ const gpPlay = document.getElementById("sn-gp-play");
 const gpReplay = document.getElementById("sn-gp-replay");
 const gpStatus = document.getElementById("sn-gp-status");
 const gpClose = document.getElementById("sn-gp-close");
+const gpSpeed = document.getElementById("sn-gp-speed");
 
-const GP_STEP_MS = 720; // per-field reveal delay
+// Per-field reveal delay (ms). The Speed slider (1 = slow … 10 = fast) maps to it LIVE, so a
+// change mid-animation affects the remaining steps.
+let gpStepMs = 720;
+
+/** Map the 1..10 speed slider to a step delay in ms (1 → 1400ms slow, 10 → 120ms fast). */
+function gpSpeedToMs(value) {
+  return Math.round(1400 - (Number(value) - 1) * (1280 / 9));
+}
+if (gpSpeed) {
+  gpStepMs = gpSpeedToMs(gpSpeed.value);
+  gpSpeed.addEventListener("input", function () {
+    gpStepMs = gpSpeedToMs(gpSpeed.value);
+  });
+}
 let gpTimer = null; // active step timer, so exit/replay can cancel a running animation
 
 /** The node <g> element in the graph SVG for a field name (case-insensitive scan). */
@@ -161,7 +175,7 @@ function gpLightEdgesInto(name) {
       g.classList.add("sn-gp-edge-live", "sn-edge-flow");
       setTimeout(function () {
         g.classList.remove("sn-edge-flow"); // the flow pulse is transient; "live" stays
-      }, GP_STEP_MS);
+      }, gpStepMs);
     }
   });
 }
@@ -346,10 +360,10 @@ function gpPlay_() {
       }
       gpStatus.innerHTML = msg;
     }
-    gpTimer = setTimeout(next, GP_STEP_MS);
+    gpTimer = setTimeout(next, gpStepMs);
   }
   gpStatus.textContent = "Seed given → generating in dependency order…";
-  gpTimer = setTimeout(next, GP_STEP_MS);
+  gpTimer = setTimeout(next, gpStepMs);
 }
 
 if (gpBtn) {
