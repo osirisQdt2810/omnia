@@ -44,8 +44,7 @@ def _float(name: str, default: float) -> float:
 environment_variables: dict[str, Callable[[], Any]] = {
     # ── logging ── empty -> use the configured log_level (config/omnia.toml).
     "OMNIA_LOG_LEVEL": lambda: _str("OMNIA_LOG_LEVEL", ""),
-    # NOTE: test-only env vars (e.g. OMNIA_TEST_CONFIG) intentionally live in the test harness
-    # (tests/conftest.py), NOT here — this module is for production runtime knobs only.
+
     # ── per-LLM-call temperatures (OMNIA_{PLUGIN}_{FUNCTION}_TEMPERATURE) ──
     # Each distinct LLM call gets its own knob, defaulted to what that task wants and
     # env-overridable (e.g. set to 0 for deterministic runs). The general per-provider default
