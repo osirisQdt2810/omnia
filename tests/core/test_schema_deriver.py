@@ -122,6 +122,24 @@ class TestSchemaEdgeCases:
         assert fields["note"].kind == "int"
 
 
+class _ColorSample(BaseModel):
+    text_color: str = "#c62828"
+    color_token: str = ""  # 'token' is a secret hint AND 'color' — secret must win
+    label: str = ""  # plain text (no colour/secret hint)
+
+
+class TestColorDetection:
+    def test_str_named_like_colour_is_color(self):
+        assert _by_key(_ColorSample)["text_color"].kind == "color"
+
+    def test_secret_hint_wins_over_colour(self):
+        # A name matching both is a secret: the secret check runs before the colour check.
+        assert _by_key(_ColorSample)["color_token"].kind == "secret"
+
+    def test_plain_str_is_still_text(self):
+        assert _by_key(_ColorSample)["label"].kind == "text"
+
+
 class TestSchemaAgainstPluginModels:
     def test_typed_accuracy_pass_ease_is_choice(self):
         from omnia.plugins.typed_accuracy.config import TypedAccuracySettings

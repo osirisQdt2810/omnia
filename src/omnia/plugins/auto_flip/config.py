@@ -45,8 +45,9 @@ class AutoFlipSettings(_Strict):
         ge=0,
         le=120,
         description=(
-            "How long the question side is shown before Omnia auto-flips to the answer. "
-            "Per-deck overrides take precedence (gear menu → Auto-Flip…)."
+            "How long the question side stays up before Omnia auto-flips it to the answer.\n"
+            "• In seconds (0 = flip as soon as the question renders).\n"
+            "• Per-deck overrides take precedence (deck gear menu → Auto-Flip…)."
         ),
     )
     delay_answer_seconds: float = Field(
@@ -54,21 +55,26 @@ class AutoFlipSettings(_Strict):
         ge=0,
         le=120,
         description=(
-            "How long the answer side is shown before Omnia auto-grades Good and moves to "
-            "the next card. Press a key first to take over manually."
+            "How long the answer side stays up before Omnia auto-grades Good and advances.\n"
+            "• In seconds (0 = grade as soon as the answer renders).\n"
+            "• Press Enter first to cancel the pending auto-grade and take over manually."
         ),
     )
     wait_for_audio: bool = Field(
         True,
         description=(
-            "When on, the countdown begins only once the card's audio has finished playing, "
-            "so a card never flips before you've heard it."
+            "Wait for the card's audio to finish before starting the countdown.\n"
+            "• On: the countdown begins only once all of the side's sounds have played.\n"
+            "• Off: the countdown starts as soon as the side is shown.\n"
+            "• Keeps a card from flipping before you have heard it."
         ),
     )
     show_timer: bool = Field(
         True,
         description=(
-            "Show the shrinking countdown ring in the corner while a flip is pending."
+            "Show the shrinking countdown ring in the corner while a flip/grade is pending.\n"
+            "• On: a visual ring counts down to the auto action.\n"
+            "• Off: the timer still runs, just without the on-screen ring."
         ),
     )
     # deck id (as a string) -> override; empty means "use the global delays everywhere".
