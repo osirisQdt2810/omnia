@@ -182,6 +182,21 @@ def reviewer_eval(js: str) -> None:
         web.eval(js)
 
 
+def reviewer_bottom_eval(js: str) -> None:
+    """Evaluate ``js`` in the reviewer's bottom-bar (grading) webview; no-op if not reviewing.
+
+    Mirrors :func:`reviewer_eval` but targets ``mw.reviewer.bottom.web`` — the PERSISTENT
+    webview that renders the Again/Hard/Good/Easy grading buttons. Per-card updates only touch
+    an inner element of that bar, never ``document.body``, so a ``<div>`` appended to its body
+    survives across cards; display_interval uses this to pin its next-interval label there.
+    """
+    reviewer = getattr(main_window(), "reviewer", None)
+    bottom = getattr(reviewer, "bottom", None)
+    web = getattr(bottom, "web", None)
+    if web is not None:
+        web.eval(js)
+
+
 def main_web_eval(js: str) -> None:
     """Evaluate ``js`` in Anki's main webview (the deck list / overview / stats screen).
 
