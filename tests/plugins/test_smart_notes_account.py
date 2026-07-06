@@ -47,9 +47,13 @@ def _llm() -> LLMSettings:
 
 class TestModelsInUse:
     def test_central_defaults_always_present(self):
+        # The config id 'openai' is normalized to the class name 'openai_compatible' (what the
+        # usage recorder stores) so the models-in-use rows join against recorded usage.
         models = models_in_use(_settings(), _llm(), TTSSettings())
-        assert {"provider": "openai", "model": "gpt-text"} in models["text"]
-        assert {"provider": "openai", "model": "gpt-image"} in models["image"]
+        assert {"provider": "openai_compatible", "model": "gpt-text"} in models["text"]
+        assert {"provider": "openai_compatible", "model": "gpt-image"} in models[
+            "image"
+        ]
         assert {"provider": "google_translate", "model": "(default)"} in models["sound"]
 
     def test_field_override_provider_and_model(self):
@@ -67,8 +71,11 @@ class TestModelsInUse:
     def test_blank_override_substitutes_central_default(self):
         fields = [SmartNotesFieldConfig(field="Meaning", type="text")]
         models = models_in_use(_settings(fields), _llm(), TTSSettings())
-        # The field inherits the central provider+model; only one distinct text entry.
-        assert models["text"] == [{"provider": "openai", "model": "gpt-text"}]
+        # The field inherits the central provider+model; only one distinct text entry. The
+        # provider is normalized to the recorder's class name 'openai_compatible'.
+        assert models["text"] == [
+            {"provider": "openai_compatible", "model": "gpt-text"}
+        ]
 
     def test_sound_uses_voice_as_model(self):
         fields = [
@@ -92,7 +99,34 @@ class TestModelsInUse:
     def test_image_field_uses_image_model(self):
         fields = [SmartNotesFieldConfig(field="Pic", type="image")]
         models = models_in_use(_settings(fields), _llm(), TTSSettings())
-        assert models["image"] == [{"provider": "openai", "model": "gpt-image"}]
+        assert models["image"] == [
+            {"provider": "openai_compatible", "model": "gpt-image"}
+        ]
+
+    def test_openrouter_id_normalized_to_recorder_class_name(self):
+        # The recorder writes openai-family rows under the class name 'openai_compatible'; a
+        # collection configured with the 'openrouter' id must produce a models-in-use row that
+        # joins against that recorded row (M2 regression).
+        llm = LLMSettings(
+            provider="openrouter",
+            openrouter=OpenAICompatibleLLMSettings(api_key="k", text_model="gpt-text"),
+        )
+        models = models_in_use(_settings(), llm, TTSSettings())["text"]
+        rows = [
+            {
+                "kind": "text",
+                "provider": "openai_compatible",
+                "model": "gpt-text",
+                "calls": 4,
+                "in_chars": 10,
+                "out_chars": 20,
+                "last_used_ts": 5.0,
+            }
+        ]
+        merged = merge_usage(models, rows, "text")
+        match = next(m for m in merged if m["model"] == "gpt-text")
+        assert match["provider"] == "openai_compatible"
+        assert match["calls"] == 4
 
 
 class TestMergeUsage:

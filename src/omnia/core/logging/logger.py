@@ -14,6 +14,7 @@ stderr handler is a headless/test fallback, and ``propagate`` is disabled.
 from __future__ import annotations
 
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
@@ -48,7 +49,14 @@ def setup_logging(
     if log_dir is not None:
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.FileHandler(log_dir / "omnia.log", encoding="utf-8")
+            # Rotate so the log can't grow unbounded across sessions: 2 MB per file, keeping the
+            # 3 most recent (omnia.log, .1, .2, .3) — enough history to diagnose a crash.
+            file_handler = RotatingFileHandler(
+                log_dir / "omnia.log",
+                maxBytes=2 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
             file_added = True

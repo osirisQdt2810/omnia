@@ -80,10 +80,24 @@ class TestImproveMessages:
 
     def test_batch_message_lists_each_field(self):
         msg = build_improve_prompts_message(
-            "Vocab", "Word", [("Example", "ví dụ"), ("IPA", "phiên âm")]
+            "Vocab",
+            "Word",
+            [("Example", "ví dụ", "text"), ("IPA", "phiên âm", "text")],
         )
         assert "Example" in msg and "IPA" in msg
         assert "JSON" in msg
+
+    def test_batch_message_threads_field_kind(self):
+        # The batch path must give the same per-type output guidance as the single-field path:
+        # an image field gets the direct-visual-description clause, a tts field the spoken one.
+        msg = build_improve_prompts_message(
+            "Vocab",
+            "Word",
+            [("Pic", "a picture", "image"), ("Audio", "say it", "tts")],
+        )
+        assert "type: image" in msg and "type: tts" in msg
+        assert "IMAGE field" in msg
+        assert "TTS/audio field" in msg
 
 
 class TestParseImprovedPrompts:
@@ -170,7 +184,7 @@ class TestPromptAuthorWithCannedJson:
             FakeLLMProvider(text='{"Example": "Polished {{Word}} prompt"}')
         )
         out = author.improve_all(
-            note_type="Vocab", base_field="Word", items=[("Example", "rough")]
+            note_type="Vocab", base_field="Word", items=[("Example", "rough", "text")]
         )
         assert out == {"Example": "Polished {{Word}} prompt"}
 
@@ -181,7 +195,9 @@ class TestPromptAuthorWithCannedJson:
 
         author = PromptAuthor(_NoCall())
         assert (
-            author.improve_all(note_type="V", base_field="W", items=[("X", "   ")])
+            author.improve_all(
+                note_type="V", base_field="W", items=[("X", "   ", "text")]
+            )
             == {}
         )
 

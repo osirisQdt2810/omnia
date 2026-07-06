@@ -336,6 +336,20 @@ class TestMarkdownConversion:
     def test_plain_text_passes_through(self):
         assert convert_markdown_to_html("a feline") == "a feline"
 
+    def test_snake_case_is_not_italicized(self):
+        # CommonMark forbids intraword ``_`` emphasis, so identifiers survive verbatim.
+        assert convert_markdown_to_html("read_file_now") == "read_file_now"
+        assert convert_markdown_to_html("a_b_c") == "a_b_c"
+
+    def test_spaced_asterisks_are_not_italicized(self):
+        # Asterisk emphasis needs non-space flanking, so multiplication stays literal.
+        assert convert_markdown_to_html("3 * 4 * 5") == "3 * 4 * 5"
+
+    def test_word_boundary_emphasis_still_converts(self):
+        assert convert_markdown_to_html("*bold-ish*") == "<em>bold-ish</em>"
+        assert convert_markdown_to_html("_em_") == "<em>em</em>"
+        assert convert_markdown_to_html("**bold**") == "<strong>bold</strong>"
+
 
 def _rule(target, *, prompt="", source="", kind="text"):
     return SmartNotesFieldRule(
@@ -498,6 +512,19 @@ class _RecordingLLM(FakeLLMProvider):
         return b"IMG"
 
 
+class _FailingLLM(FakeLLMProvider):
+    """Fake LLM that raises for prompts containing a marker, else echoes — for isolation tests."""
+
+    def __init__(self, fail_marker):
+        super().__init__()
+        self._fail_marker = fail_marker
+
+    def generate_text(self, prompt, *, system=None, temperature=0.7, max_tokens=None):
+        if self._fail_marker in prompt:
+            raise ProviderError(f"boom: {prompt}")
+        return f"generated:{prompt}"
+
+
 class _RecordingTTS(FakeTTSProvider):
     """Fake TTS that records the voice + text it is asked to synthesize."""
 
@@ -533,7 +560,7 @@ class TestGenerateNote:
                 ),
             ],
         )
-        results, _blocked = service.generate_note(
+        results, _blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Def": "", "Usage": ""}
         )
         targets = [rule.target_field for rule, _ in results]
@@ -552,7 +579,9 @@ class TestGenerateNote:
                 ("Def", dict(enabled=True, type="text", prompt="define {{Word}}")),
             ],
         )
-        results, _blocked = service.generate_note(config, {"Word": "cat", "Def": ""})
+        results, _blocked, _failed = service.generate_note(
+            config, {"Word": "cat", "Def": ""}
+        )
         assert [r.target_field for r, _ in results] == ["Def"]
 
     def test_skips_already_filled_target_without_overwrite(self):
@@ -561,7 +590,7 @@ class TestGenerateNote:
         config = _config(
             "Word", [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))]
         )
-        results, _blocked = service.generate_note(
+        results, _blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Def": "filled"}
         )
         assert results == []
@@ -572,7 +601,7 @@ class TestGenerateNote:
         config = _config(
             "Word", [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))]
         )
-        results, _blocked = service.generate_note(
+        results, _blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Def": "filled"}, force_overwrite=True
         )
         assert [r.target_field for r, _ in results] == ["Def"]
@@ -594,7 +623,7 @@ class TestGenerateNote:
                 )
             ],
         )
-        results, _blocked = service.generate_note(
+        results, _blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Def": "filled"}
         )
         assert [r.target_field for r, _ in results] == ["Def"]
@@ -605,7 +634,9 @@ class TestGenerateNote:
         config = _config(
             "Word", [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))]
         )
-        results, _blocked = service.generate_note(config, {"Word": "", "Def": ""})
+        results, _blocked, _failed = service.generate_note(
+            config, {"Word": "", "Def": ""}
+        )
         assert results == []
 
     def test_disabled_field_is_skipped(self):
@@ -615,7 +646,9 @@ class TestGenerateNote:
             "Word",
             [("Def", dict(enabled=False, type="text", prompt="define {{Word}}"))],
         )
-        results, _blocked = service.generate_note(config, {"Word": "cat", "Def": ""})
+        results, _blocked, _failed = service.generate_note(
+            config, {"Word": "cat", "Def": ""}
+        )
         assert results == []
 
     def test_cycle_raises(self):
@@ -645,7 +678,7 @@ class TestGenerateNoteBlocking:
                 ("Usage", dict(enabled=True, type="text", prompt="use {{Def}}")),
             ],
         )
-        results, blocked = service.generate_note(
+        results, blocked, _failed = service.generate_note(
             config, {"Word": "", "Def": "", "Usage": ""}
         )
         assert results == []
@@ -673,7 +706,7 @@ class TestGenerateNoteBlocking:
             ],
         )
         # Note is blank, but it is only a SOFT prereq of Def, so Def still generates.
-        results, blocked = service.generate_note(
+        results, blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Note": "", "Def": ""}
         )
         assert "Def" in [r.target_field for r, _ in results]
@@ -686,7 +719,9 @@ class TestGenerateNoteBlocking:
             "Word",
             [("Def", dict(enabled=True, type="text", prompt="define {{Word}}"))],
         )
-        results, blocked = service.generate_note(config, {"Word": "cat", "Def": ""})
+        results, blocked, _failed = service.generate_note(
+            config, {"Word": "cat", "Def": ""}
+        )
         assert [r.target_field for r, _ in results] == ["Def"]
         assert blocked == []
 
@@ -708,7 +743,7 @@ class TestGenerateNoteBlocking:
         )
         # allow_empty_fields isolates the BLOCK gate from the pre-existing empty-source skip
         # (an image embed ref is never chained into ``working``, so {{Pic}} reads blank there).
-        results, blocked = service.generate_note(
+        results, blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Pic": "", "Caption": ""}, allow_empty_fields=True
         )
         targets = [r.target_field for r, _ in results]
@@ -735,7 +770,7 @@ class TestGenerateNoteBlocking:
                 ),
             ],
         )
-        results, blocked = service.generate_note(
+        results, blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Note": "", "Def": ""}
         )
         assert results == []
@@ -782,7 +817,9 @@ class TestGenerateNoteBlocking:
                 )
             ],
         )
-        results, blocked = service.generate_note(config, {"Word": "", "Def": ""})
+        results, blocked, _failed = service.generate_note(
+            config, {"Word": "", "Def": ""}
+        )
         assert results == []
         assert [b.target_field for b in blocked] == ["Def"]
         assert blocked[0].missing == ["Word"]
@@ -799,11 +836,49 @@ class TestGenerateNoteBlocking:
                 ("Usage", dict(enabled=True, type="text", prompt="use {{Def}}")),
             ],
         )
-        results, blocked = service.generate_note(
+        results, blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Def": "already here", "Usage": ""}
         )
         assert [r.target_field for r, _ in results] == ["Usage"]
         assert blocked == []
+
+
+class TestGenerateNoteFieldFailure:
+    def test_one_field_failure_isolated_others_still_generate(self):
+        # Def's provider raises; Usage (independent) must still generate, and Def is recorded in
+        # ``failed`` (not raised out), so one misconfigured field never discards its siblings.
+        service = GenerationService(_stub_hub(llm=_FailingLLM("boom")))
+        config = _config(
+            "Word",
+            [
+                ("Def", dict(enabled=True, type="text", prompt="boom {{Word}}")),
+                ("Usage", dict(enabled=True, type="text", prompt="ok {{Word}}")),
+            ],
+        )
+        results, _blocked, failed = service.generate_note(
+            config, {"Word": "cat", "Def": "", "Usage": ""}
+        )
+        assert [r.target_field for r, _ in results] == ["Usage"]
+        assert [f.field for f in failed] == ["Def"]
+        assert "boom" in failed[0].error
+
+    def test_failed_field_blocks_its_hard_dependents_transitively(self):
+        # Def fails → it produces no value, so Usage (hard-depends on Def via {{Def}}) is blocked,
+        # exactly like a blocked prerequisite. The failure never raises out of generate_note.
+        service = GenerationService(_stub_hub(llm=_FailingLLM("boom")))
+        config = _config(
+            "Word",
+            [
+                ("Def", dict(enabled=True, type="text", prompt="boom {{Word}}")),
+                ("Usage", dict(enabled=True, type="text", prompt="use {{Def}}")),
+            ],
+        )
+        results, blocked, failed = service.generate_note(
+            config, {"Word": "cat", "Def": "", "Usage": ""}
+        )
+        assert results == []
+        assert [f.field for f in failed] == ["Def"]
+        assert [b.target_field for b in blocked] == ["Usage"]
 
 
 class TestPerFieldOverrides:
@@ -1085,7 +1160,9 @@ class TestAutoSmartApply:
                 prompt="Write a sentence with {{Word}}",  # references Word, NOT Meaning
                 depends_on=(
                     AutoSmartDep(field="Word", kind="hard"),
-                    AutoSmartDep(field="Meaning", kind="soft"),  # not in the prompt → dropped
+                    AutoSmartDep(
+                        field="Meaning", kind="soft"
+                    ),  # not in the prompt → dropped
                 ),
             )
         }
@@ -1205,15 +1282,20 @@ class TestSmartNotesPlugin:
     def test_enable_subscribes_all_hooks_disable_removes_them(self, gui_hooks):
         import types
 
+        import anki
+
         from omnia.plugins.smart_notes import SmartNotesPlugin
         from omnia.plugins.smart_notes.config import SmartNotesSettings
 
+        note_hook = anki.hooks.note_will_be_added
         ctx = types.SimpleNamespace(settings=SmartNotesSettings(), providers=_hub())
         plugin = SmartNotesPlugin()
         plugin.on_enable(ctx)
         assert all(getattr(gui_hooks, name).count() == 1 for name in self._HOOKS)
+        assert note_hook.count() == 1  # the integration gateway backend hook
         plugin.on_disable(ctx)
         assert all(getattr(gui_hooks, name).count() == 0 for name in self._HOOKS)
+        assert note_hook.count() == 0
 
 
 class _FakeNote:
@@ -1250,7 +1332,7 @@ class _FakeEditor:
 
 
 class TestEditorGeneratePath:
-    """The editor ✨ "Generate" path must unpack ``generate_note``'s (results, blocked) tuple."""
+    """The editor ✨ "Generate" path must unpack ``generate_note``'s (results, blocked, failed) tuple."""
 
     def test_generate_into_note_unpacks_tuple_and_writes_field(self, monkeypatch):
         import types
@@ -1284,7 +1366,7 @@ class TestEditorGeneratePath:
 
         note = _FakeNote({"Word": "cat", "Def": ""})
         editor = _FakeEditor(note)
-        # Drives the synchronous QueryOp stub: op() must return a list, not the (list, list) tuple.
+        # Drives the synchronous QueryOp stub: op() must return a list, not the (list, list, list) tuple.
         plugin._generate_into_note(editor, note, config)
 
         assert note["Def"] == "a feline"
@@ -1317,6 +1399,12 @@ class TestBatchSummary:
         assert summary.message() == (
             "Processed 2 note(s), 3 blocked — missing prerequisites."
         )
+
+    def test_field_failures_count_is_surfaced(self):
+        from omnia.plugins.smart_notes.integration.batch import BatchSummary
+
+        summary = BatchSummary(processed=2, field_failures=1)
+        assert summary.message() == "Processed 2 note(s), 1 field error(s)."
 
 
 class TestSmartNotesSettingsDefaults:

@@ -174,8 +174,12 @@ class PluginConfigDialog(QDialog):
         if field.kind == "choice":
             w = QComboBox()
             w.addItems(list(field.choices))
-            if value in field.choices:
-                w.setCurrentText(str(value))
+            # settings.dict() (pydantic v1 without use_enum_values) hands back an Enum MEMBER,
+            # not its string value, so a raw ``value in field.choices`` (stringy choices) misses
+            # and the field silently resets to index 0. Normalize to the underlying value first.
+            normalized = str(getattr(value, "value", value))
+            if normalized in field.choices:
+                w.setCurrentText(normalized)
             return w
         # text / secret
         w = QLineEdit(str(value or ""))

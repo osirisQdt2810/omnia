@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from aqt.qt import QDialog, QVBoxLayout, QWebEngineView, QWidget
+from aqt.qt import QCloseEvent, QDialog, Qt, QVBoxLayout, QWebEngineView, QWidget
 from aqt.webview import AnkiWebView
 
 from omnia.core.logging import get_logger
@@ -56,6 +56,9 @@ class WebDialog(QDialog):
         height: int = 560,
     ) -> None:
         super().__init__(parent)
+        # Delete on close so the dialog + its webview are reclaimed instead of lingering.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._web_cleaned = False
         self._handlers = handlers
         self.setWindowTitle(title)
         self.setMinimumSize(width, height)
@@ -75,6 +78,25 @@ class WebDialog(QDialog):
         layout.addWidget(self._web)
 
         self.set_html(html)
+
+    def closeEvent(self, evt: QCloseEvent) -> None:  # noqa: N802 (Qt override name)
+        """Tear the hosted webview down on close so it doesn't leak.
+
+        Each :class:`AnkiWebView` allocates a ``QWebEnginePage`` and appends two global
+        ``gui_hooks`` callbacks; without ``cleanup()`` every open leaks a page and grows those
+        hook lists. Cleanup runs exactly once (guarded), then the dialog schedules its own
+        deletion.
+        """
+        self._cleanup_web()
+        super().closeEvent(evt)
+        self.deleteLater()
+
+    def _cleanup_web(self) -> None:
+        """Call ``AnkiWebView.cleanup`` exactly once (safe if the webview is missing/gone)."""
+        web = getattr(self, "_web", None)
+        if web is not None and not self._web_cleaned:
+            self._web_cleaned = True
+            web.cleanup()
 
     def _on_load_finished(self, ok: bool) -> None:
         """Log the page-load outcome + rendered body size (real-Anki blank-dialog diagnostic)."""

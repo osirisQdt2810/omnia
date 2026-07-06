@@ -71,6 +71,23 @@ from omnia.plugins.smart_notes.config import (
 if TYPE_CHECKING:
     from omnia.core.providers.native_runtime import NativeRuntimeManager
 
+
+def _script_safe(s: str) -> str:
+    """Make a ``json.dumps`` result safe to embed inside an inline ``<script>`` block.
+
+    ``json.dumps`` does not escape ``/`` or the U+2028/U+2029 line separators, so a baked
+    string containing ``</script>`` (from a prompt, model, etc.) would terminate the inline
+    script early and break the dialog. Escape the sequences that can end/confuse the script
+    context; the result is still valid JS (``<\\/`` etc. parse back to the originals).
+    """
+    return (
+        s.replace("</", "<\\/")
+        .replace("<!--", "<\\!--")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 _FIELD_TYPES = ("text", "tts", "image")
 _DEP_KINDS = ("hard", "soft")
 
@@ -560,8 +577,10 @@ def build_smart_notes_html(
         theme_class="omnia-dark" if dark else "omnia-light",
         css=read_asset(__file__, "web", "page.css"),
         types_json=json.dumps(_FIELD_TYPES),
-        init_json=json.dumps(init) if init else "null",
-        catalog_json=json.dumps(catalog if catalog is not None else catalog_payload()),
+        init_json=_script_safe(json.dumps(init)) if init else "null",
+        catalog_json=_script_safe(
+            json.dumps(catalog if catalog is not None else catalog_payload())
+        ),
         js=read_assets(__file__, "web", names=_PAGE_JS_PARTS),
     )
 

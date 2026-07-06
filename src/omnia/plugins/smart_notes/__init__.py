@@ -27,6 +27,7 @@ from omnia.plugins.smart_notes.engine import (
 from omnia.plugins.smart_notes.integration import (
     BatchGenerator,
     BatchSummary,
+    IntegrationGateway,
     ReviewTimeEvaluator,
     SmartNotesStore,
     add_generate_button,
@@ -41,6 +42,25 @@ _SIDEBAR_HOOK = "browser_sidebar_will_show_context_menu"
 _EDITOR_HOOK = "editor_did_init_buttons"
 _EDITOR_MENU_HOOK = "editor_will_show_context_menu"
 _REVIEW_HOOK = "reviewer_did_show_question"
+# Backend (anki.hooks) hook — fires on EVERY col.add_note, incl. AnkiConnect's addNote — that
+# lets the integration gateway auto-generate externally-clipped cards (Feature B).
+_NOTE_ADD_HOOK = "note_will_be_added"
+
+# Omnia-branded label + hover tip shared by every "generate" entry point (browser / sidebar
+# context menus) so the action is unmistakably this add-on's, not another's generic "generate".
+_GEN_LABEL = "✨ Omnia · Generate Smart Fields"
+_GEN_TIP = "[Omnia] Generate AI fields (text · image · audio) for the selected notes"
+
+
+def _branded_gen_action(menu: Any, label: str = _GEN_LABEL, tip: str = _GEN_TIP) -> Any:
+    """A QAction carrying the Omnia label + a hover tooltip, with menu tooltips made visible."""
+    from aqt.qt import QAction
+
+    action = QAction(label, menu)
+    action.setToolTip(tip)
+    action.setStatusTip(tip)
+    menu.setToolTipsVisible(True)  # QMenu hides action tooltips unless this is on
+    return action
 
 
 @register("smart_notes")
@@ -59,6 +79,7 @@ class SmartNotesPlugin(FeaturePlugin):
         self._ctx: Optional[PluginContext] = None
         self._service: Optional[GenerationService] = None
         self._review: Optional[ReviewTimeEvaluator] = None
+        self._gateway: Optional[IntegrationGateway] = None
         self._store: Optional[SmartNotesStore] = None
 
     def on_enable(self, ctx: PluginContext) -> None:
@@ -67,11 +88,15 @@ class SmartNotesPlugin(FeaturePlugin):
         # Rules persist in the collection (synced), read fresh each card via self._settings.
         self._store = SmartNotesStore()
         self._review = ReviewTimeEvaluator(self._service, self._settings)
+        self._gateway = IntegrationGateway(self._service, self._settings)
         anki_compat.subscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
         anki_compat.subscribe_hook(_SIDEBAR_HOOK, self._on_sidebar_menu)
         anki_compat.subscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
         anki_compat.subscribe_hook(_EDITOR_MENU_HOOK, self._on_editor_context_menu)
         anki_compat.subscribe_hook(_REVIEW_HOOK, self._on_review_question)
+        anki_compat.subscribe_anki_hook(
+            _NOTE_ADD_HOOK, self._gateway.on_note_will_be_added
+        )
 
     def on_disable(self, ctx: PluginContext) -> None:
         anki_compat.unsubscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
@@ -79,9 +104,14 @@ class SmartNotesPlugin(FeaturePlugin):
         anki_compat.unsubscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
         anki_compat.unsubscribe_hook(_EDITOR_MENU_HOOK, self._on_editor_context_menu)
         anki_compat.unsubscribe_hook(_REVIEW_HOOK, self._on_review_question)
+        if self._gateway is not None:
+            anki_compat.unsubscribe_anki_hook(
+                _NOTE_ADD_HOOK, self._gateway.on_note_will_be_added
+            )
         self._ctx = None
         self._service = None
         self._review = None
+        self._gateway = None
         self._store = None
 
     # --- bespoke settings dialog -----------------------------------------------------
@@ -93,9 +123,7 @@ class SmartNotesPlugin(FeaturePlugin):
 
     # --- Browser selection batch -----------------------------------------------------
     def _on_browser_menu(self, browser: Any, menu: Any) -> None:
-        from aqt.qt import QAction
-
-        action = QAction("✨ Generate Smart Fields", menu)
+        action = _branded_gen_action(menu)
         action.triggered.connect(lambda: self._generate_for_browser(browser))
         menu.addSeparator()
         menu.addAction(action)
@@ -116,12 +144,10 @@ class SmartNotesPlugin(FeaturePlugin):
     ) -> None:
         # Anki fires this hook as (tree_view, menu, sidebar_item, index); accept the trailing
         # args defensively so a signature tweak across versions can't break the menu.
-        from aqt.qt import QAction
-
         note_ids = _sidebar_note_ids(sidebar_item)
         if note_ids is None:
             return  # not a deck/note-type node
-        action = QAction("✨ Generate Smart Fields", menu)
+        action = _branded_gen_action(menu)
         action.triggered.connect(lambda: self._run_batch(note_ids))
         menu.addSeparator()
         menu.addAction(action)
@@ -169,7 +195,7 @@ class SmartNotesPlugin(FeaturePlugin):
         def op() -> list[tuple[Any, GenerationResult]]:
             # Blocked fields stay empty (their hard prerequisites are missing); the editor only
             # writes generated results, so the block list is unused on this manual path.
-            results, _blocked = service.generate_note(
+            results, _blocked, _failed = service.generate_note(
                 config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
@@ -204,7 +230,11 @@ class SmartNotesPlugin(FeaturePlugin):
                     "smart_notes: failed to write field %s", rule.target_field
                 )
         if written:
-            anki_compat.update_note(note)
+            # A brand-new note in the Add window has id==0 (not yet in the collection), and
+            # col.update_note would raise NotFoundError on it. Persist only a saved note; the
+            # editor reload renders the freshly generated fields on the in-memory note either way.
+            if int(getattr(note, "id", 0)):
+                anki_compat.update_note(note)
             self._reload_editor(editor)
             tooltip(f"Omnia: generated {written} field(s).")
         elif results:
@@ -278,9 +308,13 @@ def _sidebar_note_ids(sidebar_item: Any) -> Optional[list[int]]:
     item_type = getattr(sidebar_item, "item_type", None)
     name = str(getattr(item_type, "name", "")).upper()
     if "NOTETYPE" in name:
-        query = f'note:"{getattr(sidebar_item, "name", "")}"'
+        term = anki_compat.escape_search_term(str(getattr(sidebar_item, "name", "")))
+        query = f'note:"{term}"'
     elif "DECK" in name:
-        query = f'deck:"{getattr(sidebar_item, "full_name", getattr(sidebar_item, "name", ""))}"'
+        deck_name = getattr(
+            sidebar_item, "full_name", getattr(sidebar_item, "name", "")
+        )
+        query = f'deck:"{anki_compat.escape_search_term(str(deck_name))}"'
     else:
         return None
     return anki_compat.find_card_note_ids(query)
