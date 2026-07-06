@@ -630,6 +630,12 @@ select:disabled { opacity: 0.7; }
 }
 .sn-gp-seed-item:hover { border-color: var(--accent); }
 .sn-gp-controls { display: flex; align-items: center; gap: 10px; }
+.sn-gp-speed {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); user-select: none; white-space: nowrap;
+}
+.sn-gp-speed input[type="range"] { width: 96px; accent-color: var(--accent); cursor: pointer; }
 .sn-gp-status { font-size: 11px; color: var(--muted); line-height: 1.35; flex: 1; }
 .sn-gp-status b { color: var(--fg); }
 
