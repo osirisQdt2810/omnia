@@ -1,8 +1,9 @@
 """A generic config dialog that renders a plugin's ``config_schema()`` into a form.
 
 Each :class:`~omnia.core.plugin.ConfigField` maps to a Qt widget by ``kind`` (bool→checkbox,
-int→spinbox, float→double spinbox, text/secret→line edit, choice→combo). This is how every
-feature gets a settings panel without a bespoke dialog — declare fields, get a form.
+int→spinbox, float→double spinbox, text/secret→line edit, choice→combo, color→colour picker).
+This is how every feature gets a settings panel without a bespoke dialog — declare fields,
+get a form.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from aqt.qt import (
     QCheckBox,
     QColor,
+    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -26,6 +28,7 @@ from aqt.qt import (
     QPainter,
     QPixmap,
     QPoint,
+    QPushButton,
     QSize,
     QSpinBox,
     Qt,
@@ -36,6 +39,51 @@ from aqt.qt import (
 )
 
 _INFO_ICON: QIcon | None = None
+
+
+def _help_html(text: str) -> str:
+    """Escape ``text`` and turn newlines into ``<br>`` so Qt tooltips keep explicit breaks.
+
+    Plain-text tooltips let Qt auto-wrap and collapse ``\\n``; wrapping the help as HTML (Qt
+    auto-detects the ``<br>`` as rich text) preserves the authored line breaks while long
+    lines still wrap.
+    """
+    return _html.escape(text).replace("\n", "<br>")
+
+
+class _ColorButton(QPushButton):
+    """A colour-picker button: shows the current hex, opens ``QColorDialog`` on click.
+
+    Stores the selected colour as a ``#rrggbb`` hex string; the button text is that hex and
+    its background is the colour itself, with black/white text chosen by luminance so the hex
+    stays readable on any colour.
+    """
+
+    def __init__(self, value: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._hex = value or "#000000"
+        self.clicked.connect(self._pick)
+        self._refresh()
+
+    def hex(self) -> str:
+        """Return the currently selected colour as a ``#rrggbb`` hex string."""
+        return self._hex
+
+    def _pick(self) -> None:
+        chosen = QColorDialog.getColor(QColor(self._hex), self)
+        if chosen.isValid():
+            self._hex = chosen.name()
+            self._refresh()
+
+    def _refresh(self) -> None:
+        color = QColor(self._hex)
+        # Perceived luminance (ITU-R BT.601): dark text on light colours, light on dark.
+        luminance = (
+            0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()
+        ) / 255
+        fg = "#000000" if luminance >= 0.5 else "#ffffff"
+        self.setText(self._hex)
+        self.setStyleSheet(f"background-color:{self._hex}; color:{fg};")
 
 
 def _info_icon() -> QIcon:
@@ -94,10 +142,10 @@ class PluginConfigDialog(QDialog):
             self._widgets[field.key] = widget
             label = QLabel(field.label)
             if field.help:
-                # Hover tooltip AND an always-visible clickable (i) icon — hover tooltips are
-                # easy to miss (esp. on macOS), so the icon makes the help discoverable.
-                label.setToolTip(field.help)
-                widget.setToolTip(field.help)
+                # The clickable (i) icon in the value row is the SINGLE help source — a
+                # width-limited, wrapped tooltip plus click-to-show. Deliberately NO tooltip on
+                # the label or the widget: those were unbounded and popped a screen-wide
+                # one-line strip on hover/click, duplicating the (i).
                 form.addRow(label, self._field_row(widget, field.help))
             else:
                 form.addRow(label, widget)
@@ -123,10 +171,10 @@ class PluginConfigDialog(QDialog):
         layout.setSpacing(0)
 
         # Wrap the help as width-limited HTML so a long tooltip wraps onto several readable
-        # lines instead of one screen-wide strip.
+        # lines instead of one screen-wide strip; _help_html also keeps authored line breaks.
         rich = (
             "<div style='max-width:320px; font-size:13px; line-height:1.45;'>"
-            f"{_html.escape(help_text)}</div>"
+            f"{_help_html(help_text)}</div>"
         )
 
         info = QToolButton()
@@ -181,6 +229,8 @@ class PluginConfigDialog(QDialog):
             if normalized in field.choices:
                 w.setCurrentText(normalized)
             return w
+        if field.kind == "color":
+            return _ColorButton(str(value or ""))
         # text / secret
         w = QLineEdit(str(value or ""))
         if field.kind == "secret":
@@ -198,6 +248,9 @@ class PluginConfigDialog(QDialog):
                 result[field.key] = widget.value()
             elif isinstance(widget, QComboBox):
                 result[field.key] = widget.currentText()
+            elif isinstance(widget, _ColorButton):
+                # A _ColorButton is a QPushButton (not a QLineEdit), so read its hex explicitly.
+                result[field.key] = widget.hex()
             elif isinstance(widget, QLineEdit):
                 result[field.key] = widget.text()
         return result

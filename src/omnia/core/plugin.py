@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 # Supported config-field kinds the settings GUI knows how to render.
-FIELD_KINDS = ("bool", "int", "float", "text", "secret", "choice")
+FIELD_KINDS = ("bool", "int", "float", "text", "secret", "choice", "color")
 
 
 @dataclass(frozen=True)
