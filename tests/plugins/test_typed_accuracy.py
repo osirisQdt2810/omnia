@@ -138,6 +138,30 @@ class TestTypedAccuracyPlugin:
         # The result was logged with the study deck and the card's deck.
         assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_GOOD)]
 
+    def test_show_stats_false_suppresses_injection(self, gui_hooks):
+        # Regression (L8): with show_stats off, the stats panel must not be built or wired —
+        # no injector and no subscription to the style hook that would inject the donut.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(show_stats=False))
+        style_hook = gui_hooks.webview_did_inject_style_into_page
+        before = style_hook.count()
+        plugin = TypedAccuracyPlugin()
+        plugin.on_enable(ctx)
+        assert plugin._injector is None
+        assert style_hook.count() == before  # style hook not subscribed
+
+    def test_show_stats_true_wires_injection(self, gui_hooks):
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(show_stats=True))
+        style_hook = gui_hooks.webview_did_inject_style_into_page
+        before = style_hook.count()
+        plugin = TypedAccuracyPlugin()
+        plugin.on_enable(ctx)
+        assert plugin._injector is not None
+        assert style_hook.count() == before + 1
+
     def test_fail_grades_hard(self, fake_mw):
         from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 

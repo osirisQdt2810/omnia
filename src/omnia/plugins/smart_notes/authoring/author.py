@@ -340,26 +340,32 @@ def build_improve_prompt_message(
 
 
 def build_improve_prompts_message(
-    note_type: str, base_field: str, items: list[tuple[str, str]]
+    note_type: str, base_field: str, items: list[tuple[str, str, str]]
 ) -> str:
     """Build the user message rewriting MANY rough prompts at once (the global action).
+
+    Each field carries its generation kind so the batch gets the SAME per-type output guidance
+    as the single-field path (image → direct visual description, tts → spoken placeholder).
 
     Args:
         note_type: The note type's name.
         base_field: The base input field, referenced as ``{{<base>}}``.
-        items: ``(field_name, rough_prompt)`` pairs for the fields to improve.
+        items: ``(field_name, rough_prompt, kind)`` triples for the fields to improve; ``kind``
+            is ``text``/``image``/``tts``.
 
     Returns:
         A user message instructing a JSON object keyed by field name → improved prompt.
     """
     listing = "\n".join(
-        f'- "{field}": current request = """{rough.strip()}"""'
-        for field, rough in items
+        f'- "{field}" (type: {kind}): current request = """{rough.strip()}"""'
+        f"{_kind_output_clause(kind)}"
+        for field, rough, kind in items
     )
     return (
         f'Note type: "{note_type}". Base (input) field: {{{{{base_field}}}}}.\n'
         "Rewrite EACH of the following fields' rough requests into a complete, "
-        "production-grade generation prompt that follows your rules:\n\n"
+        "production-grade generation prompt that follows your rules. Respect EACH field's "
+        "declared type when deciding what its rewritten prompt must OUTPUT:\n\n"
         f"{listing}\n\n"
         "Respond with ONLY a JSON object mapping each field name to its rewritten prompt "
         "string. No prose, no code fences."
@@ -766,16 +772,20 @@ class PromptAuthor:
         *,
         note_type: str,
         base_field: str,
-        items: list[tuple[str, str]],
+        items: list[tuple[str, str, str]],
     ) -> dict[str, str]:
         """Rewrite many fields' rough prompts at once; return ``{field: improved_prompt}``.
 
-        A no-op (returns ``{}``) when there are no items with a non-blank prompt.
+        A no-op (returns ``{}``) when there are no items with a non-blank prompt. Each item's
+        ``kind`` (``text``/``image``/``tts``) is threaded through so the batch gets the same
+        per-type output guidance as :meth:`improve`.
 
         Raises:
             ProviderError: On a provider/network failure or an unparseable reply.
         """
-        pending = [(field, rough) for field, rough in items if rough.strip()]
+        pending = [
+            (field, rough, kind) for field, rough, kind in items if rough.strip()
+        ]
         if not pending:
             return {}
         message = build_improve_prompts_message(note_type, base_field, pending)

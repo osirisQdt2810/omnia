@@ -82,13 +82,20 @@
   // Options modal — global Smart Notes flags, seeded from the load response, collected on save.
   /**
    * Seed the option checkboxes from the load response (regenerate defaults to true).
-   * @param {?Object} opts {generate_at_review, regenerate_when_batching, allow_empty_fields}
+   * @param {?Object} opts {generate_at_review, regenerate_when_batching, allow_empty_fields,
+   *     auto_generate_integrations, integration_status}
    */
   function applyOptions(opts) {
     opts = opts || {};
     optGenReview.checked = !!opts.generate_at_review;
     optRegenBatch.checked = opts.regenerate_when_batching !== false;
     optAllowEmpty.checked = !!opts.allow_empty_fields;
+    optIntegWebClipper.checked = !!(opts.auto_generate_integrations || {}).web_clipper;
+    const count = (opts.integration_status || {}).web_clipper;
+    integStatusWebClipper.textContent =
+      typeof count === "number"
+        ? "Detected " + count + " card(s) from this integration."
+        : "";
   }
 
   /**
@@ -99,7 +106,8 @@
     return {
       generate_at_review: optGenReview.checked,
       regenerate_when_batching: optRegenBatch.checked,
-      allow_empty_fields: optAllowEmpty.checked
+      allow_empty_fields: optAllowEmpty.checked,
+      auto_generate_integrations: {web_clipper: optIntegWebClipper.checked}
     };
   }
 
@@ -484,13 +492,19 @@
   }
 
   /**
-   * Receive the refreshed Auto-detect options (off-thread): merge them into the catalog and
-   * re-render the editor. NEVER touches the saved map — purely additive to the picker.
-   * @param {?Object} res {auto_voice_options} on success, {error} on failure.
+   * Receive the refreshed voices (off-thread): merge the Auto-detect options AND the per-provider
+   * voices into the catalog, then re-render the editor. NEVER touches the saved map — purely
+   * additive to the pickers.
+   * @param {?Object} res {auto_voice_options, voices} on success, {error} on failure.
    */
   window.__snVoicesRefreshed = function (res) {
     if (res && res.auto_voice_options) {
       CATALOG.auto_voice_options = res.auto_voice_options;
+    }
+    // Merge the refreshed per-provider voices so the Default/row voice pickers (voiceEntries →
+    // CATALOG.voices) reflect them too, not just the Auto-detect dropdowns.
+    if (res && res.voices) {
+      CATALOG.voices = Object.assign({}, CATALOG.voices || {}, res.voices);
     }
     if (acctSubtab === "sound") {
       renderDefaultPicker();  // re-enables the Refresh button in the default-voice section
@@ -770,7 +784,7 @@
     acctOutEl.className = "sn-acct-out";
     acctOutEl.innerHTML = "";
     if (res.kind === "text") {
-      acctOutEl.innerHTML = res.text || "(empty result)";
+      acctOutEl.textContent = res.text || "(empty result)"; // model output as TEXT (XSS guard)
     } else if (res.kind === "image") {
       // A generated image can be several MB and would overflow the dialog if rendered inline —
       // show a line + a Preview button that opens the borderless full-screen lightbox.

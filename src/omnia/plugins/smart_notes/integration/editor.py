@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import Any
 
 _BUTTON_LABEL = "✨"
-_BUTTON_TIP = "Ctrl+Shift+G: Generate Smart Fields"
+_BUTTON_TIP = "[Omnia] Generate Smart Fields — Ctrl+Shift+G"
 _BUTTON_CMD = "omnia_smart_notes"
 # Stable DOM id so the in-flight greying JS can target exactly this button.
 _BUTTON_ID = "generate_smart_fields"

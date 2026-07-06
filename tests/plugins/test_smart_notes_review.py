@@ -7,6 +7,8 @@ fake runs inline, so a tick fully generates + writes within the call.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from conftest import FakeLLMProvider
 
 from omnia.plugins.smart_notes.config import (
@@ -14,7 +16,7 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
-from omnia.plugins.smart_notes.engine import GenerationService
+from omnia.plugins.smart_notes.engine import GenerationResult, GenerationService
 from omnia.plugins.smart_notes.integration.review import ReviewTimeEvaluator
 
 
@@ -193,6 +195,35 @@ class TestReviewTimeEvaluator:
         settings = SmartNotesSettings(note_types=[config], generate_at_review=True)
         ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(card)
         assert fake.updated == []
+
+    def test_same_show_regeneration_is_guarded(self, monkeypatch):
+        # A provider that returns EMPTY text leaves the target empty, so the post-write redraw's
+        # re-fire (same nid) would regenerate forever. The single-nid guard must let the first
+        # show generate ONCE and skip the immediate re-show.
+        note = _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})
+        card = _FakeCard(note)
+        fake = _FakeCompat({1: note}, current=card)
+        _patch(monkeypatch, fake)
+
+        class _CountingService:
+            def __init__(self):
+                self.calls = 0
+
+            def generate_note(self, config, fields, *, allow_empty_fields):
+                self.calls += 1
+                rule = SimpleNamespace(target_field="Def")
+                return [(rule, GenerationResult("text", text=""))], [], []
+
+        service = _CountingService()
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()], generate_at_review=True
+        )
+        evaluator = ReviewTimeEvaluator(service, lambda: settings)
+        evaluator.on_card_shown(card)
+        evaluator.on_card_shown(
+            card
+        )  # the redraw's re-fire equivalent — must NOT regenerate
+        assert service.calls == 1
 
     def test_card_in_deck_scope_is_generated(self, monkeypatch):
         note = _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})

@@ -82,6 +82,16 @@ class TestDetectLanguage:
 
         assert detect_language(_NoCall(), "   ", fallback="en") == "en"
 
+    def test_prose_reply_without_a_code_falls_back(self):
+        # "Spanish" has no standalone two-letter token → no ISO code parsed → fallback.
+        assert detect_language(_CodeLLM("Spanish"), "hola", fallback="und") == "und"
+
+    def test_code_embedded_in_prose_is_extracted(self):
+        assert detect_language(_CodeLLM("Language: en"), "hello") == "en"
+
+    def test_bare_code_is_returned(self):
+        assert detect_language(_CodeLLM("de"), "hallo") == "de"
+
 
 # ---------------------------------------------------------------------------
 # LanguageDetector (best-effort wrapper).

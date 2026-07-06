@@ -166,6 +166,15 @@ def _install_anki_stubs() -> None:
 
     qt_mod.QAction = _FakeAction
     qt_mod.QKeySequence = lambda value: value
+
+    class _FakeTimer:
+        """Stand-in for ``aqt.qt.QTimer``: ``singleShot`` runs the closure inline in tests."""
+
+        @staticmethod
+        def singleShot(_ms, fn) -> None:
+            fn()
+
+    qt_mod.QTimer = _FakeTimer
     aqt.qt = qt_mod
 
     # aqt.sound: an av_player whose queue depth tests can set to gate audio-aware arming.
@@ -178,7 +187,15 @@ def _install_anki_stubs() -> None:
     sys.modules["aqt.operations"] = operations_mod
     sys.modules["aqt.qt"] = qt_mod
     sys.modules["aqt.sound"] = sound_mod
-    sys.modules["anki"] = types.ModuleType("anki")
+
+    # anki.hooks: backend (collection) hooks — smart_notes' integration gateway subscribes to
+    # note_will_be_added here (fires on every col.add_note, incl. AnkiConnect's addNote).
+    anki_mod = types.ModuleType("anki")
+    anki_hooks_mod = types.ModuleType("anki.hooks")
+    anki_hooks_mod.note_will_be_added = FakeHook()
+    anki_mod.hooks = anki_hooks_mod
+    sys.modules["anki"] = anki_mod
+    sys.modules["anki.hooks"] = anki_hooks_mod
 
 
 _install_anki_stubs()

@@ -179,6 +179,9 @@ class SmartNotesSettings(_Strict):
     regenerate_when_batching: bool = True
     # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
     generate_at_review: bool = False
+    # Per-integration auto-generate toggles (integration key -> enabled). Empty ⇒ every
+    # integration OFF, so no external source triggers LLM spend until the user opts in.
+    auto_generate_integrations: dict[str, bool] = Field(default_factory=dict)
 
     def note_type_config(self, note_type: str) -> Optional[SmartNotesNoteTypeConfig]:
         """Return the config for ``note_type``, or None when it has no smart-notes config."""
@@ -186,3 +189,7 @@ class SmartNotesSettings(_Strict):
             if config.note_type == note_type:
                 return config
         return None
+
+    def integration_autogen_enabled(self, key: str) -> bool:
+        """Return whether auto-generation is enabled for integration ``key`` (default off)."""
+        return bool(self.auto_generate_integrations.get(key, False))

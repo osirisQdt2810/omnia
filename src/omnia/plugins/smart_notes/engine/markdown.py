@@ -12,13 +12,16 @@ from __future__ import annotations
 import re
 
 # (pattern, replacement) pairs applied in order. Bold runs before italic so ``**x**`` is not
-# eaten by the single-``*`` italic rule; headers run from the most ``#`` to the fewest so
-# ``###`` is not matched by the ``#`` rule first.
+# eaten by the single-``*`` italic rule. Single-char emphasis follows CommonMark's intraword
+# rules so it doesn't corrupt real text: asterisk emphasis requires non-space flanking (so
+# ``3 * 4 * 5`` is left alone) but may be intraword; underscore emphasis additionally requires
+# word boundaries (so ``read_file_now`` / ``a_b_c`` stay intact — CommonMark forbids intraword
+# ``_``). Headers run from the most ``#`` to the fewest so ``###`` isn't matched by ``#`` first.
 _INLINE_RULES: tuple[tuple[str, str], ...] = (
     (r"\*\*(.*?)\*\*", r"<strong>\1</strong>"),
     (r"__(.*?)__", r"<strong>\1</strong>"),
-    (r"\*(.*?)\*", r"<em>\1</em>"),
-    (r"_(.*?)_", r"<em>\1</em>"),
+    (r"\*(?!\s)(.+?)(?<!\s)\*", r"<em>\1</em>"),
+    (r"(?<![\w])_(?!\s)(.+?)(?<!\s)_(?![\w])", r"<em>\1</em>"),
 )
 _HEADER_RULES: tuple[tuple[str, str], ...] = (
     (r"###### (.*?)\n", r"<h6>\1</h6>\n"),

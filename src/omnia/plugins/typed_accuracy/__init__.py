@@ -77,7 +77,9 @@ class TypedAccuracyPlugin(FeaturePlugin):
         settings = ctx.settings
         self._threshold = settings.threshold
         self._pass_ease = settings.pass_ease
-        self._injector = StatsInjector(_WEB_DIR)
+        # Only build the stats-panel injector when the user wants the donut; leaving it None
+        # (and skipping the style hook below) means the panel is never injected.
+        self._injector = StatsInjector(_WEB_DIR) if settings.show_stats else None
 
         ctx.web.add_asset(self.id, WebAsset(answer_js=_ANSWER_JS))
         ctx.web.add_handler(self.id, "rated", self._on_rated)
@@ -94,10 +96,11 @@ class TypedAccuracyPlugin(FeaturePlugin):
         anki_compat.subscribe_hook("reviewer_did_show_question", self._on_question)
         # Record the session-open time per deck when review begins (for the "current" range).
         anki_compat.subscribe_hook("state_did_change", self._on_state_change)
-        # Mount the interactive panel onto the Statistics screen.
-        anki_compat.subscribe_hook(
-            "webview_did_inject_style_into_page", self._on_inject_style
-        )
+        # Mount the interactive panel onto the Statistics screen (only when show_stats is on).
+        if settings.show_stats:
+            anki_compat.subscribe_hook(
+                "webview_did_inject_style_into_page", self._on_inject_style
+            )
 
     def on_disable(self, ctx: PluginContext) -> None:
         ctx.web.remove(self.id)

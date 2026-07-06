@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -132,9 +133,13 @@ class JsonUsageRecorder(UsageRecorder):
         return parsed if isinstance(parsed, dict) else {}
 
     def _dump(self, data: dict[str, dict]) -> None:
+        # Write to a sibling temp file then atomically replace, so a mid-write failure (crash,
+        # disk full) leaves the previous usage.json intact instead of truncating it to nothing.
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("w", encoding="utf-8") as handle:
+        tmp = self._path.with_name(self._path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as handle:
             json.dump(data, handle)
+        os.replace(tmp, self._path)
 
 
 class RecordingLLMProvider(LLMProvider):
@@ -181,19 +186,26 @@ class RecordingLLMProvider(LLMProvider):
         result = self._wrapped.generate_text(
             prompt, system=system, temperature=temperature, max_tokens=max_tokens
         )
-        # Proxy the wrapped provider's exact-token usage so external readers see it too.
-        self.last_usage = getattr(self._wrapped, "last_usage", None)
+        # Snapshot the wrapped provider's per-call usage into a LOCAL immediately after the
+        # call and pass it to _record, so a concurrent generation on the same cached instance
+        # can't swap it out from under us via the shared last_usage attribute. We still proxy
+        # it onto self.last_usage for external readers (residual: that attribute alone remains
+        # racy for those readers, but recording no longer depends on it).
+        usage = getattr(self._wrapped, "last_usage", None)
+        self.last_usage = usage
         self._record(
             kind="text",
             model=self._model,
             in_chars=len(prompt) + len(system or ""),
             out_chars=len(result),
+            usage=usage,
         )
         return result
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
         result = self._wrapped.generate_image(prompt, size=size)
-        self.last_usage = getattr(self._wrapped, "last_usage", None)
+        usage = getattr(self._wrapped, "last_usage", None)
+        self.last_usage = usage
         # Record under the IMAGE model (falling back to the text model only when none is
         # configured) so an image call never shows up as a text-model row.
         self._record(
@@ -201,13 +213,22 @@ class RecordingLLMProvider(LLMProvider):
             model=self._image_model or self._model,
             in_chars=len(prompt),
             out_chars=len(result),
+            usage=usage,
         )
         return result
 
-    def _record(self, *, kind: str, model: str, in_chars: int, out_chars: int) -> None:
+    def _record(
+        self,
+        *,
+        kind: str,
+        model: str,
+        in_chars: int,
+        out_chars: int,
+        usage: Optional[dict] = None,
+    ) -> None:
         # Best-effort: usage tracking must never break a generation. Swallow any recorder
         # failure (a corrupt/locked file, a disk error) rather than surface it to the user.
-        usage = self.last_usage if isinstance(self.last_usage, dict) else {}
+        counts = usage if isinstance(usage, dict) else {}
         with contextlib.suppress(Exception):
             self._recorder.record(
                 kind=kind,
@@ -215,8 +236,8 @@ class RecordingLLMProvider(LLMProvider):
                 model=model or "(default)",
                 in_chars=in_chars,
                 out_chars=out_chars,
-                in_tokens=int(usage.get("in", 0)),
-                out_tokens=int(usage.get("out", 0)),
+                in_tokens=int(counts.get("in", 0)),
+                out_tokens=int(counts.get("out", 0)),
             )
 
 

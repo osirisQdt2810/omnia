@@ -542,6 +542,22 @@ class TestEnsureRunning:
         assert runner.run_calls == []  # no venv/pip ran
         assert runner.popen_calls == []  # no server spawned
 
+    def test_reuses_tracked_server_without_respawn(self, tmp_path: Path) -> None:
+        # A second ensure_running for the same spec must NOT spawn a second sidecar: it reuses
+        # the live tracked one (the guard that stops two concurrent callers double-binding a
+        # fixed port). listening: call1 = [check False, poll True]; call2 = [check False (still
+        # starting → tracked reuse), poll True].
+        proc = _FakeProc()  # stays running (poll() → None)
+        runner = _FakeProcessRunner(listening=[False, True, False, True], proc=proc)
+        manager = NativeRuntimeManager(tmp_path, runner)
+        spec = _server_spec()
+        _mark_installed(manager, spec)
+
+        manager.ensure_running(spec)
+        manager.ensure_running(spec)
+
+        assert len(runner.popen_calls) == 1  # reused, not respawned
+
     def test_picks_free_port_when_spec_port_zero(self, tmp_path: Path) -> None:
         runner = _FakeProcessRunner(free_port=54321, listening=[True])
         manager = NativeRuntimeManager(tmp_path, runner)
@@ -705,6 +721,55 @@ class TestUninstall:
 
         assert runner.terminated == []  # nothing was running
         assert not manager.venv_dir(spec).exists()
+
+
+class TestNoWindowFlag:
+    """L14: the SubprocessRunner suppresses the flashing console window on Windows."""
+
+    def test_no_window_is_noop_off_windows(self) -> None:
+        # macOS/Linux subprocess has no CREATE_NO_WINDOW, so the guard defaults it to 0 (no-op).
+        assert native_runtime._NO_WINDOW == 0
+
+    def test_run_passes_creationflags(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        class _Completed:
+            returncode = 0
+            stdout = b""
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            return _Completed()
+
+        monkeypatch.setattr(native_runtime.subprocess, "run", fake_run)
+        native_runtime.SubprocessRunner().run(["echo", "hi"])
+        assert captured["creationflags"] == native_runtime._NO_WINDOW
+
+    def test_run_capture_passes_creationflags(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        class _Completed:
+            returncode = 0
+            stdout = b"out"
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            return _Completed()
+
+        monkeypatch.setattr(native_runtime.subprocess, "run", fake_run)
+        native_runtime.SubprocessRunner().run_capture(["echo", "hi"])
+        assert captured["creationflags"] == native_runtime._NO_WINDOW
+
+    def test_popen_passes_creationflags(self, monkeypatch) -> None:
+        captured: dict = {}
+
+        def fake_popen(argv, **kwargs):
+            captured.update(kwargs)
+            return object()
+
+        monkeypatch.setattr(native_runtime.subprocess, "Popen", fake_popen)
+        native_runtime.SubprocessRunner().popen(["server"])
+        assert captured["creationflags"] == native_runtime._NO_WINDOW
 
 
 class TestRegistry:

@@ -24,6 +24,7 @@ from omnia.gui.smart_notes.html import (
     row_to_payload,
     rows_for_note_type,
 )
+from omnia.plugins.smart_notes.integration.integrations import INTEGRATIONS
 
 logger = get_logger("smart_notes")
 
@@ -92,7 +93,15 @@ class ConfigController:
             "all_decks": self._ctx.all_decks(),
             "options": self._options_payload(),
             "graph": graph_payload(
-                note_type_config_from_payload(note_type, base_field, row_payloads)
+                note_type_config_from_payload(
+                    note_type,
+                    base_field,
+                    row_payloads,
+                    # Carry the saved pinned-node positions through (as load_payload does), so
+                    # switching the base field / adding a field doesn't reset node_positions={}
+                    # and lose every pinned graph position on the next save.
+                    positions=config.node_positions if config else {},
+                )
             ),
         }
 
@@ -146,6 +155,11 @@ class ConfigController:
                     "allow_empty_fields": bool(
                         opts.get("allow_empty_fields", settings.allow_empty_fields)
                     ),
+                    # Merge so integration keys not sent by this page are preserved.
+                    "auto_generate_integrations": {
+                        **settings.auto_generate_integrations,
+                        **(opts.get("auto_generate_integrations") or {}),
+                    },
                 }
             )
         )
@@ -162,4 +176,27 @@ class ConfigController:
             "generate_at_review": settings.generate_at_review,
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
+            "auto_generate_integrations": settings.auto_generate_integrations,
+            "integration_status": self._integration_status(),
         }
+
+    @staticmethod
+    def _integration_status() -> dict[str, int]:
+        """Per-integration counts of notes already carrying that integration's source tag.
+
+        Best-effort — a collection-read failure yields 0 rather than crashing the dialog, so the
+        "Detected N cards" status line never breaks the Options modal.
+        """
+        status: dict[str, int] = {}
+        for integration in INTEGRATIONS:
+            try:
+                status[integration.key] = len(
+                    anki_compat.find_note_ids(f"tag:{integration.source_tag}")
+                )
+            except Exception:  # status is cosmetic; never break the Options modal
+                logger.exception(
+                    "smart_notes: could not count notes for integration %s",
+                    integration.key,
+                )
+                status[integration.key] = 0
+        return status

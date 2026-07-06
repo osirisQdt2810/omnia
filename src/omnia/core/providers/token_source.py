@@ -153,7 +153,18 @@ def resolve_token_source(
     """
     if config.get("access_token"):
         return StaticTokenSource(str(config["access_token"]))
-    service_account = _load_service_account(config)
+    # Bad Vertex creds (unreadable file, malformed JSON) would otherwise surface as a raw
+    # OSError/JSONDecodeError; re-raise as a ProviderError with the same config guidance the
+    # "no credentials" branch below gives, so the message is actionable (mirrors
+    # service_account_project's OSError/ValueError guard).
+    try:
+        service_account = _load_service_account(config)
+    except (OSError, ValueError) as exc:
+        raise ProviderError(
+            "gemini_vertex could not read its service-account credentials: set a valid "
+            "'access_token' or 'credentials_path'/'credentials_json' (a service-account "
+            f"JSON). The 'gcloud' CLI is not used. ({exc})"
+        ) from exc
     if service_account is not None:
         return ServiceAccountTokenSource(service_account, http, signer, clock)
     raise ProviderError(

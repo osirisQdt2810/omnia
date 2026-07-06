@@ -225,8 +225,10 @@
   }
 
   /**
-   * Refresh the editor's guard-rail warning band from the current prompt. Returns true when there
-   * is a BLOCKING issue (an unknown field ref or unbalanced braces), so Save can refuse.
+   * Refresh the editor's guard-rail warning band from the current prompt. Returns true ONLY for a
+   * BLOCKING issue (an unknown field ref or unbalanced braces), so Save can refuse. The image-prompt
+   * heuristic is ADVISORY: it still shows its warning band but must NOT block Save (a valid image
+   * brief can legitimately contain a flagged style word like "midjourney").
    * @return {boolean}
    */
   function refreshModalWarn() {
@@ -235,8 +237,10 @@
     }
     const issues = promptRefIssues(modalPrompt.value);
     const parts = [];
+    let blocking = false;
     if (issues.syntaxBad) {
       parts.push("Unbalanced <b>{{ }}</b> — check the braces.");
+      blocking = true;
     }
     if (issues.unknown.length) {
       parts.push(
@@ -244,10 +248,12 @@
           issues.unknown.map(esc).join(" ") +
           "</b> — fix or remove it (it won’t be filled in)."
       );
+      blocking = true;
     }
     if (modalKind() === "image") {
       const imgIssue = imagePromptIssue(modalPrompt.value);
       if (imgIssue) {
+        // Advisory only — warn, but don't set `blocking` (don't gate Save on a heuristic).
         parts.push(
           "This is an <b>image</b> field — its prompt is sent to the image model AS the picture " +
             "description, but this one reads like a text prompt (" +
@@ -260,7 +266,7 @@
     if (parts.length) {
       modalWarn.innerHTML = "⚠ " + parts.join("<br>⚠ ");
       modalWarn.hidden = false;
-      return true;
+      return blocking;
     }
     modalWarn.hidden = true;
     return false;
@@ -318,7 +324,7 @@
     if (tr.classList.contains("sn-row-locked")) {
       return;
     }
-    setMsg('<span class="sn-spin"></span>Previewing ' + tr.dataset.field + "…", false);
+    setMsg('<span class="sn-spin"></span>Previewing ' + esc(tr.dataset.field) + "…", false);
     send("preview", previewPayload(tr, null), null);
   }
 
@@ -476,7 +482,7 @@
     const out = document.createElement("div");
     out.className = "sn-preview-output";
     if (res.kind === "text") {
-      out.innerHTML = res.text || "(empty result)"; // server-rendered HTML
+      out.textContent = res.text || "(empty result)"; // model output as TEXT, not HTML (XSS guard)
     } else if (res.kind === "tts") {
       out.textContent = "🔊 " + (res.message || "Audio preview played.");
     } else {

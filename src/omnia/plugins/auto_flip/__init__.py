@@ -42,7 +42,7 @@ from omnia.plugins.auto_flip.logic import (
 
 _EASE_GOOD = 3
 _DECK_MENU_HOOK = "deck_browser_will_show_options_menu"
-_TOOLS_ACTION_LABEL = "Auto-Flip (Ctrl+J)"
+_TOOLS_ACTION_LABEL = "Omnia · Auto-Flip (Ctrl+J)"
 _TOOLS_ACTION_SHORTCUT = "Ctrl+J"
 
 

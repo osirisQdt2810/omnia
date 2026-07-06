@@ -28,6 +28,7 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -43,6 +44,10 @@ _logger = get_logger("native_runtime")
 # tests can monkeypatch ``native_runtime._IS_WINDOWS`` to exercise BOTH the POSIX
 # (``bin/python``) and Windows (``Scripts/python.exe``) layouts on a single host.
 _IS_WINDOWS = os.name == "nt"
+
+# Suppress the flashing console window a child process pops on Windows (pip/venv/piper). The
+# flag only exists on Windows, so ``getattr`` defaults it to 0 (a no-op) on macOS/Linux.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Marker file written into a venv once its pip install has fully succeeded; its presence (plus
 # the venv python) is what :meth:`NativeRuntimeManager.is_installed` checks, so a half-finished
@@ -334,6 +339,7 @@ class SubprocessRunner:
             timeout=timeout,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
             check=False,
         )
         return completed.returncode
@@ -355,6 +361,7 @@ class SubprocessRunner:
             timeout=timeout,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
             check=False,
         )
         return completed.returncode, completed.stdout or b""
@@ -364,6 +371,7 @@ class SubprocessRunner:
             list(argv),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=_NO_WINDOW,
         )
 
     def is_listening(self, host: str, port: int, timeout: float = 1.0) -> bool:
@@ -435,6 +443,14 @@ class NativeRuntimeManager:
         )
         self._host_python_override = host_python
         self._servers: dict[str, _Server] = {}
+        # Guards the check-then-act in ensure_running (and every _servers read/mutation) so two
+        # concurrent callers can't double-spawn a fixed-port sidecar (e.g. viettts:8298) — the
+        # second would fail to bind and clobber the tracking of the live one.
+        self._servers_lock = threading.Lock()
+        # Register ONE process-exit cleanup for the manager, not one per launched sidecar: a
+        # per-launch atexit.register would accumulate dead-Popen handlers on a crash-loop
+        # (start → crash → restart …). shutdown_all terminates whatever is tracked at exit.
+        atexit.register(self.shutdown_all)
 
     # -- interpreter / path resolution ----------------------------------------------------
     def host_python(self, min_python: tuple[int, int] = (3, 9)) -> str | None:
@@ -646,7 +662,9 @@ class NativeRuntimeManager:
         Idempotent: a no-op if nothing is tracked and the venv is absent. Backs the GUI's
         "untick → delete the venv immediately" toggle so a disabled runtime frees its disk.
         """
-        server = self._servers.pop(spec.name, None)
+        with self._servers_lock:
+            server = self._servers.pop(spec.name, None)
+        # Terminate OUTSIDE the lock so the (bounded) wait doesn't block a concurrent caller.
         if server is not None:
             self._terminate(server.proc)
         shutil.rmtree(self.venv_dir(spec), ignore_errors=True)
@@ -691,42 +709,51 @@ class NativeRuntimeManager:
         host = spec.host
         port = spec.port or self._free_port()
 
-        if self._runner.is_listening(host, port):
-            return host, port
-
-        self._require_installed(spec)
-
-        argv = self._substitute(
-            spec.server_argv,
-            {
-                "{python}": str(self.venv_python(spec)),
-                "{bin}": str(self.venv_bin_dir(spec)),
-                "{host}": host,
-                "{port}": str(port),
-            },
-        )
-        try:
-            proc = self._runner.popen(argv)
-        except OSError as exc:
-            raise ProviderError(
-                f"{spec.name}: failed to start its server: {exc}"
-            ) from exc
-        self._servers[spec.name] = _Server(spec=spec, proc=proc, host=host, port=port)
-        atexit.register(self._terminate, proc)
+        # Decide (and, if needed, spawn) under the lock so two concurrent callers can't both
+        # spawn: the loser reuses the winner's tracked, still-starting server. The startup poll
+        # runs OUTSIDE the lock so a slow start doesn't block shutdown/uninstall of OTHERS.
+        with self._servers_lock:
+            if self._runner.is_listening(host, port):
+                return host, port
+            existing = self._servers.get(spec.name)
+            if existing is not None and existing.proc.poll() is None:
+                # Another caller already started this server; wait for THAT one, don't respawn.
+                server = existing
+            else:
+                self._require_installed(spec)
+                argv = self._substitute(
+                    spec.server_argv,
+                    {
+                        "{python}": str(self.venv_python(spec)),
+                        "{bin}": str(self.venv_bin_dir(spec)),
+                        "{host}": host,
+                        "{port}": str(port),
+                    },
+                )
+                try:
+                    proc = self._runner.popen(argv)
+                except OSError as exc:
+                    raise ProviderError(
+                        f"{spec.name}: failed to start its server: {exc}"
+                    ) from exc
+                server = _Server(spec=spec, proc=proc, host=host, port=port)
+                self._servers[spec.name] = server
+                # No per-launch atexit here: shutdown_all (registered once in __init__) cleans
+                # up every tracked server at process exit.
 
         deadline = time.monotonic() + _SERVER_STARTUP_TIMEOUT
         while time.monotonic() < deadline:
-            if self._runner.is_listening(host, port):
-                return host, port
-            if proc.poll() is not None:
+            if self._runner.is_listening(server.host, server.port):
+                return server.host, server.port
+            if server.proc.poll() is not None:
                 raise ProviderError(
                     f"{spec.name}: its server exited during startup "
                     f"(check the install / logs)."
                 )
             time.sleep(_SERVER_POLL_INTERVAL)
         raise ProviderError(
-            f"{spec.name}: its server did not start listening at {host}:{port} within "
-            f"{_SERVER_STARTUP_TIMEOUT:.0f}s."
+            f"{spec.name}: its server did not start listening at "
+            f"{server.host}:{server.port} within {_SERVER_STARTUP_TIMEOUT:.0f}s."
         )
 
     # -- one-shot (mode='cli') ------------------------------------------------------------
@@ -793,9 +820,11 @@ class NativeRuntimeManager:
     # -- cleanup --------------------------------------------------------------------------
     def shutdown_all(self) -> None:
         """Terminate every sidecar server this manager started (safe from ``atexit``)."""
-        for server in self._servers.values():
+        with self._servers_lock:
+            servers = list(self._servers.values())
+            self._servers.clear()
+        for server in servers:
             self._terminate(server.proc)
-        self._servers.clear()
 
     # -- helpers --------------------------------------------------------------------------
     def _free_port(self) -> int:

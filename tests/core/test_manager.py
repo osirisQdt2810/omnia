@@ -138,6 +138,35 @@ class TestPluginManager:
         finally:
             mgr.teardown()
 
+    def test_config_change_between_disable_and_enable_is_reflected(self, make_manager):
+        # Regression (L1): disabling must evict the cached PluginContext so a config edit made
+        # while the plugin is off is picked up on re-enable (not the stale prior snapshot).
+        from omnia.plugins.auto_flip.config import AutoFlipSettings
+
+        seen: list[float] = []
+
+        @registry.register("auto_flip")
+        class Fake(FeaturePlugin):
+            config_model = AutoFlipSettings
+
+            def on_enable(self, ctx):
+                seen.append(ctx.settings.delay_question_seconds)
+
+            def on_disable(self, ctx):
+                pass
+
+        mgr, repo = make_manager()
+        try:
+            mgr.setup()
+            assert mgr.set_enabled("auto_flip", True) is True
+            assert seen[-1] == 3.0  # default from the example config
+            mgr.set_enabled("auto_flip", False)
+            repo.update_section("auto_flip", {"delay_question_seconds": 9.0})
+            assert mgr.set_enabled("auto_flip", True) is True
+            assert seen[-1] == 9.0  # the edit reached the plugin via a fresh context
+        finally:
+            mgr.teardown()
+
     def test_unknown_plugin_raises(self, make_manager):
         mgr, _ = make_manager()
         mgr.setup()

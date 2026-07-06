@@ -181,6 +181,7 @@
     <div class="sn-tabs">
       <button class="sn-tab sn-tab-active" data-tab="general">General</button>
       <button class="sn-tab" data-tab="account">Usage &amp; Keys</button>
+      <button class="sn-tab" data-tab="integrations">Integrations</button>
       <button class="sn-tab" data-tab="advanced">Advanced</button>
     </div>
     <div class="sn-tabpane" data-pane="general">
@@ -196,6 +197,16 @@
       <label class="sn-opt-row" title="ON: a field is generated even when EVERY field its prompt references is blank.&#10;OFF: generation is skipped when all referenced (source) fields are empty — so the AI is never asked about nothing.&#10;&#10;Example: a card with only the Word filled still generates Meaning; a totally blank card generates nothing.">
         <input type="checkbox" id="sn-opt-allow-empty" class="sn-check">
         <span><b>Allow empty sources</b> — generate even when every referenced field is blank.</span>
+      </label>
+    </div>
+    <div class="sn-tabpane" data-pane="integrations" hidden>
+      <div class="sn-modal-fields">Let external tools auto-fill Smart Notes fields. Each is OFF until you opt in — auto-generation makes AI (LLM/TTS) calls that cost money.</div>
+      <label class="sn-opt-row" title="ON: when the Omnia browser extension saves a card tagged omnia-web-clipper with auto-generate on, Omnia fills that note's empty smart fields in the background.&#10;OFF: clipped cards are saved as-is — run a batch to fill them later.">
+        <input type="checkbox" id="sn-opt-integ-web_clipper" class="sn-check">
+        <span>
+          <b>Omnia Web Clipper</b> — When the browser extension saves a card (tagged omnia-web-clipper) with auto-generate on, Omnia fills its smart fields automatically.
+          <span id="sn-integ-status-web_clipper" class="sn-integ-status"></span>
+        </span>
       </label>
     </div>
     <div class="sn-tabpane" data-pane="advanced" hidden>

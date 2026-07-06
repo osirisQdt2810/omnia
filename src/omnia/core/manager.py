@@ -40,9 +40,9 @@ class PluginManager:
     ) -> None:
         self._config = config
         self._paths = paths
-        self._providers = providers or ProviderHub(
-            config.llm_settings(), config.tts_settings()
-        )
+        # Pass the repo (not snapshots) so the hub reads provider settings FRESH: a live config
+        # change (e.g. an Auto-detect voice edit) reaches generation without an Anki restart.
+        self._providers = providers or ProviderHub(config=config)
         self._ease = ease or EasePipeline()
         self._web = web or WebInjector()
         self._plugins: dict[str, FeaturePlugin] = {}
@@ -101,6 +101,10 @@ class PluginManager:
         # Always drop from the active set: a plugin that failed teardown is in an unknown
         # state, and leaving it "active" only causes cascading errors on retry/teardown.
         self._active.discard(plugin_id)
+        # Evict the cached context so a later re-enable rebuilds it from a FRESH settings
+        # snapshot — otherwise a config edit made while the plugin was disabled would be
+        # ignored on re-enable (the stale snapshot from the previous activation would be used).
+        self._contexts.pop(plugin_id, None)
         if ok:
             logger.info("Disabled plugin %s", plugin_id)
         return ok
@@ -125,11 +129,11 @@ class PluginManager:
     def reload(self, plugin_id: str) -> None:
         """Re-apply a plugin's config by disabling then re-enabling it (if active).
 
-        Drops the cached context so the plugin is rebuilt with a fresh settings snapshot.
+        ``_deactivate`` drops the cached context, so the re-enable rebuilds the plugin with a
+        fresh settings snapshot.
         """
         if plugin_id in self._active:
             self._deactivate(plugin_id)
-            self._contexts.pop(plugin_id, None)
             self._activate(plugin_id)
 
     def plugins(self) -> list[FeaturePlugin]:

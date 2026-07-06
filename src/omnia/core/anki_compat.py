@@ -284,6 +284,16 @@ def note_deck_ids(note: Any, col: Optional[Any] = None) -> list[int]:
     return [int(c.did) for c in note.cards()]
 
 
+def escape_search_term(text: str) -> str:
+    """Escape a value for interpolation into a quoted Anki search term (``note:"..."``).
+
+    Escapes ``\\`` then ``"`` so a note-type / deck name containing either character can't break
+    out of the quotes or corrupt the query (Anki's search grammar escapes a double-quote inside a
+    quoted term with a backslash). Order matters: escape the backslash first.
+    """
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def random_note_of_type(
     note_type: str, deck_id: Optional[int] = None, col: Optional[Any] = None
 ) -> Any:
@@ -294,11 +304,12 @@ def random_note_of_type(
     """
     if col is None:
         col = main_window().col
-    query = f'note:"{note_type}"'
+    query = f'note:"{escape_search_term(note_type)}"'
     if deck_id is not None:
         deck_name = col.decks.name(deck_id)
         if deck_name:
-            query = f'{query} (deck:"{deck_name}" or deck:"{deck_name}::*")'
+            safe_deck = escape_search_term(deck_name)
+            query = f'{query} (deck:"{safe_deck}" or deck:"{safe_deck}::*")'
     note_ids = col.find_notes(query)
     return col.get_note(note_ids[0]) if note_ids else None
 
@@ -436,6 +447,36 @@ def unsubscribe_hook(hook_name: str, callback: Callable[..., Any]) -> None:
 
     registered = _GUARDED.pop((hook_name, callback), callback)
     hook = getattr(gui_hooks(), hook_name)
+    with contextlib.suppress(ValueError):
+        hook.remove(registered)
+
+
+def anki_hooks() -> Any:
+    """Return the ``anki.hooks`` module (backend hooks, distinct from ``aqt.gui_hooks``)."""
+    from anki import hooks
+
+    return hooks
+
+
+def subscribe_anki_hook(hook_name: str, callback: Callable[..., Any]) -> None:
+    """Append ``callback`` to ``anki.hooks.<hook_name>`` (always guarded).
+
+    Backend (``anki.hooks``) hooks fire from the collection during note adds/edits, off the
+    ``aqt.gui_hooks`` surface (e.g. ``note_will_be_added``). Those are notify hooks (no return
+    value threaded through), so the callback is wrapped in the same logging guard as the
+    non-filter GUI hooks — an exception in a feature callback must never break a note add.
+    """
+    registered = _guard(hook_name, callback)
+    _GUARDED[(hook_name, callback)] = registered
+    getattr(anki_hooks(), hook_name).append(registered)
+
+
+def unsubscribe_anki_hook(hook_name: str, callback: Callable[..., Any]) -> None:
+    """Remove ``callback`` from ``anki.hooks.<hook_name>`` (safe if already gone)."""
+    import contextlib
+
+    registered = _GUARDED.pop((hook_name, callback), callback)
+    hook = getattr(anki_hooks(), hook_name)
     with contextlib.suppress(ValueError):
         hook.remove(registered)
 

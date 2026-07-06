@@ -30,6 +30,21 @@ def _llm_default_model(llm: LLMSettings, kind: str) -> str:
     return str(getattr(active, field, "") or "")
 
 
+def _canonical_llm_provider(provider: str) -> str:
+    """Map a config LLM provider id to the provider CLASS name the usage recorder stores.
+
+    The recorder writes each row under ``provider.name`` (a class attribute), so all three
+    OpenAI-family config ids (openai / openrouter / openai_compatible) collapse to
+    ``"openai_compatible"``. Normalizing the models-in-use join key to that same class name is
+    what lets :func:`merge_usage`'s left-join actually attach the recorded counts. An unknown
+    id passes through unchanged.
+    """
+    from omnia.core.providers.llm.factory import _PROVIDER_CLASSES
+
+    cls = _PROVIDER_CLASSES.get(provider)
+    return cls.name if cls is not None else provider
+
+
 def models_in_use(
     settings: SmartNotesSettings, llm: LLMSettings, tts: TTSSettings
 ) -> dict[str, list[dict]]:
@@ -62,9 +77,19 @@ def models_in_use(
             seen[kind].add(key)
             out[kind].append({"provider": provider, "model": model})
 
-    # Always list the central defaults so an unconfigured collection shows something.
-    add("text", llm.provider, _llm_default_model(llm, "text") or "(default)")
-    add("image", llm.provider, _llm_default_model(llm, "image") or "(default)")
+    # Always list the central defaults so an unconfigured collection shows something. LLM
+    # providers are normalized to the class name the recorder stores (see _canonical_llm_provider)
+    # so the usage left-join matches; TTS provider ids already match their class name.
+    add(
+        "text",
+        _canonical_llm_provider(llm.provider),
+        _llm_default_model(llm, "text") or "(default)",
+    )
+    add(
+        "image",
+        _canonical_llm_provider(llm.provider),
+        _llm_default_model(llm, "image") or "(default)",
+    )
     add("sound", tts.provider, "(default)")
 
     for note_type in settings.note_types:
@@ -78,7 +103,7 @@ def models_in_use(
             else:
                 provider = field.provider or llm.provider
                 model = field.model or _llm_default_model(llm, kind) or "(default)"
-                add(kind, provider, model)
+                add(kind, _canonical_llm_provider(provider), model)
     return out
 
 

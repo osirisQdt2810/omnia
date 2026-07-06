@@ -25,12 +25,14 @@ sys.modules.setdefault("aqt.theme", _theme_mod)
 
 _qt = sys.modules.get("aqt.qt") or types.ModuleType("aqt.qt")
 for _name in (
+    "QCloseEvent",
     "QComboBox",
     "QDialog",
     "QDialogButtonBox",
     "QLabel",
     "QPlainTextEdit",
     "QPushButton",
+    "Qt",
     "QVBoxLayout",
     "QWebEngineView",
     "QWidget",
@@ -439,6 +441,7 @@ class TestSaveCycleGuard:
                 generate_at_review=False,
                 regenerate_when_batching=True,
                 allow_empty_fields=False,
+                auto_generate_integrations={},
                 copy=lambda update: saved.append(update),
             ),
             save=lambda settings: saved.append(settings),

@@ -597,6 +597,27 @@ class TestBuildSmartNotesHtml:
         assert "Smart Notes" in html
         assert "senior language master" in html
 
+    def test_baked_json_is_script_safe(self):
+        # A prompt containing a closing </script> must not terminate the inline <script> that
+        # bakes window.__SN_INIT — it is escaped to <\/script> instead (M6).
+        init = {
+            "note_types": ["Vocab"],
+            "note_type": "Vocab",
+            "base_field": "Word",
+            "all_fields": ["Word", "Def"],
+            "rows": [
+                {"field": "Def", "prompt": "close </script><script>x</script> here"}
+            ],
+            "providers": [],
+        }
+        html = build_smart_notes_html(dark=False, init=init)
+        marker = "window.__SN_INIT = "
+        start = html.index(marker) + len(marker)
+        end = html.index("</script>", start)  # the first REAL closing tag
+        baked = html[start:end]
+        assert "</script>" not in baked  # the injected close tag was neutralized...
+        assert "<\\/script>" in baked  # ...escaped instead
+
     def test_ops_wired_in_js(self):
         html = build_smart_notes_html(dark=False)
         for op in (

@@ -387,27 +387,7 @@
     const defs = svgEl("defs");
     defs.appendChild(arrowMarker("sn-arrow-hard", HARD_COLOR));
     defs.appendChild(arrowMarker("sn-arrow-soft", SOFT_COLOR));
-    defs.appendChild(edgeGradient("sn-grad-hard", "#ff6b6b", HARD_COLOR));
-    defs.appendChild(edgeGradient("sn-grad-soft", "#4cc38a", SOFT_COLOR));
     return defs;
-  }
-
-  function edgeGradient(id, from, to) {
-    const g = svgEl("linearGradient");
-    g.setAttribute("id", id);
-    g.setAttribute("x1", "0");
-    g.setAttribute("y1", "0");
-    g.setAttribute("x2", "1");
-    g.setAttribute("y2", "0");
-    const a = svgEl("stop");
-    a.setAttribute("offset", "0");
-    a.setAttribute("stop-color", from);
-    const b = svgEl("stop");
-    b.setAttribute("offset", "1");
-    b.setAttribute("stop-color", to);
-    g.appendChild(a);
-    g.appendChild(b);
-    return g;
   }
 
   function arrowMarker(id, color) {
@@ -525,7 +505,11 @@
         (sel ? " sn-edge-selected" : "") +
         (e.cycle ? " sn-edge-cycle" : "")
     );
-    path.setAttribute("stroke", "url(#" + (soft ? "sn-grad-soft" : "sn-grad-hard") + ")");
+    // Solid stroke, NOT an objectBoundingBox gradient: a perfectly horizontal or vertical edge
+    // (e.g. two nodes at the same vertical centre) has a zero-area bounding box, and SVG ignores
+    // an objectBoundingBox paint server there — which made the shaft vanish while the solid-fill
+    // arrowhead stayed. A flat colour renders at any angle and matches the arrowhead + glow.
+    path.setAttribute("stroke", soft ? SOFT_COLOR : HARD_COLOR);
     if (e.derived) {
       path.setAttribute("stroke-dasharray", "7,5");
     }
@@ -1187,6 +1171,19 @@
     if (!graphVisible || !selectedEdge) {
       return;
     }
+    // Never hijack Delete/Backspace while the user is typing in a field (the prompt-editor modal,
+    // the Save-diff textarea, etc. sit over the still-"visible" graph). Otherwise correcting text
+    // there would silently delete the selected edge AND swallow the keystroke.
+    var t = e.target;
+    if (
+      t &&
+      (t.isContentEditable ||
+        t.tagName === "INPUT" ||
+        t.tagName === "TEXTAREA" ||
+        t.tagName === "SELECT")
+    ) {
+      return;
+    }
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
       removeEdge(selectedEdge);
@@ -1384,8 +1381,23 @@
     const changed = [];
     Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
       const field = tr.dataset.field || "";
-      // A locked field's prompt must never be rewritten by the sync — skip it entirely.
+      // A locked field's prompt must never be rewritten by the sync — skip it. But its unsynced
+      // edge edits must not persist while its prompt stays unchanged: Save writes depends_on
+      // verbatim and clears removedEdges, so e.g. deleting a derived edge then locking the field
+      // would silently lose the deletion (the edge reappears on reload). Revert the row's deps to
+      // the synced baseline and drop its pending derived deletions so the locked row can't persist
+      // deps diverging from its prompt.
       if (isFieldLocked(field)) {
+        const baseline = lastSyncedDeps[field.toLowerCase()];
+        if (baseline) {
+          const now = readDependsOn(tr).map(function (d) {
+            return {field: d.field, kind: d.kind};
+          });
+          if (diffEdges(baseline, now).length) {
+            tr.dataset.dependsOn = JSON.stringify(baseline);
+          }
+        }
+        clearRemovedFor(field);
         return;
       }
       const before = lastSyncedDeps[field.toLowerCase()] || [];

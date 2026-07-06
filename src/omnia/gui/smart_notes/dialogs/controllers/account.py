@@ -202,8 +202,9 @@ class AccountController:
         whether it can fetch a live list (only edge_tts does this pass; google_cloud needs auth);
         no concrete provider is named here. Enriches ONLY the dropdown options (the fetched voices
         merged over the curated seed); it never touches the saved ``[tts.auto_voices]`` map.
-        Pushed back through ``window.__snVoicesRefreshed`` with the rebuilt
-        ``auto_voice_options``.
+        Pushed back through ``window.__snVoicesRefreshed`` with the rebuilt ``auto_voice_options``
+        AND the refreshed per-provider ``voices`` map, so the Default/row voice pickers (which read
+        ``CATALOG.voices``) also reflect the fetched voices.
         """
 
         def fetch() -> dict[str, object]:
@@ -213,7 +214,10 @@ class AccountController:
             voices = tts.refresh_voices()
             voice_cache.save_cached_voices(self._ctx.user_files_dir(), voices)
             payload = catalog_payload(voices)
-            return {"auto_voice_options": payload["auto_voice_options"]}
+            return {
+                "auto_voice_options": payload["auto_voice_options"],
+                "voices": payload["voices"],
+            }
 
         anki_compat.run_in_background(
             fetch,
