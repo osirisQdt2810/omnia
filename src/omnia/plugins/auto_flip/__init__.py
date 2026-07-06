@@ -12,7 +12,8 @@ typed_accuracy / overdue_guard). On top of the plain delay this feature adds:
   the clip duration in its command; that duration is added to the wait so a clip never gets
   cut off.
 * **Ctrl+J runtime toggle**: a checkable Tools-menu action suspends/resumes auto-flip without
-  disabling the plugin (a runtime ``_active`` flag, distinct from plugin-enabled).
+  disabling the plugin (a runtime ``_active`` flag, distinct from plugin-enabled). It starts
+  OFF every session — a fresh Anki launch never auto-flips until you press Ctrl+J.
 * **Two-stage Enter cancel**: the first Enter while a timer is pending cancels it (the
   countdown ring turns "cancelled") without flipping/grading; a second Enter performs the
   real action.
@@ -64,8 +65,9 @@ class AutoFlipPlugin(FeaturePlugin):
         self._subs: list[tuple[str, Callable[..., Any]]] = []
         self._wait_for_audio = False
         self._show_timer = True
-        # Runtime suspend/resume (Ctrl+J), independent of the plugin being enabled.
-        self._active = True
+        # Runtime suspend/resume (Ctrl+J), independent of the plugin being enabled. Starts OFF
+        # each session (set again in on_enable) so a fresh launch never auto-flips until Ctrl+J.
+        self._active = False
         self._tools_action: Optional[Any] = None
         # Which side is currently armed/awaiting audio ("question" | "answer" | None).
         self._pending_side: Optional[str] = None
@@ -77,7 +79,11 @@ class AutoFlipPlugin(FeaturePlugin):
         self._ctx = ctx
         self._wait_for_audio = settings.wait_for_audio
         self._show_timer = settings.show_timer
-        self._active = True
+        # Start every session SUSPENDED: even with the plugin enabled, auto-flip does nothing
+        # until the user turns it on with Ctrl+J (the Tools-menu toggle). This is deliberate —
+        # auto-advancing cards you didn't ask for is surprising, so a fresh Anki launch never
+        # auto-flips; the runtime toggle opts in per session and is not persisted.
+        self._active = False
         self._subscribe("reviewer_will_answer_card", self._on_will_answer)
         self._subscribe(_DECK_MENU_HOOK, self._on_deck_menu)
         if self._wait_for_audio:
