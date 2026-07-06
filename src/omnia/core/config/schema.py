@@ -5,7 +5,8 @@ settings form should not duplicate that as a hand-written :class:`ConfigField` l
 module introspects a model's ``__fields__`` and emits the equivalent :class:`ConfigField`s:
 
 * field type -> kind (``bool``/``int``/``float``/``text``; ``str`` named like a credential ->
-  ``secret``; ``Literal[...]`` / ``Enum`` -> ``choice`` with its values),
+  ``secret``; ``str`` named like a colour -> ``color`` (rendered as a colour picker);
+  ``Literal[...]`` / ``Enum`` -> ``choice`` with its values),
 * ``Field(..., description=)`` -> the field's ``help`` (the GUI tooltip),
 * ``ge``/``le`` -> ``minimum``/``maximum``,
 * the field's default -> ``default``.
@@ -61,7 +62,8 @@ def _field_to_config(name: str, model_field: ModelField) -> ConfigField | None:
     kind, choices = _kind_and_choices(name, model_field)
     return ConfigField(
         key=name,
-        label=_label(name),
+        # A Field(title=…) overrides the humanised field name (e.g. "ratio" → "Overdue Ratio").
+        label=field_info.title or _label(name),
         kind=kind,
         default=model_field.default,
         help=field_info.description or "",
@@ -102,12 +104,18 @@ def _kind_and_choices(
         return "float", ()
     if _looks_secret(name):
         return "secret", ()
+    if _looks_color(name):
+        return "color", ()
     return "text", ()
 
 
 def _looks_secret(name: str) -> bool:
     lowered = name.lower()
     return any(hint in lowered for hint in _SECRET_HINTS)
+
+
+def _looks_color(name: str) -> bool:
+    return "color" in name.lower()
 
 
 def _label(name: str) -> str:
