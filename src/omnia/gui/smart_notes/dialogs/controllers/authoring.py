@@ -164,7 +164,11 @@ class AuthoringController:
         base_field = str(data.get("base_field", ""))
         posted_rows = list(data.get("rows", []))
         items = [
-            (str(row.get("field", "")), str(row.get("prompt", "")))
+            (
+                str(row.get("field", "")),
+                str(row.get("prompt", "")),
+                str(row.get("type", "text")),
+            )
             for row in posted_rows
             if row.get("enabled")
             and not row.get("prompt_locked")

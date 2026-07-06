@@ -263,6 +263,8 @@ select:disabled { opacity: 0.7; }
 }
 .sn-opt-row:hover { background: var(--head); }
 .sn-opt-row .sn-check { margin-top: 2px; }
+/* Integrations tab: the muted "Detected N cards from this integration." status line. */
+.sn-integ-status { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
 
 /* Native runtimes (ADR-005): per-section groups of installable local engines, each row a
    toggle + a status line that flips between idle / installing (spinner) / installed / error. */
@@ -688,8 +690,9 @@ select:disabled { opacity: 0.7; }
   background-clip: padding-box;
 }
 
-/* Edges: gradient stroke, dashed when derived; a wide transparent hit-twin makes clicking easy;
-   the selected edge gets a translucent under-stroke glow (NO SVG filter). */
+/* Edges: solid stroke (colour set inline per kind), dashed when derived; a wide transparent
+   hit-twin makes clicking easy; the selected edge gets a translucent under-stroke glow (NO SVG
+   filter). Solid — not a gradient — so a horizontal/vertical edge (zero-area bbox) still paints. */
 .sn-edge {
   fill: none; stroke-width: 2.5; cursor: pointer;
   transition: stroke-width 0.12s ease;
@@ -702,8 +705,8 @@ select:disabled { opacity: 0.7; }
 .sn-edge-glow { fill: none; stroke-width: 9; opacity: 0.28; }
 /* An edge on a dependency cycle: generation needs a loop-free graph, so flag it in solid AMBER
    — a hue that stands out from BOTH the red (hard) and green (soft) edges even in a dense graph
-   (CSS stroke beats the gradient set as a presentation attribute). The layout still renders the
-   whole cyclic graph; the user clicks an amber edge + Delete to break the loop. */
+   (CSS stroke !important beats the solid colour set as a presentation attribute). The layout
+   still renders the whole cyclic graph; the user clicks an amber edge + Delete to break the loop. */
 .sn-edge-cycle {
   stroke: #ffb020 !important; stroke-width: 5; stroke-dasharray: none !important;
 }

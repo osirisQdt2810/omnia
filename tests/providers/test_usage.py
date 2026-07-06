@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+
+import pytest
 from conftest import FakeHttpClient, FakeLLMProvider, FakeTTSProvider
 
 from omnia.core.config.models import (
@@ -100,6 +103,27 @@ class TestJsonUsageRecorder:
         path = tmp_path / "usage.json"
         path.write_text("not json{", encoding="utf-8")
         assert JsonUsageRecorder(path).snapshot() == []
+
+    def test_dump_is_atomic_via_temp_then_replace(self, tmp_path, monkeypatch):
+        # Regression (L3): the write must go through a temp file + os.replace so a mid-write
+        # failure can't truncate the existing usage.json to nothing. Make os.replace raise, then
+        # confirm the prior content survives intact (the failed write only touched the temp file).
+        path = tmp_path / "usage.json"
+        recorder = JsonUsageRecorder(path)
+        recorder.record(
+            kind="text", provider="gemini", model="m", in_chars=1, out_chars=1
+        )
+        before = path.read_text(encoding="utf-8")
+
+        def _boom(src, dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(os, "replace", _boom)
+        with pytest.raises(OSError):
+            recorder.record(
+                kind="text", provider="gemini", model="m", in_chars=1, out_chars=1
+            )
+        assert path.read_text(encoding="utf-8") == before
 
 
 class TestRecordingLLMProvider:

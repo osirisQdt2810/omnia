@@ -7,7 +7,7 @@ Features depend on the :class:`~omnia.core.providers.llm.LLMProvider` /
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from pydantic import BaseModel
 
@@ -71,9 +71,18 @@ class ProviderHub:
         tts_settings: Optional[TTSSettings] = None,
         http: Optional[HttpClient] = None,
         recorder: Optional[UsageRecorder] = None,
+        *,
+        config: Any = None,
     ) -> None:
-        self._llm_settings = llm_settings
-        self._tts_settings = tts_settings
+        # ``config`` is a ConfigRepository-like object exposing ``llm_settings()`` /
+        # ``tts_settings()``. When given, the hub reads settings FRESH on every access, so a live
+        # config change (e.g. an Auto-detect voice edit) is picked up without an Anki restart. The
+        # positional ``llm_settings``/``tts_settings`` snapshots stay for the dialog one-shot hubs
+        # and tests and are used only when ``config`` is None. Typed ``Any`` to avoid a hard import
+        # cycle with omnia.core.config.
+        self._config = config
+        self._llm_settings_static = llm_settings
+        self._tts_settings_static = tts_settings
         self._http = http
         # Every built provider is wrapped so each generation records usage (calls + rough
         # char counts) for the Account dialog. Defaults to the process-wide recorder set at
@@ -83,6 +92,49 @@ class ProviderHub:
         # repeated rules reuse one instance instead of rebuilding it for every note (the wrapped
         # instance is cached, so the recording wrapper is reused too).
         self._llm_cache: dict[tuple[str, str, str], LLMProvider] = {}
+        # The LLMSettings object the override cache was populated against. A config reload yields a
+        # NEW settings object, so a mismatch means the cached providers are stale (built for old
+        # config) and must be dropped. Stays None for snapshot hubs (config is None).
+        self._llm_cache_ref: Optional[LLMSettings] = None
+
+    @property
+    def _llm_settings(self) -> Optional[LLMSettings]:
+        """The current LLM settings — read FRESH from the repo when one was injected.
+
+        With a ``config`` repo, returns its latest ``llm_settings()`` (a new object after each
+        reload) so a live edit is seen without a restart; otherwise the constructor snapshot. All
+        internal reads go through this property, so they transparently pick up the fresh object.
+        """
+        if self._config is not None:
+            # ``_config`` is Any (loosely typed to avoid an import cycle); the repo contract is
+            # that ``llm_settings()`` returns LLMSettings.
+            return cast("LLMSettings", self._config.llm_settings())
+        return self._llm_settings_static
+
+    @property
+    def _tts_settings(self) -> Optional[TTSSettings]:
+        """The current TTS settings — read FRESH from the repo when one was injected.
+
+        See :attr:`_llm_settings`; same fresh-vs-snapshot rule for the TTS side.
+        """
+        if self._config is not None:
+            # See :attr:`_llm_settings`: ``_config`` is Any; the repo returns TTSSettings here.
+            return cast("TTSSettings", self._config.tts_settings())
+        return self._tts_settings_static
+
+    def _maybe_invalidate_cache(self) -> None:
+        """Drop the per-rule override cache when the LLM settings object changed.
+
+        A config reload rebuilds ``LLMSettings`` into a new object; providers cached against the
+        old one are stale. No-op for snapshot hubs (``config`` is None), whose settings never
+        change under them.
+        """
+        if self._config is None:
+            return
+        cur = self._llm_settings  # fresh
+        if cur is not self._llm_cache_ref:
+            self._llm_cache.clear()
+            self._llm_cache_ref = cur
 
     def _llm_config(self, provider: str = "") -> dict[str, Any]:
         """Flatten the active (or named ``provider``) ``[llm.<provider>]`` subsection.
@@ -149,6 +201,7 @@ class ProviderHub:
             model: Override the text model id (empty = the subsection's configured model).
             image_model: Override the image model id (empty = the subsection's configured one).
         """
+        self._maybe_invalidate_cache()
         if not model and not image_model and not provider:
             config = self._llm_config()
             built = create_llm_provider(config, self._http)

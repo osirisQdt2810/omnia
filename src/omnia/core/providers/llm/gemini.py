@@ -186,4 +186,7 @@ class GeminiProvider(LLMProvider):
         resp = self._http.post_json(
             self._endpoint(self._image_model), payload, headers=self._headers()
         )
+        # Record the image call's exact token usage too (mirrors generate_text) — otherwise the
+        # recording wrapper reads a stale/absent last_usage and logs the image call as 0 tokens.
+        self.last_usage = _usage_from_gemini(resp)
         return self._parse_image_response(resp)

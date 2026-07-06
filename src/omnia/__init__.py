@@ -94,15 +94,22 @@ def _bootstrap() -> None:
         web_dir=_ADDON_DIR / "web",
         user_files_dir=user_files,
     )
-    loader = ConfigLoader(config_dir)
-    repository = ConfigRepository(loader)
-    setup_logging(user_files)
+    logger = setup_logging(user_files)
     # Tee any displayed/uncaught exception's full traceback into omnia.log — Anki's error
     # dialog only exposes the version + add-on list, not the traceback, so this is what makes
     # a user-reported crash diagnosable from the log alone.
-    from omnia.core.logging import get_logger, install_crash_logger
+    from omnia.core.logging import install_crash_logger
 
-    install_crash_logger(get_logger())
+    install_crash_logger(logger)
+    # Build the repository AFTER logging is up: it eager-loads + validates the config (extra
+    # keys forbidden), so a config typo raises here — logging first guarantees that failure is
+    # captured in omnia.log before we re-raise (which aborts boot, the current behaviour).
+    loader = ConfigLoader(config_dir)
+    try:
+        repository = ConfigRepository(loader)
+    except Exception:
+        logger.exception("Failed to load Omnia config")
+        raise
     _manager = PluginManager(repository, paths)
     _manager.setup()
     _install_menu()

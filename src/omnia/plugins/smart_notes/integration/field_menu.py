@@ -1,6 +1,6 @@
 """The editor field right-click context menu for smart_notes (ports the reference field_menu).
 
-Adds, on the field the cursor is in: "✨ Generate this field" (runs that field's rule(s) on
+Adds, on the field the cursor is in: "✨ Omnia · Generate this field" (runs that field's rule(s) on
 demand, even when disabled for batching) plus 💬/🔈/🖼️ one-off custom-prompt palettes that
 generate into the field without saving a rule. Thin Anki glue; the per-field selection logic
 lives in ``engine.rules`` and the palettes in ``gui/smart_notes/dialogs/prompt``.
@@ -48,7 +48,9 @@ def build_field_menu(
         return
 
     menu.addSeparator()
-    generate = QAction("✨ Generate this field", menu)
+    menu.setToolTipsVisible(True)  # QMenu hides action tooltips unless this is on
+    generate = QAction("✨ Omnia · Generate this field", menu)
+    generate.setToolTip("[Omnia] Generate just the field the cursor is in")
     generate.triggered.connect(lambda: generate_field(editor, field))
     menu.addAction(generate)
 

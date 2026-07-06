@@ -45,6 +45,12 @@ class ReviewTimeEvaluator:
         # Note ids currently being generated, so a re-show of the same card mid-flight doesn't
         # kick off a duplicate background wave.
         self._in_flight: set[int] = set()
+        # The nid we last generated for during the CURRENT show. Writing the note redraws the
+        # card, which re-fires ``reviewer_did_show_question`` for the SAME nid; if the target is
+        # still empty (a provider returned empty text) that re-fire would regenerate forever.
+        # This guard skips the redraw's re-fire; showing any other card overwrites it, so the
+        # same card shown again later still re-evaluates.
+        self._generated_for: Optional[int] = None
 
     def on_card_shown(self, card: Any) -> None:
         """Hook callback for ``reviewer_did_show_question``: maybe pre-generate ``card``.
@@ -62,6 +68,8 @@ class ReviewTimeEvaluator:
 
     def _maybe_generate(self, card: Any, settings: SmartNotesSettings) -> None:
         nid = int(card.nid)
+        if nid == self._generated_for:
+            return  # this is the post-write redraw's re-fire for the same show — don't loop
         if nid in self._in_flight:
             return
         note = card.note()
@@ -84,7 +92,7 @@ class ReviewTimeEvaluator:
         def op() -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
             # Review-time pre-generation only fills empty fields; blocked fields stay empty and
             # are simply not written (the next show re-evaluates), so the block list is unused.
-            results, _blocked = service.generate_note(
+            results, _blocked, _failed = service.generate_note(
                 config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
@@ -113,6 +121,8 @@ class ReviewTimeEvaluator:
                 wrote = True
             if wrote:
                 anki_compat.update_note(note)
+                # Mark BEFORE the redraw so the redraw's re-fire (same nid) is skipped.
+                self._generated_for = nid
                 self._redraw_if_current(nid)
         except Exception:
             logger.exception("smart_notes: failed to write review-time note %s", nid)

@@ -57,6 +57,9 @@ class BatchSummary:
     failed: int = 0
     skipped: int = 0
     blocked: int = 0
+    # Per-field generation errors across all notes (a single field raising), distinct from
+    # ``failed`` (a whole note that could not be processed/written at all).
+    field_failures: int = 0
     cancelled: bool = False
 
     def message(self) -> str:
@@ -68,6 +71,8 @@ class BatchSummary:
             parts.append(f"{self.skipped} skipped")
         if self.blocked:
             parts.append(f"{self.blocked} blocked — missing prerequisites")
+        if self.field_failures:
+            parts.append(f"{self.field_failures} field error(s)")
         prefix = "Cancelled — " if self.cancelled else ""
         return prefix + ", ".join(parts) + "."
 
@@ -81,6 +86,8 @@ class _NoteOutcome:
         default_factory=list
     )
     blocked: int = 0
+    # Count of this note's fields whose generation raised and was isolated (siblings still ran).
+    field_failures: int = 0
     failed: bool = False
 
 
@@ -93,7 +100,13 @@ class BatchGenerator:
         self._service = service
         self._settings = settings
 
-    def run(self, note_ids: list[int], on_done: Callable[[BatchSummary], None]) -> None:
+    def run(
+        self,
+        note_ids: list[int],
+        on_done: Callable[[BatchSummary], None],
+        *,
+        show_progress: bool = True,
+    ) -> None:
         """Generate smart fields for ``note_ids`` in the background, then call ``on_done``.
 
         Reads each note's fields + selects its enabled rules on the main thread, opens the
@@ -103,6 +116,9 @@ class BatchGenerator:
         Args:
             note_ids: The notes to process (deduped here; cards of one note collapse to it).
             on_done: Main-thread callback receiving the :class:`BatchSummary`.
+            show_progress: Open the modal progress dialog. Off for background auto-generation
+                (the integration gateway) so a stream of clipped notes never stacks modal
+                dialogs — which would freeze Anki; a summary tooltip still reports the result.
         """
         plans, deck_skipped = self._build_plans(dedupe_preserving_order(note_ids))
         if not plans:
@@ -113,21 +129,29 @@ class BatchGenerator:
         # Batch overwrite is driven by ``regenerate_when_batching``: when set, the batch
         # regenerates fields it already filled (ignoring per-field overwrite).
         force_overwrite = self._settings.regenerate_when_batching
-        anki_compat.progress_start(f"Omnia: generating… (0/{total})", total)
+        if show_progress:
+            anki_compat.progress_start(f"Omnia: generating… (0/{total})", total)
 
         def op() -> tuple[list[_NoteOutcome], bool]:
-            return self._generate(plans, total, force_overwrite=force_overwrite)
+            return self._generate(
+                plans,
+                total,
+                force_overwrite=force_overwrite,
+                show_progress=show_progress,
+            )
 
         def on_success(result: tuple[list[_NoteOutcome], bool]) -> None:
             outcomes, cancelled = result
             summary = self._apply(outcomes)
             summary.skipped += deck_skipped
             summary.cancelled = cancelled
-            anki_compat.progress_finish()
+            if show_progress:
+                anki_compat.progress_finish()
             on_done(summary)
 
         def on_failure(exc: Exception) -> None:
-            anki_compat.progress_finish()
+            if show_progress:
+                anki_compat.progress_finish()
             logger.exception("smart_notes batch failed")
             on_done(BatchSummary(failed=total))
 
@@ -143,7 +167,13 @@ class BatchGenerator:
         plans: list[_NotePlan] = []
         deck_skipped = 0
         for nid in note_ids:
-            note = anki_compat.get_note(nid)
+            try:
+                note = anki_compat.get_note(nid)
+            except Exception:
+                # The note may have been deleted between selection/queueing and now (e.g. a clip
+                # deleted during the gateway's debounce). Skip it rather than aborting the batch.
+                logger.exception("smart_notes: batch skipping unreadable note %s", nid)
+                continue
             config = self._settings.note_type_config(_note_type_name(note))
             if config is None or not config.generatable_fields():
                 continue
@@ -157,15 +187,21 @@ class BatchGenerator:
         return plans, deck_skipped
 
     def _generate(
-        self, plans: list[_NotePlan], total: int, *, force_overwrite: bool
+        self,
+        plans: list[_NotePlan],
+        total: int,
+        *,
+        force_overwrite: bool,
+        show_progress: bool = True,
     ) -> tuple[list[_NoteOutcome], bool]:
         """Generate every plan in chunks off the main thread; returns outcomes + cancelled flag."""
         outcomes: list[_NoteOutcome] = []
         done = 0
         for batch in chunk(list(range(len(plans))), _CHUNK_SIZE):
             # want_cancel() is a simple thread-safe flag read on Anki's progress manager, so
-            # it can be polled directly from this background thread between chunks.
-            if anki_compat.progress_was_cancelled():
+            # it can be polled directly from this background thread between chunks. Only meaningful
+            # when a progress dialog is shown (background auto-gen has none, so nothing to cancel).
+            if show_progress and anki_compat.progress_was_cancelled():
                 return outcomes, True
             for index in batch:
                 plan = plans[index]
@@ -173,22 +209,28 @@ class BatchGenerator:
                     self._generate_one(plan, force_overwrite=force_overwrite)
                 )
             done += len(batch)
-            anki_compat.run_on_main(
-                lambda d=done: anki_compat.progress_update(
-                    f"Omnia: generating… ({d}/{total})", d, total
+            if show_progress:
+                anki_compat.run_on_main(
+                    lambda d=done: anki_compat.progress_update(
+                        f"Omnia: generating… ({d}/{total})", d, total
+                    )
                 )
-            )
         return outcomes, False
 
     def _generate_one(self, plan: _NotePlan, *, force_overwrite: bool) -> _NoteOutcome:
         try:
-            results, blocked = self._service.generate_note(
+            results, blocked, failed = self._service.generate_note(
                 plan.config,
                 plan.fields,
                 allow_empty_fields=self._settings.allow_empty_fields,
                 force_overwrite=force_overwrite,
             )
-            return _NoteOutcome(plan.nid, results=results, blocked=len(blocked))
+            return _NoteOutcome(
+                plan.nid,
+                results=results,
+                blocked=len(blocked),
+                field_failures=len(failed),
+            )
         except Exception:  # one bad note must not abort the rest of the batch
             logger.exception("smart_notes: failed to generate note %s", plan.nid)
             return _NoteOutcome(plan.nid, failed=True)
@@ -201,9 +243,11 @@ class BatchGenerator:
                 summary.failed += 1
                 continue
             summary.blocked += outcome.blocked
+            summary.field_failures += outcome.field_failures
             if not outcome.results:
-                # A note with only blocked fields counts as blocked, not skipped.
-                if not outcome.blocked:
+                # A note with only blocked/errored fields counts as blocked/field-error, not
+                # skipped (skipped means there was genuinely nothing to generate).
+                if not outcome.blocked and not outcome.field_failures:
                     summary.skipped += 1
                 continue
             if self._write_note(outcome):

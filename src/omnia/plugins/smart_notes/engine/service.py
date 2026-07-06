@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from omnia.core.logging import get_logger
 from omnia.core.providers.errors import ProviderError
 from omnia.plugins.smart_notes.engine.generators import (
     GenerationResult,
@@ -38,6 +39,8 @@ if TYPE_CHECKING:
         SmartNotesNoteTypeConfig,
     )
 
+logger = get_logger("smart_notes")
+
 
 @dataclass(frozen=True)
 class BlockedField:
@@ -50,6 +53,20 @@ class BlockedField:
 
     target_field: str
     missing: list[str]
+
+
+@dataclass(frozen=True)
+class FailedField:
+    """A field whose generation raised (e.g. a provider/network error) and was isolated.
+
+    Recording it (instead of letting the exception abort the whole note) lets sibling fields
+    that already succeeded still be written; ``error`` is the exception's message for surfacing a
+    count/diagnostic to the user. Like a blocked field, it produces no value, so its own hard
+    dependents block transitively.
+    """
+
+    field: str
+    error: str
 
 
 def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
@@ -119,7 +136,11 @@ class GenerationService:
         *,
         allow_empty_fields: bool = False,
         force_overwrite: bool = False,
-    ) -> tuple[list[tuple[SmartNotesFieldRule, GenerationResult]], list[BlockedField]]:
+    ) -> tuple[
+        list[tuple[SmartNotesFieldRule, GenerationResult]],
+        list[BlockedField],
+        list[FailedField],
+    ]:
         """Generate a note type's enabled fields, in dependency order, with chaining.
 
         The note type's generatable fields are compiled into rules
@@ -146,14 +167,21 @@ class GenerationService:
             force_overwrite: Regenerate every field even if its target is already non-empty
                 (the batch "regenerate when batching" path), ignoring per-field ``overwrite``.
 
+        A single field whose generation raises (e.g. a TTS field with no Auto-detect voice, or a
+        provider/network error) is isolated: the exception is logged and recorded as a
+        :class:`FailedField`, and generation continues with the remaining fields, so one
+        misconfigured field never discards siblings that already succeeded. Like a blocked field,
+        it writes no value, so its own hard dependents block transitively.
+
         Returns:
-            A tuple ``(results, blocked)`` where ``results`` is the ``(rule, result)`` pairs for
-            the fields that actually generated (in run order) and ``blocked`` lists the fields
-            skipped for a missing hard prerequisite.
+            A tuple ``(results, blocked, failed)`` where ``results`` is the ``(rule, result)``
+            pairs for the fields that actually generated (in run order), ``blocked`` lists the
+            fields skipped for a missing hard prerequisite, and ``failed`` lists the fields whose
+            generation raised.
 
         Raises:
-            SmartNotesCycleError: If the fields reference each other in a cycle.
-            ProviderError: On bad config or a provider/network failure.
+            SmartNotesCycleError: If the fields reference each other in a cycle. (A single field's
+                provider/network failure is NOT raised — it is recorded in ``failed``.)
         """
         rules = compile_note_type_rules(config)
         if force_overwrite:
@@ -161,6 +189,7 @@ class GenerationService:
         working = dict(fields)
         results: list[tuple[SmartNotesFieldRule, GenerationResult]] = []
         blocked: list[BlockedField] = []
+        failed: list[FailedField] = []
         # Lower-cased target names that generated a non-error result this run. Media (image/tts)
         # results are NOT chained into ``working`` (they are embed refs, not prompt text), so a
         # field hard-depending on a media field would falsely read it blank; ``produced`` records
@@ -173,14 +202,23 @@ class GenerationService:
                 continue  # writes no value → hard dependents block transitively
             if should_skip_rule(rule, working, allow_empty_fields=allow_empty_fields):
                 continue
-            result = self.generate(rule, working)
+            try:
+                result = self.generate(rule, working)
+            except Exception as exc:  # one field's error must not abort the note
+                logger.exception(
+                    "smart_notes: field %r failed to generate", rule.target_field
+                )
+                failed.append(FailedField(rule.target_field, str(exc)))
+                # Not added to results/produced/working, so its hard dependents block
+                # transitively (same as a blocked field).
+                continue
             results.append((rule, result))
             produced.add(rule.target_field.strip().lower())
             # Only text feeds downstream prompts; media (image/tts) becomes an embed ref a
             # later prompt shouldn't consume.
             if result.kind == "text" and result.text is not None:
                 working[rule.target_field] = result.text
-        return results, blocked
+        return results, blocked, failed
 
     @staticmethod
     def _missing_hard_prerequisites(
