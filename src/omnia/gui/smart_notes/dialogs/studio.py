@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from aqt.theme import theme_manager
 
+from omnia import active_voice_cache
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.providers.catalog import catalog_payload
@@ -64,6 +65,7 @@ class SmartNotesDialog(WebDialog):
             repo=repo,
             store=SmartNotesStore(),
             native_manager=default_manager(),
+            voice_cache=active_voice_cache(),
         )
         self._config = ConfigController(self._ctx, reject=self.reject)
         self._graph = GraphController(self._ctx)

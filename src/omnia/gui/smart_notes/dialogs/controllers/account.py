@@ -54,7 +54,7 @@ class AccountController:
     def on_account_data(self, _data: dict[str, Any]) -> dict[str, Any]:
         """The Account tab's usage tables: models-in-use merged with the recorded usage.
 
-        Synchronous + main-thread-safe: it only reads config + the fast JSON usage snapshot
+        Synchronous + main-thread-safe: it only reads config + the recorder's usage snapshot
         (no network). The credit line is fetched separately off-thread (``account_credit``).
         """
         from omnia.core.providers import usage
@@ -205,23 +205,34 @@ class AccountController:
         Pushed back through ``window.__snVoicesRefreshed`` with the rebuilt ``auto_voice_options``
         AND the refreshed per-provider ``voices`` map, so the Default/row voice pickers (which read
         ``CATALOG.voices``) also reflect the fetched voices.
+
+        The cache write happens in ``on_success`` (the Qt main thread) — the collection-backed
+        cache uses ``col.set_config``, which must never be touched from the background worker.
         """
 
-        def fetch() -> dict[str, object]:
-            from omnia.core.providers import tts, voice_cache
+        def fetch() -> dict[str, Any]:
+            from omnia.core.providers import tts
             from omnia.core.providers.catalog import catalog_payload
 
             voices = tts.refresh_voices()
-            voice_cache.save_cached_voices(self._ctx.user_files_dir(), voices)
             payload = catalog_payload(voices)
             return {
-                "auto_voice_options": payload["auto_voice_options"],
-                "voices": payload["voices"],
+                "voices": voices,  # the raw fetched map, saved on the main thread
+                "options": {
+                    "auto_voice_options": payload["auto_voice_options"],
+                    "voices": payload["voices"],
+                },
             }
+
+        def on_success(res: dict[str, Any]) -> None:
+            # QueryOp's success callback runs on the Qt main thread, the only safe place to
+            # write the collection-backed voice cache.
+            self._ctx.voice_cache().save(res["voices"])
+            self._push_voices_refreshed(options=res["options"])
 
         anki_compat.run_in_background(
             fetch,
-            on_success=lambda res: self._push_voices_refreshed(options=res),
+            on_success=on_success,
             on_failure=lambda exc: self._push_voices_refreshed(
                 error=self._ctx.friendly(exc, "Refresh voices failed")
             ),
