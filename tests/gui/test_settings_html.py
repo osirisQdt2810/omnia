@@ -83,19 +83,40 @@ class TestBuildSettingsHtml:
         )
         assert '<button class="omnia-configure"' not in html
 
-    def test_tooltip_falls_back_to_description(self):
+    def test_no_info_popover_without_tooltip(self):
+        # No extended tooltip → description shown inline, no (i) popover (nothing to add).
         html = build_settings_html(
             [("Grading", [_card("x", description="the desc", tooltip="")])],
             dark=False,
         )
         assert "the desc" in html
+        assert 'class="omnia-info"' not in html  # markup, not the CSS rule
 
-    def test_tooltip_used_when_present(self):
+    def test_info_popover_rendered_when_tooltip_present(self):
         html = build_settings_html(
             [("Grading", [_card("x", tooltip="cooperates with the other one")])],
             dark=False,
         )
         assert "cooperates with the other one" in html
+        assert 'class="omnia-info"' in html
+        assert 'class="omnia-tip"' in html
+        # The card must NOT carry a raw browser title= attribute anymore.
+        assert 'title="' not in html
+
+    def test_info_popover_suppressed_when_tooltip_equals_description(self):
+        # A tooltip that just repeats the visible description adds nothing → no popover.
+        html = build_settings_html(
+            [("Grading", [_card("x", description="same text", tooltip="same text")])],
+            dark=False,
+        )
+        assert 'class="omnia-info"' not in html
+
+    def test_tooltip_newlines_become_line_breaks(self):
+        html = build_settings_html(
+            [("Grading", [_card("x", tooltip="line one\nline two")])],
+            dark=False,
+        )
+        assert "line one<br>line two" in html
 
     def test_failed_enable_marks_card(self):
         html = build_settings_html(
