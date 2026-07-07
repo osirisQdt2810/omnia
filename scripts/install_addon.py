@@ -8,16 +8,21 @@ side-by-side in ONE folder, so this script *assembles* that folder by:
 * symlinking each source item (``__init__.py``, ``envs.py``, ``manifest.json``, ``core``,
   ``gui``, ``plugins``) from ``src/omnia`` into the target — edits are picked up on the next
   Anki restart, no rebuild;
-* symlinking the repo-root sibling data dirs (``vendor``, ``models``) into the target;
-* creating the runtime dirs (``config``, ``.secrets``, ``user_files``) as REAL directories in
-  the target, only if absent (never clobbering user data on re-run); and
-* seeding the ``*.example.toml`` templates + the secrets README into those runtime dirs if
-  they are missing (live ``*.toml`` are NEVER seeded — the add-on writes them at runtime).
+* symlinking the repo-root sibling data dirs (``vendor``, ``models``, and ``config`` — the
+  shipped ``*.example.toml`` templates) into the target;
+* creating the runtime dir ``user_files`` (with its live ``config`` + ``config/.secrets``
+  subdirs) as REAL directories in the target, only if absent (never clobbering user data on
+  re-run); and
+* seeding the secrets README into ``user_files/config/.secrets`` if missing (live ``*.toml``
+  are NEVER seeded — the add-on writes them under ``user_files/config`` on first run).
+
+The LIVE config + secrets live under ``user_files/`` so Anki preserves them across add-on
+updates; the root ``config/`` is templates-only (refreshed on every update).
 
 Because each top-level item is symlinked individually (not the whole package folder), the
 add-on's ``__init__.py`` resolves its directory — not the file — so the runtime siblings it
-needs (``vendor``, ``models``, ``config``, ``.secrets``, ``user_files``) live next to it in
-the assembled folder rather than back in ``src/omnia``.
+needs (``vendor``, ``models``, ``config`` templates, ``user_files``) live next to it in the
+assembled folder rather than back in ``src/omnia``.
 
 Usage:
     python scripts/install_addon.py            # symlink-assemble (default)
@@ -38,10 +43,16 @@ ADDON_FOLDER_NAME = "omnia"  # dev folder name inside addons21/
 
 # Source items linked individually from src/omnia (the source-only package).
 SOURCE_ITEMS = ("__init__.py", "envs.py", "manifest.json", "core", "gui", "plugins")
-# Repo-root data dirs linked in as siblings of the source items.
-SIBLING_LINKS = {"vendor": REPO_ROOT / "vendor", "models": REPO_ROOT / "models"}
-# Runtime dirs created as REAL dirs in the target, only if absent (hold user data).
-RUNTIME_DIRS = ("config", ".secrets", "user_files")
+# Repo-root data dirs linked in as siblings of the source items. ``config`` is the shipped
+# TEMPLATE dir (its ``*.example.toml``); the LIVE config lives under ``user_files/config``.
+SIBLING_LINKS = {
+    "vendor": REPO_ROOT / "vendor",
+    "models": REPO_ROOT / "models",
+    "config": REPO_ROOT / "config",
+}
+# Runtime dirs created as REAL dirs in the target, only if absent (hold user data preserved
+# across add-on updates). The live config + secrets live under ``user_files/config``.
+RUNTIME_DIRS = ("user_files", "user_files/config", "user_files/config/.secrets")
 
 
 def anki_addons_dir() -> Path:
@@ -101,22 +112,18 @@ def _place(src: Path, dest: Path, *, copy: bool) -> None:
 
 
 def _seed_runtime(target: Path) -> None:
-    """Seed config templates + the secrets README into the runtime dirs if missing.
+    """Seed the secrets README into the live secrets dir if missing.
 
-    Never seeds live ``*.toml`` (the add-on writes those itself on first run); only the tracked
-    ``*.example.toml`` templates and the secrets README, and only when absent.
+    Config TEMPLATES ship at the add-on root ``config/`` (a symlink of the repo ``config/``),
+    so they are never copied here. Live ``*.toml`` are never seeded either — the add-on writes
+    ``providers.toml`` under ``user_files/config`` itself on first run. This only drops the
+    secrets README next to where the live ``.secrets/`` will be, and only when absent.
 
     Args:
-        target: The assembled add-on folder whose runtime dirs are seeded.
+        target: The assembled add-on folder whose live secrets dir is seeded.
     """
-    config_src = REPO_ROOT / "config"
-    config_dst = target / "config"
-    for template in config_src.glob("*.example.toml"):
-        dst = config_dst / template.name
-        if not dst.exists():
-            shutil.copy2(template, dst)
-    readme_src = config_src / "secrets.README.md"
-    readme_dst = target / ".secrets" / "README.md"
+    readme_src = REPO_ROOT / "config" / "secrets.README.md"
+    readme_dst = target / "user_files" / "config" / ".secrets" / "README.md"
     if readme_src.exists() and not readme_dst.exists():
         shutil.copy2(readme_src, readme_dst)
 

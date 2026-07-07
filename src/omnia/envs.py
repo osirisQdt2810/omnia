@@ -44,7 +44,6 @@ def _float(name: str, default: float) -> float:
 environment_variables: dict[str, Callable[[], Any]] = {
     # ── logging ── empty -> use the configured log_level (config/omnia.toml).
     "OMNIA_LOG_LEVEL": lambda: _str("OMNIA_LOG_LEVEL", ""),
-
     # ── per-LLM-call temperatures (OMNIA_{PLUGIN}_{FUNCTION}_TEMPERATURE) ──
     # Each distinct LLM call gets its own knob, defaulted to what that task wants and
     # env-overridable (e.g. set to 0 for deterministic runs). The general per-provider default
@@ -76,6 +75,21 @@ environment_variables: dict[str, Callable[[], Any]] = {
     ),
     # ── HTTP ── default request timeout (seconds) for the stdlib HTTP client.
     "OMNIA_HTTP_TIMEOUT": lambda: _float("OMNIA_HTTP_TIMEOUT", 30.0),
+    # ── storage dispatch (ADR-006) ── one knob per persistence concern, selecting its backend.
+    # Default "database" = the Anki collection (config/voices in col config, usage in a col.db
+    # table); the file backends stay first-class and selectable. These are read at startup by
+    # the PersistenceDispatcher: changing a value triggers a ONE-TIME sync of that concern's
+    # data from the previous backend to the newly-selected one on the next startup (the last-used
+    # value is remembered in user_files/.storage.json), so switching never loses state.
+    "OMNIA_CONFIG_STORAGE": lambda: _str(
+        "OMNIA_CONFIG_STORAGE", "database"
+    ),  # "database" | "toml"
+    "OMNIA_USAGE_STORAGE": lambda: _str(
+        "OMNIA_USAGE_STORAGE", "database"
+    ),  # "database" | "json"
+    "OMNIA_VOICE_CACHE_STORAGE": lambda: _str(
+        "OMNIA_VOICE_CACHE_STORAGE", "database"
+    ),  # "database" | "json"
 }
 
 
