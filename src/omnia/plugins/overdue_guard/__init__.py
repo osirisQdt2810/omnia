@@ -27,16 +27,20 @@ class OverdueGuardPlugin(FeaturePlugin):
     )
     group = "Grading"
     tooltip = (
-        "Caps the grade for very overdue cards (forces Hard/Again). "
-        "Cooperates with Typing Accuracy: Typing Accuracy sets the grade first, "
-        "then Overdue Guard caps it when a card is overdue. Both can be on together — "
-        "they run in order through the shared ease pipeline, not against each other. "
-        "How “overdue” is measured: a card’s interval (ivl) is the gap Anki scheduled "
-        "between reviews, and days-late is how far past the due date you actually review it "
-        "(reviewing on time = 0 days late). A card is overdue when days-late ÷ interval ≥ "
-        "Ratio, once it is at least Min days late. Example: interval = 10 days and you review "
-        "it 8 days after it came due → 8 ÷ 10 = 0.8, so at the default Ratio 0.8 the card is "
-        "overdue and capped to Hard. The same card reviewed on time → 0 ÷ 10 = 0 → never overdue."
+        "Caps the grade for very overdue cards (forces Hard/Again).\n"
+        "Cooperates with Typing Accuracy: it sets the grade first, then Overdue Guard "
+        "caps it when a card is overdue.\n"
+        "Both can be on together — they run in order through the shared ease pipeline, "
+        "not against each other.\n"
+        "\n"
+        "How “overdue” is measured:\n"
+        "• interval (ivl) — the gap Anki scheduled between reviews.\n"
+        "• days-late — how far past the due date you actually review it (on time = 0).\n"
+        "• A card is overdue when days-late ÷ interval ≥ Overdue Ratio, once it is at "
+        "least Min days late.\n"
+        "\n"
+        "Example: interval 10 days, reviewed 8 days late → 8 ÷ 10 = 0.8 ≥ 0.8 → overdue, "
+        "capped to Hard. Reviewed on time → 0 ÷ 10 = 0 → never overdue."
     )
     order = 40
     config_model = OverdueGuardSettings

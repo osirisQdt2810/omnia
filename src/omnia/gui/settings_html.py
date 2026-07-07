@@ -74,8 +74,27 @@ def _section_html(group_name: str, cards: list[PluginCardModel]) -> str:
     )
 
 
+def _tip_html(tooltip: str, description: str) -> str:
+    """Render the styled (i) help popover for a card, or "" when there's no extended help.
+
+    Only shown when the plugin declares a ``tooltip`` that adds something beyond the inline
+    ``description`` (avoids a redundant popover that just repeats the visible text). The body
+    keeps the author's line breaks (``\\n`` → ``<br>``) so multi-line/bulleted help reads as
+    written instead of one wrapped paragraph.
+    """
+    extra = tooltip.strip()
+    if not extra or extra == description.strip():
+        return ""
+    body = "<br>".join(html.escape(line) for line in extra.split("\n"))
+    return (
+        '<span class="omnia-info" tabindex="0" aria-label="More about this feature">'
+        '<span class="omnia-info-icon">i</span>'
+        f'<span class="omnia-tip" role="tooltip">{body}</span>'
+        "</span>"
+    )
+
+
 def _card_html(card: PluginCardModel) -> str:
-    tip = card.tooltip or card.description
     checked = " checked" if card.enabled else ""
     failed = " omnia-failed" if (card.enabled and not card.active) else ""
     configure = (
@@ -84,17 +103,18 @@ def _card_html(card: PluginCardModel) -> str:
         else ""
     )
     return (
-        f'<div class="omnia-card{failed}" data-id="{html.escape(card.id)}" '
-        f'title="{html.escape(tip)}">'
+        f'<div class="omnia-card{failed}" data-id="{html.escape(card.id)}">'
         '<div class="omnia-card-text">'
-        f'<div class="omnia-card-title">{html.escape(card.name or card.id)}</div>'
+        '<div class="omnia-card-title">'
+        f"{html.escape(card.name or card.id)}"
+        f"{_tip_html(card.tooltip, card.description)}"
+        "</div>"
         f'<div class="omnia-card-desc">{html.escape(card.description)}</div>'
         f'<div class="omnia-card-status">{html.escape(status_text(enabled=card.enabled, active=card.active))}</div>'
         "</div>"
         '<div class="omnia-card-actions">'
         f"{configure}"
-        '<label class="omnia-switch" title="'
-        f'{html.escape(tip)}">'
+        '<label class="omnia-switch">'
         f'<input type="checkbox" data-id="{html.escape(card.id)}"{checked}>'
         '<span class="omnia-slider"></span>'
         "</label>"
