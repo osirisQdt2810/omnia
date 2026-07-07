@@ -49,7 +49,9 @@ class SettingsDialog(WebDialog):
             id=plugin.id,
             name=plugin.name or plugin.id,
             description=plugin.description,
-            tooltip=plugin.tooltip or plugin.description,
+            # Only the extended help (empty when a plugin sets no tooltip) — the card shows an
+            # (i) popover for it; the plain description is already rendered inline.
+            tooltip=plugin.tooltip,
             enabled=self._manager.config.is_enabled(plugin.id),
             active=self._manager.is_active(plugin.id),
             configurable=bool(

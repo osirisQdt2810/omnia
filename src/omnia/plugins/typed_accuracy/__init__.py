@@ -58,10 +58,10 @@ class TypedAccuracyPlugin(FeaturePlugin):
     )
     group = "Grading"
     tooltip = (
-        "Sets the grade from how accurately you typed the answer. "
-        "Cooperates with Overdue Guard: Typing Accuracy decides the grade first, "
-        "then Overdue Guard may cap it for very overdue cards. Both can be on at once — "
-        "they do not conflict and need not be mutually exclusive."
+        "Sets the grade from how accurately you typed the answer.\n"
+        "Cooperates with Overdue Guard: Typing Accuracy decides the grade first, then "
+        "Overdue Guard may cap it for very overdue cards.\n"
+        "Both can be on at once — they do not conflict and need not be mutually exclusive."
     )
     order = 20
     config_model = TypedAccuracySettings

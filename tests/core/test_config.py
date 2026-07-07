@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 import omnia.plugins  # noqa: F401 — registers plugins so feature_settings resolves config_model
 from omnia.core.config import ConfigLoader, ConfigRepository
-from omnia.core.config.loader import ConfigLoader as Loader
+from omnia.core.config.loader import deep_merge
 from omnia.core.config.models import OmniaConfig
 from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
@@ -277,9 +277,58 @@ class TestConfigLoader:
     def test_deep_merge_is_recursive(self):
         base = {"a": {"x": 1, "y": 2}, "b": 1}
         override = {"a": {"y": 3, "z": 4}, "c": 5}
-        merged = Loader._deep_merge(base, override)
+        merged = deep_merge(base, override)
         assert merged == {"a": {"x": 1, "y": 3, "z": 4}, "b": 1, "c": 5}
         assert base == {"a": {"x": 1, "y": 2}, "b": 1}  # base untouched
+
+
+class TestTomlConfigLoaderTemplateDir:
+    """The shipped ``*.example.toml`` templates and the LIVE files can live in separate dirs.
+
+    This is what lets the live config move under ``user_files/config`` (preserved across add-on
+    updates) while the templates stay at the add-on root ``config/`` (refreshed each update).
+    """
+
+    def test_seeds_live_files_from_separate_template_dir(self, tmp_path):
+        from omnia.core.config.loader import TomlConfigLoader
+
+        template_dir = tmp_path / "templates"
+        live_dir = tmp_path / "live"
+        template_dir.mkdir()
+        (template_dir / "omnia.example.toml").write_text(
+            'log_level = "DEBUG"\n', encoding="utf-8"
+        )
+        (template_dir / "features.example.toml").write_text(
+            "[auto_flip]\ndelay_question_seconds = 4.0\n", encoding="utf-8"
+        )
+        (template_dir / "providers.example.toml").write_text(
+            '[llm]\nprovider = "gemini"\n', encoding="utf-8"
+        )
+
+        loader = TomlConfigLoader(live_dir, template_dir=template_dir)
+        loader.ensure_live_files()
+
+        # The live files are created in the LIVE dir (created on demand), from the templates.
+        for name in ("omnia.toml", "features.toml", "providers.toml"):
+            assert (live_dir / name).exists()
+            assert not (template_dir / name).exists()
+        # Reads come from the live dir; writes stay there, never the template dir.
+        assert loader.read_file("omnia.toml") == {"log_level": "DEBUG"}
+        loader.write_file("omnia.toml", {"log_level": "WARNING"})
+        assert loader.read_file("omnia.toml") == {"log_level": "WARNING"}
+        assert not (template_dir / "omnia.toml").exists()
+
+    def test_template_dir_defaults_to_config_dir(self, tmp_path):
+        # Single-dir back-compat: with no template_dir, templates + live files share one dir.
+        from omnia.core.config.loader import TomlConfigLoader
+
+        (tmp_path / "omnia.example.toml").write_text(
+            'log_level = "INFO"\n', encoding="utf-8"
+        )
+        loader = TomlConfigLoader(tmp_path)
+        loader.ensure_live_files()
+        assert (tmp_path / "omnia.toml").exists()
+        assert loader.read_file("omnia.toml") == {"log_level": "INFO"}
 
 
 def _tmp_config(tmp_path):

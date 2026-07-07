@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from omnia.core.providers.voice_cache import VoiceCache
 
 # Resolve the DIRECTORY, not the file: with the per-item-symlink deploy, ``__init__.py`` is a
 # symlink back into the repo's ``src/omnia``. Resolving the file would follow it there (where
-# the runtime siblings vendor/, models/, config/, .secrets/ do NOT exist); resolving the parent
-# instead keeps ``_ADDON_DIR`` at the real add-on folder where those siblings are assembled.
+# the runtime siblings vendor/, models/, config/, user_files/ do NOT exist); resolving the
+# parent instead keeps ``_ADDON_DIR`` at the real add-on folder where those siblings are
+# assembled. The root config/ holds only the shipped *.example.toml templates (refreshed on
+# every add-on update); the LIVE config + secrets live under user_files/config/ (+ its
+# .secrets/), which Anki preserves across updates.
 _ADDON_DIR = Path(__file__).parent.resolve(strict=False)
 
 # Anki loads an add-on under its *folder* name (the numeric AnkiWeb id once published, e.g.
@@ -47,7 +53,7 @@ _add_vendor_paths()
 
 # Importing the plugins package runs each plugin's @register at load time.
 from omnia import plugins  # noqa: E402  (import for side effects: registration)
-from omnia.core.config import ConfigLoader, ConfigRepository  # noqa: E402
+from omnia.core.config import ConfigRepository, SecretsStore  # noqa: E402
 from omnia.core.logging import setup_logging  # noqa: E402
 from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
@@ -56,14 +62,19 @@ _manager: Optional[PluginManager] = None
 # The single Tools → Omnia QAction. Tracked so it can be removed on profile close and not
 # re-appended on the next profile open (profile_did_open fires on every profile switch).
 _menu_action: Optional[Any] = None
+# The active fetched-voice cache resolved by the PersistenceDispatcher at bootstrap (the backend
+# selected by OMNIA_VOICE_CACHE_STORAGE). The Smart Notes dialog reads it via
+# active_voice_cache(); resolved once so the sync-on-change runs at startup, not per dialog open.
+_voice_cache: Optional[VoiceCache] = None
 
 
 def addon_user_files_dir() -> Path:
     """The add-on's ``user_files`` directory (runtime state Anki preserves across updates).
 
-    Holds logs + per-plugin state files (logs, usage.json, the fetched-voice cache) — NOT
-    config. Public so GUI glue (e.g. the Smart Notes dialog's voice cache) can resolve it
-    without threading a path through every constructor.
+    Holds logs, the LIVE config + secrets (``user_files/config/`` + its ``.secrets/``, seeded
+    on first run from the shipped templates so they survive add-on updates) and any per-plugin
+    state files (usage + the fetched-voice cache live in the collection DB per ADR-006). Public
+    so GUI glue can resolve it without threading a path through every constructor.
     """
     path = _ADDON_DIR / "user_files"
     path.mkdir(parents=True, exist_ok=True)
@@ -74,21 +85,48 @@ def _user_files_dir() -> Path:
     return addon_user_files_dir()
 
 
+def active_voice_cache() -> VoiceCache:
+    """The active fetched-voice cache (the backend OMNIA_VOICE_CACHE_STORAGE selected).
+
+    Public so the Smart Notes dialog can inject it. Resolved by the PersistenceDispatcher at
+    bootstrap (so the sync-on-change runs once at startup); before bootstrap / on a headless
+    import it degrades to the collection backend, whose ``col`` is resolved lazily (defaults /
+    no-op without a collection).
+    """
+    if _voice_cache is not None:
+        return _voice_cache
+    from omnia.core.providers.voice_cache import CollectionVoiceCache
+
+    return CollectionVoiceCache()
+
+
 def _bootstrap() -> None:
     """Build the PluginManager from Anki config and activate enabled plugins."""
-    global _manager
+    global _manager, _voice_cache
     if _manager is not None:
         return
 
     user_files = _user_files_dir()
-    # Every ProviderHub built anywhere records LLM/TTS usage to user_files/usage.json (Anki
-    # preserves user_files across updates; .gitignore already excludes it). Imported locally
-    # so the module stays import-safe headless.
+    # One env-driven dispatcher resolves every persistence concern's active backend (ADR-006):
+    # it reads the OMNIA_*_STORAGE knobs and, when a knob changed since last startup, syncs that
+    # concern's data from the previous backend into the new one before returning it. Built after
+    # user_files is known and while col is available (profile_did_open). Imported locally so this
+    # module stays import-safe headless.
+    from omnia.core.config.dispatch import PersistenceDispatcher
     from omnia.core.providers import usage
 
-    usage.set_default_recorder(usage.JsonUsageRecorder(user_files / "usage.json"))
-    config_dir = _ADDON_DIR / "config"
-    (_ADDON_DIR / ".secrets").mkdir(parents=True, exist_ok=True)
+    dispatcher = PersistenceDispatcher(user_files)
+    # Usage records LLM/TTS calls; the DB backend BUFFERS in memory and flushes on the Qt main
+    # thread, because col.db is not safe to write per-record off a bg generation thread.
+    usage.set_default_recorder(dispatcher.usage_recorder())
+    # The fetched-voice cache the Smart Notes dialog reads via active_voice_cache().
+    _voice_cache = dispatcher.voice_cache()
+    # config/ at the add-on root ships the templates (refreshed each update); the LIVE config +
+    # secrets live under user_files/config/ so Anki preserves them across add-on updates.
+    template_dir = _ADDON_DIR / "config"
+    live_config_dir = _ADDON_DIR / "user_files" / "config"
+    live_config_dir.mkdir(parents=True, exist_ok=True)
+    (live_config_dir / ".secrets").mkdir(parents=True, exist_ok=True)
     paths = AddonPaths(
         addon_dir=_ADDON_DIR,
         web_dir=_ADDON_DIR / "web",
@@ -103,10 +141,14 @@ def _bootstrap() -> None:
     install_crash_logger(logger)
     # Build the repository AFTER logging is up: it eager-loads + validates the config (extra
     # keys forbidden), so a config typo raises here — logging first guarantees that failure is
-    # captured in omnia.log before we re-raise (which aborts boot, the current behaviour).
-    loader = ConfigLoader(config_dir)
+    # captured in omnia.log before we re-raise (which aborts boot, the current behaviour). The
+    # loader is the backend OMNIA_CONFIG_STORAGE selected (collection by default, ADR-006):
+    # plugin settings + enable flags live in the synced collection; providers.toml stays on disk.
+    loader = dispatcher.config_loader(live_config_dir, template_dir=template_dir)
     try:
-        repository = ConfigRepository(loader)
+        repository = ConfigRepository(
+            loader, secrets=SecretsStore(live_config_dir / ".secrets")
+        )
     except Exception:
         logger.exception("Failed to load Omnia config")
         raise
@@ -146,6 +188,11 @@ def _open_settings() -> None:
 
 def _teardown() -> None:
     global _manager, _menu_action
+    # Flush any buffered usage synchronously before we tear down — the coalesced main-thread
+    # flush may still be pending, and this is the last safe point on the main thread.
+    from omnia.core.providers import usage
+
+    usage.flush_default_recorder()
     if _menu_action is not None:
         from aqt import mw
 
