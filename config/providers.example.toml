@@ -2,9 +2,11 @@
 #
 # The [llm] block has ONE subsection per provider ([llm.gemini_vertex], [llm.openai], …):
 # `provider` selects which one is active, so you only fill in the credentials for the
-# provider you actually use. Secrets stay in the active subsection (or, better, in your
-# user override at user_files/omnia.toml so they're not shipped). The free defaults
-# (google_translate TTS) need no key.
+# provider you actually use. The live file is user_files/config/providers.toml (gitignored,
+# preserved across add-on updates); this *.example.toml is only the seed template. NEVER put a
+# raw key here — reference it instead: `secret:<name>` reads the value from .secrets/<name>, and
+# `secret-file:<name>` resolves to the .secrets/<name> path (for a service-account JSON). The
+# free defaults (google_translate / edge_tts) need no key.
 
 [llm]
 # provider: gemini_vertex | gemini | openai | openrouter | openai_compatible
@@ -16,7 +18,7 @@ provider = "gemini_vertex"
 project = ""                # GCP project id, e.g. "vio-ai-500116"
 location = "global"         # "global" for Gemini 3.x; a region like "us-central1" otherwise
 # Auth — set exactly ONE of these two (the add-on never shells out to the gcloud CLI):
-credentials_path = ""       # service-account JSON path (abs, or relative to the add-on dir)
+credentials_path = ""       # e.g. "secret-file:llm.gemini_vertex.credentials_path.json" (JSON in .secrets/)
 access_token = ""           # paste a short-lived OAuth token directly
 # Model ids:
 text_model = "gemini-2.5-flash"
@@ -24,8 +26,8 @@ image_model = ""            # e.g. "gemini-2.5-flash-image"
 embedding_model = ""        # e.g. "gemini-embedding-001"
 
 # Gemini via AI Studio (a GOOGLE_API_KEY instead of a GCP project).
-# NOTE: keep secrets OUT of this tracked file — put api keys in the gitignored
-# user_files/omnia.toml (see below) so they can't be committed.
+# NOTE: never inline the raw key — set `api_key = "secret:llm.gemini.api_key"` and store the
+# value in .secrets/llm.gemini.api_key (the .secrets/ dir is gitignored, under user_files/config).
 [llm.gemini]
 api_key = ""
 text_model = "gemini-2.0-flash"
@@ -40,7 +42,8 @@ text_model = "gpt-4o-mini"
 image_model = "gpt-image-1"
 embedding_model = "text-embedding-3-small"
 
-# OpenRouter (OpenAI-compatible aggregator). Put the api_key in user_files/omnia.toml, not here.
+# OpenRouter (OpenAI-compatible aggregator). Use `api_key = "secret:llm.openrouter.api_key"`
+# (value in .secrets/), not a raw key here.
 [llm.openrouter]
 api_key = ""
 base_url = "https://openrouter.ai/api/v1"
