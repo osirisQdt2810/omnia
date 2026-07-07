@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
-from omnia.core.config.loader import ConfigLoader
+from omnia.core.config.loader import BaseConfigLoader
 from omnia.core.config.models import (
     LLMSettings,
     OmniaConfig,
@@ -39,12 +39,13 @@ class ConfigRepository:
     """
 
     def __init__(
-        self, loader: ConfigLoader, secrets: Optional[SecretsStore] = None
+        self, loader: BaseConfigLoader, secrets: Optional[SecretsStore] = None
     ) -> None:
         self._loader = loader
-        # Secrets live next to the config dir (``<addon>/.secrets``) unless one is injected
-        # (tests pass their own). The reference scheme keeps keys/JSON out of providers.toml.
-        self._secrets = secrets or SecretsStore(loader.config_dir.parent / ".secrets")
+        # Secrets live under the live config dir (``<config_dir>/.secrets``) unless one is
+        # injected (bootstrap injects it explicitly; tests pass their own). The reference scheme
+        # keeps keys/JSON out of providers.toml.
+        self._secrets = secrets or SecretsStore(loader.config_dir / ".secrets")
         self._config: OmniaConfig = loader.load()
         self._resolve_secrets()
         # Retained so a plugin's namespace can be validated by its own config_model.

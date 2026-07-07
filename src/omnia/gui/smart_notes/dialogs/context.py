@@ -15,7 +15,6 @@ context). Only loaded inside Anki; pure-logic imports stay lazy so the deps test
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core.logging import get_logger
@@ -24,6 +23,7 @@ from omnia.core.providers import ProviderError, ProviderHub
 if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
     from omnia.core.providers.native_runtime import NativeRuntimeManager
+    from omnia.core.providers.voice_cache import VoiceCache
     from omnia.plugins.smart_notes.engine import GenerationResult
     from omnia.plugins.smart_notes.integration import SmartNotesStore
 
@@ -44,6 +44,8 @@ class SmartNotesContext:
         store: The synced per-note-type rules store (the global option flags ride along).
         native_manager: The native-runtime sidecar manager (ADR-005), shared so install state +
             tracked servers persist across the native-runtime ops.
+        voice_cache: The fetched-voice cache backend (the synced collection config), read by
+            the catalog and written by the Refresh action (on the main thread).
     """
 
     def __init__(
@@ -54,12 +56,14 @@ class SmartNotesContext:
         repo: ConfigRepository,
         store: SmartNotesStore,
         native_manager: NativeRuntimeManager,
+        voice_cache: VoiceCache,
     ) -> None:
         self.eval_js = eval_js
         self.parent_widget = parent_widget
         self.repo = repo
         self.store = store
         self.native_manager = native_manager
+        self._voice_cache = voice_cache
         # The temp clip of the last sound preview/test, replayed by the "Play again" button.
         # Lives here because result_payload (shared by preview + account test) writes it and the
         # account replay op reads it — shared state, so it sits on the shared context.
@@ -96,12 +100,9 @@ class SmartNotesContext:
             {"id": deck_id, "name": name} for deck_id, name in anki_compat.deck_names()
         ]
 
-    @staticmethod
-    def user_files_dir() -> Path:
-        """The add-on's ``user_files`` directory (where the fetched-voice cache lives)."""
-        from omnia import addon_user_files_dir
-
-        return addon_user_files_dir()
+    def voice_cache(self) -> VoiceCache:
+        """The fetched-voice cache backend (synced collection), injected at construction."""
+        return self._voice_cache
 
     def cached_fetched_voices(self) -> dict[str, Any]:
         """The cached Refresh result merged into the baked catalog (``{}`` when absent).
@@ -109,9 +110,7 @@ class SmartNotesContext:
         Offline-safe: when no cache exists the Auto-detect dropdowns fall back to the curated
         seed. Provider-agnostic — whatever providers were fetched + cached are merged.
         """
-        from omnia.core.providers import voice_cache
-
-        return voice_cache.load_cached_voices(self.user_files_dir())
+        return self.voice_cache().load()
 
     def result_payload(self, result: GenerationResult) -> dict[str, Any]:
         """Convert a generation result to the page payload (shared by preview + account test).

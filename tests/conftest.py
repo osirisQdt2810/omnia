@@ -349,7 +349,11 @@ class FakeTTSProvider(_TTSProvider):
 
 
 def _real_config_dir() -> Path:
-    return _REPO_ROOT / "config"
+    # The add-on's LIVE config now lives under user_files/config (ADR-006 — preserved across
+    # Anki updates); that's where the running add-on writes providers.toml + .secrets, so the
+    # real-provider integration tests read their credentials from there. (This dir is gitignored,
+    # so building a repo over it never pollutes the tracked tree with seeded live *.toml.)
+    return _REPO_ROOT / "user_files" / "config"
 
 
 def llm_sub_has_credentials(provider: str, sub) -> bool:
@@ -369,7 +373,7 @@ def has_llm_credentials(llm_settings) -> bool:
 def _real_repo_and_override():
     """A ConfigRepository over the gitignored live config dir holding real credentials.
 
-    Creds come only from the live ``config/providers.toml`` (gitignored) — or a config
+    Creds come only from the live ``user_files/config/providers.toml`` (gitignored) — or a config
     directory named by ``OMNIA_TEST_CONFIG`` — never the tracked ``*.example.toml`` templates,
     so secrets are never sourced from a committable file. The returned path is the live
     ``providers.toml`` so callers can gate on its existence.
@@ -394,7 +398,7 @@ def real_llm_provider_or_skip():
 
     * env ``OMNIA_TEST_CONFIG`` → a config DIRECTORY holding your live ``providers.toml`` with
       ``[llm.<provider>]`` creds, or
-    * the add-on's gitignored ``config/providers.toml`` (what the running add-on
+    * the add-on's gitignored ``user_files/config/providers.toml`` (what the running add-on
       writes when you configure providers in Anki).
 
     The tracked ``providers.example.toml`` still supplies non-secret defaults (provider, model
@@ -409,7 +413,7 @@ def real_llm_provider_or_skip():
             f"no credentials for LLM provider {llm.provider!r}: put them in the live config — "
             f"set OMNIA_TEST_CONFIG to a config directory with a providers.toml holding "
             f"[llm.{llm.provider}] creds, or configure providers in Anki (writes "
-            f"config/providers.toml) — to run @llm tests"
+            f"user_files/config/providers.toml) — to run @llm tests"
         )
     return ProviderHub(llm, repo.tts_settings()).llm()
 

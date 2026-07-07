@@ -1,49 +1,115 @@
-"""On-disk cache of fetched TTS voices (the Refresh result).
+"""Cache of fetched TTS voices (the Refresh result), behind a swappable backend.
 
 The Smart Notes "Auto-detect voices" editor lets a user point each language at a concrete
 ``provider:voice``. Each provider's curated seed (its ``CURATED_VOICES``) covers the common
 languages offline; a Refresh action fetches the FULL set from the fetch-capable providers (via
-:func:`omnia.core.providers.tts.refresh_voices`) and caches it under ``user_files/`` so the
-dropdowns can offer every voice across sessions. The cache is OPTIONAL: when the file is absent
-(offline, never refreshed) callers fall back to the curated seed, so nothing requires the
-network.
+:func:`omnia.core.providers.tts.refresh_voices`) and caches it so the dropdowns can offer every
+voice across sessions. The cache is OPTIONAL: when it is absent (offline, never refreshed)
+callers fall back to the curated seed, so nothing requires the network.
 
-Pure module — no ``aqt``/``anki`` imports. It only persists/reads the aggregated
-``{provider: [TTSVoice, ...]}`` map (serializing each :class:`TTSVoice` to a plain dict); the
-fetch itself is the provider layer's concern, and ``user_files_dir`` is injected by the glue.
+Pure module — no ``aqt``/``anki`` imports at top level. A :class:`VoiceCache` persists/reads the
+aggregated ``{provider: [TTSVoice, ...]}`` map (serializing each :class:`TTSVoice` to a plain
+dict). :class:`JsonVoiceCache` stores it under ``user_files/``; :class:`CollectionVoiceCache`
+stores it in the synced collection config (``col.set_config`` under ``omnia:voices``) — a
+harmless re-fetchable cache that rides along with a device sync.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, Optional
 
 from omnia.core.providers.tts.base import TTSVoice
 
 _CACHE_FILE = "voices.json"
 
 
-def cache_path(user_files_dir: Path) -> Path:
-    """Return the fetched-voice cache file path under ``user_files_dir``."""
-    return user_files_dir / _CACHE_FILE
+class VoiceCache(ABC):
+    """Persists the aggregated ``{provider: [TTSVoice, ...]}`` fetched-voice map."""
+
+    @abstractmethod
+    def load(self) -> dict[str, list[TTSVoice]]:
+        """Return the cached voice map (``{}`` when absent/unreadable/malformed)."""
+
+    @abstractmethod
+    def save(self, voices: dict[str, list[TTSVoice]]) -> None:
+        """Persist the aggregated voice map."""
 
 
-def load_cached_voices(user_files_dir: Path) -> dict[str, list[TTSVoice]]:
-    """Return the cached ``{provider: [TTSVoice, ...]}`` map (``{}`` if absent or corrupt).
+class JsonVoiceCache(VoiceCache):
+    """A :class:`VoiceCache` backed by ``voices.json`` under the add-on's ``user_files``."""
 
-    Args:
-        user_files_dir: The add-on's ``user_files`` directory.
+    def __init__(self, user_files_dir: Path) -> None:
+        self._dir = user_files_dir
 
-    Returns:
-        The cached voice map, or ``{}`` when the cache is missing/unreadable/malformed.
+    def load(self) -> dict[str, list[TTSVoice]]:
+        path = self._dir / _CACHE_FILE
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                parsed = json.load(handle)
+        except (OSError, ValueError):
+            return {}
+        return _voices_from_raw(parsed)
+
+    def save(self, voices: dict[str, list[TTSVoice]]) -> None:
+        path = self._dir / _CACHE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(_voices_to_raw(voices), handle)
+
+
+class CollectionVoiceCache(VoiceCache):
+    """A :class:`VoiceCache` in the synced collection config (``col.set_config``).
+
+    The map is stored under ``omnia:voices`` as plain JSON-able dicts, so it syncs across
+    devices (a harmless re-fetchable cache). ``col`` is resolved LAZILY (``mw.col`` isn't ready
+    at add-on init); an optional ``col_provider`` lets tests inject a fake collection. Without a
+    collection it degrades to ``{}`` on load and a no-op on save (headless-safe).
     """
-    path = cache_path(user_files_dir)
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            parsed = json.load(handle)
-    except (OSError, ValueError):
-        return {}
+
+    KEY = "omnia:voices"
+
+    def __init__(self, col_provider: Optional[Callable[[], Any]] = None) -> None:
+        self._col_provider = col_provider
+
+    def load(self) -> dict[str, list[TTSVoice]]:
+        col = self._col()
+        raw = col.get_config(self.KEY, None) if col is not None else None
+        return _voices_from_raw(raw or {})
+
+    def save(self, voices: dict[str, list[TTSVoice]]) -> None:
+        col = self._col()
+        if col is not None:
+            col.set_config(self.KEY, _voices_to_raw(voices))
+
+    def _col(self) -> Any:
+        if self._col_provider is not None:
+            try:
+                return self._col_provider()
+            except Exception:
+                return None
+        from omnia.core import anki_compat
+
+        try:
+            return anki_compat.main_window().col
+        except Exception:
+            return None
+
+
+def _voices_to_raw(voices: dict[str, list[TTSVoice]]) -> dict[str, list[dict]]:
+    """Serialize the ``{provider: [TTSVoice, ...]}`` map to plain JSON-able dicts."""
+    return {
+        provider: [dataclasses.asdict(v) for v in entries]
+        for provider, entries in voices.items()
+    }
+
+
+def _voices_from_raw(parsed: object) -> dict[str, list[TTSVoice]]:
+    """Rebuild the ``{provider: [TTSVoice, ...]}`` map from a parsed cache (tolerant)."""
     if not isinstance(parsed, dict):
         return {}
     out: dict[str, list[TTSVoice]] = {}
@@ -54,18 +120,6 @@ def load_cached_voices(user_files_dir: Path) -> dict[str, list[TTSVoice]]:
             _voice_from_dict(entry) for entry in entries if isinstance(entry, dict)
         ]
     return out
-
-
-def save_cached_voices(user_files_dir: Path, voices: dict[str, list[TTSVoice]]) -> None:
-    """Persist the aggregated ``{provider: [TTSVoice, ...]}`` map under user_files."""
-    path = cache_path(user_files_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = {
-        provider: [dataclasses.asdict(v) for v in entries]
-        for provider, entries in voices.items()
-    }
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(serialized, handle)
 
 
 def _voice_from_dict(entry: dict[str, object]) -> TTSVoice:
