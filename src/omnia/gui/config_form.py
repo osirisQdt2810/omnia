@@ -209,14 +209,20 @@ class PluginConfigDialog(QDialog):
             return w
         if field.kind == "int":
             w = QSpinBox()
-            w.setRange(int(field.minimum or 0), int(field.maximum or 1_000_000))
+            # A legit ``0`` bound is falsy, so test ``is None`` — ``field.maximum or DEFAULT``
+            # would treat a real 0 as "unset" and widen the range past it.
+            minimum = 0 if field.minimum is None else int(field.minimum)
+            maximum = 1_000_000 if field.maximum is None else int(field.maximum)
+            w.setRange(minimum, maximum)
             w.setValue(int(value or 0))
             return w
         if field.kind == "float":
             w = QDoubleSpinBox()
             w.setDecimals(2)
             w.setSingleStep(0.1)
-            w.setRange(float(field.minimum or 0.0), float(field.maximum or 1_000_000.0))
+            minimum = 0.0 if field.minimum is None else float(field.minimum)
+            maximum = 1_000_000.0 if field.maximum is None else float(field.maximum)
+            w.setRange(minimum, maximum)
             w.setValue(float(value or 0.0))
             return w
         if field.kind == "choice":
@@ -226,7 +232,11 @@ class PluginConfigDialog(QDialog):
             # not its string value, so a raw ``value in field.choices`` (stringy choices) misses
             # and the field silently resets to index 0. Normalize to the underlying value first.
             normalized = str(getattr(value, "value", value))
-            if normalized in field.choices:
+            # Preserve an out-of-range stored value as its own option instead of silently
+            # coercing to index 0 — otherwise OK would overwrite the user's real value on save.
+            if normalized and normalized not in field.choices:
+                w.addItem(normalized)
+            if normalized:
                 w.setCurrentText(normalized)
             return w
         if field.kind == "color":

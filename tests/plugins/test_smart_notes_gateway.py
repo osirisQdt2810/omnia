@@ -265,6 +265,21 @@ class TestGatewayGuards:
             gateway._running is False
         )  # reset despite the synchronous failure — not wedged
 
+    def test_flush_after_teardown_is_noop(self, monkeypatch):
+        # A note queued this session, then the plugin was disabled: a leftover debounce timer
+        # must NOT run a stale batch after teardown, even though settings still resolve.
+        note = self._note([_SOURCE_TAG, AUTOGEN_TAG])
+        _col, calls = _install(monkeypatch, {1: note})
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()],
+            auto_generate_integrations={"web_clipper": True},
+        )
+        gateway = _gateway(settings)
+        gateway._pending.add(1)  # queued before disable
+        gateway.teardown()
+        gateway._flush()  # the leftover QTimer.singleShot closure fires after disable
+        assert calls == []  # no stale generation ran
+
     def test_registry_has_web_clipper(self):
         keys = {integration.key for integration in INTEGRATIONS}
         assert "web_clipper" in keys

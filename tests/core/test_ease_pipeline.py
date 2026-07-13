@@ -34,6 +34,12 @@ class TestFoldEase:
         entries = [_Entry(100, "x", lambda c, e: -5)]
         assert fold_ease(object(), 1, entries) == 1
 
+    def test_fold_clamps_to_answer_button_count(self):
+        # Learning/relearning cards show only 3 buttons; a transformer returning Easy(4)
+        # must clamp to the card's actual button count so it doesn't mis-schedule.
+        entries = [_Entry(100, "x", lambda c, e: 4)]
+        assert fold_ease(object(), 1, entries, ease_max=3) == 3
+
 
 class TestEasePipeline:
     def test_add_remove_transformer(self):
@@ -62,6 +68,29 @@ class TestEasePipeline:
         r2 = Reviewer(card=object())
         r2._answerCard(4)
         assert r2.answered_with == [4]  # original behavior restored
+
+    def test_answer_card_clamps_to_scheduler_button_count(self):
+        import types
+
+        from aqt.reviewer import Reviewer
+
+        p = EasePipeline()
+        p.add_transformer("force_easy", lambda c, e: 4, priority=10)
+        p.install()
+        try:
+            r = Reviewer(card=object())
+            # A (re)learning card exposes only 3 answer buttons.
+            r.mw = types.SimpleNamespace(
+                col=types.SimpleNamespace(
+                    sched=types.SimpleNamespace(answerButtons=lambda card: 3)
+                )
+            )
+            r._answerCard(
+                1
+            )  # transformer forces Easy(4) -> clamped to 3 (no Easy button)
+            assert r.answered_with == [3]
+        finally:
+            p.uninstall()
 
     def test_install_is_idempotent(self):
         from aqt.reviewer import Reviewer

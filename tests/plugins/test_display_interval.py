@@ -61,6 +61,26 @@ class TestAnswerLabel:
         assert len(evals) == 1
         assert "interval: 3d" in evals[0]
 
+    def test_answer_uses_nondestructive_preview(self, monkeypatch):
+        # The label must PREVIEW (apply=False): an apply-aware, staged transformer (like
+        # typed_accuracy) is peeked, not consumed, so the real grade still receives it.
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, ease: 86_400
+        )
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", lambda _js: None)
+
+        pending = {1: 2}
+
+        def staged(card, ease, *, apply=True):
+            cid = card.id
+            return pending.pop(cid, None) if apply else pending.get(cid)
+
+        ease = EasePipeline()
+        ease.add_transformer("typed", staged, priority=100)
+        _plugin_with_ctx(ease)._on_answer(FakeCard(id=1))
+        # The preview did NOT consume the staged ease; the real grade still gets it.
+        assert ease.compute_ease(FakeCard(id=1), 3) == 2
+
     def test_answer_noop_when_no_interval(self, monkeypatch):
         evals: list[str] = []
         monkeypatch.setattr(

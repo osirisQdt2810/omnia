@@ -56,6 +56,19 @@ class OpenAICompatibleProvider(LLMProvider):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
+        text, _usage = self.generate_text_with_usage(
+            prompt, system=system, temperature=temperature, max_tokens=max_tokens
+        )
+        return text
+
+    def generate_text_with_usage(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> tuple[str, Optional[dict[str, int]]]:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -70,9 +83,11 @@ class OpenAICompatibleProvider(LLMProvider):
         resp = self._http.post_json(
             f"{self._base_url}/chat/completions", payload, headers=self._headers()
         )
-        self.last_usage = _usage_from_openai(resp)
+        # Return the usage parsed from THIS response; also set last_usage for external readers.
+        usage = _usage_from_openai(resp)
+        self.last_usage = usage
         try:
-            return str(resp["choices"][0]["message"]["content"])
+            return str(resp["choices"][0]["message"]["content"]), usage
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"Unexpected chat response shape: {resp}") from exc
 
@@ -98,6 +113,12 @@ class OpenAICompatibleProvider(LLMProvider):
         return {"total": total, "used": used, "remaining": total - used}
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
+        data, _usage = self.generate_image_with_usage(prompt, size=size)
+        return data
+
+    def generate_image_with_usage(
+        self, prompt: str, *, size: str = "1024x1024"
+    ) -> tuple[bytes, Optional[dict[str, int]]]:
         payload = {
             "model": self._image_model,
             "prompt": prompt,
@@ -107,7 +128,10 @@ class OpenAICompatibleProvider(LLMProvider):
         resp = self._http.post_json(
             f"{self._base_url}/images/generations", payload, headers=self._headers()
         )
+        # The images endpoint reports no token usage; return None (and clear last_usage) so the
+        # image call is never attributed a stale text-call usage from shared state.
+        self.last_usage = None
         try:
-            return base64.b64decode(resp["data"][0]["b64_json"])
+            return base64.b64decode(resp["data"][0]["b64_json"]), None
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise ProviderError(f"Unexpected image response shape: {resp}") from exc

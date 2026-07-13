@@ -638,3 +638,157 @@ class TestCancelledRingJs:
         assert "omnia-autoflip-timer" in js
         assert "clearInterval" in js
         assert "3b82f6" in js
+
+
+class TestAutoGradeChain:
+    def test_grade_preserves_next_cards_timer(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        card1 = types.SimpleNamespace(did=1, odid=0)
+        card2 = types.SimpleNamespace(did=1, odid=0)
+        mw = _fake_mw(monkeypatch, schedule, calls)
+        _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(
+                wait_for_audio=False,
+                delay_question_seconds=3,
+                delay_answer_seconds=2,
+            )
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._on_toggle(True)
+
+        # Card 1: question timer fires -> flip to the answer side.
+        mw.reviewer.state = "question"
+        gui_hooks.reviewer_did_show_question.fire(card1)
+        schedule[-1][1]()
+        assert "show_answer" in calls
+
+        # Card 1: answer side arms the grade timer.
+        mw.reviewer.state = "answer"
+        gui_hooks.reviewer_did_show_answer.fire(card1)
+        grade_timer = schedule[-1][2]
+
+        # Grading card 1 advances to card 2, which (like real Anki) fires the answer-card
+        # filter hook then shows card 2's question -> arms card 2's timer.
+        def answer_card(ease):
+            calls.append(("answer", ease))
+            gui_hooks.reviewer_will_answer_card.fire((ease, False), object(), object())
+            mw.reviewer.state = "question"
+            gui_hooks.reviewer_did_show_question.fire(card2)
+
+        mw.reviewer._answerCard = answer_card
+
+        # Fire card 1's grade timer -> _grade -> answer -> re-arm card 2.
+        schedule[-1][1]()
+        assert ("answer", 3) in calls
+
+        next_timer = schedule[-1][2]
+        assert next_timer is not grade_timer
+        # The just-armed next card's timer must survive (auto-grade chain continues).
+        assert next_timer.stopped is False
+        assert schedule[-1][0] == 3000  # card 2 armed with the question delay
+
+        plugin.on_disable(ctx)
+
+
+class TestAudioEnterCancelThenNextSide:
+    def test_enter_cancel_does_not_disable_answer_side_autograde(
+        self, gui_hooks, monkeypatch
+    ):
+        import aqt
+
+        schedule: list = []
+        calls: list = []
+        card = types.SimpleNamespace(did=1, odid=0)
+        mw = _fake_mw(monkeypatch, schedule, calls, card=card)
+        _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(
+                wait_for_audio=True,
+                delay_question_seconds=5,
+                delay_answer_seconds=4,
+            )
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True  # audio path: activate WITHOUT rearming
+
+        # Question side with audio -> defer, then arm once the queue drains.
+        mw.reviewer.state = "question"
+        gui_hooks.reviewer_will_play_question_sounds.fire(card, ["q.mp3"])
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert len(schedule) == 1
+
+        # First Enter cancels the pending question auto-flip (sets _enter_cancelled=True).
+        reviewer = aqt.reviewer.Reviewer()
+        reviewer.onEnterKey()
+        assert schedule[-1][2].stopped is True
+
+        # The answer side is presented (sounds play, then end). The enter-cancel flag must
+        # be reset on the new side so answer-side auto-grade still arms.
+        mw.reviewer.state = "answer"
+        gui_hooks.reviewer_will_play_answer_sounds.fire(card, ["a.mp3"])
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert len(schedule) == 2  # grade timer armed despite the earlier Enter cancel
+        assert schedule[-1][0] == 4000
+
+        plugin.on_disable(ctx)
+
+
+class TestReviewerExitTeardown:
+    def test_leaving_review_cancels_pending_timer(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _fake_mw(monkeypatch, schedule, calls)
+        _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=False, delay_question_seconds=5)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._on_toggle(True)
+
+        gui_hooks.reviewer_did_show_question.fire(object())
+        pending = schedule[-1][2]
+
+        # Leaving the reviewer for the deck list tears the pending timer down.
+        gui_hooks.state_did_change.fire("deckBrowser", "review")
+        assert pending.stopped is True
+
+        plugin.on_disable(ctx)
+
+
+class TestToggleRespectsWaitForAudio:
+    def test_toggle_on_while_audio_playing_defers_arming(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        calls: list = []
+        card = types.SimpleNamespace(did=1, odid=0)
+        mw = _fake_mw(monkeypatch, schedule, calls, card=card)
+        _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=5)
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+
+        # A clip is still playing when the user hits Ctrl+J on the question side.
+        mw.reviewer.state = "question"
+        aqt.sound.av_player._enqueued = ["q.mp3"]
+        plugin._on_toggle(True)
+        assert schedule == []  # did not arm immediately; deferred to av_player drain
+
+        # When the queue drains, the deferred side arms.
+        aqt.sound.av_player._enqueued = []
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert len(schedule) == 1
+        assert schedule[-1][0] == 5000
+
+        plugin.on_disable(ctx)

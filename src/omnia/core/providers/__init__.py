@@ -7,6 +7,7 @@ Features depend on the :class:`~omnia.core.providers.llm.LLMProvider` /
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING, Any, Optional, cast
 
 from pydantic import BaseModel
@@ -96,6 +97,9 @@ class ProviderHub:
         # NEW settings object, so a mismatch means the cached providers are stale (built for old
         # config) and must be dropped. Stays None for snapshot hubs (config is None).
         self._llm_cache_ref: Optional[LLMSettings] = None
+        # ``llm()`` runs on background generation threads (QueryOp); guard every read/mutate of
+        # the override cache + its ref so concurrent callers can't corrupt the dict or double-build.
+        self._llm_cache_lock = threading.Lock()
 
     @property
     def _llm_settings(self) -> Optional[LLMSettings]:
@@ -201,23 +205,27 @@ class ProviderHub:
             model: Override the text model id (empty = the subsection's configured model).
             image_model: Override the image model id (empty = the subsection's configured one).
         """
-        self._maybe_invalidate_cache()
-        if not model and not image_model and not provider:
-            config = self._llm_config()
-            built = create_llm_provider(config, self._http)
-            return self._record_llm(built, config)
-        key = (provider, model, image_model)
-        cached = self._llm_cache.get(key)
-        if cached is None:
-            config = self._llm_config(provider)
-            if model:
-                config["model"] = model
-            if image_model:
-                config["image_model"] = image_model
-            built = create_llm_provider(config, self._http)
-            cached = self._record_llm(built, config)
-            self._llm_cache[key] = cached
-        return cached
+        # Hold the cache lock across invalidate + get + build + set so concurrent generation
+        # threads can't race the dict (create_llm_provider is pure construction — no network —
+        # so the lock is held only briefly).
+        with self._llm_cache_lock:
+            self._maybe_invalidate_cache()
+            if not model and not image_model and not provider:
+                config = self._llm_config()
+                built = create_llm_provider(config, self._http)
+                return self._record_llm(built, config)
+            key = (provider, model, image_model)
+            cached = self._llm_cache.get(key)
+            if cached is None:
+                config = self._llm_config(provider)
+                if model:
+                    config["model"] = model
+                if image_model:
+                    config["image_model"] = image_model
+                built = create_llm_provider(config, self._http)
+                cached = self._record_llm(built, config)
+                self._llm_cache[key] = cached
+            return cached
 
     def tts(self, *, provider: str = "") -> TTSProvider:
         """Build a TTS provider, optionally pinned to a different ``provider``.

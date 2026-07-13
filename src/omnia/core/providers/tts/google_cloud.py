@@ -157,4 +157,7 @@ class GoogleCloudTTS(TTSProvider):
         if self._language_code:
             return self._language_code
         key = (lang or self._lang or "en").strip().lower()
-        return _LANG_CODES.get(key, key if "-" in key else "en-US")
+        # An unknown bare 2-letter code derives a plausible BCP-47 (e.g. "fr" -> "fr-FR")
+        # rather than silently defaulting to en-US, which would speak the WRONG language. An
+        # already-BCP-47 key (with a "-") passes through; known codes use the curated map.
+        return _LANG_CODES.get(key, key if "-" in key else f"{key}-{key.upper()}")

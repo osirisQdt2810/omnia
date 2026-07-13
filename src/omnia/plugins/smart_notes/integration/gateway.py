@@ -54,6 +54,17 @@ class IntegrationGateway:
         self._pending: set[int] = set()  # note ids queued for the next batch
         self._running = False  # a batch is in flight (serialize; never overlap)
         self._timer_armed = False  # a debounce flush is scheduled
+        self._alive = True  # cleared by teardown(); already-scheduled timers then bail
+
+    def teardown(self) -> None:
+        """Deactivate the gateway so any already-scheduled timer closures become no-ops.
+
+        ``on_disable`` drops the plugin's reference, but a ``QTimer.singleShot`` closure armed
+        before disable can still fire afterwards. Clearing ``_alive`` makes those leftover
+        callbacks (``_enqueue`` / ``_flush``) bail, so a disable then re-enable cannot run a
+        stale batch queued in a previous session.
+        """
+        self._alive = False
 
     def on_note_will_be_added(self, col: Any, note: Any, deck_id: Any) -> None:
         """``note_will_be_added`` callback: queue the note for a coalesced batch when guards pass.
@@ -108,6 +119,8 @@ class IntegrationGateway:
 
     def _enqueue(self, note: Any) -> None:
         """Add the just-committed note's id to the pending batch + arm the debounce (main thread)."""
+        if not self._alive:  # gateway torn down between scheduling and firing
+            return
         try:
             nid = int(getattr(note, "id", 0) or 0)
             if not nid:
@@ -128,6 +141,8 @@ class IntegrationGateway:
 
     def _flush(self) -> None:
         """Run the queued note ids as ONE background batch (serialized — never overlapping)."""
+        if not self._alive:  # a leftover debounce timer fired after teardown
+            return
         self._timer_armed = False
         try:
             if self._running:

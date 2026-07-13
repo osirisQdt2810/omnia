@@ -138,7 +138,15 @@ class WebDialog(QDialog):
 
         For pushing a result the page can't receive through the synchronous ``pycmd`` callback
         (e.g. an op whose work runs off the Qt main thread and reports back later).
+
+        A late off-thread callback can fire after the dialog is closed (cleanup +
+        ``deleteLater``); calling ``eval`` on the deleted C++ webview would crash. Guard on both
+        our cleanup flag and sip's liveness check before touching the webview.
         """
+        from aqt.qt import sip
+
+        if self._web_cleaned or sip.isdeleted(self._web):
+            return
         self._web.eval(js)
 
     def _on_cmd(self, message: str) -> Any:

@@ -34,11 +34,43 @@ class _FakeComboBox:
         if self._items and not self._current:
             self._current = self._items[0]
 
+    def addItem(self, item) -> None:
+        self._items.append(item)
+
     def setCurrentText(self, text) -> None:
         self._current = text
 
     def currentText(self) -> str:
         return self._current
+
+
+class _FakeSpin:
+    """Mimics QSpinBox: records the range so the ``0``-bound test can read it back."""
+
+    def __init__(self) -> None:
+        self._min = None
+        self._max = None
+        self._value = None
+
+    def setRange(self, lo, hi) -> None:
+        self._min = lo
+        self._max = hi
+
+    def setValue(self, v) -> None:
+        self._value = v
+
+    def value(self):
+        return self._value
+
+
+class _FakeDoubleSpin(_FakeSpin):
+    """Mimics QDoubleSpinBox (distinct class); adds the float-only setters config_form calls."""
+
+    def setDecimals(self, n) -> None:
+        pass
+
+    def setSingleStep(self, s) -> None:
+        pass
 
 
 class _FakeButton:
@@ -124,6 +156,8 @@ _qt.QComboBox = _FakeComboBox
 _qt.QPushButton = _FakeButton
 _qt.QColor = _FakeColor
 _qt.QColorDialog = _FakeColorDialog
+_qt.QSpinBox = _FakeSpin
+_qt.QDoubleSpinBox = _FakeDoubleSpin
 
 from omnia.gui.config_form import PluginConfigDialog, _ColorButton  # noqa: E402
 
@@ -163,9 +197,43 @@ class TestChoiceWidgetPreselect:
         widget = PluginConfigDialog._make_widget(_CHOICE_FIELD, "blue")
         assert widget.currentText() == "blue"
 
-    def test_unknown_value_falls_back_to_first(self):
+    def test_unknown_value_is_preserved(self):
+        # An out-of-range stored value must be kept (appended as its own option) and selected,
+        # not silently coerced to index 0 — otherwise OK would overwrite the user's real value.
         widget = PluginConfigDialog._make_widget(_CHOICE_FIELD, "purple")
-        assert widget.currentText() == "red"
+        assert widget.currentText() == "purple"
+        assert "purple" in widget._items
+
+
+class TestNumericBounds:
+    """A legit ``0`` bound must be honored, not treated as unset (``is None``, not truthiness)."""
+
+    def test_int_zero_maximum_is_honored(self):
+        field = ConfigField(
+            key="offset", label="Offset", kind="int", default=0, minimum=-10, maximum=0
+        )
+        widget = PluginConfigDialog._make_widget(field, -3)
+        assert widget._min == -10
+        assert widget._max == 0
+
+    def test_int_unset_maximum_uses_default(self):
+        field = ConfigField(key="n", label="N", kind="int", default=0)
+        widget = PluginConfigDialog._make_widget(field, 5)
+        assert widget._min == 0
+        assert widget._max == 1_000_000
+
+    def test_float_zero_maximum_is_honored(self):
+        field = ConfigField(
+            key="ratio",
+            label="Ratio",
+            kind="float",
+            default=0.0,
+            minimum=-1.0,
+            maximum=0.0,
+        )
+        widget = PluginConfigDialog._make_widget(field, -0.5)
+        assert widget._min == -1.0
+        assert widget._max == 0.0
 
 
 class TestColorWidget:

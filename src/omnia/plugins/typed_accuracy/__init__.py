@@ -115,10 +115,15 @@ class TypedAccuracyPlugin(FeaturePlugin):
         self._injector = None
 
     # --- ease pipeline --------------------------------------------------------------
-    def _transform(self, card: Any, _ease: int) -> Optional[int]:
-        # pop is idempotent: a second answer path for the same card finds nothing staged,
-        # so the staged ease is applied exactly once (the pipeline is the only apply point).
-        return self._pending.pop(getattr(card, "id", None), None)
+    def _transform(self, card: Any, _ease: int, *, apply: bool = True) -> Optional[int]:
+        # The real grade CONSUMES the staged ease (pop), so it is applied exactly once (a
+        # second answer path finds nothing staged; the pipeline is the only apply point). A
+        # non-destructive preview (apply=False, e.g. display_interval's label) only PEEKS, so
+        # it can never silently eat the typing grade before the card is actually answered.
+        cid = getattr(card, "id", None)
+        if apply:
+            return self._pending.pop(cid, None)
+        return self._pending.get(cid)
 
     # --- pycmd handlers (data, context) -> result ----------------------------------
     def _on_rated(self, data: dict[str, Any], _context: Any) -> dict[str, Any]:
@@ -245,10 +250,17 @@ class TypedAccuracyPlugin(FeaturePlugin):
 
     @staticmethod
     def _current_card_did() -> Optional[int]:
-        """Return the original deck id of the card under review, or None."""
+        """Return the HOME deck id of the card under review, or None.
+
+        In a filtered/cram deck ``card.did`` is the temporary deck while ``card.odid`` holds
+        the home deck. Record the home deck (``odid`` when set, else ``did``) so the
+        include-subdecks stats rollup isn't missed for cards being reviewed in a filtered deck.
+        """
         reviewer = getattr(anki_compat.main_window(), "reviewer", None)
         card = getattr(reviewer, "card", None)
-        return getattr(card, "did", None) if card is not None else None
+        if card is None:
+            return None
+        return getattr(card, "odid", 0) or getattr(card, "did", None)
 
     @staticmethod
     def _current_deck_id() -> Optional[int]:

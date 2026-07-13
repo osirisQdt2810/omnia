@@ -51,4 +51,25 @@
       send("configure", {id: btn.getAttribute("data-id")}, null);
     });
   });
+
+  // The (i) help popover is anchored below its icon by default; on the last card of a
+  // non-scrolling dialog that clips it under the window edge. Before it shows, measure the
+  // room below the icon and flip the popover above when it won't fit (mirrors the graph
+  // tooltip's flip). offsetHeight is readable while the tip is only visibility:hidden.
+  document.querySelectorAll(".omnia-info").forEach(function (info) {
+    const flip = function () {
+      const tip = info.querySelector(".omnia-tip");
+      if (!tip) {
+        return;
+      }
+      info.classList.remove("omnia-tip-above");
+      const rect = info.getBoundingClientRect();
+      const below = window.innerHeight - rect.bottom;
+      if (below < tip.offsetHeight + 16 && rect.top > below) {
+        info.classList.add("omnia-tip-above");
+      }
+    };
+    info.addEventListener("mouseenter", flip);
+    info.addEventListener("focus", flip);
+  });
 })();

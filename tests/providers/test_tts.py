@@ -364,6 +364,12 @@ class TestGoogleCloudLanguageCode:
         assert params["languageCode"] == "vi-VN"
         assert "name" not in params
 
+    def test_unknown_lang_derives_bcp47_not_en_us(self):
+        # Regression: an unknown 2-letter code must derive a plausible BCP-47 ("fr" -> "fr-FR"),
+        # never silently default to en-US (which would speak the wrong language).
+        params = self._synth_voice_params("", lang="fr")
+        assert params["languageCode"] == "fr-FR"
+
 
 # --- 3. structural contract (fake + real) ----------------------------------------------
 class TTSProviderContract:
