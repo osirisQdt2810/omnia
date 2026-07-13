@@ -427,7 +427,7 @@
         }
       }
     } else {
-      setModalMsg((res && res.error) || "Improve failed — see logs.", true);
+      setModalMsg(esc((res && res.error) || "Improve failed — see logs."), true);
     }
   };
 
@@ -451,7 +451,9 @@
     modalPreview.disabled = false;
     const inModal = modalRow && modalRow.dataset.field === field && !modal.hidden;
     if (!res || res.error) {
-      const msg = (res && res.error) || "Preview failed — see logs.";
+      // The error can be ProviderError text (untrusted) written into an innerHTML sink — escape
+      // it so it renders as text, not markup.
+      const msg = esc((res && res.error) || "Preview failed — see logs.");
       if (inModal) {
         setModalMsg("", false);
         setModalResult(msg, true);

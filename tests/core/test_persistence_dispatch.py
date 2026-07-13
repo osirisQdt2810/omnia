@@ -317,6 +317,28 @@ class TestConfigSync:
         assert "omnia:config:providers" not in fake_col.conf
         assert _read_marker(user_files)["config"] == "database"
 
+    def test_marker_not_advanced_when_destination_write_no_ops(
+        self, user_files, config_dir, monkeypatch
+    ):
+        # Old (toml) backend holds settings; switch the knob to the database backend WITHOUT a
+        # loaded collection, so CollectionConfigLoader.write_file silently skips (returns False).
+        old = TomlConfigLoader(config_dir)
+        old.write_file("omnia.toml", {"log_level": "DEBUG"})
+        old.write_file("features.toml", {"auto_flip": {"delay_question_seconds": 4.0}})
+        _write_marker(user_files, {"config": "toml"})
+        monkeypatch.setenv("OMNIA_CONFIG_STORAGE", "database")
+
+        import aqt
+
+        monkeypatch.setattr(aqt, "mw", None, raising=False)  # no col -> writes no-op
+
+        loader = PersistenceDispatcher(user_files).config_loader(config_dir)
+
+        assert isinstance(loader, CollectionConfigLoader)
+        # The copy did not persist, so the marker must stay 'toml' to retry next boot (settings
+        # would otherwise be silently lost: marker == env next time would skip the sync).
+        assert _read_marker(user_files)["config"] == "toml"
+
 
 class TestInvalidEnv:
     def test_invalid_config_value_falls_back_to_database(

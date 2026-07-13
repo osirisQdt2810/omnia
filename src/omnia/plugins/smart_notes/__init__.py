@@ -105,6 +105,9 @@ class SmartNotesPlugin(FeaturePlugin):
         anki_compat.unsubscribe_hook(_EDITOR_MENU_HOOK, self._on_editor_context_menu)
         anki_compat.unsubscribe_hook(_REVIEW_HOOK, self._on_review_question)
         if self._gateway is not None:
+            # Neutralize any QTimer.singleShot closures armed before disable so a leftover batch
+            # queued this session can't fire after a disable → re-enable.
+            self._gateway.teardown()
             anki_compat.unsubscribe_anki_hook(
                 _NOTE_ADD_HOOK, self._gateway.on_note_will_be_added
             )

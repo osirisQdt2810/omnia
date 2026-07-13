@@ -14,7 +14,8 @@ startup the dispatcher compares the marker to the current ``envs`` value per con
 
 * missing marker → first run, no sync (backends start fresh per ADR-006);
 * equal → no-op;
-* changed → build the old backend too, copy old→new, then update the marker.
+* changed → build the old backend too, copy old→new, then update the marker — but only once the
+  copy actually persisted; a skipped/failed copy leaves the marker so it retries next boot.
 
 The compare/build/(maybe)sync/record flow is a single private helper (:meth:`_dispatch`); each
 resolver supplies its own explicit build + sync closures (the per-concern copy semantics differ:
@@ -104,15 +105,20 @@ class PersistenceDispatcher:
                 config_dir, backend=value, template_dir=template_dir
             )
 
-        def sync(old: BaseConfigLoader, new: BaseConfigLoader) -> None:
+        def sync(old: BaseConfigLoader, new: BaseConfigLoader) -> bool:
             new.ensure_live_files()
+            persisted = True
             for name in ("omnia.toml", "features.toml"):
                 data = old.read_file(name)
                 # Skip empty domains: the old backend having no data for a domain means there is
                 # nothing to carry, and writing {} would clobber the template defaults the fresh
                 # `ensure_live_files` just seeded (only matters for the toml backend).
-                if data:
-                    new.write_file(name, data)
+                if data and not new.write_file(name, data):
+                    # The destination silently skipped this write (e.g. the collection backend
+                    # with no col loaded yet). Report the copy as not persisted so the dispatcher
+                    # leaves the marker unchanged and retries next boot instead of losing settings.
+                    persisted = False
+            return persisted
 
         return self._dispatch("config", build=build, sync=sync)
 
@@ -129,8 +135,9 @@ class PersistenceDispatcher:
                 return JsonUsageStore(self._user_files_dir / "usage.json")
             return ColUsageStore()
 
-        def sync(old: UsageStore, new: UsageStore) -> None:
+        def sync(old: UsageStore, new: UsageStore) -> bool:
             new.save(old.load())
+            return True
 
         store = self._dispatch("usage", build=build, sync=sync)
         # _dispatch just recorded the resolved value in the marker — reuse it (don't re-read the
@@ -147,8 +154,9 @@ class PersistenceDispatcher:
                 return JsonVoiceCache(self._user_files_dir)
             return CollectionVoiceCache()
 
-        def sync(old: VoiceCache, new: VoiceCache) -> None:
+        def sync(old: VoiceCache, new: VoiceCache) -> bool:
             new.save(old.load())
+            return True
 
         return self._dispatch("voices", build=build, sync=sync)
 
@@ -157,23 +165,29 @@ class PersistenceDispatcher:
         concern: str,
         *,
         build: Callable[[str], T],
-        sync: Callable[[T, T], None],
+        sync: Callable[[T, T], bool],
     ) -> T:
         """Build the active backend for ``concern``, copying old→new when the knob changed.
 
         Reads the current (validated) env value, builds its backend, and — only when the marker
-        holds a *different, valid* last-used value — builds the old backend and runs ``sync``
-        before recording the current value in the marker. Returns the active backend.
+        holds a *different, valid* last-used value — builds the old backend and runs ``sync``.
+        The marker is advanced to the current value ONLY if ``sync`` reports the copy persisted;
+        a skipped/failed copy (``sync`` returns ``False``) leaves the marker unchanged so the
+        copy is retried next boot instead of silently losing the un-copied data. Returns the
+        active backend.
         """
         current = self._value(concern)
         new = build(current)
         last = self._marker.get(concern)
+        # Short-circuit keeps ``sync`` (which copies data) from running unless the knob truly
+        # changed; if the copy did not persist, bail without advancing the marker (retry next boot).
         if (
             isinstance(last, str)
             and last in _CONCERNS[concern].allowed
             and last != current
+            and not sync(build(last), new)
         ):
-            sync(build(last), new)
+            return new
         self._record(concern, current)
         return new
 

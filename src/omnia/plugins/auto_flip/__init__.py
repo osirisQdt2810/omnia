@@ -86,6 +86,7 @@ class AutoFlipPlugin(FeaturePlugin):
         self._active = False
         self._subscribe("reviewer_will_answer_card", self._on_will_answer)
         self._subscribe(_DECK_MENU_HOOK, self._on_deck_menu)
+        self._subscribe("state_did_change", self._on_state_change)
         if self._wait_for_audio:
             # Arm off the audio hooks so a card with sound never flips before it finishes.
             self._subscribe(
@@ -149,12 +150,17 @@ class AutoFlipPlugin(FeaturePlugin):
 
     # --- reviewer events (audio path: arm only once sounds are absent/finished) -----
     def _on_question_sounds(self, card: Any, sounds: Any) -> None:
+        # A new side is presented — clear any Enter-cancel from the previous side so the
+        # audio path's _on_audio_end isn't left permanently disabled (the sounds path never
+        # goes through _cancel, which is the only other place this flag is reset).
+        self._enter_cancelled = False
         self._pending_side = "question"
         # Arm now only when this side plays nothing; otherwise wait for av_player to drain.
         if not sounds:
             self._arm_question(card)
 
     def _on_answer_sounds(self, card: Any, sounds: Any) -> None:
+        self._enter_cancelled = False
         self._pending_side = "answer"
         if not sounds:
             self._arm_answer(card)
@@ -220,6 +226,12 @@ class AutoFlipPlugin(FeaturePlugin):
         self._cancel()
         return ease
 
+    def _on_state_change(self, new_state: Any, old_state: Any) -> None:
+        # Leaving the reviewer (e.g. back to the deck list) — tear down any pending timer
+        # and countdown ring so nothing fires against a card that's no longer shown.
+        if old_state == "review" and new_state != "review":
+            self._cancel()
+
     # --- Ctrl+J runtime toggle ------------------------------------------------------
     def _on_toggle(self, active: bool) -> None:
         self._active = active
@@ -231,6 +243,11 @@ class AutoFlipPlugin(FeaturePlugin):
         if card is None:
             return
         side = anki_compat.reviewer_side()
+        # Respect wait_for_audio: if a clip is still playing, don't arm now — record the
+        # side and let _on_audio_end arm once the queue drains (mirrors the sounds path).
+        if self._wait_for_audio and anki_compat.audio_still_playing():
+            self._pending_side = side
+            return
         if side == "question":
             self._arm_question(card)
         elif side == "answer":
@@ -269,8 +286,13 @@ class AutoFlipPlugin(FeaturePlugin):
             anki_compat.reviewer_show_answer()
 
     def _grade(self) -> None:
+        # Answering advances to the NEXT card, which synchronously fires
+        # reviewer_did_show_question -> _arm_question and installs the next card's timer in
+        # self._timer. Only tear down when our fired timer is still the current one (nothing
+        # re-armed); otherwise an unconditional _cancel() would stop the just-armed next
+        # timer and stall the auto-grade chain. Mirrors _flip's re-schedule reasoning.
+        fired = self._timer
         if anki_compat.reviewer_side() == "answer":
             anki_compat.reviewer_answer_card(_EASE_GOOD)
-        # Terminal action — clear the fired timer/action so no stale state lingers. (_flip
-        # must NOT do this: the resulting show-answer re-schedules via the answer arm.)
-        self._cancel()
+        if self._timer is fired:
+            self._cancel()

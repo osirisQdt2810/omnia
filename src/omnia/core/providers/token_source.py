@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -100,13 +101,23 @@ class ServiceAccountTokenSource(TokenSource):
         self._clock = clock
         self._cached: Optional[str] = None
         self._expiry: float = 0.0
+        # Concurrent background syntheses/generations share one token source; the lock makes the
+        # check-then-mint atomic so they don't both mint (a wasted token exchange, or a torn
+        # _cached/_expiry write).
+        self._lock = threading.Lock()
 
     def token(self) -> str:
         now = self._clock()
+        # Fast path: a still-valid cached token needs no lock.
         if self._cached and self._expiry - _TOKEN_SKEW_S > now:
             return self._cached
-        self._cached, self._expiry = self._mint(now)
-        return self._cached
+        with self._lock:
+            # Re-check under the lock: another thread may have minted while we waited.
+            now = self._clock()
+            if self._cached and self._expiry - _TOKEN_SKEW_S > now:
+                return self._cached
+            self._cached, self._expiry = self._mint(now)
+            return self._cached
 
     def _mint(self, now: float) -> tuple[str, float]:
         token_uri = self._sa.get("token_uri", "https://oauth2.googleapis.com/token")

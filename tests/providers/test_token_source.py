@@ -106,6 +106,45 @@ class TestServiceAccountTokenSource:
         src.token()
         assert signer.count == 2  # re-minted
 
+    def test_token_is_minted_once_under_concurrency(self):
+        # Regression: overlapping background generations share one token source; the mint must be
+        # guarded so they don't both mint (a wasted exchange / torn cache write). A slow signer
+        # widens the mint window so an unguarded token() would double-mint.
+        import threading
+        import time
+
+        class _SlowSigner:
+            def __init__(self) -> None:
+                self.count = 0
+                self._count_lock = threading.Lock()
+
+            def sign(self, message: bytes, private_key_pem: str) -> bytes:
+                with self._count_lock:
+                    self.count += 1
+                time.sleep(0.02)
+                return b"signature-bytes"
+
+        http = FakeHttpClient(json={"access_token": "minted", "expires_in": 3600})
+        signer = _SlowSigner()
+        src = resolve_token_source(
+            _sa_config(), http, signer=signer, clock=_Clock(1000.0)
+        )
+        barrier = threading.Barrier(5)
+        results: list[str] = []
+
+        def _worker() -> None:
+            barrier.wait()  # release all threads into token() at once
+            results.append(src.token())
+
+        threads = [threading.Thread(target=_worker) for _ in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert signer.count == 1  # minted exactly once despite 5 concurrent callers
+        assert results == ["minted"] * 5
+
 
 class TestServiceAccountSigner:
     def test_signer_pem_to_der_strips_headers(self):

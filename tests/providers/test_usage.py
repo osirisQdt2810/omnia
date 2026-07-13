@@ -53,6 +53,29 @@ class _UsageLLM(FakeLLMProvider):
         self.last_usage = {"in": 42, "out": 8, "total": 50}
 
 
+class _ReturnUsageLLM(FakeLLMProvider):
+    """Returns per-call usage via the ``*_with_usage`` methods while CORRUPTING the shared
+    ``last_usage`` attribute — exactly as an overlapping generation on the same cached instance
+    would. A wrapper that read ``last_usage`` would misattribute; one reading the return value
+    stays correct.
+    """
+
+    def __init__(self, text_usage: dict, image_usage: dict, text: str = "hi") -> None:
+        super().__init__(text=text, image=b"PNG")
+        self._text_usage = text_usage
+        self._image_usage = image_usage
+
+    def generate_text_with_usage(
+        self, prompt, *, system=None, temperature=None, max_tokens=None
+    ):
+        self.last_usage = {"in": 9999, "out": 9999, "total": 19998}  # a racy clobber
+        return self._text, self._text_usage
+
+    def generate_image_with_usage(self, prompt, *, size="1024x1024"):
+        self.last_usage = {"in": 9999, "out": 9999, "total": 19998}  # a racy clobber
+        return self._image, self._image_usage
+
+
 class TestRecordsRealTokens:
     def test_wrapper_records_provider_reported_tokens(self):
         rec = _FakeRecorder()
@@ -66,6 +89,25 @@ class TestRecordsRealTokens:
         call = rec.calls[0]
         assert call["in_tokens"] == 0 and call["out_tokens"] == 0
         assert call["in_chars"] == 1  # char fallback still recorded
+
+    def test_text_records_returned_usage_not_shared_last_usage(self):
+        # Regression: recording must attribute THIS call's tokens (the return value), never the
+        # wrapped provider's shared last_usage — a concurrent generation would clobber that.
+        rec = _FakeRecorder()
+        wrapped = _ReturnUsageLLM({"in": 12, "out": 3}, {"in": 5, "out": 1})
+        RecordingLLMProvider(wrapped, rec, model="m").generate_text("prompt")
+        call = rec.calls[0]
+        assert call["in_tokens"] == 12 and call["out_tokens"] == 3
+
+    def test_image_records_returned_usage_not_shared_last_usage(self):
+        rec = _FakeRecorder()
+        wrapped = _ReturnUsageLLM({"in": 12, "out": 3}, {"in": 5, "out": 1})
+        RecordingLLMProvider(wrapped, rec, model="m", image_model="im").generate_image(
+            "a cat"
+        )
+        call = rec.calls[0]
+        assert call["kind"] == "image"
+        assert call["in_tokens"] == 5 and call["out_tokens"] == 1
 
 
 class TestJsonUsageRecorder:
@@ -412,13 +454,25 @@ class TestColUsageStore:
         store.ensure()  # second call must not raise (CREATE TABLE IF NOT EXISTS)
         assert store.load() == {}
 
-    def test_save_replaces_all_rows(self):
+    def test_save_upserts_new_key_without_wiping_others(self):
+        # Upsert semantics (no DELETE-all destructive window): saving a DIFFERENT key must not
+        # wipe a previously-saved one. The buffered recorder always saves the full aggregate, so
+        # rows are only ever added/updated, never dropped — a mid-loop failure can't wipe data.
         db = _SqliteDb()
         store = ColUsageStore(db_provider=lambda: db)
         store.save({"text|g|a": _aggregate_row(provider="g", model="a")})
         store.save({"sound|g|b": _aggregate_row(kind="sound", provider="g", model="b")})
-        # Replace-all semantics: only the second aggregate survives.
-        assert list(store.load().keys()) == ["sound|g|b"]
+        assert set(store.load().keys()) == {"text|g|a", "sound|g|b"}
+
+    def test_save_updates_an_existing_key_in_place(self):
+        db = _SqliteDb()
+        store = ColUsageStore(db_provider=lambda: db)
+        store.save({"text|g|m": _aggregate_row(calls=1)})
+        store.save({"text|g|m": _aggregate_row(calls=5)})
+        # ON CONFLICT(key) DO UPDATE overwrites the row's counters, not a duplicate insert.
+        loaded = store.load()
+        assert list(loaded.keys()) == ["text|g|m"]
+        assert loaded["text|g|m"]["calls"] == 5
 
     def test_preserves_in_and_out_tokens(self):
         db = _SqliteDb()
@@ -626,6 +680,26 @@ class TestBufferedUsageRecorder:
         rec.record(kind="text", provider="g", model="m", in_chars=2, out_chars=0)
         row = next(r for r in rec.snapshot() if r["calls"] == 5)
         assert row["in_chars"] == 10
+
+    def test_schedule_failure_does_not_wedge_future_flushes(self):
+        # Regression: if _schedule_main raises (e.g. no main window during teardown), the pending
+        # flag must reset so a LATER record() re-schedules — otherwise the recorder wedges and
+        # never flushes again. record() itself must not raise (best-effort).
+        store = _FakeUsageStore()
+        attempts = {"n": 0}
+
+        def flaky(cb):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise RuntimeError("no main window")
+            cb()
+
+        rec = BufferedUsageRecorder(store, schedule_main=flaky)
+        rec.record(kind="text", provider="g", model="m", in_chars=1, out_chars=1)
+        assert store.saves == []  # the failed schedule flushed nothing
+        rec.record(kind="text", provider="g", model="m", in_chars=1, out_chars=1)
+        # The second record re-scheduled (flag was reset) and flushed the full aggregate.
+        assert store.saves and store.saves[-1]["text|g|m"]["calls"] == 2
 
     def test_flush_never_raises_on_a_failing_store(self):
         class _Boom(_FakeUsageStore):

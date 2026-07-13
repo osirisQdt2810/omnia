@@ -359,14 +359,24 @@ def play_audio(data: bytes, ext: str) -> str:
     """Play raw audio ``data`` through Anki's av player (writes a temp clip first).
 
     Used by the prompt/custom dialogs to preview a generated TTS clip without saving a rule.
-    Returns the temp clip path so the caller can replay it via :func:`replay_audio_file`.
+    Each preview gets a UNIQUE filename (so two quick previews never race on one path), and
+    prior previews are cleared first so unique-named clips don't accumulate. Returns the temp
+    clip path so the caller can replay it via :func:`replay_audio_file`.
     """
+    import contextlib
     import tempfile
+    import uuid
     from pathlib import Path
 
     from aqt.sound import av_player
 
-    tmp = Path(tempfile.gettempdir()) / f"omnia-preview.{ext or 'mp3'}"
+    tmp_dir = Path(tempfile.gettempdir())
+    # Best-effort sweep of earlier previews; a clip still playing on Windows can't be unlinked —
+    # ignore that (it will be cleared on the next preview).
+    for stale in tmp_dir.glob("omnia-preview*"):
+        with contextlib.suppress(OSError):
+            stale.unlink()
+    tmp = tmp_dir / f"omnia-preview-{uuid.uuid4().hex}.{ext or 'mp3'}"
     tmp.write_bytes(data)
     av_player.play_file(str(tmp))
     return str(tmp)
@@ -423,47 +433,59 @@ def run_on_main(callback: Callable[[], None]) -> None:
 
 
 # --- hook subscription (so features stay free of direct gui_hooks access) --------------
-# Filter hooks must RETURN a value (the threaded result); we never wrap those — their handlers
-# are trivial and return-critical. Every other (notify) hook callback is wrapped in a logging
-# guard so a single feature's bug logs to omnia.log instead of crashing Anki's UI on a click.
-_FILTER_HOOKS = frozenset(
-    {"reviewer_will_answer_card", "webview_did_receive_js_message"}
-)
-# (hook_name, original_callback) -> guarded wrapper actually registered, for clean removal.
-_GUARDED: dict[tuple[str, Any], Callable[..., Any]] = {}
+# EVERY hook callback — filter and notify alike — is wrapped in ONE logging guard so a single
+# feature's bug logs to omnia.log instead of crashing Anki. On an exception the guard re-returns
+# its first positional arg: for a FILTER hook that is the value threaded through the chain, so the
+# chain stays intact (grading / pycmd routing keep working); NOTIFY hooks ignore the return, so
+# they are unaffected. One guard for all hooks means no return-critical hook is left unprotected.
+# Each (hook_name, callback) maps to the LIST of wrappers registered for it: a re-subscribe after a
+# failed teardown does not orphan the earlier wrapper — unsubscribe removes every wrapper for the
+# callback, so no ghost wrapper is left firing.
+_GUARDED: dict[tuple[str, Any], list[Callable[..., Any]]] = {}
 
 
 def _guard(hook_name: str, callback: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # A notify-hook bug must not break Anki's UI — log it and continue.
+        # A hook bug must not break Anki — log it and pass the threaded value through.
         try:
             return callback(*args, **kwargs)
         except Exception:
             from omnia.core.logging import get_logger
 
             get_logger().exception("hook %s callback failed", hook_name)
-            return None
+            # Re-return the pass-through arg so a filter chain keeps its threaded value; a notify
+            # hook ignores the return, so returning the first arg (or None) is harmless there.
+            return args[0] if args else None
 
     return wrapper
 
 
+def _register_guarded(hook: Any, hook_name: str, callback: Callable[..., Any]) -> None:
+    """Append a guarded wrapper for ``callback`` to ``hook`` and track it for clean removal."""
+    wrapper = _guard(hook_name, callback)
+    _GUARDED.setdefault((hook_name, callback), []).append(wrapper)
+    hook.append(wrapper)
+
+
+def _unregister_guarded(
+    hook: Any, hook_name: str, callback: Callable[..., Any]
+) -> None:
+    """Remove EVERY guarded wrapper registered for ``callback`` from ``hook`` (safe if gone)."""
+    import contextlib
+
+    for wrapper in _GUARDED.pop((hook_name, callback), []):
+        with contextlib.suppress(ValueError):
+            hook.remove(wrapper)
+
+
 def subscribe_hook(hook_name: str, callback: Callable[..., Any]) -> None:
-    """Append ``callback`` to ``aqt.gui_hooks.<hook_name>`` (guarded unless it's a filter hook)."""
-    registered = callback
-    if hook_name not in _FILTER_HOOKS:
-        registered = _guard(hook_name, callback)
-        _GUARDED[(hook_name, callback)] = registered
-    getattr(gui_hooks(), hook_name).append(registered)
+    """Append ``callback`` to ``aqt.gui_hooks.<hook_name>`` behind the shared logging guard."""
+    _register_guarded(getattr(gui_hooks(), hook_name), hook_name, callback)
 
 
 def unsubscribe_hook(hook_name: str, callback: Callable[..., Any]) -> None:
     """Remove ``callback`` from ``aqt.gui_hooks.<hook_name>`` (safe if already gone)."""
-    import contextlib
-
-    registered = _GUARDED.pop((hook_name, callback), callback)
-    hook = getattr(gui_hooks(), hook_name)
-    with contextlib.suppress(ValueError):
-        hook.remove(registered)
+    _unregister_guarded(getattr(gui_hooks(), hook_name), hook_name, callback)
 
 
 def anki_hooks() -> Any:
@@ -474,26 +496,18 @@ def anki_hooks() -> Any:
 
 
 def subscribe_anki_hook(hook_name: str, callback: Callable[..., Any]) -> None:
-    """Append ``callback`` to ``anki.hooks.<hook_name>`` (always guarded).
+    """Append ``callback`` to ``anki.hooks.<hook_name>`` behind the shared logging guard.
 
     Backend (``anki.hooks``) hooks fire from the collection during note adds/edits, off the
-    ``aqt.gui_hooks`` surface (e.g. ``note_will_be_added``). Those are notify hooks (no return
-    value threaded through), so the callback is wrapped in the same logging guard as the
-    non-filter GUI hooks — an exception in a feature callback must never break a note add.
+    ``aqt.gui_hooks`` surface (e.g. ``note_will_be_added``). They share the same guard + removal
+    bookkeeping as the GUI hooks — an exception in a feature callback must never break a note add.
     """
-    registered = _guard(hook_name, callback)
-    _GUARDED[(hook_name, callback)] = registered
-    getattr(anki_hooks(), hook_name).append(registered)
+    _register_guarded(getattr(anki_hooks(), hook_name), hook_name, callback)
 
 
 def unsubscribe_anki_hook(hook_name: str, callback: Callable[..., Any]) -> None:
     """Remove ``callback`` from ``anki.hooks.<hook_name>`` (safe if already gone)."""
-    import contextlib
-
-    registered = _GUARDED.pop((hook_name, callback), callback)
-    hook = getattr(anki_hooks(), hook_name)
-    with contextlib.suppress(ValueError):
-        hook.remove(registered)
+    _unregister_guarded(getattr(anki_hooks(), hook_name), hook_name, callback)
 
 
 # --- Tools-menu action + shortcut (used by auto_flip's Ctrl+J toggle) ------------------

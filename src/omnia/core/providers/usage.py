@@ -7,8 +7,10 @@ can show what is being used without depending on any provider's billing API.
 The persisted aggregate is a ``{f"{kind}|{provider}|{model}": row}`` dict, where each row holds
 ``{kind, provider, model, calls, in_chars, out_chars, in_tokens, out_tokens, last_used_ts}``.
 It lives behind a :class:`UsageStore` (a JSON file via :class:`JsonUsageStore`, or a dedicated
-``col.db`` aggregate table via :class:`ColUsageStore`). :func:`_fold_call` is the single
-row-default + increment helper both recorders share.
+``col.db`` aggregate table via :class:`ColUsageStore`). Either store is DEVICE-LOCAL: a custom
+``col.db`` table is not synced by AnkiWeb (only Anki's own tables sync), so usage is per-device
+like the ``typed_accuracy`` table — never assume it aggregates across a user's machines.
+:func:`_fold_call` is the single row-default + increment helper both recorders share.
 
 Two recorders write the aggregate: :class:`JsonUsageRecorder` folds each call straight into its
 :class:`UsageStore` under a lock (a synchronous read-modify-write, bg-thread-safe with the
@@ -240,17 +242,31 @@ class ColUsageStore(UsageStore):
         return out
 
     def save(self, data: dict[str, dict]) -> None:
-        """Replace every row with ``data`` in one pass (no-op when no collection is loaded)."""
+        """Upsert every row in ``data`` (no-op when no collection is loaded).
+
+        Per-row ``INSERT ... ON CONFLICT(key) DO UPDATE`` rather than a DELETE-all-then-INSERT
+        loop: there is no destructive window where a mid-loop failure (e.g. under ``_flush``'s
+        suppressed teardown save) could wipe or half-write the aggregate. The buffered recorder
+        always saves the FULL aggregate (rows are only ever added/updated, never dropped), so
+        upserting is equivalent to a replace without the wipe risk.
+        """
         db = self._db()
         if db is None:
             return
         db.execute(_USAGE_TABLE_SQL)
-        db.execute("DELETE FROM omnia_usage")
         placeholders = ", ".join("?" for _ in _USAGE_COLUMNS)
-        insert = f"INSERT INTO omnia_usage({', '.join(_USAGE_COLUMNS)}) VALUES ({placeholders})"
+        assignments = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in _USAGE_COLUMNS
+            if column != "key"
+        )
+        upsert = (
+            f"INSERT INTO omnia_usage({', '.join(_USAGE_COLUMNS)}) "
+            f"VALUES ({placeholders}) ON CONFLICT(key) DO UPDATE SET {assignments}"
+        )
         for key, row in data.items():
             db.execute(
-                insert,
+                upsert,
                 key,
                 str(row.get("kind", "")),
                 str(row.get("provider", "")),
@@ -383,7 +399,14 @@ class BufferedUsageRecorder(UsageRecorder):
             if self._flush_pending:
                 return  # a flush is already scheduled; coalesce into it
             self._flush_pending = True
-        self._schedule_main(self._flush)
+        try:
+            self._schedule_main(self._flush)
+        except Exception:
+            # Scheduling can fail (e.g. no main window during teardown). Clear the pending flag
+            # so a later record() re-schedules instead of the recorder wedging into never
+            # flushing again. Best-effort boundary: recording must not raise into the caller.
+            with self._lock:
+                self._flush_pending = False
 
     def snapshot(self) -> list[dict]:
         """Return the in-memory rows (matches :meth:`JsonUsageRecorder.snapshot`)."""
@@ -391,7 +414,13 @@ class BufferedUsageRecorder(UsageRecorder):
             return [dict(row) for row in self._rows.values()]
 
     def flush_now(self) -> None:
-        """Flush synchronously (teardown); safe to call on any thread."""
+        """Flush the buffered aggregate to the store synchronously, on the CALLING thread.
+
+        Called at teardown (profile close) on the Qt main thread. It writes the store inline, so
+        with a ``ColUsageStore`` (``col.db``) it is ONLY safe on the main thread — off-thread it
+        is safe only with the file-backed :class:`JsonUsageStore`. Never raises (the save is
+        best-effort, suppressed in :meth:`_flush`).
+        """
         self._flush()
 
     def _flush(self) -> None:
@@ -444,15 +473,14 @@ class RecordingLLMProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> str:
-        result = self._wrapped.generate_text(
+        # Take the usage as the call's RETURN VALUE, not off the wrapped provider's shared
+        # last_usage attribute: two overlapping generations on the same cached instance would
+        # otherwise clobber that attribute and misattribute each other's token counts. We still
+        # proxy it onto self.last_usage for external readers (that attribute alone stays racy for
+        # them, but recording no longer depends on it).
+        result, usage = self._wrapped.generate_text_with_usage(
             prompt, system=system, temperature=temperature, max_tokens=max_tokens
         )
-        # Snapshot the wrapped provider's per-call usage into a LOCAL immediately after the
-        # call and pass it to _record, so a concurrent generation on the same cached instance
-        # can't swap it out from under us via the shared last_usage attribute. We still proxy
-        # it onto self.last_usage for external readers (residual: that attribute alone remains
-        # racy for those readers, but recording no longer depends on it).
-        usage = getattr(self._wrapped, "last_usage", None)
         self.last_usage = usage
         self._record(
             kind="text",
@@ -464,8 +492,7 @@ class RecordingLLMProvider(LLMProvider):
         return result
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
-        result = self._wrapped.generate_image(prompt, size=size)
-        usage = getattr(self._wrapped, "last_usage", None)
+        result, usage = self._wrapped.generate_image_with_usage(prompt, size=size)
         self.last_usage = usage
         # Record under the IMAGE model (falling back to the text model only when none is
         # configured) so an image call never shows up as a text-model row.

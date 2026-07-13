@@ -26,6 +26,28 @@ from omnia.core.providers.errors import ProviderError
 
 DEFAULT_TIMEOUT = 60
 
+# HTTP methods safe to retry on a 5xx: a 5xx may mean the server DID process a non-idempotent
+# request, so retrying a POST risks a double-charge (e.g. a duplicate LLM/TTS billing). GET/HEAD
+# carry no side effects, so retrying them on transient 5xx is safe.
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD"})
+
+
+def _parse_retry_after(headers: Any) -> Optional[float]:
+    """Return the ``Retry-After`` delay in seconds, or None when absent/non-numeric.
+
+    Only the delta-seconds form is honored (the form these APIs use for 429/503); the rarer
+    HTTP-date form falls back to the caller's backoff (returns None).
+    """
+    if headers is None:
+        return None
+    value = headers.get("Retry-After")
+    if value is None:
+        return None
+    value = str(value).strip()
+    if value.isdigit():
+        return float(value)
+    return None
+
 
 @dataclass
 class RetryPolicy:
@@ -208,24 +230,35 @@ class UrllibHttpClient(HttpClient):
 
     def _request(self, req: urllib.request.Request) -> bytes:
         retry = self._retry
+        # A non-idempotent method (POST) retries only on 429 (rate-limited — rejected, not
+        # processed) + network errors, NEVER on 5xx (which may mean the request WAS processed →
+        # a retry double-charges). Idempotent GET/HEAD retry the full transient set.
+        if req.get_method() in _IDEMPOTENT_METHODS:
+            retriable = retry.retriable_statuses
+        else:
+            retriable = tuple(code for code in retry.retriable_statuses if code == 429)
         for attempt in range(retry.max_attempts):
             last = attempt >= retry.max_attempts - 1
+            retry_after: Optional[float] = None
             try:
                 with urllib.request.urlopen(req, timeout=self._timeout) as resp:
                     return resp.read()
             except urllib.error.HTTPError as exc:
-                if last or exc.code not in retry.retriable_statuses:
+                if last or exc.code not in retriable:
                     body = exc.read().decode("utf-8", "replace")[:500]
                     raise ProviderError(
                         f"HTTP {exc.code} from {req.full_url}: {body}",
                         status_code=exc.code,
                     ) from exc
+                # Honor a server-supplied Retry-After (429/503) over the computed backoff.
+                retry_after = _parse_retry_after(exc.headers)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 if last:
                     raise ProviderError(
                         f"Network error calling {req.full_url}: {exc}"
                     ) from exc
-            retry.sleep(retry.delay_for(attempt))
+            delay = retry_after if retry_after is not None else retry.delay_for(attempt)
+            retry.sleep(min(delay, retry.max_delay))
         raise ProviderError(
             f"Request to {req.full_url} exhausted retries"
         )  # unreachable

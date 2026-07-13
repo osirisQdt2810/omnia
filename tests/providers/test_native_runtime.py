@@ -723,6 +723,47 @@ class TestUninstall:
         assert not manager.venv_dir(spec).exists()
 
 
+class TestInstallLock:
+    """Per-spec install lock serialises ensure_installed/uninstall for one runtime."""
+
+    @pytest.fixture(autouse=True)
+    def _no_fs_globs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(native_runtime, "_PYTHON_SEARCH_GLOBS", ())
+
+    def test_lock_is_per_spec_name(self, tmp_path: Path) -> None:
+        manager = NativeRuntimeManager(tmp_path, _FakeProcessRunner())
+        # Same name → same lock; different name → different lock.
+        assert manager._install_lock(_server_spec()) is manager._install_lock(
+            _server_spec()
+        )
+        assert manager._install_lock(_server_spec()) is not manager._install_lock(
+            _cli_spec()
+        )
+
+    def test_lock_is_held_across_pip_install(self, tmp_path: Path) -> None:
+        # The install lock must be held during the pip install (the slow step), so a concurrent
+        # install/uninstall for the same runtime is serialised rather than corrupting the venv.
+        holder: dict[str, Any] = {}
+
+        class _Probe(_FakeProcessRunner):
+            def run_capture(self, argv, **kwargs):
+                holder["held"] = holder["mgr"]._install_lock(holder["spec"]).locked()
+                return super().run_capture(argv, **kwargs)
+
+        runner = _Probe(
+            which_map={"python3": "/usr/bin/python3"},
+            python_versions={"/usr/bin/python3": (3, 12)},
+            run_codes=[0, 0, 0],
+        )
+        manager = NativeRuntimeManager(tmp_path, runner)
+        spec = _server_spec()
+        holder["mgr"], holder["spec"] = manager, spec
+
+        manager.ensure_installed(spec)
+
+        assert holder["held"] is True
+
+
 class TestNoWindowFlag:
     """L14: the SubprocessRunner suppresses the flashing console window on Windows."""
 

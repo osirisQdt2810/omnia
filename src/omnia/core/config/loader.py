@@ -94,8 +94,13 @@ class BaseConfigLoader(ABC):
         """Return the parsed contents of the ``name`` domain (or ``{}``)."""
 
     @abstractmethod
-    def write_file(self, name: str, data: dict[str, Any]) -> None:
-        """Persist ``data`` for the ``name`` domain."""
+    def write_file(self, name: str, data: dict[str, Any]) -> bool:
+        """Persist ``data`` for the ``name`` domain; return whether it actually persisted.
+
+        Returns ``True`` when the write reached durable storage, ``False`` when it was skipped
+        (e.g. the collection backend with no ``col`` loaded yet), so a caller syncing data
+        between backends can avoid treating a silent no-op as a successful copy.
+        """
 
 
 class TomlConfigLoader(BaseConfigLoader):
@@ -149,9 +154,10 @@ class TomlConfigLoader(BaseConfigLoader):
         """Return the parsed contents of one live file, or ``{}`` if it is absent."""
         return read_toml(self._config_dir / name)
 
-    def write_file(self, name: str, data: dict[str, Any]) -> None:
-        """Persist ``data`` to the live file ``name`` (the owning domain file)."""
+    def write_file(self, name: str, data: dict[str, Any]) -> bool:
+        """Persist ``data`` to the live file ``name`` (the owning domain file); always ``True``."""
         write_toml(self._config_dir / name, data)
+        return True
 
 
 class CollectionConfigLoader(BaseConfigLoader):
@@ -228,8 +234,12 @@ class CollectionConfigLoader(BaseConfigLoader):
             return col.get_config(self._col_key(name)) or {}
         return read_toml(self._config_dir / name)
 
-    def write_file(self, name: str, data: dict[str, Any]) -> None:
-        """Persist the ``name`` domain: to ``col`` for DB domains, to disk otherwise."""
+    def write_file(self, name: str, data: dict[str, Any]) -> bool:
+        """Persist the ``name`` domain: to ``col`` for DB domains, to disk otherwise.
+
+        Returns ``False`` (skipped) for a DB domain when no collection is loaded, so a caller
+        syncing between backends knows the copy did not persist and must retry.
+        """
         if name in self._DB_FILES:
             col = self._col()
             if col is None:
@@ -238,10 +248,11 @@ class CollectionConfigLoader(BaseConfigLoader):
                 get_logger("config").warning(
                     "no collection loaded; skipping write of %s", name
                 )
-                return
+                return False
             col.set_config(self._col_key(name), data)
-            return
+            return True
         write_toml(self._config_dir / name, data)
+        return True
 
     @staticmethod
     def _col_key(name: str) -> str:

@@ -162,6 +162,48 @@ class TestTypedAccuracyPlugin:
         assert plugin._injector is not None
         assert style_hook.count() == before + 1
 
+    def test_preview_peeks_without_consuming_staged_ease(self, fake_mw):
+        # A preview (display_interval's label) calls compute_ease(apply=False): it must PEEK
+        # the staged ease repeatedly without consuming it, so the real grade still gets it.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
+        TypedAccuracyPlugin().on_enable(ctx)
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.95, "hasGood": True, "hasBad": False, "hasMiss": False},
+            ),
+            None,
+        )
+        # Preview twice: the staged Good is peeked, never consumed.
+        assert ctx.ease.compute_ease(fake_mw.card, 1, apply=False) == 3
+        assert ctx.ease.compute_ease(fake_mw.card, 1, apply=False) == 3
+        # The real grade (apply=True) consumes it exactly once.
+        assert ctx.ease.compute_ease(fake_mw.card, 1) == 3
+        assert ctx.ease.compute_ease(fake_mw.card, 1) == 1  # nothing left staged
+
+    def test_records_home_deck_for_filtered_card(self, fake_mw):
+        # In a filtered/cram deck card.did is the temporary deck; card.odid is the home deck.
+        # card_did must record the HOME deck so the include-subdecks rollup isn't missed.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        fake_mw.card.odid = 5
+        fake_mw.card.did = 99
+        ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
+        TypedAccuracyPlugin().on_enable(ctx)
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.95, "hasGood": True, "hasBad": False, "hasMiss": False},
+            ),
+            None,
+        )
+        # study deck (get_current_id) = 7; card home deck (odid) = 5.
+        assert _logged_rows(fake_mw.conn) == [(42, 7, 5, RESULT_GOOD)]
+
     def test_fail_grades_hard(self, fake_mw):
         from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 

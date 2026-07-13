@@ -145,6 +145,11 @@
   // (checked = installed) + a status line. Ticking installs OFF-THREAD (the result is pushed
   // back through window.__snNativeRuntime*); unticking uninstalls (fast, synchronous callback).
 
+  // Names with an install in flight. Re-opening the Advanced tab re-renders rows from the
+  // server payload (installed=false during an install); without this an in-flight row would
+  // render enabled+unchecked and a second click would fire a concurrent install.
+  const nativeInFlight = new Set();
+
   /** Fetch the registered native runtimes and (re)render the panel. */
   function loadNativeRuntimes() {
     send("native_runtimes", {}, renderNativeRuntimes);
@@ -182,10 +187,15 @@
     row.className = "sn-native-row";
     row.dataset.name = rt.name;
 
+    // An install in flight for this runtime wins over the (stale) server ``installed`` flag:
+    // render it checked + disabled + "Installing…" so a re-render can't fire a second install.
+    const inFlight = nativeInFlight.has(rt.name);
+
     const check = document.createElement("input");
     check.type = "checkbox";
     check.className = "sn-native-toggle";
-    check.checked = !!rt.installed;
+    check.checked = inFlight || !!rt.installed;
+    check.disabled = inFlight;
     check.title = rt.installed ? "Remove this runtime" : "Install this runtime";
 
     const main = document.createElement("div");
@@ -198,7 +208,11 @@
     size.textContent = rt.size_hint || "";
     const status = document.createElement("div");
     status.className = "sn-native-status";
-    setNativeStatus(status, rt.installed ? "Installed ✓" : "Not installed", rt.installed);
+    if (inFlight) {
+      setNativeStatus(status, '<span class="sn-spin"></span>Installing…', false, true);
+    } else {
+      setNativeStatus(status, rt.installed ? "Installed ✓" : "Not installed", rt.installed);
+    }
     main.appendChild(label);
     main.appendChild(size);
     main.appendChild(status);
@@ -206,6 +220,7 @@
     check.addEventListener("change", function () {
       if (check.checked) {
         check.disabled = true;
+        nativeInFlight.add(rt.name);
         setNativeStatus(status, '<span class="sn-spin"></span>Installing…', false, true);
         send("set_native_runtime", {name: rt.name, enabled: true}, null);
       } else {
@@ -270,6 +285,7 @@
    * @param {?Object} res {installed} on success, {installed:false, error} on failure.
    */
   window.__snNativeRuntimeDone = function (name, res) {
+    nativeInFlight.delete(name);
     const row = nativeListEl.querySelector('.sn-native-row[data-name="' + name + '"]');
     if (!row) {
       return;
@@ -1126,7 +1142,7 @@
           applyLoad
         );
       } else if (res && res.error) {
-        setMsg(res.error, true);
+        setMsg(esc(res.error), true); // untrusted error text → escape (setMsg is an innerHTML sink)
       }
     });
   });
@@ -1148,7 +1164,7 @@
       const n = typeof res.filled === "number" ? res.filled : res.rows.length;
       setMsg("Auto-prompt wrote prompts for " + n + " field(s)." + depsSuffix(colored), false);
     } else {
-      setMsg((res && res.error) || "Auto-prompt failed — see logs.", true);
+      setMsg(esc((res && res.error) || "Auto-prompt failed — see logs."), true);
     }
   };
   autoBtn.addEventListener("click", function () {
@@ -1184,7 +1200,7 @@
       refreshGraphIfOpen();
       setMsg("Improved " + n + " prompt(s)." + depsSuffix(colored), false);
     } else {
-      setMsg((res && res.error) || "Improve all failed — see logs.", true);
+      setMsg(esc((res && res.error) || "Improve all failed — see logs."), true);
     }
   };
 

@@ -447,6 +447,11 @@ class NativeRuntimeManager:
         # concurrent callers can't double-spawn a fixed-port sidecar (e.g. viettts:8298) — the
         # second would fail to bind and clobber the tracking of the live one.
         self._servers_lock = threading.Lock()
+        # Per-spec.name install lock, serialising ensure_installed/uninstall for one runtime so a
+        # concurrent install+install (double pip into the same venv) or install+uninstall (deleting
+        # a venv mid-install) can't corrupt it. The guard protects the lazy creation of each lock.
+        self._install_locks: dict[str, threading.Lock] = {}
+        self._install_locks_guard = threading.Lock()
         # Register ONE process-exit cleanup for the manager, not one per launched sidecar: a
         # per-launch atexit.register would accumulate dead-Popen handlers on a crash-loop
         # (start → crash → restart …). shutdown_all terminates whatever is tracked at exit.
@@ -579,6 +584,15 @@ class NativeRuntimeManager:
     def _marker_path(self, spec: NativeRuntimeSpec) -> Path:
         return self.venv_dir(spec) / _INSTALL_MARKER
 
+    def _install_lock(self, spec: NativeRuntimeSpec) -> threading.Lock:
+        """Return the (lazily-created) install lock for ``spec.name`` — one lock per runtime."""
+        with self._install_locks_guard:
+            lock = self._install_locks.get(spec.name)
+            if lock is None:
+                lock = threading.Lock()
+                self._install_locks[spec.name] = lock
+            return lock
+
     # -- install --------------------------------------------------------------------------
     def is_installed(self, spec: NativeRuntimeSpec) -> bool:
         """Return whether ``spec``'s venv exists AND its install marker is present."""
@@ -609,65 +623,75 @@ class NativeRuntimeManager:
             if on_progress is not None:
                 on_progress(message)
 
-        if self.is_installed(spec):
-            return
+        # Serialise per runtime (held across the install) so a concurrent ensure_installed sees
+        # the finished install on entry, and an uninstall can't delete the venv mid-pip.
+        with self._install_lock(spec):
+            if self.is_installed(spec):
+                return
 
-        host_python = self.host_python(spec.min_python)
-        if host_python is None:
-            maj, minr = spec.min_python
-            raise ProviderError(
-                f"{spec.name}: needs Python >= {maj}.{minr}, but no suitable interpreter "
-                f"was found. Anki's PATH can be minimal — install Python {maj}.{minr}+ "
-                f"(python.org) or ensure it's on PATH, then try again."
+            host_python = self.host_python(spec.min_python)
+            if host_python is None:
+                maj, minr = spec.min_python
+                raise ProviderError(
+                    f"{spec.name}: needs Python >= {maj}.{minr}, but no suitable interpreter "
+                    f"was found. Anki's PATH can be minimal — install Python {maj}.{minr}+ "
+                    f"(python.org) or ensure it's on PATH, then try again."
+                )
+
+            venv_dir = self.venv_dir(spec)
+            _progress(f"creating runtime environment at {venv_dir}")
+            # ``--clear`` rebuilds from scratch: a prior failed install may have left a venv built
+            # by a different (e.g. too-old) interpreter, and ``venv`` without it would REUSE that
+            # stale interpreter's symlinks (only rewriting pyvenv.cfg) — so pip would still run
+            # the old Python and re-hit the version gate. Clearing pins the env to host_python.
+            code = self._runner.run(
+                [host_python, "-m", "venv", "--clear", str(venv_dir)]
             )
+            if code != 0:
+                raise ProviderError(
+                    f"{spec.name}: failed to create its runtime environment "
+                    f"(`python -m venv` exited {code})."
+                )
 
-        venv_dir = self.venv_dir(spec)
-        _progress(f"creating runtime environment at {venv_dir}")
-        # ``--clear`` rebuilds from scratch: a prior failed install may have left a venv built
-        # by a different (e.g. too-old) interpreter, and ``venv`` without it would REUSE that
-        # stale interpreter's symlinks (only rewriting pyvenv.cfg) — so pip would still run the
-        # old Python and re-hit the version gate. Clearing pins the env to ``host_python``.
-        code = self._runner.run([host_python, "-m", "venv", "--clear", str(venv_dir)])
-        if code != 0:
-            raise ProviderError(
-                f"{spec.name}: failed to create its runtime environment "
-                f"(`python -m venv` exited {code})."
+            venv_python = str(self.venv_python(spec))
+            # Best-effort pip upgrade: a fresh venv's pip can be old (e.g. 21.x), which struggles
+            # with VCS installs + heavy resolutions; ignore failure (existing pip may suffice).
+            _progress("updating pip")
+            self._runner.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
+            _progress(
+                f"installing {', '.join(spec.pip_packages)} (this may take a while)"
             )
-
-        venv_python = str(self.venv_python(spec))
-        # Best-effort pip upgrade: a fresh venv's pip can be old (e.g. 21.x), which struggles
-        # with VCS installs + heavy resolutions; ignore failure (the existing pip may suffice).
-        _progress("updating pip")
-        self._runner.run([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
-        _progress(f"installing {', '.join(spec.pip_packages)} (this may take a while)")
-        code, output = self._runner.run_capture(
-            [venv_python, "-m", "pip", "install", *spec.pip_packages],
-            merge_stderr=True,
-        )
-        if code != 0:
-            tail = _tail(output)
-            raise ProviderError(
-                f"{spec.name}: failed to install its packages (`pip install` exited {code})."
-                + (f"\n{tail}" if tail else "")
+            code, output = self._runner.run_capture(
+                [venv_python, "-m", "pip", "install", *spec.pip_packages],
+                merge_stderr=True,
             )
+            if code != 0:
+                tail = _tail(output)
+                raise ProviderError(
+                    f"{spec.name}: failed to install its packages "
+                    f"(`pip install` exited {code})." + (f"\n{tail}" if tail else "")
+                )
 
-        marker = self._marker_path(spec)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("ok", encoding="utf-8")
-        _progress("runtime ready")
+            marker = self._marker_path(spec)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("ok", encoding="utf-8")
+            _progress("runtime ready")
 
     def uninstall(self, spec: NativeRuntimeSpec) -> None:
         """Stop ``spec``'s sidecar (if this manager started one) and delete its venv.
 
         Idempotent: a no-op if nothing is tracked and the venv is absent. Backs the GUI's
         "untick → delete the venv immediately" toggle so a disabled runtime frees its disk.
+        Holds the per-spec install lock so it can't delete the venv while an install is running.
         """
-        with self._servers_lock:
-            server = self._servers.pop(spec.name, None)
-        # Terminate OUTSIDE the lock so the (bounded) wait doesn't block a concurrent caller.
-        if server is not None:
-            self._terminate(server.proc)
-        shutil.rmtree(self.venv_dir(spec), ignore_errors=True)
+        with self._install_lock(spec):
+            with self._servers_lock:
+                server = self._servers.pop(spec.name, None)
+            # Terminate OUTSIDE the servers lock so the (bounded) wait doesn't block a concurrent
+            # caller; still under the install lock so an install can't race the venv deletion.
+            if server is not None:
+                self._terminate(server.proc)
+            shutil.rmtree(self.venv_dir(spec), ignore_errors=True)
 
     def _require_installed(self, spec: NativeRuntimeSpec) -> None:
         """Raise an actionable error if ``spec`` is not installed (opt-in model, ADR-005).

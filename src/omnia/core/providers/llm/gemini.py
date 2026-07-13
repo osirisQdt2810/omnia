@@ -13,7 +13,6 @@ and overrides just those two hooks — same wire format, different host + bearer
 from __future__ import annotations
 
 import base64
-import json
 from typing import Any, Optional
 
 from omnia.core.logging import get_logger
@@ -147,8 +146,13 @@ class GeminiProvider(LLMProvider):
         returned_text = "".join(
             str(part.get("text", "")) for part in (parts or [])
         ).strip()
-        _logger.info(
-            "gemini image: no inline image; raw response = %s", json.dumps(resp)
+        # Log METADATA only, at DEBUG — never the raw response body, which can carry the prompt /
+        # returned text (PII) into the log. finishReason + part kinds + sizes are enough to triage.
+        _logger.debug(
+            "gemini image: no inline image (finishReason=%r, parts=%s, text_len=%d)",
+            reason,
+            part_kinds or "none",
+            len(returned_text),
         )
         detail = f"parts={part_kinds or 'none'}"
         if returned_text:
@@ -167,15 +171,36 @@ class GeminiProvider(LLMProvider):
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ) -> str:
+        text, _usage = self.generate_text_with_usage(
+            prompt, system=system, temperature=temperature, max_tokens=max_tokens
+        )
+        return text
+
+    def generate_text_with_usage(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> tuple[str, Optional[dict[str, int]]]:
         temp = self._temperature if temperature is None else temperature
         payload = self._build_payload(prompt, system, temp, max_tokens)
         resp = self._http.post_json(
             self._endpoint(self._model), payload, headers=self._headers()
         )
-        self.last_usage = _usage_from_gemini(resp)
-        return self._parse_response(resp)
+        # Return the usage parsed from THIS response; also set last_usage for external readers.
+        usage = _usage_from_gemini(resp)
+        self.last_usage = usage
+        return self._parse_response(resp), usage
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
+        data, _usage = self.generate_image_with_usage(prompt, size=size)
+        return data
+
+    def generate_image_with_usage(
+        self, prompt: str, *, size: str = "1024x1024"
+    ) -> tuple[bytes, Optional[dict[str, int]]]:
         if not self._image_model:
             raise ProviderError(
                 f"{self.name} image generation needs an image_model "
@@ -186,7 +211,8 @@ class GeminiProvider(LLMProvider):
         resp = self._http.post_json(
             self._endpoint(self._image_model), payload, headers=self._headers()
         )
-        # Record the image call's exact token usage too (mirrors generate_text) — otherwise the
-        # recording wrapper reads a stale/absent last_usage and logs the image call as 0 tokens.
-        self.last_usage = _usage_from_gemini(resp)
-        return self._parse_image_response(resp)
+        # Return the image call's exact token usage (mirrors generate_text_with_usage) so the
+        # recording wrapper attributes tokens from THIS call, not a stale/absent last_usage.
+        usage = _usage_from_gemini(resp)
+        self.last_usage = usage
+        return self._parse_image_response(resp), usage

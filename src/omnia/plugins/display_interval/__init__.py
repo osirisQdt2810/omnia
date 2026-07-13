@@ -72,12 +72,13 @@ class DisplayIntervalPlugin(FeaturePlugin):
         anki_compat.reviewer_bottom_eval(_HIDE_JS)
 
     def _on_answer(self, card: Any, *_args: Any) -> None:
-        # Fold a Good press through the pipeline so overdue_guard's (synchronous) adjustment
-        # shows. typed_accuracy is async (pycmd) and not yet staged here — see module docstring.
+        # Fold a Good press through the pipeline as a non-destructive PREVIEW (apply=False) so
+        # overdue_guard's (synchronous) adjustment shows WITHOUT consuming typed_accuracy's
+        # staged ease. typed_accuracy stages async over pycmd — see the module docstring.
         # The hook passes the card first; tolerate any extra args Anki may add.
         if self._ctx is None:
             return
-        effective = self._ctx.ease.compute_ease(card, _EASE_GOOD)
+        effective = self._ctx.ease.compute_ease(card, _EASE_GOOD, apply=False)
         seconds = anki_compat.next_interval_seconds(card, effective)
         if seconds is None:
             return
