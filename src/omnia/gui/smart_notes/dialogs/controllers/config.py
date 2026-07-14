@@ -178,6 +178,17 @@ class ConfigController:
             "allow_empty_fields": settings.allow_empty_fields,
             "auto_generate_integrations": settings.auto_generate_integrations,
             "integration_status": self._integration_status(),
+            # The registered integrations (key + display text), so the Integrations tab renders
+            # one row per entry instead of hardcoding a single clipper — adding an Integration to
+            # the INTEGRATIONS tuple now shows up in the UI automatically.
+            "integrations": [
+                {
+                    "key": integration.key,
+                    "name": integration.name,
+                    "description": integration.description,
+                }
+                for integration in INTEGRATIONS
+            ],
         }
 
     @staticmethod
