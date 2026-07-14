@@ -57,8 +57,7 @@
   const optRegenBatch = document.getElementById("sn-opt-regen-batch");
   const optAllowEmpty = document.getElementById("sn-opt-allow-empty");
   // Integrations tab: the per-integration auto-generate toggle + its "Detected N cards" line.
-  const optIntegWebClipper = document.getElementById("sn-opt-integ-web_clipper");
-  const integStatusWebClipper = document.getElementById("sn-integ-status-web_clipper");
+  const integrationsList = document.getElementById("sn-integrations-list");
   const nativeListEl = document.getElementById("sn-native-list");
 
   // Tabbed Options dialog: General (the flags above) + Account (usage tables, OpenRouter

@@ -90,12 +90,54 @@
     optGenReview.checked = !!opts.generate_at_review;
     optRegenBatch.checked = opts.regenerate_when_batching !== false;
     optAllowEmpty.checked = !!opts.allow_empty_fields;
-    optIntegWebClipper.checked = !!(opts.auto_generate_integrations || {}).web_clipper;
-    const count = (opts.integration_status || {}).web_clipper;
-    integStatusWebClipper.textContent =
-      typeof count === "number"
-        ? "Detected " + count + " card(s) from this integration."
-        : "";
+    renderIntegrations(opts);
+  }
+
+  /**
+   * Render one row per registered integration from the backend list, so adding an Integration
+   * server-side (the INTEGRATIONS tuple) appears here with no HTML change. Each row is a checkbox
+   * (seeded from auto_generate_integrations[key]) + name/description + a "Detected N cards" line.
+   * @param {!Object} opts {integrations, auto_generate_integrations, integration_status}
+   */
+  function renderIntegrations(opts) {
+    if (!integrationsList) return;
+    const list = opts.integrations || [];
+    const enabled = opts.auto_generate_integrations || {};
+    const status = opts.integration_status || {};
+    integrationsList.textContent = "";
+    for (const integ of list) {
+      const label = document.createElement("label");
+      label.className = "sn-opt-row";
+      label.title =
+        "ON: when this tool saves a card (tagged " + integ.key + ") with auto-generate on, " +
+        "Omnia fills that note's empty smart fields in the background.\n" +
+        "OFF: clipped cards are saved as-is — run a batch to fill them later.";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "sn-check sn-opt-integ";
+      checkbox.dataset.integKey = integ.key;
+      checkbox.checked = !!enabled[integ.key];
+
+      const span = document.createElement("span");
+      const name = document.createElement("b");
+      name.textContent = integ.name;
+      span.appendChild(name);
+      span.appendChild(document.createTextNode(" — " + integ.description));
+
+      const statusEl = document.createElement("span");
+      statusEl.className = "sn-integ-status";
+      const count = status[integ.key];
+      statusEl.textContent =
+        typeof count === "number"
+          ? "Detected " + count + " card(s) from this integration."
+          : "";
+      span.appendChild(statusEl);
+
+      label.appendChild(checkbox);
+      label.appendChild(span);
+      integrationsList.appendChild(label);
+    }
   }
 
   /**
@@ -103,11 +145,18 @@
    * @return {!Object}
    */
   function collectOptions() {
+    const autoGenerateIntegrations = {};
+    if (integrationsList) {
+      const boxes = integrationsList.querySelectorAll(".sn-opt-integ");
+      for (const box of boxes) {
+        autoGenerateIntegrations[box.dataset.integKey] = box.checked;
+      }
+    }
     return {
       generate_at_review: optGenReview.checked,
       regenerate_when_batching: optRegenBatch.checked,
       allow_empty_fields: optAllowEmpty.checked,
-      auto_generate_integrations: {web_clipper: optIntegWebClipper.checked}
+      auto_generate_integrations: autoGenerateIntegrations
     };
   }
 
