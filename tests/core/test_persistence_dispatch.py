@@ -21,35 +21,18 @@ from omnia.core.config.loader import CollectionConfigLoader, TomlConfigLoader
 from omnia.core.providers.tts.base import TTSVoice
 from omnia.core.providers.usage import (
     BufferedUsageRecorder,
-    ColUsageStore,
+    CollectionUsageStore,
     JsonUsageRecorder,
     JsonUsageStore,
 )
 from omnia.core.providers.voice_cache import CollectionVoiceCache, JsonVoiceCache
 
 
-class _SqliteDb:
-    """Expose an in-memory ``sqlite3`` connection through Anki's ``.execute``/``.scalar``."""
-
-    def __init__(self) -> None:
-        import sqlite3
-
-        self._conn = sqlite3.connect(":memory:")
-
-    def execute(self, sql: str, *args: object):
-        return self._conn.execute(sql, args).fetchall()
-
-    def scalar(self, sql: str, *args: object):
-        row = self._conn.execute(sql, args).fetchone()
-        return row[0] if row else None
-
-
 class _FakeCol:
-    """A stand-in collection: dict-backed ``get_config``/``set_config`` + a sqlite ``db``."""
+    """A stand-in collection: dict-backed ``get_config``/``set_config`` (all backends synced)."""
 
     def __init__(self) -> None:
         self.conf: dict[str, object] = {}
-        self.db = _SqliteDb()
 
     def get_config(self, key, default=None):
         return self.conf.get(key, default)
@@ -217,14 +200,14 @@ class TestUsageChangeDetected:
         recorder = PersistenceDispatcher(user_files).usage_recorder()
 
         assert isinstance(recorder, BufferedUsageRecorder)
-        assert ColUsageStore(db_provider=lambda: fake_col.db).load() == seeded
+        assert CollectionUsageStore(col_provider=lambda: fake_col).load() == seeded
         assert _read_marker(user_files)["usage"] == "database"
 
     def test_database_to_json_copies_the_aggregate(
         self, user_files, fake_col, monkeypatch
     ):
         seeded = {"text|gemini|m": _usage_row()}
-        ColUsageStore(db_provider=lambda: fake_col.db).save(seeded)
+        CollectionUsageStore(col_provider=lambda: fake_col).save(seeded)
         _write_marker(user_files, {"usage": "database"})
         monkeypatch.setenv("OMNIA_USAGE_STORAGE", "json")
 
