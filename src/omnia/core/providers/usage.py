@@ -6,17 +6,19 @@ can show what is being used without depending on any provider's billing API.
 
 The persisted aggregate is a ``{f"{kind}|{provider}|{model}": row}`` dict, where each row holds
 ``{kind, provider, model, calls, in_chars, out_chars, in_tokens, out_tokens, last_used_ts}``.
-It lives behind a :class:`UsageStore` (a JSON file via :class:`JsonUsageStore`, or a dedicated
-``col.db`` aggregate table via :class:`ColUsageStore`). Either store is DEVICE-LOCAL: a custom
-``col.db`` table is not synced by AnkiWeb (only Anki's own tables sync), so usage is per-device
-like the ``typed_accuracy`` table — never assume it aggregates across a user's machines.
-:func:`_fold_call` is the single row-default + increment helper both recorders share.
+It is a small bounded map (one row per provider+model combination), so it lives behind a
+:class:`UsageStore` as plain JSON-able data: the default :class:`CollectionUsageStore` keeps it in
+the SYNCED collection config (``col.set_config`` under ``omnia:usage``), so usage rides along with
+AnkiWeb sync and aggregates across a user's devices; :class:`JsonUsageStore` keeps it in a
+device-local JSON file (the ``json`` backend). :func:`_fold_call` is the single row-default +
+increment helper both recorders share.
 
 Two recorders write the aggregate: :class:`JsonUsageRecorder` folds each call straight into its
 :class:`UsageStore` under a lock (a synchronous read-modify-write, bg-thread-safe with the
 file-backed store), while :class:`BufferedUsageRecorder` folds each call into a thread-safe
 in-memory aggregate and flushes it to its store on the Qt main thread (coalesced), so a store
-that isn't safe to touch off-thread — ``col.db`` — is only written on the main thread. The
+that isn't safe to touch off-thread — the collection (``col.set_config``) — is only written on
+the main thread. The
 :class:`RecordingLLMProvider` / :class:`RecordingTTSProvider` decorate a real provider so every
 generation records a row; recording is best-effort and never raises into the call. A
 process-wide default recorder is set once at bootstrap (a :class:`NullUsageRecorder` until then).
@@ -32,7 +34,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Optional
 
 from omnia.core.providers.llm.base import LLMProvider
 from omnia.core.providers.tts.base import TTSProvider
@@ -135,8 +137,14 @@ class UsageStore(ABC):
         """Return the persisted rows (``{}`` when absent/unreadable)."""
 
     @abstractmethod
-    def save(self, data: dict[str, dict]) -> None:
-        """Persist the full rows dict."""
+    def save(self, data: dict[str, dict]) -> bool:
+        """Persist the full rows dict.
+
+        Returns:
+            ``True`` if the data was actually persisted; ``False`` when the store silently
+            skipped the write (e.g. the collection backend with no ``col`` loaded). The
+            dispatcher relies on this to know whether a backend-switch copy succeeded.
+        """
 
 
 class JsonUsageStore(UsageStore):
@@ -157,7 +165,7 @@ class JsonUsageStore(UsageStore):
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
-    def save(self, data: dict[str, dict]) -> None:
+    def save(self, data: dict[str, dict]) -> bool:
         # Write to a sibling temp file then atomically replace, so a mid-write failure (crash,
         # disk full) leaves the previous file intact instead of truncating it to nothing.
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,33 +173,10 @@ class JsonUsageStore(UsageStore):
         with tmp.open("w", encoding="utf-8") as handle:
             json.dump(data, handle)
         os.replace(tmp, self._path)
+        return True
 
 
-class DbHandle(Protocol):
-    """The narrow database surface :class:`ColUsageStore` needs (``mw.col.db`` satisfies it)."""
-
-    def execute(self, sql: str, *args: Any) -> Any: ...
-
-    def scalar(self, sql: str, *args: Any) -> Any: ...
-
-
-_USAGE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS omnia_usage (
-    key TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    provider TEXT NOT NULL,
-    model TEXT NOT NULL,
-    calls INTEGER NOT NULL,
-    in_chars INTEGER NOT NULL,
-    out_chars INTEGER NOT NULL,
-    in_tokens INTEGER NOT NULL,
-    out_tokens INTEGER NOT NULL,
-    last_used_ts REAL
-);
-"""
-
-_USAGE_COLUMNS = (
-    "key",
+_USAGE_ROW_FIELDS = (
     "kind",
     "provider",
     "model",
@@ -204,91 +189,64 @@ _USAGE_COLUMNS = (
 )
 
 
-class ColUsageStore(UsageStore):
-    """A :class:`UsageStore` backed by a dedicated ``col.db`` aggregate table (``omnia_usage``).
+def _rows_from_raw(parsed: object) -> dict[str, dict]:
+    """Rebuild the ``{key: row}`` aggregate from parsed config (tolerant of junk)."""
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for key, row in parsed.items():
+        if isinstance(key, str) and isinstance(row, dict):
+            out[key] = row
+    return out
 
-    One row per ``kind|provider|model`` key, mirroring the ``typed_accuracy`` ``col.db`` table
-    pattern. The database handle is resolved LAZILY through ``db_provider`` (``mw.col`` is not
-    ready at add-on init); an injected provider lets tests pass a fake handle. Without a
-    collection the store degrades to ``{}`` on load and a no-op on save (headless-safe).
+
+class CollectionUsageStore(UsageStore):
+    """A :class:`UsageStore` in the synced collection config (``col.set_config``).
+
+    The bounded ``{key: row}`` aggregate is stored under ``omnia:usage`` as plain JSON-able data,
+    so it syncs across a user's devices via AnkiWeb (mirroring :class:`CollectionVoiceCache`).
+    ``col`` is resolved LAZILY (``mw.col`` isn't ready at add-on init); an optional
+    ``col_provider`` lets tests inject a fake collection. Without a collection it degrades to
+    ``{}`` on load and reports a non-persisted (``False``) save (headless-safe). Because a write
+    touches the collection, saves must happen on the Qt main thread — hence the
+    :class:`BufferedUsageRecorder` wrapper (see the module docstring).
     """
 
-    def __init__(self, db_provider: Optional[Callable[[], Any]] = None) -> None:
+    KEY = "omnia:usage"
+
+    def __init__(self, col_provider: Optional[Callable[[], Any]] = None) -> None:
         """Initialise the store.
 
         Args:
-            db_provider: Returns the DB handle (``execute``/``scalar``); defaults to the
-                lazily-resolved ``mw.col.db``. Tests inject a ``sqlite3`` adapter.
+            col_provider: Returns the collection (``get_config``/``set_config``); defaults to the
+                lazily-resolved ``mw.col``. Tests inject a fake collection.
         """
-        self._db_provider = db_provider
-
-    def ensure(self) -> None:
-        """Create the ``omnia_usage`` table if it does not exist (idempotent; no-op if no col)."""
-        db = self._db()
-        if db is not None:
-            db.execute(_USAGE_TABLE_SQL)
+        self._col_provider = col_provider
 
     def load(self) -> dict[str, dict]:
-        """Return every row as ``{key: row}`` (``{}`` when no collection is loaded)."""
-        db = self._db()
-        if db is None:
-            return {}
-        db.execute(_USAGE_TABLE_SQL)
-        columns = ", ".join(_USAGE_COLUMNS)
-        out: dict[str, dict] = {}
-        for values in db.execute(f"SELECT {columns} FROM omnia_usage"):
-            row = dict(zip(_USAGE_COLUMNS, values, strict=True))
-            out[str(row.pop("key"))] = row
-        return out
+        """Return the persisted rows as ``{key: row}`` (``{}`` when no collection is loaded)."""
+        col = self._col()
+        raw = col.get_config(self.KEY, None) if col is not None else None
+        return _rows_from_raw(raw or {})
 
-    def save(self, data: dict[str, dict]) -> None:
-        """Upsert every row in ``data`` (no-op when no collection is loaded).
+    def save(self, data: dict[str, dict]) -> bool:
+        """Persist the full rows dict (no-op → ``False`` when no collection is loaded)."""
+        col = self._col()
+        if col is None:
+            return False
+        col.set_config(self.KEY, data)
+        return True
 
-        Per-row ``INSERT ... ON CONFLICT(key) DO UPDATE`` rather than a DELETE-all-then-INSERT
-        loop: there is no destructive window where a mid-loop failure (e.g. under ``_flush``'s
-        suppressed teardown save) could wipe or half-write the aggregate. The buffered recorder
-        always saves the FULL aggregate (rows are only ever added/updated, never dropped), so
-        upserting is equivalent to a replace without the wipe risk.
-        """
-        db = self._db()
-        if db is None:
-            return
-        db.execute(_USAGE_TABLE_SQL)
-        placeholders = ", ".join("?" for _ in _USAGE_COLUMNS)
-        assignments = ", ".join(
-            f"{column}=excluded.{column}"
-            for column in _USAGE_COLUMNS
-            if column != "key"
-        )
-        upsert = (
-            f"INSERT INTO omnia_usage({', '.join(_USAGE_COLUMNS)}) "
-            f"VALUES ({placeholders}) ON CONFLICT(key) DO UPDATE SET {assignments}"
-        )
-        for key, row in data.items():
-            db.execute(
-                upsert,
-                key,
-                str(row.get("kind", "")),
-                str(row.get("provider", "")),
-                str(row.get("model", "")),
-                int(row.get("calls", 0)),
-                int(row.get("in_chars", 0)),
-                int(row.get("out_chars", 0)),
-                int(row.get("in_tokens", 0)),
-                int(row.get("out_tokens", 0)),
-                row.get("last_used_ts"),
-            )
-
-    def _db(self) -> Any:
-        if self._db_provider is not None:
+    def _col(self) -> Any:
+        if self._col_provider is not None:
             try:
-                return self._db_provider()
+                return self._col_provider()
             except Exception:
                 return None
         from omnia.core import anki_compat
 
         try:
-            return anki_compat.main_window().col.db
+            return anki_compat.main_window().col
         except Exception:
             return None
 
@@ -354,7 +312,8 @@ class BufferedUsageRecorder(UsageRecorder):
     thread-safe in-memory rows dict — same keying/fields as :class:`JsonUsageRecorder` — then
     schedules a COALESCED flush on the Qt main thread (only one flush pending at a time, so N
     rapid records cause one save, not N). This keeps a store that is unsafe to touch off-thread
-    (``col.db``) written only on the main thread. ``schedule_main`` is injected for tests (a
+    (the collection, ``col.set_config``) written only on the main thread. ``schedule_main`` is
+    injected for tests (a
     synchronous stand-in runs the flush inline); the default defers to
     :func:`_default_schedule_main`.
     """
@@ -417,9 +376,9 @@ class BufferedUsageRecorder(UsageRecorder):
         """Flush the buffered aggregate to the store synchronously, on the CALLING thread.
 
         Called at teardown (profile close) on the Qt main thread. It writes the store inline, so
-        with a ``ColUsageStore`` (``col.db``) it is ONLY safe on the main thread — off-thread it
-        is safe only with the file-backed :class:`JsonUsageStore`. Never raises (the save is
-        best-effort, suppressed in :meth:`_flush`).
+        with a ``CollectionUsageStore`` (``col.set_config``) it is ONLY safe on the main thread —
+        off-thread it is safe only with the file-backed :class:`JsonUsageStore`. Never raises (the
+        save is best-effort, suppressed in :meth:`_flush`).
         """
         self._flush()
 

@@ -36,8 +36,14 @@ class VoiceCache(ABC):
         """Return the cached voice map (``{}`` when absent/unreadable/malformed)."""
 
     @abstractmethod
-    def save(self, voices: dict[str, list[TTSVoice]]) -> None:
-        """Persist the aggregated voice map."""
+    def save(self, voices: dict[str, list[TTSVoice]]) -> bool:
+        """Persist the aggregated voice map.
+
+        Returns:
+            ``True`` if actually persisted; ``False`` when the store silently skipped the write
+            (the collection backend with no ``col`` loaded). The dispatcher uses this to decide
+            whether a backend-switch copy succeeded.
+        """
 
 
 class JsonVoiceCache(VoiceCache):
@@ -55,11 +61,12 @@ class JsonVoiceCache(VoiceCache):
             return {}
         return _voices_from_raw(parsed)
 
-    def save(self, voices: dict[str, list[TTSVoice]]) -> None:
+    def save(self, voices: dict[str, list[TTSVoice]]) -> bool:
         path = self._dir / _CACHE_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             json.dump(_voices_to_raw(voices), handle)
+        return True
 
 
 class CollectionVoiceCache(VoiceCache):
@@ -81,10 +88,12 @@ class CollectionVoiceCache(VoiceCache):
         raw = col.get_config(self.KEY, None) if col is not None else None
         return _voices_from_raw(raw or {})
 
-    def save(self, voices: dict[str, list[TTSVoice]]) -> None:
+    def save(self, voices: dict[str, list[TTSVoice]]) -> bool:
         col = self._col()
-        if col is not None:
-            col.set_config(self.KEY, _voices_to_raw(voices))
+        if col is None:
+            return False
+        col.set_config(self.KEY, _voices_to_raw(voices))
+        return True
 
     def _col(self) -> Any:
         if self._col_provider is not None:
