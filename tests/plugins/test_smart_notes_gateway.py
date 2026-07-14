@@ -283,3 +283,29 @@ class TestGatewayGuards:
     def test_registry_has_web_clipper(self):
         keys = {integration.key for integration in INTEGRATIONS}
         assert "web_clipper" in keys
+
+    def test_registry_has_desktop_clipper(self):
+        keys = {integration.key for integration in INTEGRATIONS}
+        assert "desktop_clipper" in keys
+
+    def test_desktop_source_tag_resolves_its_integration(self):
+        integration = integration_for_tags(["x", "omnia-desktop-clipper"])
+        assert integration is not None
+        assert integration.key == "desktop_clipper"
+
+    def test_desktop_note_autogenerates_when_toggle_on(self, monkeypatch):
+        # A note the DESKTOP clipper pushes (source tag omnia-desktop-clipper + omnia-autogen)
+        # passes the gateway's guards and schedules generation, exactly like the web clipper.
+        note = _FakeNote(
+            1,
+            "Basic",
+            {"Word": "cat", "Def": ""},
+            ["omnia-desktop-clipper", AUTOGEN_TAG],
+        )
+        col, calls = _install(monkeypatch, {1: note})
+        settings = SmartNotesSettings(
+            note_types=[_note_type_config()],
+            auto_generate_integrations={"desktop_clipper": True},
+        )
+        _gateway(settings).on_note_will_be_added(col, note, 1)
+        assert calls == [[1]]

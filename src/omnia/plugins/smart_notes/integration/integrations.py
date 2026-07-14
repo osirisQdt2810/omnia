@@ -46,6 +46,12 @@ INTEGRATIONS: tuple[Integration, ...] = (
         name="Omnia Web Clipper",
         description="Auto-generate cards saved by the Omnia browser extension.",
     ),
+    Integration(
+        key="desktop_clipper",
+        source_tag="omnia-desktop-clipper",
+        name="Omnia Desktop Clipper",
+        description="Auto-generate cards saved by the Omnia desktop app (any app, via hotkey/OCR).",
+    ),
 )
 
 
