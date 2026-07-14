@@ -3,7 +3,7 @@
 Omnia is a single Anki add-on that hosts many independent **feature plugins** — auto-flip,
 typing-accuracy grading, AI note generation, and more. A clean settings UI lists every
 plugin with an enable toggle; tick one and that feature turns on. Adding a new feature is
-the same "pluginize" move every time: drop a `FeaturePlugin` subclass into `features/`,
+the same "pluginize" move every time: drop a `FeaturePlugin` subclass into `plugins/`,
 register it, and it appears in the UI.
 
 ## Why a plugin architecture
@@ -26,6 +26,105 @@ in `core/` and keeps each feature thin and isolated:
 | `display_interval` | Shows the predicted next interval on the answer side. |
 | `overdue_guard` | Forces very overdue cards to Hard/Again regardless of input. |
 | `smart_notes` | Generates note fields (text/image) and TTS audio via an LLM/TTS provider. |
+
+---
+
+## Install on your machine
+
+Omnia runs **inside Anki** (25.09+ / 26.x, which bundles Python 3.13 + PyQt6). It is **not**
+a server — there is nothing to run separately.
+
+### A. End user — install the packaged add-on (macOS & Windows)
+1. Get `omnia.ankiaddon` (from a release, or build it yourself — see *Develop* below:
+   `python scripts/build_addon.py` writes it to `dist/`).
+2. In Anki: **Tools → Add-ons → Install from file…** and pick `omnia.ankiaddon`.
+3. **Restart Anki.** You now have a **Tools → Omnia** menu.
+
+That is the whole install. Everything else (which plugins are on, their settings) is done in
+the GUI and stored in your collection — see *Where your settings & data live* below. There is
+no config file to edit **unless** you use the AI features, which need `providers.toml` (next
+section).
+
+> Installing on another machine? Just repeat A on that machine. Your **plugin settings sync
+> automatically** with the rest of your collection through AnkiWeb (they live in the collection,
+> not in a local file). The only per-machine step is re-creating `providers.toml` with your API
+> keys, because secrets are deliberately **not** synced (see below).
+
+### B. Developer — run from source into your local Anki
+```bash
+git clone --recurse-submodules <this-repo-url>      # --recurse-submodules pulls the clippers
+cd omnia
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements/requirements-dev.txt
+pre-commit install
+
+python scripts/install_addon.py    # assemble src/omnia + vendor/ + models/ + config/ into addons21/
+```
+Restart Anki; edits to the source are picked up on the next Anki start (re-run
+`install_addon.py` if the assembled layout changed). `pytest tests/ -vv` runs the logic tests
+headless (Anki is stubbed).
+
+---
+
+## Where your settings & data live (no files in this repo — by design)
+
+You will not find `storage.json`, `usage.json`, `voices.json`, or a live `config` in this
+repository. That is intentional: **Omnia keeps its runtime state inside Anki's own database,
+created on your machine on first run** (ADR-006). Nothing runtime is committed to the repo.
+
+| What | Where it is stored | Synced by AnkiWeb? |
+|---|---|---|
+| Plugin settings + enable toggles | Anki **collection config** (`col.set_config`) | ✅ Yes — follows your collection to every device |
+| AI usage accounting (LLM/TTS call counts) | a table in **`collection.anki2`** (`col.db`) | ❌ No — device-local |
+| Fetched-voice cache (TTS voice lists) | Anki **collection config** | ✅ Yes |
+| A tiny backend marker | `user_files/.storage.json` | ❌ No — device-local |
+| **AI provider config + API keys** | **`user_files/config/providers.toml`** + `user_files/config/.secrets/` | ❌ No — stays a local file, never synced |
+
+`user_files/` is the one directory Anki **preserves across add-on updates**, so your local
+config and secrets survive upgrades (the rest of the add-on folder is replaced on update).
+
+**Swappable backends.** Each storage concern above is dispatched by an environment knob so a
+backend can be swapped without losing data — `OMNIA_CONFIG_STORAGE`, `OMNIA_USAGE_STORAGE`,
+`OMNIA_VOICE_CACHE_STORAGE` (each defaults to `database`). When you change a knob, Omnia reads
+the `user_files/.storage.json` marker, notices the change, and **syncs the concern's data from
+the old backend into the new one** before using it — so switching is safe. Most users never
+touch these; the default (everything in the Anki DB) is what the tables above describe.
+
+---
+
+## Set up AI providers (only for `smart_notes` / TTS)
+
+The AI features need provider credentials, which are the **one** thing kept in a file (so keys
+never sync to AnkiWeb or land in the DB):
+
+```bash
+# from the installed add-on folder (Tools → Add-ons → Omnia → "View Files" shows it):
+mkdir -p user_files/config
+cp config/providers.example.toml user_files/config/providers.toml
+# then edit user_files/config/providers.toml and add your LLM/TTS keys
+```
+`config/providers.example.toml` (shipped in the repo) documents every option. Put raw secrets
+under `user_files/config/.secrets/` and reference them from `providers.toml` — see
+`config/secrets.README.md`. Both `providers.toml` and `.secrets/` are gitignored and live-only.
+
+---
+
+## Companion clippers (capture into Anki from anywhere)
+
+Two optional companion tools push words + context into your running Anki (via AnkiConnect),
+where `smart_notes` auto-generates the rest of the card. They are tracked here as **git
+submodules** under [`3rdparty/`](3rdparty/) — each has its own repo and its own README with
+per-machine install steps:
+
+| Tool | Capture from | Repo |
+|---|---|---|
+| [Omnia Web Clipper](3rdparty/omnia-web-clipper) | any web page (Chrome/Chromium) | <https://github.com/osirisQdt2810/omnia-web-clipper> |
+| [Omnia Desktop Clipper](3rdparty/omnia-desktop-clipper) | any desktop app + screen OCR (macOS/Windows/Linux) | <https://github.com/osirisQdt2810/omnia-desktop-clipper> |
+
+Enable each under **Tools → Omnia → Smart Notes → Integrations**. If you cloned without
+`--recurse-submodules`, run `git submodule update --init --recursive`.
+
+---
 
 ## Develop
 ```bash
