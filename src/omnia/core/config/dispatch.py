@@ -39,7 +39,7 @@ from omnia import envs
 from omnia.core.config.loader import BaseConfigLoader, build_config_loader
 from omnia.core.providers.usage import (
     BufferedUsageRecorder,
-    ColUsageStore,
+    CollectionUsageStore,
     JsonUsageRecorder,
     JsonUsageStore,
     UsageRecorder,
@@ -126,18 +126,20 @@ class PersistenceDispatcher:
         """Return the active usage recorder, syncing the usage aggregate on a changed knob.
 
         The store is synced (``new.save(old.load())``), then wrapped in its recorder: the file
-        store in a synchronous :class:`JsonUsageRecorder`, the ``col.db`` store in a
+        store in a synchronous :class:`JsonUsageRecorder`, the synced-collection store in a
         main-thread-flushing :class:`BufferedUsageRecorder`.
         """
 
         def build(value: str) -> UsageStore:
             if value == "json":
                 return JsonUsageStore(self._user_files_dir / "usage.json")
-            return ColUsageStore()
+            return CollectionUsageStore()
 
         def sync(old: UsageStore, new: UsageStore) -> bool:
-            new.save(old.load())
-            return True
+            # Report ACTUAL persistence: if the destination silently skipped the write (the
+            # collection store with no col loaded yet), the dispatcher leaves the marker unchanged
+            # and retries next boot instead of orphaning the old backend's aggregate.
+            return new.save(old.load())
 
         store = self._dispatch("usage", build=build, sync=sync)
         # _dispatch just recorded the resolved value in the marker — reuse it (don't re-read the
@@ -155,8 +157,9 @@ class PersistenceDispatcher:
             return CollectionVoiceCache()
 
         def sync(old: VoiceCache, new: VoiceCache) -> bool:
-            new.save(old.load())
-            return True
+            # Report ACTUAL persistence (see usage_recorder): a no-op save on the collection
+            # backend must leave the marker unchanged so the copy retries next boot.
+            return new.save(old.load())
 
         return self._dispatch("voices", build=build, sync=sync)
 
