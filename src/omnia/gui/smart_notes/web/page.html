@@ -205,13 +205,9 @@
     </div>
     <div class="sn-tabpane" data-pane="integrations" hidden>
       <div class="sn-modal-fields">Let external tools auto-fill Smart Notes fields. Each is OFF until you opt in — auto-generation makes AI (LLM/TTS) calls that cost money.</div>
-      <label class="sn-opt-row" title="ON: when the Omnia browser extension saves a card tagged omnia-web-clipper with auto-generate on, Omnia fills that note's empty smart fields in the background.&#10;OFF: clipped cards are saved as-is — run a batch to fill them later.">
-        <input type="checkbox" id="sn-opt-integ-web_clipper" class="sn-check">
-        <span>
-          <b>Omnia Web Clipper</b> — When the browser extension saves a card (tagged omnia-web-clipper) with auto-generate on, Omnia fills its smart fields automatically.
-          <span id="sn-integ-status-web_clipper" class="sn-integ-status"></span>
-        </span>
-      </label>
+      <!-- One row per registered integration, rendered from the backend list (see 05-handlers.js
+           renderIntegrations); adding an Integration server-side shows up here automatically. -->
+      <div id="sn-integrations-list" class="sn-integrations-list"></div>
     </div>
     <div class="sn-tabpane" data-pane="advanced" hidden>
       <div class="sn-modal-fields">Advanced settings.</div>
