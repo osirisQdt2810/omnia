@@ -75,7 +75,7 @@ created on your machine on first run** (ADR-006). Nothing runtime is committed t
 | What | Where it is stored | Synced by AnkiWeb? |
 |---|---|---|
 | Plugin settings + enable toggles | Anki **collection config** (`col.set_config`) | ✅ Yes — follows your collection to every device |
-| AI usage accounting (LLM/TTS call counts) | a table in **`collection.anki2`** (`col.db`) | ❌ No — device-local |
+| AI usage accounting (LLM/TTS call counts) | Anki **collection config** (`col.set_config`) | ✅ Yes — usage aggregates across your devices |
 | Fetched-voice cache (TTS voice lists) | Anki **collection config** | ✅ Yes |
 | A tiny backend marker | `user_files/.storage.json` | ❌ No — device-local |
 | **AI provider config + API keys** | **`user_files/config/providers.toml`** + `user_files/config/.secrets/` | ❌ No — stays a local file, never synced |
@@ -94,18 +94,20 @@ touch these; the default (everything in the Anki DB) is what the tables above de
 
 ## Set up AI providers (only for `smart_notes` / TTS)
 
-The AI features need provider credentials, which are the **one** thing kept in a file (so keys
-never sync to AnkiWeb or land in the DB):
+The AI features need provider credentials. **You do not create or copy any file** — the add-on
+**auto-creates** `user_files/config/providers.toml` (from the shipped template) on first run.
+Configure everything **in the GUI**:
 
-```bash
-# from the installed add-on folder (Tools → Add-ons → Omnia → "View Files" shows it):
-mkdir -p user_files/config
-cp config/providers.example.toml user_files/config/providers.toml
-# then edit user_files/config/providers.toml and add your LLM/TTS keys
-```
-`config/providers.example.toml` (shipped in the repo) documents every option. Put raw secrets
-under `user_files/config/.secrets/` and reference them from `providers.toml` — see
-`config/secrets.README.md`. Both `providers.toml` and `.secrets/` are gitignored and live-only.
+> **Tools → Omnia**, open the **Smart Notes** plugin's **Configure**, go to the **Usage & Keys**
+> tab, pick your LLM/TTS provider + model and paste your API key. That's it — the dialog writes
+> `providers.toml` and stores the key under `user_files/config/.secrets/` for you.
+
+Keys are the **one** thing kept in a local file rather than the synced collection, so they never
+sync to AnkiWeb or land in the DB. *Advanced:* you can edit `user_files/config/providers.toml`
+directly instead — `config/providers.example.toml` documents every option and
+`config/secrets.README.md` explains the `.secrets/` references. Both `providers.toml` and
+`.secrets/` are gitignored and live-only. (Do **not** copy the template over an existing
+`providers.toml` — that would overwrite your keys.)
 
 ---
 
@@ -121,8 +123,8 @@ per-machine install steps:
 | [Omnia Web Clipper](3rdparty/omnia-web-clipper) | any web page (Chrome/Chromium) | <https://github.com/osirisQdt2810/omnia-web-clipper> |
 | [Omnia Desktop Clipper](3rdparty/omnia-desktop-clipper) | any desktop app + screen OCR (macOS/Windows/Linux) | <https://github.com/osirisQdt2810/omnia-desktop-clipper> |
 
-Enable each under **Tools → Omnia → Smart Notes → Integrations**. If you cloned without
-`--recurse-submodules`, run `git submodule update --init --recursive`.
+Enable each in **Tools → Omnia** → the **Smart Notes** plugin's **Configure** → **Integrations**
+tab. If you cloned without `--recurse-submodules`, run `git submodule update --init --recursive`.
 
 ---
 

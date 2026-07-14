@@ -12,7 +12,8 @@ repository, and Omnia only pins the exact commit it was verified against.
 Both send the captured **word/phrase + surrounding context** into your running Anki through the
 [AnkiConnect](https://ankiweb.net/shared/info/2055492159) add-on, tagged so that Omnia's
 **Smart Notes** feature auto-generates the rest of the card. Each is enabled as an integration
-under **Tools → Omnia → Smart Notes → Integrations**. Neither is part of the Python add-on itself
+in **Tools → Omnia** → the **Smart Notes** plugin's **Configure** → **Integrations** tab. Neither
+is part of the Python add-on itself
 — they talk to Anki over the local network — which is why they live here as submodules rather than
 inside `src/omnia/`.
 
