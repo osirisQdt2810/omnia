@@ -15,7 +15,7 @@ from omnia.core.config.models import (
 from omnia.core.providers import ProviderHub
 from omnia.core.providers.usage import (
     BufferedUsageRecorder,
-    ColUsageStore,
+    CollectionUsageStore,
     JsonUsageRecorder,
     JsonUsageStore,
     NullUsageRecorder,
@@ -405,20 +405,17 @@ class TestJsonUsageStore:
         assert JsonUsageStore(path).load() == {}
 
 
-class _SqliteDb:
-    """Expose an in-memory ``sqlite3`` connection through Anki's ``.execute``/``.scalar``."""
+class _FakeCol:
+    """A minimal fake collection exposing ``get_config``/``set_config`` over an in-memory dict."""
 
     def __init__(self) -> None:
-        import sqlite3
+        self._config: dict = {}
 
-        self._conn = sqlite3.connect(":memory:")
+    def get_config(self, key: str, default: object = None) -> object:
+        return self._config.get(key, default)
 
-    def execute(self, sql: str, *args: object):
-        return self._conn.execute(sql, args).fetchall()
-
-    def scalar(self, sql: str, *args: object):
-        row = self._conn.execute(sql, args).fetchone()
-        return row[0] if row else None
+    def set_config(self, key: str, value: object) -> None:
+        self._config[key] = value
 
 
 def _aggregate_row(**over) -> dict:
@@ -438,60 +435,61 @@ def _aggregate_row(**over) -> dict:
     return row
 
 
-class TestColUsageStore:
+class TestCollectionUsageStore:
     def test_round_trips_the_full_aggregate(self):
-        db = _SqliteDb()
-        store = ColUsageStore(db_provider=lambda: db)
+        col = _FakeCol()
+        store = CollectionUsageStore(col_provider=lambda: col)
         data = {"text|gemini|m": _aggregate_row()}
-        store.save(data)
-        # A fresh store over the SAME db reads back the identical aggregate (all nine fields).
-        assert ColUsageStore(db_provider=lambda: db).load() == data
+        assert store.save(data) is True
+        # A fresh store over the SAME collection reads back the identical aggregate.
+        assert CollectionUsageStore(col_provider=lambda: col).load() == data
 
-    def test_ensure_is_idempotent(self):
-        db = _SqliteDb()
-        store = ColUsageStore(db_provider=lambda: db)
-        store.ensure()
-        store.ensure()  # second call must not raise (CREATE TABLE IF NOT EXISTS)
-        assert store.load() == {}
-
-    def test_save_upserts_new_key_without_wiping_others(self):
-        # Upsert semantics (no DELETE-all destructive window): saving a DIFFERENT key must not
-        # wipe a previously-saved one. The buffered recorder always saves the full aggregate, so
-        # rows are only ever added/updated, never dropped — a mid-loop failure can't wipe data.
-        db = _SqliteDb()
-        store = ColUsageStore(db_provider=lambda: db)
+    def test_save_replaces_the_whole_map(self):
+        # col.set_config stores the FULL aggregate; the buffered recorder always saves the full
+        # map (rows are only ever added/updated), so a save is a plain replace.
+        col = _FakeCol()
+        store = CollectionUsageStore(col_provider=lambda: col)
         store.save({"text|g|a": _aggregate_row(provider="g", model="a")})
-        store.save({"sound|g|b": _aggregate_row(kind="sound", provider="g", model="b")})
+        store.save(
+            {
+                "text|g|a": _aggregate_row(provider="g", model="a"),
+                "sound|g|b": _aggregate_row(kind="sound", provider="g", model="b"),
+            }
+        )
         assert set(store.load().keys()) == {"text|g|a", "sound|g|b"}
 
     def test_save_updates_an_existing_key_in_place(self):
-        db = _SqliteDb()
-        store = ColUsageStore(db_provider=lambda: db)
+        col = _FakeCol()
+        store = CollectionUsageStore(col_provider=lambda: col)
         store.save({"text|g|m": _aggregate_row(calls=1)})
         store.save({"text|g|m": _aggregate_row(calls=5)})
-        # ON CONFLICT(key) DO UPDATE overwrites the row's counters, not a duplicate insert.
         loaded = store.load()
         assert list(loaded.keys()) == ["text|g|m"]
         assert loaded["text|g|m"]["calls"] == 5
 
     def test_preserves_in_and_out_tokens(self):
-        db = _SqliteDb()
-        store = ColUsageStore(db_provider=lambda: db)
+        col = _FakeCol()
+        store = CollectionUsageStore(col_provider=lambda: col)
         store.save({"text|g|m": _aggregate_row(in_tokens=42, out_tokens=8)})
         row = store.load()["text|g|m"]
         assert row["in_tokens"] == 42 and row["out_tokens"] == 8
 
-    def test_degrades_to_empty_and_noop_without_a_collection(self):
-        store = ColUsageStore(db_provider=lambda: None)
-        store.save({"text|g|m": _aggregate_row()})  # no-op, no raise
-        assert store.load() == {}
-        store.ensure()  # no-op, no raise
+    def test_malformed_persisted_data_loads_empty(self):
+        # A non-dict under the key (or junk entries) is tolerated: load() returns {}.
+        col = _FakeCol()
+        col.set_config(CollectionUsageStore.KEY, ["not", "a", "dict"])
+        assert CollectionUsageStore(col_provider=lambda: col).load() == {}
 
-    def test_buffered_recorder_round_trips_through_col_store(self):
-        # End-to-end: the buffered recorder folds calls and flushes into the col.db table.
-        db = _SqliteDb()
+    def test_degrades_to_empty_and_reports_not_persisted_without_a_collection(self):
+        store = CollectionUsageStore(col_provider=lambda: None)
+        assert store.save({"text|g|m": _aggregate_row()}) is False  # no-op, reports False
+        assert store.load() == {}
+
+    def test_buffered_recorder_round_trips_through_collection_store(self):
+        # End-to-end: the buffered recorder folds calls and flushes into the synced col config.
+        col = _FakeCol()
         rec = BufferedUsageRecorder(
-            ColUsageStore(db_provider=lambda: db), schedule_main=_inline
+            CollectionUsageStore(col_provider=lambda: col), schedule_main=_inline
         )
         rec.record(
             kind="text",
@@ -502,7 +500,7 @@ class TestColUsageStore:
             in_tokens=7,
             out_tokens=1,
         )
-        reloaded = ColUsageStore(db_provider=lambda: db).load()["text|g|m"]
+        reloaded = CollectionUsageStore(col_provider=lambda: col).load()["text|g|m"]
         assert reloaded["calls"] == 1
         assert reloaded["in_tokens"] == 7 and reloaded["out_tokens"] == 1
 

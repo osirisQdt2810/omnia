@@ -76,8 +76,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # ── HTTP ── default request timeout (seconds) for the stdlib HTTP client.
     "OMNIA_HTTP_TIMEOUT": lambda: _float("OMNIA_HTTP_TIMEOUT", 30.0),
     # ── storage dispatch (ADR-006) ── one knob per persistence concern, selecting its backend.
-    # Default "database" = the Anki collection (config/voices in col config, usage in a col.db
-    # table); the file backends stay first-class and selectable. These are read at startup by
+    # Default "database" = the Anki collection config (config, usage, and voices all in col
+    # config, so they ride along with AnkiWeb sync); the file backends stay first-class and
+    # selectable. These are read at startup by
     # the PersistenceDispatcher: changing a value triggers a ONE-TIME sync of that concern's
     # data from the previous backend to the newly-selected one on the next startup (the last-used
     # value is remembered in user_files/.storage.json), so switching never loses state.
