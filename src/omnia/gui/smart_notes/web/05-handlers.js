@@ -147,7 +147,20 @@
     }
     // Buttons start as "Checking…"; ask the backend which are installed / have an upgrade so we
     // can show Install / Upgrade / Up-to-date (result arrives via __snClipperInstallStatus).
-    if (list.some((integ) => integ.install_kind)) send("refresh_install_status", {});
+    if (list.some((integ) => integ.install_kind)) {
+      send("refresh_install_status", {});
+      // Safety net: never leave a button stuck on "Checking…" if the status check is slow or never
+      // answers — fall back to the actionable label so it stays clickable (clicking clones/pulls +
+      // rebuilds either way). A later real status push still upgrades the label if it arrives.
+      setTimeout(function () {
+        const btns = document.querySelectorAll("[data-install-key]");
+        for (const btn of btns) {
+          if (btn.textContent === "Checking…") {
+            applyInstallState(btn, {installed: false, upgrade: false});
+          }
+        }
+      }, 10000);
+    }
   }
 
   /**
