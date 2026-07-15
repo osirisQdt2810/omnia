@@ -29,12 +29,19 @@ class Integration:
         source_tag: The tag the integration stamps on notes it creates, used to recognise them.
         name: Human-readable name shown in the Integrations settings tab.
         description: One-line explanation shown under the name.
+        repo_url: Public git URL the one-click installer clones from (empty = not installable).
+        install_kind: How the Integrations "Install" button installs it —
+            ``"desktop"`` (clone → venv → build → install the app → open),
+            ``"web"`` (clone → open ``chrome://extensions`` + reveal the folder to load unpacked;
+            Chrome blocks true programmatic install), or ``""`` (no Install button).
     """
 
     key: str
     source_tag: str
     name: str
     description: str
+    repo_url: str = ""
+    install_kind: str = ""
 
 
 # The registered integrations. One entry today (the browser extension); add a new source by
@@ -45,14 +52,26 @@ INTEGRATIONS: tuple[Integration, ...] = (
         source_tag="omnia-web-clipper",
         name="Omnia Web Clipper",
         description="Auto-generate cards saved by the Omnia browser extension.",
+        repo_url="https://github.com/osirisQdt2810/omnia-web-clipper.git",
+        install_kind="web",
     ),
     Integration(
         key="desktop_clipper",
         source_tag="omnia-desktop-clipper",
         name="Omnia Desktop Clipper",
         description="Auto-generate cards saved by the Omnia desktop app (any app, via hotkey/OCR).",
+        repo_url="https://github.com/osirisQdt2810/omnia-desktop-clipper.git",
+        install_kind="desktop",
     ),
 )
+
+
+def integration_for_key(key: str) -> Integration | None:
+    """Return the registered integration with ``key`` (or ``None``)."""
+    for integration in INTEGRATIONS:
+        if integration.key == key:
+            return integration
+    return None
 
 
 def integration_for_tags(tags: Iterable[str]) -> Integration | None:
