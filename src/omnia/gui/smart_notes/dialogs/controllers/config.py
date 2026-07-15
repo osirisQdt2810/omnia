@@ -62,6 +62,7 @@ class ConfigController:
             "save": self.on_save,
             "cancel": self.on_cancel,
             "install_integration": self.on_install_integration,
+            "refresh_install_status": self.on_refresh_install_status,
         }
 
     def load_payload_for(self, note_type: str) -> dict[str, Any]:
@@ -195,11 +196,7 @@ class ConfigController:
         if integration is None or not integration.install_kind:
             return {"started": False, "error": "This integration can't be installed."}
 
-        installer = ClipperInstaller(
-            clones_dir=addon_user_files_dir() / "clippers",
-            host_python=self._ctx.native_manager.host_python(min_python=(3, 10)),
-            runner=SubprocessCommandRunner(),
-        )
+        installer = self._build_installer()
 
         def op() -> None:
             installer.install(
@@ -215,6 +212,41 @@ class ConfigController:
             label=f"Omnia: installing {integration.name}…",
         )
         return {"started": True}
+
+    def on_refresh_install_status(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Compute each installable integration's Install/Upgrade/Up-to-date state OFF the Qt main
+        thread (a ``git ls-remote`` per integration hits the network) and push the result to
+        ``window.__snClipperInstallStatus`` so the buttons reflect it. Returns immediately.
+        """
+        installer = self._build_installer()
+        installables = [i for i in INTEGRATIONS if i.install_kind]
+
+        def op() -> dict[str, dict[str, bool]]:
+            return {i.key: installer.status(i) for i in installables}
+
+        anki_compat.run_in_background(
+            op,
+            on_success=self._push_install_status,
+            # Status is cosmetic; on any failure push an empty map (buttons fall back to "Install").
+            on_failure=lambda _exc: self._push_install_status({}),
+            label="Omnia: checking clipper updates…",
+        )
+        return {"started": True}
+
+    def _build_installer(self) -> ClipperInstaller:
+        """Construct the installer against ``user_files/clippers`` + a real host Python.
+
+        Shared by the install op and the status refresh so both clone/check the same location.
+        """
+        return ClipperInstaller(
+            clones_dir=addon_user_files_dir() / "clippers",
+            host_python=self._ctx.native_manager.host_python(min_python=(3, 10)),
+            runner=SubprocessCommandRunner(),
+        )
+
+    def _push_install_status(self, states: dict[str, dict[str, bool]]) -> None:
+        """Push the per-integration install states to the page (already on the Qt main thread)."""
+        self._ctx.eval_js(f"window.__snClipperInstallStatus({json.dumps(states)});")
 
     @staticmethod
     def _install_error_text(exc: Exception) -> str:
