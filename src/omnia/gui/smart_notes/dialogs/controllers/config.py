@@ -218,29 +218,39 @@ class ConfigController:
         thread (a ``git ls-remote`` per integration hits the network) and push the result to
         ``window.__snClipperInstallStatus`` so the buttons reflect it. Returns immediately.
         """
-        installer = self._build_installer()
+        # No host-Python needed for status (only git ls-remote + the marker), so don't probe for
+        # one here — that probing is a main-thread subprocess sweep and is irrelevant to a check.
+        installer = self._build_installer(resolve_host_python=False)
         installables = [i for i in INTEGRATIONS if i.install_kind]
 
         def op() -> dict[str, dict[str, bool]]:
             return {i.key: installer.status(i) for i in installables}
 
+        # NO label: a labelled run pops a modal progress dialog, and this fires automatically from
+        # inside the Options modal's own render — a modal-over-modal that wedges the check (buttons
+        # would sit on "Checking…" forever). Status is a silent background check.
         anki_compat.run_in_background(
             op,
             on_success=self._push_install_status,
             # Status is cosmetic; on any failure push an empty map (buttons fall back to "Install").
             on_failure=lambda _exc: self._push_install_status({}),
-            label="Omnia: checking clipper updates…",
         )
         return {"started": True}
 
-    def _build_installer(self) -> ClipperInstaller:
-        """Construct the installer against ``user_files/clippers`` + a real host Python.
+    def _build_installer(self, *, resolve_host_python: bool = True) -> ClipperInstaller:
+        """Construct the installer against ``user_files/clippers`` (+ a real host Python).
 
         Shared by the install op and the status refresh so both clone/check the same location.
+        ``resolve_host_python`` is ``False`` for the status refresh, which never builds anything —
+        skipping the (main-thread) interpreter probe keeps the check cheap and side-effect-free.
         """
         return ClipperInstaller(
             clones_dir=addon_user_files_dir() / "clippers",
-            host_python=self._ctx.native_manager.host_python(min_python=(3, 10)),
+            host_python=(
+                self._ctx.native_manager.host_python(min_python=(3, 10))
+                if resolve_host_python
+                else None
+            ),
             runner=SubprocessCommandRunner(),
         )
 

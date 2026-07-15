@@ -3,20 +3,24 @@
 Two install kinds (see :class:`~omnia.plugins.smart_notes.integration.integrations.Integration`):
 
 * ``"desktop"`` — clone the repo → create a build venv from a real host Python (NOT Anki's frozen
-  interpreter) → ``pip install`` its deps + PyInstaller → run ``build.py`` (which only builds into
-  ``dist/``) → install the built app into a per-platform location (macOS ``/Applications``, Windows
-  ``%LOCALAPPDATA%\\Programs``, Linux ``~/.local/share``) → open it (which then prompts for the OS
-  permissions). Replaces the whole manual "make a venv, pip install, python build.py, install, open,
-  grant" flow with one click. It is a genuinely long job (hundreds of MB + a PyInstaller freeze),
-  so callers run :meth:`ClipperInstaller.install` OFF the Qt main thread and surface ``progress``.
+  interpreter) → ``pip install`` its deps + PyInstaller → run ``build.py --no-install`` (which builds
+  into ``dist/`` and, on macOS, ad-hoc-signs the bundle with the STABLE bundle-identifier
+  requirement, but does NOT install) → install the built app into a per-platform location (macOS
+  ``/Applications``, Windows ``%LOCALAPPDATA%\\Programs``, Linux ``~/.local/share``) → open it (which
+  then prompts for the OS permissions). Replaces the whole manual "make a venv, pip install, python
+  build.py, install, open, grant" flow with one click. It is a genuinely long job (hundreds of MB + a
+  PyInstaller freeze), so callers run :meth:`install` OFF the Qt main thread and surface ``progress``.
 * ``"web"`` — a browser extension can't be installed programmatically (Chrome blocks it), so this
   clones the repo, reveals the folder, and opens ``chrome://extensions`` for a manual load-unpacked.
 
 Everything is cross-platform (macOS / Windows / Linux): git + venv + pip + build.py are the same
-everywhere, the venv python and install location branch on ``platform``, and the copy uses
-:func:`shutil.copytree`. Reinstalling later pulls + rebuilds; :meth:`ClipperInstaller.status`
-compares the installed commit (recorded in an ``.omnia-installed`` marker) against the remote
-``main`` HEAD so the button can offer Install / Upgrade / Up-to-date.
+everywhere, and the venv python and install location branch on ``platform``. The installer is the
+single owner of installation (``build.py`` is run with ``--no-install``) so it controls both the
+location it opens and the copy tool: macOS copies with ``ditto`` to preserve the code signature
+``build.py`` applied (that signature is what keeps Accessibility / Input-Monitoring grants across
+rebuilds); Windows/Linux copy with :func:`shutil.copytree`. Reinstalling later pulls + rebuilds;
+:meth:`status` compares the installed commit (recorded in an ``.omnia-installed`` marker) against
+the remote ``main`` HEAD so the button can offer Install / Upgrade / Up-to-date.
 
 The orchestration is pure of Anki/Qt and takes an injected :class:`CommandRunner` + host-python +
 clones dir (and an optional ``install_root``), so it unit-tests with a fake runner (no real
@@ -183,10 +187,11 @@ class ClipperInstaller:
             cwd=src,
         )
         progress("Building the app (this can take several minutes)…")
-        self._runner.run([venv_py, "build.py"], cwd=src)  # produces dist/<app>
-        # build.py only builds into dist/; the installer owns placing the app where it can be
-        # launched (and knows the exact path to open — an earlier bug opened a hardcoded
-        # /Applications path the build had never created, so nothing launched).
+        # --no-install: build.py builds (and on macOS ad-hoc-signs dist/<app> with the STABLE
+        # bundle-identifier requirement) but does NOT install — the installer is the single owner
+        # of placement, so it knows the exact path to open and controls the copy tool (an earlier
+        # bug opened a hardcoded /Applications path the build had never created → nothing launched).
+        self._runner.run([venv_py, "build.py", "--no-install"], cwd=src)
         launch_path = self._install_bundle(src, progress)
         progress("Opening the app — grant the permissions it asks for…")
         self._open_desktop_app(launch_path)
@@ -218,11 +223,10 @@ class ClipperInstaller:
         """Copy the freshly built app out of the clone's ``dist/`` to a per-platform install
         location and return the path to launch.
 
-        ``build.py`` only builds into ``dist/`` (buried in Anki's ``user_files``); the installer
-        owns placing it somewhere launchable — and knowing that exact path to open (an earlier bug
-        opened a hardcoded ``/Applications`` path the build had never created, so nothing launched).
-        Uses :func:`shutil.copytree` (``symlinks=True`` to keep a ``.app``'s framework symlinks) so
-        the copy is identical on macOS, Windows and Linux.
+        ``build.py --no-install`` leaves the built (and, on macOS, stable-identity-signed) app in
+        ``dist/`` (buried in Anki's ``user_files``); the installer owns placing it somewhere
+        launchable — and knowing that exact path to open. Tries each candidate dir in order,
+        falling back if one isn't writable.
         """
         is_mac = self._platform == "darwin"
         name = _DESKTOP_APP if is_mac else _DESKTOP_APP_NAME
@@ -235,15 +239,29 @@ class ClipperInstaller:
             progress(f"Installing into {base}…")
             try:
                 base.mkdir(parents=True, exist_ok=True)
-                if dest.exists():
-                    shutil.rmtree(dest)
-                shutil.copytree(source, dest, symlinks=True)
-            except (OSError, shutil.Error) as exc:  # not writable → try the next candidate
+                self._copy_app(source, dest)
+            except (OSError, shutil.Error, InstallError) as exc:  # not writable → next candidate
                 last_err = f"{base}: {exc}"
                 continue
             # macOS launches the .app bundle itself; Windows/Linux launch the inner binary.
             return dest if is_mac else dest / self._desktop_exe_name()
         raise InstallError(f"Built the app but could not install it. {last_err}")
+
+    def _copy_app(self, source: Path, dest: Path) -> None:
+        """Replace ``dest`` with a copy of the built app ``source``.
+
+        macOS uses ``ditto`` (Apple's tool) so the stable code signature ``build.py`` applied to the
+        bundle is preserved byte-for-byte — that signature is what keeps the Accessibility / Input
+        Monitoring grants across rebuilds. Windows/Linux use :func:`shutil.copytree` (there is no
+        ``ditto`` and no signature to preserve; ``symlinks=True`` keeps any onedir symlinks).
+        """
+        if self._platform == "darwin":
+            self._runner.run(["rm", "-rf", str(dest)])  # ditto merges into an existing dir; clear it
+            self._runner.run(["ditto", str(source), str(dest)])
+        else:
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(source, dest, symlinks=True)
 
     def _desktop_exe_name(self) -> str:
         return f"{_DESKTOP_APP_NAME}.exe" if self._platform.startswith("win") else _DESKTOP_APP_NAME
