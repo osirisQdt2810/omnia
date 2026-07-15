@@ -148,7 +148,8 @@
     // Buttons start as "Checking…"; ask the backend which are installed / have an upgrade so we
     // can show Install / Upgrade / Up-to-date (result arrives via __snClipperInstallStatus).
     if (list.some((integ) => integ.install_kind)) {
-      send("refresh_install_status", {});
+      // Defer to a fresh tick so the request never runs re-entrant with the modal's own render.
+      setTimeout(function () { send("refresh_install_status", {}); }, 0);
       // Safety net: never leave a button stuck on "Checking…" if the status check is slow or never
       // answers — fall back to the actionable label so it stays clickable (clicking clones/pulls +
       // rebuilds either way). A later real status push still upgrades the label if it arrives.
