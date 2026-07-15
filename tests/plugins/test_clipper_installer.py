@@ -88,23 +88,26 @@ def _seed_build(tmp_path, *, mac: bool = True):
 class TestDesktopInstall:
     def test_fresh_clone_then_venv_pip_build_install_open(self, tmp_path):
         runner = _FakeRunner()
-        _seed_build(tmp_path, mac=True)
+        clone = _seed_build(tmp_path, mac=True)
         progress: list[str] = []
         _installer(tmp_path, runner).install(DESKTOP, progress.append)
 
         cmds = [argv for argv, _cwd in runner.runs]
-        # 1) clone (no .git yet), 2) venv, 3) pip upgrade, 4) pip install deps, 5) build.py
+        # 1) clone, 2) venv, 3) pip upgrade, 4) pip install deps, 5) build.py --no-install,
+        # 6) rm old dest, 7) ditto dist->dest (macOS preserves the code signature)
         assert cmds[0][:2] == ["git", "clone"]
         assert DESKTOP.repo_url in cmds[0]
         assert cmds[1][1:3] == ["-m", "venv"]
         assert cmds[2][1:4] == ["-m", "pip", "install"] and "pip" in cmds[2][-1:]
         assert cmds[3][1:5] == ["-m", "pip", "install", "-r"] and "pyinstaller" in cmds[3]
-        assert cmds[4][-1] == "build.py"
-        # venv python used for pip/build is the macOS bin/python of the clone's .venv-build
+        # build.py is run --no-install so the installer is the sole owner of placement
+        assert cmds[4][-2:] == ["build.py", "--no-install"]
         assert cmds[4][0].endswith("/.venv-build/bin/python")
-        # the installer (not build.py) copies the built app into install_root and opens THAT path
+        # macOS installs with ditto (signature-preserving) into install_root, then opens THAT path
+        source = clone / "dist" / "Omnia Desktop Clipper.app"
         dest = tmp_path / "apps" / "Omnia Desktop Clipper.app"
-        assert dest.is_dir()
+        assert cmds[5] == ["rm", "-rf", str(dest)]
+        assert cmds[6] == ["ditto", str(source), str(dest)]
         assert runner.spawns[-1] == ["open", str(dest)]
         # records the installed commit so status() can later detect an upgrade
         marker = tmp_path / "clippers" / "desktop_clipper" / ".omnia-installed"
@@ -140,10 +143,14 @@ class TestDesktopInstall:
         runner = _FakeRunner()
         _seed_build(tmp_path, mac=False)
         _installer(tmp_path, runner, platform="win32").install(DESKTOP, lambda _m: None)
+        # build.py is the last runner command (win/linux copy with shutil, not the runner)
         build_cmd = [argv for argv, _c in runner.runs][-1]
+        assert build_cmd[-2:] == ["build.py", "--no-install"]
         assert build_cmd[0].endswith("\\Scripts\\python.exe") or build_cmd[0].endswith(
             "/Scripts/python.exe"
         )
+        # installed (via shutil) to the per-user programs dir; launches the inner .exe
+        assert (tmp_path / "apps" / "Omnia Desktop Clipper").is_dir()
         launch = tmp_path / "apps" / "Omnia Desktop Clipper" / "Omnia Desktop Clipper.exe"
         assert runner.spawns[-1] == ["cmd", "/c", "start", "", str(launch)]
 
@@ -151,6 +158,7 @@ class TestDesktopInstall:
         runner = _FakeRunner()
         _seed_build(tmp_path, mac=False)
         _installer(tmp_path, runner, platform="linux").install(DESKTOP, lambda _m: None)
+        assert (tmp_path / "apps" / "Omnia Desktop Clipper").is_dir()
         launch = tmp_path / "apps" / "Omnia Desktop Clipper" / "Omnia Desktop Clipper"
         assert runner.spawns[-1] == [str(launch)]
 
