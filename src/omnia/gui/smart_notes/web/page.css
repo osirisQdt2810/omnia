@@ -265,6 +265,9 @@ select:disabled { opacity: 0.7; }
 .sn-opt-row .sn-check { margin-top: 2px; }
 /* Integrations tab: the muted "Detected N cards from this integration." status line. */
 .sn-integ-status { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+.sn-integ-row { margin-bottom: 10px; }
+.sn-integ-actions { display: flex; align-items: center; gap: 8px; margin: 4px 0 0 28px; }
+.sn-integ-actions .sn-integ-status { margin-top: 0; }
 
 /* Native runtimes (ADR-005): per-section groups of installable local engines, each row a
    toggle + a status line that flips between idle / installing (spinner) / installed / error. */
