@@ -102,6 +102,7 @@ class TestOpRegistryCompleteness:
         "save",
         "cancel",
         "install_integration",
+        "refresh_install_status",
         "graph_recompute",
         "classify_deps",
         "validate_prompt",
