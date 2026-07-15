@@ -145,9 +145,31 @@
       }
       integrationsList.appendChild(row);
     }
-    // Buttons start as "Checking…"; ask the backend which are installed / have an upgrade so we
-    // can show Install / Upgrade / Up-to-date (result arrives via __snClipperInstallStatus).
-    if (list.some((integ) => integ.install_kind)) send("refresh_install_status", {});
+    // Buttons render as "Checking…"; the actual status request is fired by refreshInstallStatus()
+    // when the Options modal OPENS — NOT here. renderIntegrations runs during the server-baked
+    // initial page render (see 07-init.js), and at that instant Anki's `pycmd` bridge isn't defined
+    // yet, so a send() here throws "pycmd is not defined" and the request never goes out (buttons
+    // then sit on "Checking…" forever). By modal-open time the bridge is always ready.
+  }
+
+  /**
+   * Ask the backend which integrations are installed / have an upgrade, and resolve the buttons
+   * from the result (Install / Upgrade / Up-to-date). Called from the Options-modal open handler,
+   * where `pycmd` is guaranteed ready. Best-effort: guarded against a not-yet-ready bridge, and a
+   * 10s safety net resolves any button still on "Checking…" so it can never be permanently stuck.
+   */
+  function refreshInstallStatus() {
+    if (typeof pycmd === "undefined") return; // bridge not ready (shouldn't happen from a click)
+    if (!document.querySelector("[data-install-key]")) return; // no installable integrations
+    send("refresh_install_status", {});
+    setTimeout(function () {
+      const btns = document.querySelectorAll("[data-install-key]");
+      for (const btn of btns) {
+        if (btn.textContent === "Checking…") {
+          applyInstallState(btn, {installed: false, upgrade: false});
+        }
+      }
+    }, 10000);
   }
 
   /**
@@ -265,6 +287,9 @@
     // Always open on the General tab; Account + Advanced load their data on first show.
     showTab("general");
     optionsModal.hidden = false;
+    // Fire the integrations status check now (bridge is ready on a user click, unlike the baked
+    // initial render) so the buttons resolve to Install / Upgrade / Up-to-date.
+    refreshInstallStatus();
   });
   optionsClose.addEventListener("click", closeOptions);
   optionsDone.addEventListener("click", closeOptions);
