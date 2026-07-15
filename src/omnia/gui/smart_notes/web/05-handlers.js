@@ -136,9 +136,70 @@
 
       label.appendChild(checkbox);
       label.appendChild(span);
-      integrationsList.appendChild(label);
+
+      const row = document.createElement("div");
+      row.className = "sn-integ-row";
+      row.appendChild(label);
+      if (integ.install_kind) {
+        row.appendChild(integrationInstallActions(integ));
+      }
+      integrationsList.appendChild(row);
     }
   }
+
+  /**
+   * Build the one-click "Install" (desktop) / "Set up…" (web) button + its progress line.
+   * Clicking posts `install_integration`; the backend streams progress via
+   * window.__snClipperInstallProgress and finishes via window.__snClipperInstallDone.
+   * @param {!Object} integ {key, install_kind, ...}
+   * @return {!HTMLElement}
+   */
+  function integrationInstallActions(integ) {
+    const actions = document.createElement("div");
+    actions.className = "sn-integ-actions";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sn-btn";
+    btn.id = "sn-install-btn-" + integ.key;
+    btn.textContent = integ.install_kind === "web" ? "Set up…" : "Install app";
+    btn.title =
+      integ.install_kind === "web"
+        ? "Clone the extension + open chrome://extensions to load it (Chrome can't auto-install)."
+        : "One click: clone, build, install, and open the app (first run takes a few minutes).";
+    const prog = document.createElement("span");
+    prog.className = "sn-integ-status";
+    prog.id = "sn-install-status-" + integ.key;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      prog.textContent = "Starting…";
+      send("install_integration", {key: integ.key}, function (res) {
+        if (!res || res.started === false) {
+          btn.disabled = false;
+          prog.textContent = (res && res.error) || "Could not start.";
+        }
+      });
+    });
+    actions.appendChild(btn);
+    actions.appendChild(prog);
+    return actions;
+  }
+
+  // Backend push targets for the one-click install (defined once; find rows by id, re-render safe).
+  window.__snClipperInstallProgress = function (key, message) {
+    const el = document.getElementById("sn-install-status-" + key);
+    if (el) el.textContent = message;
+  };
+  window.__snClipperInstallDone = function (key, result) {
+    const btn = document.getElementById("sn-install-btn-" + key);
+    const el = document.getElementById("sn-install-status-" + key);
+    if (btn) btn.disabled = false;
+    if (el) {
+      el.textContent =
+        result && result.ok
+          ? "Done ✓"
+          : "Failed: " + ((result && result.error) || "unknown error");
+    }
+  };
 
   /**
    * Read the option checkboxes back into the flags object sent with `save`.
