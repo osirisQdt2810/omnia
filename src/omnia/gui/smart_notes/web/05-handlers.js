@@ -136,9 +136,106 @@
 
       label.appendChild(checkbox);
       label.appendChild(span);
-      integrationsList.appendChild(label);
+
+      const row = document.createElement("div");
+      row.className = "sn-integ-row";
+      row.appendChild(label);
+      if (integ.install_kind) {
+        row.appendChild(integrationInstallActions(integ));
+      }
+      integrationsList.appendChild(row);
+    }
+    // Buttons start as "Checking…"; ask the backend which are installed / have an upgrade so we
+    // can show Install / Upgrade / Up-to-date (result arrives via __snClipperInstallStatus).
+    if (list.some((integ) => integ.install_kind)) send("refresh_install_status", {});
+  }
+
+  /**
+   * Build the one-click "Install" (desktop) / "Set up…" (web) button + its progress line.
+   * Clicking posts `install_integration`; the backend streams progress via
+   * window.__snClipperInstallProgress and finishes via window.__snClipperInstallDone.
+   * @param {!Object} integ {key, install_kind, ...}
+   * @return {!HTMLElement}
+   */
+  function integrationInstallActions(integ) {
+    const actions = document.createElement("div");
+    actions.className = "sn-integ-actions";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sn-btn";
+    btn.id = "sn-install-btn-" + integ.key;
+    btn.dataset.installKey = integ.key;
+    btn.dataset.installKind = integ.install_kind;
+    // Starts disabled as "Checking…"; refresh_install_status resolves it to the real label.
+    btn.textContent = "Checking…";
+    btn.disabled = true;
+    btn.title =
+      integ.install_kind === "web"
+        ? "Clone the extension + open chrome://extensions to load it (Chrome can't auto-install)."
+        : "One click: clone, build, install, and open the app (first run takes a few minutes).";
+    const prog = document.createElement("span");
+    prog.className = "sn-integ-status";
+    prog.id = "sn-install-status-" + integ.key;
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      prog.textContent = "Starting…";
+      send("install_integration", {key: integ.key}, function (res) {
+        if (!res || res.started === false) {
+          btn.disabled = false;
+          prog.textContent = (res && res.error) || "Could not start.";
+        }
+      });
+    });
+    actions.appendChild(btn);
+    actions.appendChild(prog);
+    return actions;
+  }
+
+  /**
+   * Set an install button's label + enabled state from its {installed, upgrade} status:
+   * not installed → actionable "Install app"/"Set up…"; new commits on main → "Upgrade";
+   * already at the latest commit → "Up to date" (disabled — nothing to do).
+   * @param {!HTMLButtonElement} btn
+   * @param {{installed: boolean, upgrade: boolean}} st
+   */
+  function applyInstallState(btn, st) {
+    const web = btn.dataset.installKind === "web";
+    if (!st || !st.installed) {
+      btn.textContent = web ? "Set up…" : "Install app";
+      btn.disabled = false;
+    } else if (st.upgrade) {
+      btn.textContent = "Upgrade";
+      btn.disabled = false;
+    } else {
+      btn.textContent = "Up to date";
+      btn.disabled = true;
     }
   }
+
+  // Backend push targets for the one-click install (defined once; find rows by id, re-render safe).
+  window.__snClipperInstallProgress = function (key, message) {
+    const el = document.getElementById("sn-install-status-" + key);
+    if (el) el.textContent = message;
+  };
+  // Resolves every "Checking…" button. Missing/empty states → treated as not-installed (actionable),
+  // so a status-check failure leaves the button usable rather than stuck on "Checking…".
+  window.__snClipperInstallStatus = function (states) {
+    states = states || {};
+    const btns = document.querySelectorAll("[data-install-key]");
+    for (const btn of btns) applyInstallState(btn, states[btn.dataset.installKey]);
+  };
+  window.__snClipperInstallDone = function (key, result) {
+    const btn = document.getElementById("sn-install-btn-" + key);
+    const el = document.getElementById("sn-install-status-" + key);
+    if (result && result.ok) {
+      // Just cloned/pulled + built → now at the latest commit: reflect "Up to date".
+      if (btn) applyInstallState(btn, {installed: true, upgrade: false});
+      if (el) el.textContent = "Done ✓";
+    } else {
+      if (btn) btn.disabled = false; // let them retry (label stays the actionable one)
+      if (el) el.textContent = "Failed: " + ((result && result.error) || "unknown error");
+    }
+  };
 
   /**
    * Read the option checkboxes back into the flags object sent with `save`.

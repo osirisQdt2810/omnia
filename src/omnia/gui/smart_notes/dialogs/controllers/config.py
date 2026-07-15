@@ -8,9 +8,11 @@ this is the thin ``pycmd`` glue over it. Only loaded inside Anki.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
+from omnia import addon_user_files_dir
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.providers import available_llm_providers
@@ -24,7 +26,15 @@ from omnia.gui.smart_notes.html import (
     row_to_payload,
     rows_for_note_type,
 )
-from omnia.plugins.smart_notes.integration.integrations import INTEGRATIONS
+from omnia.plugins.smart_notes.integration.installer import (
+    ClipperInstaller,
+    InstallError,
+    SubprocessCommandRunner,
+)
+from omnia.plugins.smart_notes.integration.integrations import (
+    INTEGRATIONS,
+    integration_for_key,
+)
 
 logger = get_logger("smart_notes")
 
@@ -51,6 +61,8 @@ class ConfigController:
             "create_field": self.on_create_field,
             "save": self.on_save,
             "cancel": self.on_cancel,
+            "install_integration": self.on_install_integration,
+            "refresh_install_status": self.on_refresh_install_status,
         }
 
     def load_payload_for(self, note_type: str) -> dict[str, Any]:
@@ -169,6 +181,98 @@ class ConfigController:
         # The shell owns the QDialog; reject() lives there, wired in at construction.
         self._reject()
 
+    # -- One-click integration install (Integrations tab) -------------------------------------
+
+    def on_install_integration(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Start a one-click install of the integration ``key`` OFF the Qt main thread.
+
+        Cloning + a PyInstaller build (desktop) is a multi-minute, hundreds-of-MB job, so it runs
+        via :func:`anki_compat.run_in_background`, pushing step-by-step progress and the final
+        outcome to the page through ``window.__snClipperInstall*`` (mirrors the native-runtime
+        installer). Returns immediately with ``{"started": True}``.
+        """
+        key = str(data.get("key", ""))
+        integration = integration_for_key(key)
+        if integration is None or not integration.install_kind:
+            return {"started": False, "error": "This integration can't be installed."}
+
+        installer = self._build_installer()
+
+        def op() -> None:
+            installer.install(
+                integration, lambda msg: self._push_install_progress(key, msg)
+            )
+
+        anki_compat.run_in_background(
+            op,
+            on_success=lambda _none: self._push_install_done(key, ok=True),
+            on_failure=lambda exc: self._push_install_done(
+                key, ok=False, error=self._install_error_text(exc)
+            ),
+            label=f"Omnia: installing {integration.name}…",
+        )
+        return {"started": True}
+
+    def on_refresh_install_status(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Compute each installable integration's Install/Upgrade/Up-to-date state OFF the Qt main
+        thread (a ``git ls-remote`` per integration hits the network) and push the result to
+        ``window.__snClipperInstallStatus`` so the buttons reflect it. Returns immediately.
+        """
+        installer = self._build_installer()
+        installables = [i for i in INTEGRATIONS if i.install_kind]
+
+        def op() -> dict[str, dict[str, bool]]:
+            return {i.key: installer.status(i) for i in installables}
+
+        anki_compat.run_in_background(
+            op,
+            on_success=self._push_install_status,
+            # Status is cosmetic; on any failure push an empty map (buttons fall back to "Install").
+            on_failure=lambda _exc: self._push_install_status({}),
+            label="Omnia: checking clipper updates…",
+        )
+        return {"started": True}
+
+    def _build_installer(self) -> ClipperInstaller:
+        """Construct the installer against ``user_files/clippers`` + a real host Python.
+
+        Shared by the install op and the status refresh so both clone/check the same location.
+        """
+        return ClipperInstaller(
+            clones_dir=addon_user_files_dir() / "clippers",
+            host_python=self._ctx.native_manager.host_python(min_python=(3, 10)),
+            runner=SubprocessCommandRunner(),
+        )
+
+    def _push_install_status(self, states: dict[str, dict[str, bool]]) -> None:
+        """Push the per-integration install states to the page (already on the Qt main thread)."""
+        self._ctx.eval_js(f"window.__snClipperInstallStatus({json.dumps(states)});")
+
+    @staticmethod
+    def _install_error_text(exc: Exception) -> str:
+        """A user-facing one-liner for a failed install (full detail goes to the log)."""
+        logger.exception("smart_notes: clipper install failed")
+        return str(exc) if isinstance(exc, InstallError) else "Install failed — see the log."
+
+    def _push_install_progress(self, key: str, message: str) -> None:
+        """Send an install progress line to ``window.__snClipperInstallProgress`` (main thread).
+
+        MUST marshal to the Qt main thread: this runs on the ``run_in_background`` worker thread,
+        and touching the WebView off-thread hard-crashes Qt (see the native-runtime controller).
+        """
+        anki_compat.run_on_main(
+            lambda: self._ctx.eval_js(
+                f"window.__snClipperInstallProgress({json.dumps(key)}, {json.dumps(message)});"
+            )
+        )
+
+    def _push_install_done(self, key: str, *, ok: bool, error: str = "") -> None:
+        """Send the install outcome to ``window.__snClipperInstallDone`` (already on main)."""
+        result: dict[str, Any] = {"ok": ok} if ok else {"ok": False, "error": error}
+        self._ctx.eval_js(
+            f"window.__snClipperInstallDone({json.dumps(key)}, {json.dumps(result)});"
+        )
+
     def _options_payload(self) -> dict[str, Any]:
         """The global Smart Notes option flags for the Options modal."""
         settings = self._ctx.settings()
@@ -186,6 +290,7 @@ class ConfigController:
                     "key": integration.key,
                     "name": integration.name,
                     "description": integration.description,
+                    "install_kind": integration.install_kind,
                 }
                 for integration in INTEGRATIONS
             ],

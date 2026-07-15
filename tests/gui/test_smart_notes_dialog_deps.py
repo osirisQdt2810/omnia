@@ -101,6 +101,8 @@ class TestOpRegistryCompleteness:
         "create_field",
         "save",
         "cancel",
+        "install_integration",
+        "refresh_install_status",
         "graph_recompute",
         "classify_deps",
         "validate_prompt",
