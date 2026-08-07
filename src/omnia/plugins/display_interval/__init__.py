@@ -33,6 +33,9 @@ from omnia.plugins.display_interval.logic import format_interval
 
 _EASE_GOOD = 3
 
+# card.type -> template-facing state name (Anki: 0=new 1=learning 2=review 3=relearning).
+_CARD_STATES = {0: "new", 1: "learning", 2: "review", 3: "relearning"}
+
 
 def _overlay_section(name: str) -> str:
     """Return the body of the ``// ===<name>===`` section of ``overlay.js``, trimmed."""
@@ -126,8 +129,14 @@ class DisplayIntervalPlugin(FeaturePlugin):
             "next_seconds": int(seconds),
             "next_days": round(seconds / 86_400, 3),
             "next_label": format_interval(seconds),
-            # card.ivl: days for review cards, 0 while (re)learning — document the caveat.
+            # card.ivl is the last SCHEDULED day-interval. Caveat it does NOT capture: a
+            # (re)learning card still carries a positive day count (a lapsed card keeps its
+            # post-lapse days, e.g. 1) — the "10m" learning step is never in ivl. Templates
+            # that mean "just forgotten" must branch on `state`, not on a small interval.
             "current_days": int(getattr(card, "ivl", 0) or 0),
+            # 0=new 1=learning 2=review 3=relearning -> a template can put a just-lapsed
+            # card back on its "still shaky" branch regardless of the interval numbers.
+            "state": _CARD_STATES.get(int(getattr(card, "type", 2) or 0), "review"),
         }
         script = (
             "<script>window.omniaIntervals = "
