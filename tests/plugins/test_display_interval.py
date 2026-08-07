@@ -148,3 +148,86 @@ class TestEnableDisable:
         assert gui_hooks.reviewer_did_show_answer.count() == 0
         # Teardown removes the label from the bottom bar (REMOVE snippet references its id).
         assert any("__TA_NEXT_IVL" in js for js in evals)
+
+
+class TestTemplateExpose:
+    """card_will_show prepends window.omniaIntervals to the ANSWER html for template JS."""
+
+    def _plugin(self, ease, expose=True, monkeypatch=None, seconds=3 * 86_400):
+        import types as _t
+
+        if monkeypatch is not None:
+            monkeypatch.setattr(
+                anki_compat, "next_interval_seconds", lambda card, e: seconds
+            )
+        plugin = DisplayIntervalPlugin()
+        plugin._ctx = _t.SimpleNamespace(
+            ease=ease,
+            settings=_t.SimpleNamespace(
+                text_color="#c62828", expose_to_templates=expose
+            ),
+        )
+        return plugin
+
+    @staticmethod
+    def _active_pipeline():
+        """A pipeline with a passthrough transformer — exposure requires >=1 active."""
+        ease = EasePipeline()
+        ease.add_transformer("noop", lambda card, e: e, priority=100)
+        return ease
+
+    def test_answer_prepends_intervals_script(self, monkeypatch):
+        plugin = self._plugin(self._active_pipeline(), monkeypatch=monkeypatch)
+        out = plugin._on_card_will_show("<b>ans</b>", FakeCard(id=1, ivl=6), "reviewAnswer")
+        assert out.endswith("<b>ans</b>")  # original html intact, script prepended
+        assert '"next_days": 3.0' in out
+        assert '"next_seconds": 259200' in out
+        assert '"next_label": "3d"' in out
+        assert '"current_days": 6' in out
+        assert "omnia:intervals" in out  # CustomEvent handshake
+
+    def test_uses_pipeline_preview_ease(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_next(card, ease):
+            captured["ease"] = ease
+            return 86_400
+
+        monkeypatch.setattr(anki_compat, "next_interval_seconds", fake_next)
+        ease = EasePipeline()
+        ease.add_transformer("guard", lambda card, e: 2, priority=200)  # force Hard
+        plugin = self._plugin(ease)
+        plugin._on_card_will_show("x", FakeCard(id=1), "reviewAnswer")
+        assert captured["ease"] == 2  # overdue_guard-style transform reflected
+
+    def test_question_side_untouched(self, monkeypatch):
+        plugin = self._plugin(self._active_pipeline(), monkeypatch=monkeypatch)
+        assert plugin._on_card_will_show("q", FakeCard(id=1), "reviewQuestion") == "q"
+
+    def test_flag_off_leaves_html_untouched(self, monkeypatch):
+        plugin = self._plugin(self._active_pipeline(), expose=False, monkeypatch=monkeypatch)
+        assert plugin._on_card_will_show("a", FakeCard(id=1), "reviewAnswer") == "a"
+
+    def test_no_interval_available_passes_through(self, monkeypatch):
+        monkeypatch.setattr(anki_compat, "next_interval_seconds", lambda c, e: None)
+        plugin = self._plugin(self._active_pipeline())
+        assert plugin._on_card_will_show("a", FakeCard(id=1), "reviewAnswer") == "a"
+
+    def test_no_active_transformers_passes_through(self, monkeypatch):
+        # overdue_guard / typed_accuracy off -> the preview adds nothing over the current
+        # interval, so nothing is injected and the template's own fallback applies.
+        plugin = self._plugin(EasePipeline(), monkeypatch=monkeypatch)
+        assert plugin._on_card_will_show("a", FakeCard(id=1), "reviewAnswer") == "a"
+
+    def test_enable_subscribes_card_will_show(self, gui_hooks):
+        import types as _t
+
+        plugin = DisplayIntervalPlugin()
+        ctx = _t.SimpleNamespace(
+            ease=EasePipeline(),
+            settings=_t.SimpleNamespace(text_color="#c62828", expose_to_templates=True),
+        )
+        plugin.on_enable(ctx)
+        assert gui_hooks.card_will_show.count() == 1
+        plugin.on_disable(ctx)
+        assert gui_hooks.card_will_show.count() == 0
