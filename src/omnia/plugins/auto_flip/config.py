@@ -64,7 +64,9 @@ class AutoFlipSettings(_Strict):
         True,
         description=(
             "Wait for the card's audio to finish before starting the countdown.\n"
-            "• On: the countdown begins only once all of the side's sounds have played.\n"
+            "• On: the countdown begins only once all of the side's sounds have played —\n"
+            "  both Anki [sound:…] tags and audio the template plays itself via JS/HTML5\n"
+            "  (e.g. a hidden <audio> player fed by play buttons or an autoplay script).\n"
             "• Off: the countdown starts as soon as the side is shown.\n"
             "• Keeps a card from flipping before you have heard it."
         ),

@@ -8,6 +8,10 @@ typed_accuracy / overdue_guard). On top of the plain delay this feature adds:
 * **Audio-aware arming** (``wait_for_audio``): the timer only arms once a card's audio has
   finished — it starts immediately only when a side plays no sounds, otherwise it arms when
   ``av_player`` drains.
+* **HTML5 media awareness** (same flag): templates that play audio through their own JS on an
+  HTML5 ``<audio>``/``<video>`` element (no ``[sound:...]`` AV tags) are invisible to
+  ``av_player`` — a watcher injected via the web-injector seam reports ``media_busy`` /
+  ``media_idle`` over ``pycmd``, and the countdown is held while any such media plays.
 * **mpv ``--range=`` extension**: a side whose audio is an external "myview.mpv" clip carries
   the clip duration in its command; that duration is added to the wait so a clip never gets
   cut off.
@@ -30,6 +34,7 @@ from typing import Any, Optional
 from omnia.core import anki_compat
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
+from omnia.core.reviewer.web_injector import WebAsset
 from omnia.plugins.auto_flip.config import AutoFlipSettings
 from omnia.plugins.auto_flip.countdown import (
     build_countdown_js,
@@ -40,6 +45,7 @@ from omnia.plugins.auto_flip.logic import (
     effective_delays,
     parse_mpv_range_extra_seconds,
 )
+from omnia.plugins.auto_flip.media_watch import build_media_watch_js
 
 _EASE_GOOD = 3
 _DECK_MENU_HOOK = "deck_browser_will_show_options_menu"
@@ -73,6 +79,9 @@ class AutoFlipPlugin(FeaturePlugin):
         self._pending_side: Optional[str] = None
         # First Enter while a timer is pending cancels it; the second Enter acts for real.
         self._enter_cancelled = False
+        # True while the reviewer webview reports HTML5 <audio>/<video> playing (template-JS
+        # audio av_player can't see). Set/cleared by the media_busy/media_idle pycmd ops.
+        self._media_busy = False
 
     def on_enable(self, ctx: PluginContext) -> None:
         settings = ctx.settings
@@ -87,6 +96,7 @@ class AutoFlipPlugin(FeaturePlugin):
         self._subscribe("reviewer_will_answer_card", self._on_will_answer)
         self._subscribe(_DECK_MENU_HOOK, self._on_deck_menu)
         self._subscribe("state_did_change", self._on_state_change)
+        self._media_busy = False
         if self._wait_for_audio:
             # Arm off the audio hooks so a card with sound never flips before it finishes.
             self._subscribe(
@@ -94,6 +104,17 @@ class AutoFlipPlugin(FeaturePlugin):
             )
             self._subscribe("reviewer_will_play_answer_sounds", self._on_answer_sounds)
             self._subscribe("av_player_did_end_playing", self._on_audio_end)
+            # Also watch HTML5 <audio>/<video> the template plays itself (no [sound:] AV
+            # tags -> invisible to av_player): inject the watcher on both sides and hold /
+            # re-arm the countdown off its media_busy/media_idle pycmd reports.
+            web = getattr(ctx, "web", None)
+            if web is not None:
+                watcher_js = build_media_watch_js()
+                web.add_asset(
+                    self.id, WebAsset(question_js=watcher_js, answer_js=watcher_js)
+                )
+                web.add_handler(self.id, "media_busy", self._on_media_busy)
+                web.add_handler(self.id, "media_idle", self._on_media_idle)
         else:
             self._subscribe("reviewer_did_show_question", self._on_question)
             self._subscribe("reviewer_did_show_answer", self._on_answer)
@@ -108,6 +129,10 @@ class AutoFlipPlugin(FeaturePlugin):
 
     def on_disable(self, ctx: PluginContext) -> None:
         self._cancel()
+        web = getattr(ctx, "web", None)
+        if web is not None:
+            web.remove(self.id)  # drop the media watcher asset + pycmd handlers
+        self._media_busy = False
         anki_compat.restore_reviewer_enter_key()
         anki_compat.remove_tools_menu_action(self._tools_action)
         self._tools_action = None
@@ -154,6 +179,10 @@ class AutoFlipPlugin(FeaturePlugin):
         # audio path's _on_audio_end isn't left permanently disabled (the sounds path never
         # goes through _cancel, which is the only other place this flag is reset).
         self._enter_cancelled = False
+        # The previous side's HTML5 media died with its DOM (detached elements can't reach
+        # our document-level listeners), so a new side always starts "not busy" — the
+        # watcher re-reports busy if this side's template autoplays.
+        self._media_busy = False
         self._pending_side = "question"
         # Arm now only when this side plays nothing; otherwise wait for av_player to drain.
         if not sounds:
@@ -161,6 +190,7 @@ class AutoFlipPlugin(FeaturePlugin):
 
     def _on_answer_sounds(self, card: Any, sounds: Any) -> None:
         self._enter_cancelled = False
+        self._media_busy = False
         self._pending_side = "answer"
         if not sounds:
             self._arm_answer(card)
@@ -169,8 +199,38 @@ class AutoFlipPlugin(FeaturePlugin):
         # Audio finished — arm the side we were waiting on (counts the delay from now).
         if not self._wait_for_audio or self._enter_cancelled:
             return
+        if self._media_busy or anki_compat.audio_still_playing():
+            return  # more clips queued / HTML5 media playing; arm only when all are done
+        self._arm_pending_side()
+
+    # --- HTML5 media watcher (pycmd ops from media_watch.js) -------------------------
+    def _on_media_busy(self, _data: dict[str, Any], _context: Any) -> None:
+        """Template-JS audio started: hold any pending countdown until it finishes.
+
+        Deliberately NOT ``_cancel()``: ``_enter_cancelled`` must survive (an
+        Enter-cancelled side stays cancelled), and the held side is recorded in
+        ``_pending_side`` so ``media_idle`` knows what to re-arm — scheduling cleared it
+        (``_schedule`` -> ``_cancel``), so it's restored from the shown side here.
+        """
+        self._media_busy = True
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+            self._action = None
+            anki_compat.reviewer_eval(clear_countdown_js())
+            self._pending_side = anki_compat.reviewer_side() or self._pending_side
+
+    def _on_media_idle(self, _data: dict[str, Any], _context: Any) -> None:
+        """Template-JS audio finished: arm the held side (counts the delay from now)."""
+        self._media_busy = False
+        if self._enter_cancelled or self._timer is not None:
+            return
         if anki_compat.audio_still_playing():
-            return  # more clips still queued; arm only when the queue is empty
+            return  # av_player clips still queued; _on_audio_end arms when they drain
+        self._arm_pending_side()
+
+    def _arm_pending_side(self) -> None:
+        """Arm the shown side if it's the one we were waiting on (audio just finished)."""
         card = anki_compat.current_card()
         if card is None:
             return
@@ -189,6 +249,10 @@ class AutoFlipPlugin(FeaturePlugin):
         if not enabled:
             self._cancel()
             return
+        if self._media_busy:
+            # Template-JS audio is playing; media_idle re-arms this side when it ends.
+            self._pending_side = "question"
+            return
         extra_ms = self._mpv_extra_ms(card, "question")
         self._pending_side = "question"
         self._schedule(q_delay + extra_ms, self._flip)
@@ -200,6 +264,9 @@ class AutoFlipPlugin(FeaturePlugin):
         enabled, _q_delay, a_delay = self._delays_for(card)
         if not enabled:
             self._cancel()
+            return
+        if self._media_busy:
+            self._pending_side = "answer"
             return
         extra_ms = self._mpv_extra_ms(card, "answer")
         self._pending_side = "answer"
@@ -243,9 +310,12 @@ class AutoFlipPlugin(FeaturePlugin):
         if card is None:
             return
         side = anki_compat.reviewer_side()
-        # Respect wait_for_audio: if a clip is still playing, don't arm now — record the
-        # side and let _on_audio_end arm once the queue drains (mirrors the sounds path).
-        if self._wait_for_audio and anki_compat.audio_still_playing():
+        # Respect wait_for_audio: if a clip is still playing (av_player queue or template-JS
+        # HTML5 media), don't arm now — record the side and let _on_audio_end /
+        # _on_media_idle arm once everything drains (mirrors the sounds path).
+        if self._wait_for_audio and (
+            self._media_busy or anki_compat.audio_still_playing()
+        ):
             self._pending_side = side
             return
         if side == "question":

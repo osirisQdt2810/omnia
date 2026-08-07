@@ -792,3 +792,223 @@ class TestToggleRespectsWaitForAudio:
         assert schedule[-1][0] == 5000
 
         plugin.on_disable(ctx)
+
+
+class _FakeWeb:
+    """Records web-injector registrations (asset + pycmd handlers + removal)."""
+
+    def __init__(self) -> None:
+        self.assets: dict = {}
+        self.handlers: dict = {}
+        self.removed: list = []
+
+    def add_asset(self, plugin_id, asset):
+        self.assets[plugin_id] = asset
+
+    def add_handler(self, plugin_id, op, handler):
+        self.handlers[(plugin_id, op)] = handler
+
+    def remove(self, plugin_id):
+        self.removed.append(plugin_id)
+
+
+class TestHtml5MediaWait:
+    """Template-JS audio (HTML5 <audio>/<video>, no [sound:] AV tags) holds the countdown.
+
+    Regression for: a Back template that plays audio via its own JS on a hidden
+    <audio id="dynPlayer"> (no AV tags) made the sounds hook report [] -> auto-flip armed
+    immediately and graded mid-playback. The injected media watcher now reports
+    media_busy/media_idle over pycmd and the countdown holds / re-arms off those.
+    """
+
+    def test_media_watch_js_mentions_ops_and_bridge(self):
+        from omnia.plugins.auto_flip.media_watch import build_media_watch_js
+
+        js = build_media_watch_js()
+        assert "auto_flip" in js
+        assert "media_busy" in js and "media_idle" in js
+        assert "pycmd" in js
+        # capture-phase listeners must cover start + every stop signal
+        for event in ("play", "ended", "pause", "error", "emptied"):
+            assert f'"{event}"' in js
+
+    def test_registers_watcher_when_wait_for_audio(self, gui_hooks, monkeypatch):
+        _fake_mw(monkeypatch, [], [])
+        web = _FakeWeb()
+        ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=True), web=web)
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        asset = web.assets["auto_flip"]
+        assert asset.question_js and asset.question_js == asset.answer_js
+        assert ("auto_flip", "media_busy") in web.handlers
+        assert ("auto_flip", "media_idle") in web.handlers
+        plugin.on_disable(ctx)
+        assert web.removed == ["auto_flip"]
+
+    def test_no_watcher_when_wait_for_audio_off(self, gui_hooks, monkeypatch):
+        _fake_mw(monkeypatch, [], [])
+        web = _FakeWeb()
+        ctx = types.SimpleNamespace(settings=_settings(wait_for_audio=False), web=web)
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        assert web.assets == {} and web.handlers == {}
+        plugin.on_disable(ctx)
+
+    def test_media_busy_holds_then_idle_rearms(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        mw = _fake_mw(monkeypatch, schedule, calls, card=object())
+        evals = _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=4),
+            web=_FakeWeb(),
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True
+
+        # No AV tags -> arms immediately (the buggy old behavior would now grade mid-audio).
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), [])
+        assert len(schedule) == 1
+        pending = schedule[-1][2]
+
+        # Template JS starts dynPlayer ~right after render -> busy holds the countdown.
+        plugin._on_media_busy({}, None)
+        assert pending.stopped is True
+        assert any("clearInterval" in js for js in evals)  # ring torn down
+
+        # Audio chain finishes -> idle re-arms the SAME side with a fresh full delay.
+        mw.reviewer.state = "question"
+        plugin._on_media_idle({}, None)
+        assert len(schedule) == 2
+        assert schedule[-1][0] == 4000
+
+        plugin.on_disable(ctx)
+
+    def test_arm_deferred_while_media_busy(self, gui_hooks, monkeypatch):
+        # The _arm_* guard: any arm attempt while HTML5 media plays (e.g. _arm_pending_side
+        # from an av_player drain) records the side and defers instead of scheduling.
+        schedule: list = []
+        mw = _fake_mw(monkeypatch, schedule, [], card=object())
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_answer_seconds=3),
+            web=_FakeWeb(),
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True
+
+        mw.reviewer.state = "answer"
+        plugin._media_busy = True
+        plugin._arm_answer(object())
+        assert schedule == []  # deferred, not scheduled
+        assert plugin._pending_side == "answer"
+        # ...until the media goes idle.
+        plugin._on_media_idle({}, None)
+        assert len(schedule) == 1
+        assert schedule[-1][0] == 3000
+
+        plugin.on_disable(ctx)
+
+    def test_media_idle_defers_to_av_player_queue(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        mw = _fake_mw(monkeypatch, schedule, [], card=object())
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=5),
+            web=_FakeWeb(),
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True
+
+        mw.reviewer.state = "question"
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["a.mp3"])
+        plugin._on_media_busy({}, None)
+
+        # HTML5 media ends but av_player still has a clip queued -> keep waiting.
+        aqt.sound.av_player._enqueued = ["a.mp3"]
+        plugin._on_media_idle({}, None)
+        assert schedule == []
+        # av_player drains -> now arm.
+        aqt.sound.av_player._enqueued = []
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert len(schedule) == 1
+
+        plugin.on_disable(ctx)
+
+    def test_audio_end_waits_for_html5_media(self, gui_hooks, monkeypatch):
+        import aqt
+
+        schedule: list = []
+        _fake_mw(monkeypatch, schedule, [], card=object())
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=5),
+            web=_FakeWeb(),
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True
+
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["a.mp3"])
+        plugin._on_media_busy({}, None)
+        # av_player drains but the template's HTML5 audio is still playing -> hold.
+        aqt.sound.av_player._enqueued = []
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert schedule == []
+        plugin._on_media_idle({}, None)
+        assert len(schedule) == 1
+
+        plugin.on_disable(ctx)
+
+    def test_enter_cancel_survives_media_idle(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        mw = _fake_mw(monkeypatch, schedule, calls, card=object())
+        _record_reviewer_eval(monkeypatch)
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=4),
+            web=_FakeWeb(),
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True
+
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), [])
+        assert len(schedule) == 1
+        # First Enter cancels the pending flip...
+        plugin._on_enter_key(None, lambda: calls.append("enter"))
+        assert "enter" not in calls
+        # ...and a later busy->idle cycle must NOT resurrect it.
+        plugin._on_media_busy({}, None)
+        mw.reviewer.state = "question"
+        plugin._on_media_idle({}, None)
+        assert len(schedule) == 1  # nothing new scheduled
+
+        plugin.on_disable(ctx)
+
+    def test_new_side_resets_media_busy(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        _fake_mw(monkeypatch, schedule, [], card=object())
+
+        ctx = types.SimpleNamespace(
+            settings=_settings(wait_for_audio=True, delay_question_seconds=2),
+            web=_FakeWeb(),
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        plugin._active = True
+
+        # Old side's media was "busy" when the card advanced (detached players can't
+        # emit events we can see) -> the new side must not stay held forever.
+        plugin._on_media_busy({}, None)
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), [])
+        assert len(schedule) == 1  # armed: the stale busy flag was reset by the new side
+
+        plugin.on_disable(ctx)
