@@ -184,7 +184,17 @@ class TestTemplateExpose:
         assert '"next_seconds": 259200' in out
         assert '"next_label": "3d"' in out
         assert '"current_days": 6' in out
+        assert '"state": "review"' in out
         assert "omnia:intervals" in out  # CustomEvent handshake
+
+    def test_state_reflects_relearning(self, monkeypatch):
+        # A just-lapsed card still carries a positive day ivl (e.g. 1) — the state field is
+        # what lets a template put it back on the "still shaky" branch.
+        plugin = self._plugin(self._active_pipeline(), monkeypatch=monkeypatch)
+        out = plugin._on_card_will_show(
+            "a", FakeCard(id=1, ivl=1, type=3), "reviewAnswer"
+        )
+        assert '"state": "relearning"' in out and '"current_days": 1' in out
 
     def test_uses_pipeline_preview_ease(self, monkeypatch):
         captured: dict = {}
