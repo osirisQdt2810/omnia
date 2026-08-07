@@ -83,6 +83,7 @@ def _install_anki_stubs() -> None:
         profile_will_close=FakeHook(),
         reviewer_did_show_question=FakeHook(),
         reviewer_did_show_answer=FakeHook(),
+        card_will_show=FakeHook(),
         reviewer_will_answer_card=FakeHook(),
         webview_did_receive_js_message=FakeHook(),
         reviewer_will_play_question_sounds=FakeHook(),
