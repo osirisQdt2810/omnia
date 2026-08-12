@@ -83,6 +83,12 @@ class WordLookupPlugin(FeaturePlugin):
         self._service = None
         self._ctx = None
 
+    def custom_config_dialog(self, repo: Any, parent: Any) -> Optional[Any]:
+        """The per-note-type field picker (the flat form cannot express a per-note-type map)."""
+        from omnia.gui.word_lookup.dialog import WordLookupSettingsDialog
+
+        return WordLookupSettingsDialog(repo, parent)
+
     # -- the endpoint's payload ----------------------------------------------------------
 
     def lookup(self, word: str) -> dict[str, Any]:
@@ -100,7 +106,12 @@ class WordLookupPlugin(FeaturePlugin):
             title, triaged fields, deck, tags and scheduling state.
         """
         settings = self._settings()
-        query = build_query(word, tuple(settings.note_types))
+        query = build_query(
+            word,
+            tuple(settings.note_types),
+            dict(settings.search_fields),
+            match_word_forms=bool(settings.match_word_forms),
+        )
         if not query:
             return {"word": word, "found": False, "cards": [], "truncated": False}
         note_ids = anki_compat.find_note_ids(query)
@@ -133,7 +144,7 @@ class WordLookupPlugin(FeaturePlugin):
         """
         try:
             note = anki_compat.get_note(nid)
-            note_type = self._note_type_name(note)
+            note_type = self._note_type_name(note)  # needed for the per-note-type field list
             # items() preserves the NOTE TYPE's field order, which the triage uses as its
             # relevance signal — never sort or re-key this.
             ordered = [(name, str(value)) for name, value in note.items()]
@@ -142,6 +153,8 @@ class WordLookupPlugin(FeaturePlugin):
                 word=word,
                 max_fields=int(settings.max_fields),
                 hidden=tuple(settings.hidden_fields),
+                # An explicit per-note-type list wins over the automatic pick.
+                only=tuple(settings.display_fields.get(note_type, [])),
             )
             first_card = self._first_card(note)
             return LookupCard(
