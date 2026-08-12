@@ -30,6 +30,13 @@ _CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::[^}]*)?\}\}", re.DOTALL)
 _WHITESPACE_RE = re.compile(r"\s+")
 # Anki search syntax characters that must be escaped inside a quoted term.
 _SEARCH_ESCAPE_RE = re.compile(r'(["\\*_])')
+# A field that is only an identifier (a bare number, a UUID, a long hex blob) is bookkeeping,
+# never the headword — real note types often put such a field FIRST, which would otherwise make
+# the panel's title a UUID. Detected by SHAPE, so no field name is ever hardcoded.
+_IDENTIFIER_RE = re.compile(
+    r"^(?:\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,})$",
+    re.IGNORECASE,
+)
 
 _HTML_ENTITIES = {
     "&nbsp;": " ",
@@ -154,6 +161,11 @@ def field_media(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     return audio, images
 
 
+def looks_like_identifier(text: str) -> bool:
+    """Whether ``text`` is a bare identifier (number / UUID / hex blob) rather than content."""
+    return bool(_IDENTIFIER_RE.match(text.strip()))
+
+
 def _classify(text: str, audio: tuple[str, ...], images: tuple[str, ...]) -> str:
     """Pick the render kind for a field from what survived cleaning."""
     if text:
@@ -168,19 +180,28 @@ def _classify(text: str, audio: tuple[str, ...], images: tuple[str, ...]) -> str
 def triage_fields(
     ordered_fields: list[tuple[str, str]],
     *,
+    word: str = "",
     max_fields: int = 8,
     max_chars: int = 320,
     hidden: tuple[str, ...] = (),
 ) -> tuple[str, list[LookupField]]:
     """Choose the title and the fields worth showing, from a note's fields IN NOTE-TYPE ORDER.
 
-    Order is the relevance signal (see the module docstring): the first field with readable text
-    becomes the title, and the remaining non-empty fields follow in their authored order until
-    ``max_fields`` is reached. Fields that are empty after cleaning AND carry no media are
-    dropped entirely — that is what makes a 35-field note type readable.
+    Order is the relevance signal (see the module docstring), with two corrections learned from
+    real collections:
+
+    * the title is the field whose text IS the looked-up ``word`` when one exists — a note type
+      whose first field is bookkeeping (a "Note ID") would otherwise be titled with a UUID;
+    * a field that is only an identifier (bare number, UUID, hex blob) can never become the
+      title, detected by shape so no field name is hardcoded.
+
+    Everything else follows the note type's authored order until ``max_fields`` is reached, and
+    fields empty after cleaning with no media are dropped — that is what makes a 35-field note
+    type readable.
 
     Args:
         ordered_fields: ``(field_name, raw_value)`` pairs in the note type's own field order.
+        word: The looked-up word; when a field's text matches it, that field titles the card.
         max_fields: How many fields to keep after the title.
         max_chars: Per-field truncation budget for long prose.
         hidden: Field names (case-insensitive) the user chose never to show.
@@ -189,8 +210,8 @@ def triage_fields(
         ``(title, fields)`` — ``title`` is ``""`` when no field had readable text.
     """
     skip = {name.strip().lower() for name in hidden}
-    title = ""
-    chosen: list[LookupField] = []
+    needle = word.strip().lower()
+    kept: list[LookupField] = []
     for name, raw in ordered_fields:
         if name.strip().lower() in skip:
             continue
@@ -198,12 +219,7 @@ def triage_fields(
         text = strip_html(raw)
         if not text and not audio and not images:
             continue  # empty after cleaning and no media: nothing to show
-        if not title and text:
-            title = text[:max_chars]
-            continue  # the headword is rendered as the title, not repeated as a field
-        if len(chosen) >= max_fields:
-            break
-        chosen.append(
+        kept.append(
             LookupField(
                 name=name,
                 text=text[:max_chars],
@@ -212,7 +228,27 @@ def triage_fields(
                 images=images,
             )
         )
-    return title, chosen
+
+    # Title: the field that IS the looked-up word, else the first field carrying real content.
+    title_index = -1
+    if needle:
+        for index, item in enumerate(kept):
+            if item.text.strip().lower() == needle:
+                title_index = index
+                break
+    if title_index < 0:
+        for index, item in enumerate(kept):
+            if item.text and not looks_like_identifier(item.text):
+                title_index = index
+                break
+    if title_index < 0:
+        return "", kept[:max_fields]
+    title = kept[title_index].text
+    rest = [item for index, item in enumerate(kept) if index != title_index]
+    # Identifier-only fields are bookkeeping noise, but the rule is ORDERING, not visibility:
+    # they sink to the bottom rather than disappearing, so nothing is ever silently withheld.
+    rest.sort(key=lambda item: looks_like_identifier(item.text))
+    return title, rest[:max_fields]
 
 
 def card_state(card_type: int) -> str:
@@ -240,10 +276,15 @@ def rank_cards(cards: list[LookupCard], word: str) -> list[LookupCard]:
         title = card.title.strip().lower()
         if title == needle:
             return 0
-        if title.startswith(needle):
+        # A note whose TITLE is bookkeeping can still be the right card, so an exact match in
+        # any single field ranks just behind an exact title match — this is what puts the real
+        # "plunge" note above a "surf" note that merely mentions plunge in its synonyms.
+        if any(f.text.strip().lower() == needle for f in card.fields):
             return 1
-        if needle in title:
+        if title.startswith(needle):
             return 2
-        return 3
+        if needle in title:
+            return 3
+        return 4
 
     return [card for _, card in sorted(enumerate(cards), key=lambda p: (score(p[1]), p[0]))]

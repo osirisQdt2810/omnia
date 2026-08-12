@@ -107,7 +107,7 @@ class WordLookupPlugin(FeaturePlugin):
         limit = max(1, int(settings.max_results))
         cards: list[LookupCard] = []
         for nid in note_ids[: limit * 3]:  # over-read a little so ranking has room to reorder
-            card = self._card_for_note(nid, settings)
+            card = self._card_for_note(nid, settings, word)
             if card is not None:
                 cards.append(card)
         ranked = rank_cards(cards, word)[:limit]
@@ -124,7 +124,7 @@ class WordLookupPlugin(FeaturePlugin):
         return settings if settings is not None else WordLookupSettings()
 
     def _card_for_note(
-        self, nid: int, settings: WordLookupSettings
+        self, nid: int, settings: WordLookupSettings, word: str = ""
     ) -> Optional[LookupCard]:
         """Build one :class:`LookupCard` from a note id, or ``None`` if it can't be read.
 
@@ -139,6 +139,7 @@ class WordLookupPlugin(FeaturePlugin):
             ordered = [(name, str(value)) for name, value in note.items()]
             title, fields = triage_fields(
                 ordered,
+                word=word,
                 max_fields=int(settings.max_fields),
                 hidden=tuple(settings.hidden_fields),
             )
