@@ -83,6 +83,7 @@ def _install_anki_stubs() -> None:
         profile_will_close=FakeHook(),
         reviewer_did_show_question=FakeHook(),
         reviewer_did_show_answer=FakeHook(),
+        card_will_show=FakeHook(),
         reviewer_will_answer_card=FakeHook(),
         webview_did_receive_js_message=FakeHook(),
         reviewer_will_play_question_sounds=FakeHook(),
@@ -283,10 +284,14 @@ class FakeHttpClient:
 class FakeCard:
     """A duck-typed card for pure-logic tests."""
 
-    def __init__(self, *, ivl: int = 0, mod: int = 0, id: int = 1) -> None:
+    def __init__(
+        self, *, ivl: int = 0, mod: int = 0, id: int = 1, type: int = 2
+    ) -> None:
         self.ivl = ivl
         self.mod = mod
         self.id = id
+        # Anki card state: 0=new 1=learning 2=review 3=relearning (attr really named `type`).
+        self.type = type
 
 
 @pytest.fixture
