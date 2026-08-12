@@ -16,6 +16,9 @@ from omnia.plugins.word_lookup.logic import (
     rank_cards,
     strip_html,
     triage_fields,
+    word_boundary_pattern,
+    word_variants,
+    words_boundary_pattern,
 )
 
 
@@ -24,14 +27,41 @@ class TestBuildQuery:
         assert build_query("plunge") == '"plunge"'
 
     def test_scopes_to_note_types(self):
-        assert build_query("plunge", ["AnkiVocabulary"]) == '(note:"AnkiVocabulary") "plunge"'
+        assert build_query("plunge", ["AnkiVocabulary"]) == '(note:"AnkiVocabulary" "plunge")'
 
     def test_ors_multiple_note_types(self):
-        query = build_query("plunge", ["A", "B"])
-        assert query == '(note:"A" OR note:"B") "plunge"'
+        # One clause per note type, so each can carry its own field scope.
+        assert build_query("plunge", ["A", "B"]) == (
+            '((note:"A" "plunge") OR (note:"B" "plunge"))'
+        )
 
     def test_ignores_blank_note_type_entries(self):
-        assert build_query("x", ["", "  ", "A"]) == '(note:"A") "x"'
+        assert build_query("x", ["", "  ", "A"]) == '(note:"A" "x")'
+
+    def test_restricts_to_the_configured_search_fields(self):
+        query = build_query("level", ["V"], {"V": ["Word", "Meaning"]})
+        assert query == (
+            '(note:"V" ("Word:re:(?i)\\blevel\\b" OR "Meaning:re:(?i)\\blevel\\b"))'
+        )
+
+    def test_configured_fields_match_whole_words_not_substrings(self):
+        # Measured on a real collection for "port": exact 5 (misses "port of call"),
+        # substring 146 (Deport, Portion, Reporter, important…), word boundary 7 — correct.
+        query = build_query("port", ["V"], {"V": ["Word"]})
+        assert "*" not in query  # not a substring search
+        assert r"\bport\b" in query
+
+    def test_field_names_with_spaces_and_parens_stay_quoted(self):
+        query = build_query("verb", ["V"], {"V": ["Word (part of speech)"]})
+        assert '"Word (part of speech):re:' in query
+
+    def test_unlisted_note_type_still_searches_all_its_fields(self):
+        query = build_query("x", ["A", "B"], {"A": ["W"]})
+        assert '(note:"A" ("W:re:' in query
+        assert '(note:"B" "x")' in query
+
+    def test_blank_field_entries_are_ignored(self):
+        assert build_query("x", ["A"], {"A": ["", "  "]}) == '(note:"A" "x")'
 
     def test_blank_word_yields_no_query(self):
         assert build_query("   ") == ""
@@ -57,9 +87,11 @@ class TestStripHtml:
     def test_decodes_common_entities(self):
         assert strip_html("a&nbsp;b &amp; c &lt;d&gt;") == "a b & c <d>"
 
-    def test_breaks_become_spaces_not_glued_words(self):
-        assert strip_html("one<br>two<br/>three") == "one two three"
-        assert strip_html("<p>one</p><p>two</p>") == "one two"
+    def test_breaks_become_newlines_not_glued_words(self):
+        # They used to become spaces; a list field then read as one blob (see
+        # TestLineStructureIsKept). Either way the words must never be glued together.
+        assert strip_html("one<br>two<br/>three") == "one\ntwo\nthree"
+        assert strip_html("<p>one</p><p>two</p>") == "one\ntwo"
 
     def test_empty_input(self):
         assert strip_html("") == ""
@@ -272,3 +304,162 @@ class TestIdentifierFieldsSinkButStayVisible:
             [("W", "w"), ("B", "b"), ("A", "a"), ("Id", "42")]
         )
         assert [f.name for f in fields] == ["B", "A", "Id"]
+
+
+class TestExplicitDisplayFields:
+    """A per-note-type field list overrides the automatic pick, order included."""
+
+    PAIRS = [
+        ("Note ID", "1"),
+        ("Word", "plunge"),
+        ("Definition", "to dive"),
+        ("Meaning (vi)", "lao xuống"),
+        ("Example 1", "he plunged in"),
+    ]
+
+    def test_shows_only_the_listed_fields_in_the_listed_order(self):
+        title, fields = triage_fields(
+            self.PAIRS, word="plunge", only=("Meaning (vi)", "Definition")
+        )
+        assert title == "plunge"
+        assert [f.name for f in fields] == ["Meaning (vi)", "Definition"]
+
+    def test_is_case_insensitive_about_field_names(self):
+        _title, fields = triage_fields(self.PAIRS, word="plunge", only=("definition",))
+        assert [f.name for f in fields] == ["Definition"]
+
+    def test_unknown_field_names_are_skipped(self):
+        _title, fields = triage_fields(
+            self.PAIRS, word="plunge", only=("Definition", "Nope")
+        )
+        assert [f.name for f in fields] == ["Definition"]
+
+    def test_max_fields_does_not_truncate_an_explicit_list(self):
+        # The list IS the user's choice; capping it would silently drop what they asked for.
+        _title, fields = triage_fields(
+            self.PAIRS, word="plunge", only=("Definition", "Meaning (vi)", "Example 1"),
+            max_fields=1,
+        )
+        assert len(fields) == 3
+
+    def test_empty_list_falls_back_to_the_automatic_pick(self):
+        _title, auto = triage_fields(self.PAIRS, word="plunge")
+        _title2, explicit_empty = triage_fields(self.PAIRS, word="plunge", only=())
+        assert [f.name for f in auto] == [f.name for f in explicit_empty]
+
+
+class TestWordBoundaryPattern:
+    """Whole-word matching: the middle ground between exact and substring."""
+
+    def test_wraps_a_plain_word_in_boundaries(self):
+        assert word_boundary_pattern("port") == r"(?i)\bport\b"
+
+    def test_escapes_regex_metacharacters(self):
+        # A term like "a.b" must not let "." match any character.
+        assert word_boundary_pattern("a.b") == r"(?i)\ba\.b\b"
+
+    def test_omits_a_boundary_that_could_never_match(self):
+        # \b needs a word character beside it; "c++" ends in '+', so a trailing \b would make
+        # the pattern match nothing at all.
+        assert word_boundary_pattern("c++") == r"(?i)\bc\+\+"
+        assert word_boundary_pattern("++c") == r"(?i)\+\+c\b"
+
+    def test_multi_word_terms_are_supported(self):
+        assert word_boundary_pattern("port of call").startswith(r"(?i)\bport")
+        assert word_boundary_pattern("port of call").endswith(r"call\b")
+
+    def test_is_case_insensitive(self):
+        assert word_boundary_pattern("Port").startswith("(?i)")
+
+
+class TestWordVariants:
+    """Rule-based de-inflection: 'loved' must still find the card filed under 'love'."""
+
+    def test_keeps_the_original_first(self):
+        assert word_variants("loved")[0] == "loved"
+
+    def test_regular_past_and_gerund(self):
+        assert "love" in word_variants("loved")
+        assert "love" in word_variants("loving")
+        assert "look" in word_variants("looked")
+
+    def test_doubled_consonant_is_undone(self):
+        assert "stop" in word_variants("stopped")
+        assert "run" in word_variants("running")
+
+    def test_never_offers_an_impossible_e_form_for_a_doubled_stem(self):
+        # "stoppe"/"runne" are not words; a doubled consonant means the base never had that e.
+        assert "stoppe" not in word_variants("stopped")
+        assert "runne" not in word_variants("running")
+
+    def test_y_forms(self):
+        assert "study" in word_variants("studies")
+        assert "study" in word_variants("studied")
+        assert "happy" in word_variants("happiest")
+
+    def test_plural_and_adverb(self):
+        assert "love" in word_variants("loves")
+        assert "quick" in word_variants("quickly")
+        assert "go" in word_variants("goes")
+
+    def test_short_words_are_left_alone(self):
+        # Stripping "as" -> "a" would match half the collection.
+        assert word_variants("as") == ("as",)
+        assert word_variants("is") == ("is",)
+
+    def test_uninflected_word_yields_just_itself(self):
+        assert word_variants("level") == ("level",)
+
+    def test_blank_input(self):
+        assert word_variants("   ") == ()
+
+    def test_is_capped(self):
+        assert len(word_variants("studies")) <= 6
+
+
+class TestVariantsInTheQuery:
+    def test_forms_are_one_alternation(self):
+        query = build_query("loved", ["V"], {"V": ["Word"]})
+        assert "(?:" in query and "love" in query
+        assert query.count("Word:re:") == 1  # one clause, not one per form
+
+    def test_can_be_switched_off(self):
+        query = build_query("loved", ["V"], {"V": ["Word"]}, match_word_forms=False)
+        assert "(?:" not in query
+        assert r"\bloved\b" in query
+
+    def test_boundary_is_dropped_only_on_the_side_that_cannot_carry_it(self):
+        # "c++" starts with a word char (\b works) but ends with '+' (a trailing \b would make
+        # the pattern match nothing), so only the RIGHT boundary is dropped.
+        assert words_boundary_pattern(["c++"]) == r"(?i)\bc\+\+"
+        assert words_boundary_pattern(["++c"]) == r"(?i)\+\+c\b"
+        assert words_boundary_pattern(["go", "goes"]) == r"(?i)\b(?:go|goes)\b"
+
+
+class TestLineStructureIsKept:
+    """A field that lists one entry per <br> must not collapse into one blob."""
+
+    RAW = (
+        "crawl along + N: bò dọc theo  <br>crawl out of + Sth: thoát ra khỏi  "
+        "<br>crawl up + N: bò lên  "
+    )
+
+    def test_br_becomes_a_newline(self):
+        assert strip_html(self.RAW).split("\n") == [
+            "crawl along + N: bò dọc theo",
+            "crawl out of + Sth: thoát ra khỏi",
+            "crawl up + N: bò lên",
+        ]
+
+    def test_closing_block_tags_also_break_the_line(self):
+        assert strip_html("<div>one</div><div>two</div>") == "one\ntwo"
+        assert strip_html("<li>a</li><li>b</li>") == "a\nb"
+
+    def test_a_plain_sentence_stays_on_one_line(self):
+        assert strip_html("<div>hello   <b>world</b></div>") == "hello world"
+
+    def test_blank_lines_are_collapsed(self):
+        assert strip_html("a<br><br><br>b") == "a\nb"
+
+    def test_each_line_is_trimmed(self):
+        assert strip_html("  a  <br>   b   ") == "a\nb"

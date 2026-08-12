@@ -27,7 +27,12 @@ _SOUND_RE = re.compile(r"\[sound:([^\]]+)\]", re.IGNORECASE)
 _IMG_RE = re.compile(r"<img[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::[^}]*)?\}\}", re.DOTALL)
-_WHITESPACE_RE = re.compile(r"\s+")
+# Collapse runs of spaces/tabs but NOT newlines: a field like "Phrasal Verb" separates its
+# entries with <br>, and flattening those turned a tidy list into one unreadable blob.
+_INLINE_SPACE_RE = re.compile(r"[^\S\n]+")
+_BLANK_LINES_RE = re.compile(r"\n{2,}")
+# Block-level markup that ends a visual line in Anki's renderer.
+_LINE_BREAK_RE = re.compile(r"<br\s*/?>|</(?:p|div|li|tr)>", re.IGNORECASE)
 # Anki search syntax characters that must be escaped inside a quoted term.
 _SEARCH_ESCAPE_RE = re.compile(r'(["\\*_])')
 # A field that is only an identifier (a bare number, a UUID, a long hex blob) is bookkeeping,
@@ -113,16 +118,144 @@ def escape_search_term(term: str) -> str:
     return _SEARCH_ESCAPE_RE.sub(r"\\\1", term.strip())
 
 
-def build_query(word: str, note_types: list[str] | tuple[str, ...] = ()) -> str:
-    """Build the Anki search string for ``word``, optionally restricted to ``note_types``.
+# Inflection rules, applied to strip a suffix back towards the base form. Each entry is
+# (suffix, replacements) and every replacement that leaves a plausible stem is offered as a
+# candidate — the search simply ORs them, so an extra wrong guess costs nothing but a miss costs
+# the user the card they were looking for.
+_DEINFLECT: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ies", ("y",)),          # studies -> study
+    ("ied", ("y",)),          # studied -> study
+    ("ier", ("y",)),          # happier -> happy
+    ("iest", ("y",)),         # happiest -> happy
+    ("ily", ("y",)),          # happily -> happy
+    ("es", ("", "e")),        # goes -> go, boxes -> box
+    ("ed", ("", "e")),        # looked -> look, loved -> love
+    ("ing", ("", "e")),       # looking -> look, loving -> love
+    ("est", ("", "e")),       # tallest -> tall
+    ("er", ("", "e")),        # taller -> tall
+    ("ly", ("",)),            # quickly -> quick
+    ("s", ("",)),             # loves -> love
+)
+# A stem shorter than this is noise ("as" -> "a"). Two is enough for real bases like "go".
+_MIN_STEM = 2
+# Only de-inflect words long enough to actually carry a suffix; "as"/"is" must be left alone.
+_MIN_INFLECTED = 4
+_MAX_VARIANTS = 6
 
-    The term is searched across all fields (field names differ per collection, so targeting one
-    would not generalise). When note types are given they are OR-ed into a parenthesised filter
-    so the search stays scoped to what the user marked as searchable.
+
+def word_variants(word: str) -> tuple[str, ...]:
+    """Return the word plus plausible base forms of it, most-likely first.
+
+    Double-clicking "loved" should still find the card filed under "love". A full lemmatiser
+    would need a dictionary and a compiled dependency, neither of which can be vendored into an
+    Anki add-on, so this is a small rule-based de-inflector: strip a known suffix, and also undo
+    a doubled final consonant (``stopped`` -> ``stop``, ``running`` -> ``run``).
+
+    It is deliberately generous rather than clever — every candidate is OR-ed into one search, so
+    a spurious form usually matches nothing, while a missing one loses the user their card.
+
+    Args:
+        word: The captured word.
+
+    Returns:
+        Deduped candidates including ``word`` itself, capped so the query stays small.
+    """
+    base = word.strip().lower()
+    if not base:
+        return ()
+    found = [base]
+
+    def offer(candidate: str) -> None:
+        if len(candidate) >= _MIN_STEM and candidate not in found:
+            found.append(candidate)
+
+    if len(base) < _MIN_INFLECTED:
+        return tuple(found)
+    for suffix, replacements in _DEINFLECT:
+        if not base.endswith(suffix) or len(base) - len(suffix) < _MIN_STEM:
+            continue
+        stem = base[: -len(suffix)]
+        doubled = len(stem) > 2 and stem[-1] == stem[-2] and stem[-1].isalpha()
+        for replacement in replacements:
+            # "stoppe"/"runne" are impossible words: a doubled consonant means the base LOST an
+            # "e" (or never had one), so re-adding it only pads the query with noise.
+            if replacement == "e" and doubled:
+                continue
+            offer(stem + replacement)
+        if doubled:
+            offer(stem[:-1])  # stopped -> stop, running -> run
+        break  # the first matching rule is the most specific one
+
+    return tuple(found[:_MAX_VARIANTS])
+
+
+def word_boundary_pattern(term: str) -> str:
+    """Return a case-insensitive regex matching ``term`` as a WHOLE WORD inside a field.
+
+    This is the middle ground between the two obvious options, both of which are wrong for a
+    headword field (measured on a real collection, looking up "port"):
+
+    ===========================  =======  =====================================================
+    match                        hits     verdict
+    ===========================  =======  =====================================================
+    exact (``Word:port``)             5    misses "port of call"
+    substring (``Word:*port*``)     146    drags in Deport, Portion, Reporter, important, …
+    **word boundary**                 7    Port, port, port of call — what a lookup means
+    ===========================  =======  =====================================================
+
+    ``\b`` is only added where it can actually match: it needs a word character beside it, so a
+    term like ``c++`` would never match if the boundary were bolted on unconditionally.
+
+    Args:
+        term: The raw word being looked up.
+
+    Returns:
+        A regex for Anki's ``field:re:`` search.
+    """
+    return words_boundary_pattern((term,))
+
+
+def words_boundary_pattern(terms: tuple[str, ...] | list[str]) -> str:
+    """Like :func:`word_boundary_pattern` but matching ANY of ``terms``, as one alternation.
+
+    One regex with ``(?:a|b|c)`` keeps the Anki query short no matter how many word forms are
+    offered, instead of OR-ing a clause per form per field.
+    """
+    usable = [t.strip() for t in terms if t and t.strip()]
+    if not usable:
+        return ""
+    # A shared boundary only works if every alternative starts/ends with a word character;
+    # otherwise (e.g. "c++") the boundary is dropped so the pattern can still match.
+    left = r"\b" if all(t[:1].isalnum() or t[:1] == "_" for t in usable) else ""
+    right = r"\b" if all(t[-1:].isalnum() or t[-1:] == "_" for t in usable) else ""
+    body = "|".join(re.escape(t) for t in usable)
+    grouped = body if len(usable) == 1 else f"(?:{body})"
+    return f"(?i){left}{grouped}{right}"
+
+
+def build_query(
+    word: str,
+    note_types: list[str] | tuple[str, ...] = (),
+    search_fields: dict[str, list[str]] | None = None,
+    match_word_forms: bool = True,
+) -> str:
+    """Build the Anki search string for ``word``, scoped to ``note_types`` and their fields.
+
+    Each note type becomes one OR-ed clause. A note type with configured ``search_fields`` is
+    matched only inside those fields, and the term must appear there as a WHOLE WORD
+    (``note:"T" ("F1:re:…" OR "F2:re:…")``) — so "port" finds "port" and "port of call" but not
+    "important" (see :func:`word_boundary_pattern`). A note type without configured fields is
+    matched across all its fields. With no note types at all, the term is searched
+    collection-wide.
+
+    Case is not handled here on purpose: Anki folds case itself, so ``LEVEL``/``Level``/``level``
+    are already the same search (verified against a real collection).
 
     Args:
         word: The word/phrase to look up.
         note_types: Note type names to restrict the search to (empty = search everything).
+        search_fields: ``{note type: [field, …]}`` limiting where the term may match.
+        match_word_forms: Also match plausible base forms ("loved" finds "love").
 
     Returns:
         An Anki search string, or ``""`` if ``word`` is blank.
@@ -130,26 +263,47 @@ def build_query(word: str, note_types: list[str] | tuple[str, ...] = ()) -> str:
     term = escape_search_term(word)
     if not term:
         return ""
-    query = f'"{term}"'
-    names = [name for name in note_types if name and name.strip()]
-    if names:
-        joined = " OR ".join(f'note:"{escape_search_term(name)}"' for name in names)
-        query = f"({joined}) {query}"
-    return query
+    names = [name.strip() for name in note_types if name and name.strip()]
+    if not names:
+        return f'"{term}"'
+    fields_for = search_fields or {}
+    clauses = []
+    for name in names:
+        scope = f'note:"{escape_search_term(name)}"'
+        fields = [f.strip() for f in fields_for.get(name, []) if f and f.strip()]
+        if fields:
+            # WHOLE-WORD match inside the field (see word_boundary_pattern for why neither exact
+            # nor substring is right). The clause is quoted so field names with spaces and
+            # parentheses — "Word (part of speech)" — parse correctly.
+            terms = word_variants(word) if match_word_forms else (word.strip(),)
+            pattern = words_boundary_pattern(terms)
+            matches = " OR ".join(f'"{field}:re:{pattern}"' for field in fields)
+            clauses.append(f"({scope} ({matches}))")
+        else:
+            clauses.append(f'({scope} "{term}")')
+    return clauses[0] if len(clauses) == 1 else "(" + " OR ".join(clauses) + ")"
 
 
 def strip_html(value: str) -> str:
-    """Return ``value`` as plain readable text (tags, media refs, cloze and entities removed)."""
+    """Return ``value`` as plain readable text, KEEPING the author's line breaks.
+
+    Tags, media refs, cloze markup and entities are removed, but ``<br>`` and closing block tags
+    become newlines rather than spaces. Fields like "Phrasal Verb" list one entry per ``<br>``;
+    flattening those made the panel show a single unreadable run of text where the card itself
+    shows a tidy list.
+    """
     if not value:
         return ""
     text = _SOUND_RE.sub(" ", value)
     text = _IMG_RE.sub(" ", text)
     text = _CLOZE_RE.sub(r"\1", text)  # show the cloze answer, not the markup
-    text = re.sub(r"<br\s*/?>|</(p|div|li)>", " ", text, flags=re.IGNORECASE)
+    text = _LINE_BREAK_RE.sub("\n", text)  # keep the author's line structure
     text = _TAG_RE.sub("", text)
     for entity, replacement in _HTML_ENTITIES.items():
         text = text.replace(entity, replacement)
-    return _WHITESPACE_RE.sub(" ", text).strip()
+    text = _INLINE_SPACE_RE.sub(" ", text)
+    text = _BLANK_LINES_RE.sub("\n", text)
+    return "\n".join(line.strip() for line in text.split("\n")).strip()
 
 
 def field_media(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -184,6 +338,7 @@ def triage_fields(
     max_fields: int = 8,
     max_chars: int = 320,
     hidden: tuple[str, ...] = (),
+    only: tuple[str, ...] = (),
 ) -> tuple[str, list[LookupField]]:
     """Choose the title and the fields worth showing, from a note's fields IN NOTE-TYPE ORDER.
 
@@ -205,11 +360,15 @@ def triage_fields(
         max_fields: How many fields to keep after the title.
         max_chars: Per-field truncation budget for long prose.
         hidden: Field names (case-insensitive) the user chose never to show.
+        only: An explicit field order for this note type. When given, ONLY these fields are
+            shown and in this order — the automatic pick is bypassed entirely (``max_fields``
+            no longer applies, because the list is already the user's deliberate choice).
 
     Returns:
         ``(title, fields)`` — ``title`` is ``""`` when no field had readable text.
     """
     skip = {name.strip().lower() for name in hidden}
+    wanted = [name.strip().lower() for name in only if name and name.strip()]
     needle = word.strip().lower()
     kept: list[LookupField] = []
     for name, raw in ordered_fields:
@@ -245,6 +404,13 @@ def triage_fields(
         return "", kept[:max_fields]
     title = kept[title_index].text
     rest = [item for index, item in enumerate(kept) if index != title_index]
+    if wanted:
+        # The explicit list controls the FIELD LIST, not the title — the title is the word
+        # itself, already chosen above from every field. Honour the user's order, and never cap
+        # it: the list is their deliberate choice, so truncating it would drop what they asked
+        # for.
+        by_name = {item.name.strip().lower(): item for item in rest}
+        return title, [by_name[key] for key in wanted if key in by_name]
     # Identifier-only fields are bookkeeping noise, but the rule is ORDERING, not visibility:
     # they sink to the bottom rather than disappearing, so nothing is ever silently withheld.
     rest.sort(key=lambda item: looks_like_identifier(item.text))

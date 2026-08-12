@@ -46,6 +46,39 @@ class WordLookupSettings(_Strict):
             "• Fields are kept in the note type's own field order (most important first)."
         ),
     )
+    search_fields: dict[str, list[str]] = Field(
+        default_factory=dict,
+        title="Fields to search, per note type",
+        description=(
+            "``{note type: [field, …]}``. A note type listed here is searched ONLY in those "
+            "fields; anything not listed is searched across all of its fields.\n"
+            "• A listed field matches the word as a WHOLE WORD: looking up 'port' finds "
+            "'port' and 'port of call', but not 'important' or 'Portion'.\n"
+            "• Narrowing to the headword field (e.g. Word) stops a hit on a word merely "
+            "mentioned inside another card's examples or synonyms.\n"
+            "• Matching is case-insensitive — Anki folds case itself, so LEVEL, Level and "
+            "level are the same search."
+        ),
+    )
+    display_fields: dict[str, list[str]] = Field(
+        default_factory=dict,
+        title="Fields to show, per note type",
+        description=(
+            "``{note type: [field, …]}``. Listed fields are shown in the order given; a note "
+            "type that is not listed falls back to the automatic pick (the first "
+            "``max_fields`` non-empty fields, in the note type's own field order)."
+        ),
+    )
+    match_word_forms: bool = Field(
+        True,
+        title="Also match other forms of the word",
+        description=(
+            "Look up plausible base forms too, so double-clicking an inflected word still "
+            "finds the card.\n"
+            "• 'loved' also tries 'love'; 'studies' tries 'study'; 'running' tries 'run'.\n"
+            "• Off = match only the word exactly as captured."
+        ),
+    )
     hidden_fields: list[str] = Field(
         default_factory=list,
         title="Never show these fields",
