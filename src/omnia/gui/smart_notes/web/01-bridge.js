@@ -56,6 +56,7 @@
   const optGenReview = document.getElementById("sn-opt-gen-review");
   const optRegenBatch = document.getElementById("sn-opt-regen-batch");
   const optAllowEmpty = document.getElementById("sn-opt-allow-empty");
+  const optDiscardUnfilled = document.getElementById("sn-opt-discard-unfilled");
   // Integrations tab: the per-integration auto-generate toggle + its "Detected N cards" line.
   const integrationsList = document.getElementById("sn-integrations-list");
   const nativeListEl = document.getElementById("sn-native-list");

@@ -64,6 +64,13 @@ class BatchSummary:
     # A few "<field> needs <prereq>" strings for the blocked fields, so the summary can say WHICH
     # field was blocked and by what (the count alone is not actionable). Bounded when rendered.
     blocked_examples: list[str] = field(default_factory=list)
+    # Notes that WERE generatable but ended up with nothing generated (every field blocked or
+    # skipped). Notes whose type has no config never get here — they are dropped before
+    # generation — so this really means "we tried and produced nothing", which is what lets the
+    # integration gateway discard a clip that would only ever hold the captured word.
+    # A note whose generation RAISED is deliberately excluded: that is transient, and throwing
+    # the user's capture away over a provider hiccup would be worse than keeping an empty card.
+    empty_note_ids: list[int] = field(default_factory=list)
     # Per-field generation errors across all notes (a single field raising), distinct from
     # ``failed`` (a whole note that could not be processed/written at all).
     field_failures: int = 0
@@ -272,6 +279,7 @@ class BatchGenerator:
                 # skipped (skipped means there was genuinely nothing to generate).
                 if not outcome.blocked and not outcome.field_failures:
                     summary.skipped += 1
+                summary.empty_note_ids.append(outcome.nid)
                 continue
             if self._write_note(outcome):
                 summary.processed += 1
