@@ -15,3 +15,4 @@ from omnia.plugins.display_interval import DisplayIntervalPlugin
 from omnia.plugins.overdue_guard import OverdueGuardPlugin
 from omnia.plugins.smart_notes import SmartNotesPlugin
 from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
+from omnia.plugins.word_lookup import WordLookupPlugin
