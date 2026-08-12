@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from aqt.qt import (  # type: ignore[attr-defined]
     QAbstractItemView,
+    QCheckBox,
     QPalette,
     QDialog,
     QDialogButtonBox,
@@ -102,6 +103,13 @@ class WordLookupSettingsDialog(QDialog):
             1,
         )
         root.addLayout(columns, 1)
+
+        self._word_forms = QCheckBox("Also match other forms (loved -> love, studies -> study)")
+        self._word_forms.setChecked(bool(settings.match_word_forms))
+        self._word_forms.setToolTip(
+            "Double-clicking an inflected word still finds the card filed under its base form."
+        )
+        root.addWidget(self._word_forms)
 
         self._max_results = self._spin(1, 25, int(settings.max_results))
         self._max_fields = self._spin(1, 30, int(settings.max_fields))
@@ -300,6 +308,7 @@ class WordLookupSettingsDialog(QDialog):
                     "note_types": note_types,
                     "search_fields": search,
                     "display_fields": display,
+                    "match_word_forms": self._word_forms.isChecked(),
                     "max_results": self._max_results.value(),
                     "max_fields": self._max_fields.value(),
                     "port": self._port.value(),

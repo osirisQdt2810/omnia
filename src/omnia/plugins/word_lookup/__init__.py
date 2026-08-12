@@ -107,7 +107,10 @@ class WordLookupPlugin(FeaturePlugin):
         """
         settings = self._settings()
         query = build_query(
-            word, tuple(settings.note_types), dict(settings.search_fields)
+            word,
+            tuple(settings.note_types),
+            dict(settings.search_fields),
+            match_word_forms=bool(settings.match_word_forms),
         )
         if not query:
             return {"word": word, "found": False, "cards": [], "truncated": False}

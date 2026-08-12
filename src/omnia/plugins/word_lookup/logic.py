@@ -113,6 +113,77 @@ def escape_search_term(term: str) -> str:
     return _SEARCH_ESCAPE_RE.sub(r"\\\1", term.strip())
 
 
+# Inflection rules, applied to strip a suffix back towards the base form. Each entry is
+# (suffix, replacements) and every replacement that leaves a plausible stem is offered as a
+# candidate — the search simply ORs them, so an extra wrong guess costs nothing but a miss costs
+# the user the card they were looking for.
+_DEINFLECT: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ies", ("y",)),          # studies -> study
+    ("ied", ("y",)),          # studied -> study
+    ("ier", ("y",)),          # happier -> happy
+    ("iest", ("y",)),         # happiest -> happy
+    ("ily", ("y",)),          # happily -> happy
+    ("es", ("", "e")),        # goes -> go, boxes -> box
+    ("ed", ("", "e")),        # looked -> look, loved -> love
+    ("ing", ("", "e")),       # looking -> look, loving -> love
+    ("est", ("", "e")),       # tallest -> tall
+    ("er", ("", "e")),        # taller -> tall
+    ("ly", ("",)),            # quickly -> quick
+    ("s", ("",)),             # loves -> love
+)
+# A stem shorter than this is noise ("as" -> "a"). Two is enough for real bases like "go".
+_MIN_STEM = 2
+# Only de-inflect words long enough to actually carry a suffix; "as"/"is" must be left alone.
+_MIN_INFLECTED = 4
+_MAX_VARIANTS = 6
+
+
+def word_variants(word: str) -> tuple[str, ...]:
+    """Return the word plus plausible base forms of it, most-likely first.
+
+    Double-clicking "loved" should still find the card filed under "love". A full lemmatiser
+    would need a dictionary and a compiled dependency, neither of which can be vendored into an
+    Anki add-on, so this is a small rule-based de-inflector: strip a known suffix, and also undo
+    a doubled final consonant (``stopped`` -> ``stop``, ``running`` -> ``run``).
+
+    It is deliberately generous rather than clever — every candidate is OR-ed into one search, so
+    a spurious form usually matches nothing, while a missing one loses the user their card.
+
+    Args:
+        word: The captured word.
+
+    Returns:
+        Deduped candidates including ``word`` itself, capped so the query stays small.
+    """
+    base = word.strip().lower()
+    if not base:
+        return ()
+    found = [base]
+
+    def offer(candidate: str) -> None:
+        if len(candidate) >= _MIN_STEM and candidate not in found:
+            found.append(candidate)
+
+    if len(base) < _MIN_INFLECTED:
+        return tuple(found)
+    for suffix, replacements in _DEINFLECT:
+        if not base.endswith(suffix) or len(base) - len(suffix) < _MIN_STEM:
+            continue
+        stem = base[: -len(suffix)]
+        doubled = len(stem) > 2 and stem[-1] == stem[-2] and stem[-1].isalpha()
+        for replacement in replacements:
+            # "stoppe"/"runne" are impossible words: a doubled consonant means the base LOST an
+            # "e" (or never had one), so re-adding it only pads the query with noise.
+            if replacement == "e" and doubled:
+                continue
+            offer(stem + replacement)
+        if doubled:
+            offer(stem[:-1])  # stopped -> stop, running -> run
+        break  # the first matching rule is the most specific one
+
+    return tuple(found[:_MAX_VARIANTS])
+
+
 def word_boundary_pattern(term: str) -> str:
     """Return a case-insensitive regex matching ``term`` as a WHOLE WORD inside a field.
 
@@ -136,16 +207,32 @@ def word_boundary_pattern(term: str) -> str:
     Returns:
         A regex for Anki's ``field:re:`` search.
     """
-    escaped = re.escape(term)
-    left = r"\b" if term[:1].isalnum() or term[:1] == "_" else ""
-    right = r"\b" if term[-1:].isalnum() or term[-1:] == "_" else ""
-    return f"(?i){left}{escaped}{right}"
+    return words_boundary_pattern((term,))
+
+
+def words_boundary_pattern(terms: tuple[str, ...] | list[str]) -> str:
+    """Like :func:`word_boundary_pattern` but matching ANY of ``terms``, as one alternation.
+
+    One regex with ``(?:a|b|c)`` keeps the Anki query short no matter how many word forms are
+    offered, instead of OR-ing a clause per form per field.
+    """
+    usable = [t.strip() for t in terms if t and t.strip()]
+    if not usable:
+        return ""
+    # A shared boundary only works if every alternative starts/ends with a word character;
+    # otherwise (e.g. "c++") the boundary is dropped so the pattern can still match.
+    left = r"\b" if all(t[:1].isalnum() or t[:1] == "_" for t in usable) else ""
+    right = r"\b" if all(t[-1:].isalnum() or t[-1:] == "_" for t in usable) else ""
+    body = "|".join(re.escape(t) for t in usable)
+    grouped = body if len(usable) == 1 else f"(?:{body})"
+    return f"(?i){left}{grouped}{right}"
 
 
 def build_query(
     word: str,
     note_types: list[str] | tuple[str, ...] = (),
     search_fields: dict[str, list[str]] | None = None,
+    match_word_forms: bool = True,
 ) -> str:
     """Build the Anki search string for ``word``, scoped to ``note_types`` and their fields.
 
@@ -163,6 +250,7 @@ def build_query(
         word: The word/phrase to look up.
         note_types: Note type names to restrict the search to (empty = search everything).
         search_fields: ``{note type: [field, …]}`` limiting where the term may match.
+        match_word_forms: Also match plausible base forms ("loved" finds "love").
 
     Returns:
         An Anki search string, or ``""`` if ``word`` is blank.
@@ -182,7 +270,8 @@ def build_query(
             # WHOLE-WORD match inside the field (see word_boundary_pattern for why neither exact
             # nor substring is right). The clause is quoted so field names with spaces and
             # parentheses — "Word (part of speech)" — parse correctly.
-            pattern = word_boundary_pattern(word.strip())
+            terms = word_variants(word) if match_word_forms else (word.strip(),)
+            pattern = words_boundary_pattern(terms)
             matches = " OR ".join(f'"{field}:re:{pattern}"' for field in fields)
             clauses.append(f"({scope} ({matches}))")
         else:
