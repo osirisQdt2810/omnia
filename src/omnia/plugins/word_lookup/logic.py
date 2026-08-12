@@ -113,16 +113,25 @@ def escape_search_term(term: str) -> str:
     return _SEARCH_ESCAPE_RE.sub(r"\\\1", term.strip())
 
 
-def build_query(word: str, note_types: list[str] | tuple[str, ...] = ()) -> str:
-    """Build the Anki search string for ``word``, optionally restricted to ``note_types``.
+def build_query(
+    word: str,
+    note_types: list[str] | tuple[str, ...] = (),
+    search_fields: dict[str, list[str]] | None = None,
+) -> str:
+    """Build the Anki search string for ``word``, scoped to ``note_types`` and their fields.
 
-    The term is searched across all fields (field names differ per collection, so targeting one
-    would not generalise). When note types are given they are OR-ed into a parenthesised filter
-    so the search stays scoped to what the user marked as searchable.
+    Each note type becomes one OR-ed clause. A note type with configured ``search_fields`` is
+    matched only inside those fields (``note:"T" (F1:*term* OR F2:*term*)``), which stops a hit
+    on a word that merely appears inside another card's examples; one without is matched across
+    all its fields. With no note types at all, the term is searched collection-wide.
+
+    Case is not handled here on purpose: Anki folds case itself, so ``LEVEL``/``Level``/``level``
+    are already the same search (verified against a real collection).
 
     Args:
         word: The word/phrase to look up.
         note_types: Note type names to restrict the search to (empty = search everything).
+        search_fields: ``{note type: [field, …]}`` limiting where the term may match.
 
     Returns:
         An Anki search string, or ``""`` if ``word`` is blank.
@@ -130,12 +139,23 @@ def build_query(word: str, note_types: list[str] | tuple[str, ...] = ()) -> str:
     term = escape_search_term(word)
     if not term:
         return ""
-    query = f'"{term}"'
-    names = [name for name in note_types if name and name.strip()]
-    if names:
-        joined = " OR ".join(f'note:"{escape_search_term(name)}"' for name in names)
-        query = f"({joined}) {query}"
-    return query
+    names = [name.strip() for name in note_types if name and name.strip()]
+    if not names:
+        return f'"{term}"'
+    fields_for = search_fields or {}
+    clauses = []
+    for name in names:
+        scope = f'note:"{escape_search_term(name)}"'
+        fields = [f.strip() for f in fields_for.get(name, []) if f and f.strip()]
+        if fields:
+            # Substring per field: a headword field holding "level up" must still match "level".
+            matches = " OR ".join(
+                f'"{escape_search_term(field)}:*{term}*"' for field in fields
+            )
+            clauses.append(f"({scope} ({matches}))")
+        else:
+            clauses.append(f'({scope} "{term}")')
+    return clauses[0] if len(clauses) == 1 else "(" + " OR ".join(clauses) + ")"
 
 
 def strip_html(value: str) -> str:
@@ -184,6 +204,7 @@ def triage_fields(
     max_fields: int = 8,
     max_chars: int = 320,
     hidden: tuple[str, ...] = (),
+    only: tuple[str, ...] = (),
 ) -> tuple[str, list[LookupField]]:
     """Choose the title and the fields worth showing, from a note's fields IN NOTE-TYPE ORDER.
 
@@ -205,11 +226,15 @@ def triage_fields(
         max_fields: How many fields to keep after the title.
         max_chars: Per-field truncation budget for long prose.
         hidden: Field names (case-insensitive) the user chose never to show.
+        only: An explicit field order for this note type. When given, ONLY these fields are
+            shown and in this order — the automatic pick is bypassed entirely (``max_fields``
+            no longer applies, because the list is already the user's deliberate choice).
 
     Returns:
         ``(title, fields)`` — ``title`` is ``""`` when no field had readable text.
     """
     skip = {name.strip().lower() for name in hidden}
+    wanted = [name.strip().lower() for name in only if name and name.strip()]
     needle = word.strip().lower()
     kept: list[LookupField] = []
     for name, raw in ordered_fields:
@@ -245,6 +270,13 @@ def triage_fields(
         return "", kept[:max_fields]
     title = kept[title_index].text
     rest = [item for index, item in enumerate(kept) if index != title_index]
+    if wanted:
+        # The explicit list controls the FIELD LIST, not the title — the title is the word
+        # itself, already chosen above from every field. Honour the user's order, and never cap
+        # it: the list is their deliberate choice, so truncating it would drop what they asked
+        # for.
+        by_name = {item.name.strip().lower(): item for item in rest}
+        return title, [by_name[key] for key in wanted if key in by_name]
     # Identifier-only fields are bookkeeping noise, but the rule is ORDERING, not visibility:
     # they sink to the bottom rather than disappearing, so nothing is ever silently withheld.
     rest.sort(key=lambda item: looks_like_identifier(item.text))
