@@ -9,6 +9,13 @@ Again/Hard/Good/Easy button area — as a fixed bottom-right, non-interactive la
 ``interval: <X>`` in the configured colour. The label ``<div>`` survives across cards (per-card
 updates only touch an inner element of the bar), so it is driven directly off the reviewer
 show-question / show-answer hooks rather than the card-webview injector.
+
+**Template exposure** (``expose_to_templates``): the same pipeline preview is also handed to
+the card template as ``window.omniaIntervals`` — ``{next_seconds, next_days, next_label,
+current_days}`` — so template JS can branch on how well the card is known (e.g. read the
+definition aloud while the answer is still shaky, the example once it is well learned).
+Injected by PREPENDING a ``<script>`` through the ``card_will_show`` filter (answer side only),
+which runs before any of the template's own scripts — deterministic, no polling handshake.
 """
 
 from __future__ import annotations
@@ -25,6 +32,9 @@ from omnia.plugins.display_interval.config import DisplayIntervalSettings
 from omnia.plugins.display_interval.logic import format_interval
 
 _EASE_GOOD = 3
+
+# card.type -> template-facing state name (Anki: 0=new 1=learning 2=review 3=relearning).
+_CARD_STATES = {0: "new", 1: "learning", 2: "review", 3: "relearning"}
 
 
 def _overlay_section(name: str) -> str:
@@ -60,10 +70,13 @@ class DisplayIntervalPlugin(FeaturePlugin):
         self._ctx = ctx
         anki_compat.subscribe_hook("reviewer_did_show_question", self._on_question)
         anki_compat.subscribe_hook("reviewer_did_show_answer", self._on_answer)
+        # Filter hook: prepend window.omniaIntervals into the answer HTML for templates.
+        anki_compat.subscribe_hook("card_will_show", self._on_card_will_show)
 
     def on_disable(self, ctx: PluginContext) -> None:
         anki_compat.unsubscribe_hook("reviewer_did_show_question", self._on_question)
         anki_compat.unsubscribe_hook("reviewer_did_show_answer", self._on_answer)
+        anki_compat.unsubscribe_hook("card_will_show", self._on_card_will_show)
         anki_compat.reviewer_bottom_eval(_REMOVE_JS)
         self._ctx = None
 
@@ -85,6 +98,52 @@ class DisplayIntervalPlugin(FeaturePlugin):
         anki_compat.reviewer_bottom_eval(
             self._render_js(f"interval: {format_interval(seconds)}")
         )
+
+    def _on_card_will_show(self, text: str, card: Any, kind: str) -> str:
+        """Prepend ``window.omniaIntervals`` to the ANSWER html for template JS.
+
+        Prepending (rather than eval'ing on show-answer) guarantees the value exists before
+        any of the template's own inline scripts run — templates read it synchronously, no
+        polling. Fallback contract: on ANY of — the flag off, no ease transformer active
+        (overdue_guard / typed_accuracy disabled: the preview would be a raw Good, adding
+        nothing over the current interval), or a compute failure — the html passes through
+        untouched, ``window.omniaIntervals`` stays undefined, and the template's own
+        fallback (e.g. ``{{info-Ivl:}}``, the current interval) applies.
+        """
+        if kind != "reviewAnswer" or self._ctx is None:
+            return text
+        if not getattr(self._ctx.settings, "expose_to_templates", True):
+            return text
+        if not self._ctx.ease.has_transformers():
+            return text  # nothing shapes the ease -> let templates use the current interval
+        try:
+            # Same non-destructive pipeline preview as the grading-bar label (apply=False:
+            # don't consume typed_accuracy's staged ease).
+            effective = self._ctx.ease.compute_ease(card, _EASE_GOOD, apply=False)
+            seconds = anki_compat.next_interval_seconds(card, effective)
+        except Exception:
+            return text  # never break card rendering over a preview
+        if seconds is None:
+            return text
+        payload = {
+            "next_seconds": int(seconds),
+            "next_days": round(seconds / 86_400, 3),
+            "next_label": format_interval(seconds),
+            # card.ivl is the last SCHEDULED day-interval. Caveat it does NOT capture: a
+            # (re)learning card still carries a positive day count (a lapsed card keeps its
+            # post-lapse days, e.g. 1) — the "10m" learning step is never in ivl. Templates
+            # that mean "just forgotten" must branch on `state`, not on a small interval.
+            "current_days": int(getattr(card, "ivl", 0) or 0),
+            # 0=new 1=learning 2=review 3=relearning -> a template can put a just-lapsed
+            # card back on its "still shaky" branch regardless of the interval numbers.
+            "state": _CARD_STATES.get(int(getattr(card, "type", 2) or 0), "review"),
+        }
+        script = (
+            "<script>window.omniaIntervals = "
+            + json.dumps(payload)
+            + '; document.dispatchEvent(new CustomEvent("omnia:intervals"));</script>'
+        )
+        return script + text
 
     def _render_js(self, text: str) -> str:
         # The JS body lives in overlay.js; only the JSON-encoded label + configured colour are

@@ -31,3 +31,20 @@ class DisplayIntervalSettings(_Strict):
             "• Default: #c62828 (a muted red)."
         ),
     )
+    expose_to_templates: bool = Field(
+        True,
+        title="Expose to card templates",
+        description=(
+            "Give card templates the predicted next interval as `window.omniaIntervals`.\n"
+            "• On: the answer side gets {next_seconds, next_days, next_label, current_days}\n"
+            "  BEFORE the template's own scripts run, so template JS can branch on it\n"
+            "  (e.g. play the definition while an answer is still shaky, the example once\n"
+            "  it is well learned).\n"
+            "• The value is the same pipeline preview as the grading-bar label: a Good press\n"
+            "  folded through omnia's ease transformers (overdue_guard reflected;\n"
+            "  typed_accuracy is not — its ease arrives async).\n"
+            "• Only injected while at least one ease transformer is active (overdue_guard /\n"
+            "  typed_accuracy on) — otherwise, and when this is Off, templates see no omnia\n"
+            "  variables and their own fallback (the current interval) applies."
+        ),
+    )
