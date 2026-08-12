@@ -168,7 +168,10 @@ class IntegrationGateway:
 
         def done(summary: BatchSummary) -> None:
             self._running = False
-            _on_done(summary)
+            discarded = 0
+            if getattr(settings, "discard_unfilled_clips", False):
+                discarded = _discard_unfilled(summary.empty_note_ids)
+            _on_done(summary, discarded)
             # Notes queued while this batch ran get their own flush.
             if self._pending:
                 self._arm_flush()
@@ -200,11 +203,37 @@ class IntegrationGateway:
                 logger.exception("smart_notes: failed clearing autogen tag for %s", nid)
 
 
-def _on_done(summary: BatchSummary) -> None:
+def _discard_unfilled(note_ids: list[int]) -> int:
+    """Remove clipped notes that generation left empty; return how many went.
+
+    A clip whose smart fields all blocked holds nothing but the captured word, so it is not
+    worth reviewing and would otherwise sit in the deck forever. Only the integration path calls
+    this — a note typed by hand is never touched — and only for notes generation actually tried
+    and produced nothing for. Best-effort: a removal failure is logged, never raised, so one bad
+    id cannot break the batch's completion.
+    """
+    if not note_ids:
+        return 0
+    import aqt
+
+    try:
+        col = aqt.mw.col
+        col.remove_notes(list(note_ids))
+    except Exception:
+        logger.exception("smart_notes: could not discard unfilled clips %s", note_ids)
+        return 0
+    logger.info("smart_notes: discarded %d unfilled clip(s)", len(note_ids))
+    return len(note_ids)
+
+
+def _on_done(summary: BatchSummary, discarded: int = 0) -> None:
     """Report the one-shot generation outcome as a tooltip (matches the batch summary)."""
     from aqt.utils import tooltip
 
-    tooltip(f"Omnia: {summary.message()}")
+    message = summary.message()
+    if discarded:
+        message += f" Discarded {discarded} empty clip(s)."
+    tooltip(f"Omnia: {message}")
 
 
 def _has_tag(note: Any, tag: str) -> bool:
