@@ -52,6 +52,8 @@ class WordLookupSettings(_Strict):
         description=(
             "``{note type: [field, …]}``. A note type listed here is searched ONLY in those "
             "fields; anything not listed is searched across all of its fields.\n"
+            "• A listed field must match the word EXACTLY — looking up 'level' will not "
+            "return 'levelled' or 'level up'.\n"
             "• Narrowing to the headword field (e.g. Word) stops a hit on a word merely "
             "mentioned inside another card's examples or synonyms.\n"
             "• Matching is case-insensitive — Anki folds case itself, so LEVEL, Level and "

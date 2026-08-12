@@ -121,9 +121,11 @@ def build_query(
     """Build the Anki search string for ``word``, scoped to ``note_types`` and their fields.
 
     Each note type becomes one OR-ed clause. A note type with configured ``search_fields`` is
-    matched only inside those fields (``note:"T" (F1:*term* OR F2:*term*)``), which stops a hit
-    on a word that merely appears inside another card's examples; one without is matched across
-    all its fields. With no note types at all, the term is searched collection-wide.
+    matched only inside those fields, and the field must equal the term EXACTLY
+    (``note:"T" ("F1:term" OR "F2:term")``) — configured fields name the headword, so a lookup
+    for "level" must not also return "levelled". A note type without configured fields is
+    matched across all its fields (a substring hit anywhere). With no note types at all, the
+    term is searched collection-wide.
 
     Case is not handled here on purpose: Anki folds case itself, so ``LEVEL``/``Level``/``level``
     are already the same search (verified against a real collection).
@@ -148,9 +150,12 @@ def build_query(
         scope = f'note:"{escape_search_term(name)}"'
         fields = [f.strip() for f in fields_for.get(name, []) if f and f.strip()]
         if fields:
-            # Substring per field: a headword field holding "level up" must still match "level".
+            # EXACT whole-field match, not substring: a configured search field names the
+            # headword, so "level" must not also drag in "levelled" or "level up". Measured on a
+            # real collection: Word:level -> 5 notes, Word:*level* -> 10. Case still does not
+            # matter (Anki folds it: Word:LEVEL returns the same 5).
             matches = " OR ".join(
-                f'"{escape_search_term(field)}:*{term}*"' for field in fields
+                f'"{escape_search_term(field)}:{term}"' for field in fields
             )
             clauses.append(f"({scope} ({matches}))")
         else:

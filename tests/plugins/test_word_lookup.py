@@ -37,15 +37,18 @@ class TestBuildQuery:
 
     def test_restricts_to_the_configured_search_fields(self):
         query = build_query("level", ["V"], {"V": ["Word", "Meaning"]})
-        assert query == '(note:"V" ("Word:*level*" OR "Meaning:*level*"))'
+        assert query == '(note:"V" ("Word:level" OR "Meaning:level"))'
 
-    def test_substring_so_a_multiword_headword_still_matches(self):
-        # "Word" holding "level up" must still be found by "level".
-        assert "*level*" in build_query("level", ["V"], {"V": ["Word"]})
+    def test_configured_fields_match_exactly_not_as_a_substring(self):
+        # Measured on a real collection: Word:level -> 5 notes, Word:*level* -> 10 (it drags in
+        # "levelled", "level up"). A configured field names the headword, so exact is correct.
+        query = build_query("level", ["V"], {"V": ["Word"]})
+        assert "*" not in query
+        assert '"Word:level"' in query
 
     def test_unlisted_note_type_still_searches_all_its_fields(self):
         query = build_query("x", ["A", "B"], {"A": ["W"]})
-        assert '(note:"A" ("W:*x*"))' in query
+        assert '(note:"A" ("W:x"))' in query
         assert '(note:"B" "x")' in query
 
     def test_blank_field_entries_are_ignored(self):

@@ -82,8 +82,9 @@ class WordLookupSettingsDialog(QDialog):
         columns.addWidget(
             self._field_column(
                 "Search in",
-                "Only these fields are matched. Empty = search every field.\n"
-                "Matching is case-insensitive (LEVEL = Level = level).",
+                "The field must match the word EXACTLY (not 'levelled' for 'level').\n"
+                "Empty = search every field, substring allowed.\n"
+                "Case never matters (LEVEL = Level = level).",
                 on_auto=self._auto_search,
                 attr="_search_list",
             ),
