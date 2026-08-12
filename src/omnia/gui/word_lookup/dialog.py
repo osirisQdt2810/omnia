@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from aqt.qt import (  # type: ignore[attr-defined]
     QAbstractItemView,
+    QPalette,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -84,14 +85,17 @@ class WordLookupSettingsDialog(QDialog):
                 "Only these fields are matched. Empty = search every field.\n"
                 "Matching is case-insensitive (LEVEL = Level = level).",
                 on_auto=self._auto_search,
+                attr="_search_list",
             ),
             1,
         )
         columns.addWidget(
             self._field_column(
-                "Show",
-                "Shown in this order. Empty = automatic (the first N non-empty fields).",
+                "Preview",
+                "Shown in this order in the lookup panel. "
+                "Empty = automatic (the first N non-empty fields).",
                 on_auto=self._auto_display,
+                attr="_display_list",
             ),
             1,
         )
@@ -125,11 +129,19 @@ class WordLookupSettingsDialog(QDialog):
 
     # -- construction helpers -------------------------------------------------------------
 
-    @staticmethod
-    def _hint(text: str) -> QLabel:
+    def _hint(self, text: str) -> QLabel:
+        """A secondary-text label that stays readable in BOTH themes.
+
+        ``palette(mid)`` (the obvious choice) resolves to a near-black under Anki's dark theme,
+        which is invisible on its dark background. Deriving from the window's ACTUAL text colour
+        and softening it with alpha keeps the contrast direction correct whatever the theme.
+        """
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setStyleSheet("color: palette(mid);")
+        color = self.palette().color(QPalette.ColorRole.WindowText)
+        label.setStyleSheet(
+            f"color: rgba({color.red()}, {color.green()}, {color.blue()}, 165);"
+        )
         return label
 
     @staticmethod
@@ -166,7 +178,7 @@ class WordLookupSettingsDialog(QDialog):
         )
         return holder
 
-    def _field_column(self, title: str, hint: str, on_auto: Any) -> QWidget:
+    def _field_column(self, title: str, hint: str, on_auto: Any, attr: str) -> QWidget:
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -181,8 +193,7 @@ class WordLookupSettingsDialog(QDialog):
         listing = QListWidget()
         layout.addWidget(listing, 1)
         layout.addWidget(self._hint(hint))
-        # Keep a handle under a predictable attribute name.
-        setattr(self, "_search_list" if title == "Search in" else "_display_list", listing)
+        setattr(self, attr, listing)  # explicit, so renaming a column can't rewire the lists
         return holder
 
     @staticmethod
