@@ -87,9 +87,11 @@ class TestStripHtml:
     def test_decodes_common_entities(self):
         assert strip_html("a&nbsp;b &amp; c &lt;d&gt;") == "a b & c <d>"
 
-    def test_breaks_become_spaces_not_glued_words(self):
-        assert strip_html("one<br>two<br/>three") == "one two three"
-        assert strip_html("<p>one</p><p>two</p>") == "one two"
+    def test_breaks_become_newlines_not_glued_words(self):
+        # They used to become spaces; a list field then read as one blob (see
+        # TestLineStructureIsKept). Either way the words must never be glued together.
+        assert strip_html("one<br>two<br/>three") == "one\ntwo\nthree"
+        assert strip_html("<p>one</p><p>two</p>") == "one\ntwo"
 
     def test_empty_input(self):
         assert strip_html("") == ""
@@ -432,3 +434,32 @@ class TestVariantsInTheQuery:
         assert words_boundary_pattern(["c++"]) == r"(?i)\bc\+\+"
         assert words_boundary_pattern(["++c"]) == r"(?i)\+\+c\b"
         assert words_boundary_pattern(["go", "goes"]) == r"(?i)\b(?:go|goes)\b"
+
+
+class TestLineStructureIsKept:
+    """A field that lists one entry per <br> must not collapse into one blob."""
+
+    RAW = (
+        "crawl along + N: bò dọc theo  <br>crawl out of + Sth: thoát ra khỏi  "
+        "<br>crawl up + N: bò lên  "
+    )
+
+    def test_br_becomes_a_newline(self):
+        assert strip_html(self.RAW).split("\n") == [
+            "crawl along + N: bò dọc theo",
+            "crawl out of + Sth: thoát ra khỏi",
+            "crawl up + N: bò lên",
+        ]
+
+    def test_closing_block_tags_also_break_the_line(self):
+        assert strip_html("<div>one</div><div>two</div>") == "one\ntwo"
+        assert strip_html("<li>a</li><li>b</li>") == "a\nb"
+
+    def test_a_plain_sentence_stays_on_one_line(self):
+        assert strip_html("<div>hello   <b>world</b></div>") == "hello world"
+
+    def test_blank_lines_are_collapsed(self):
+        assert strip_html("a<br><br><br>b") == "a\nb"
+
+    def test_each_line_is_trimmed(self):
+        assert strip_html("  a  <br>   b   ") == "a\nb"

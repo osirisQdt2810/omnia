@@ -27,7 +27,12 @@ _SOUND_RE = re.compile(r"\[sound:([^\]]+)\]", re.IGNORECASE)
 _IMG_RE = re.compile(r"<img[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::[^}]*)?\}\}", re.DOTALL)
-_WHITESPACE_RE = re.compile(r"\s+")
+# Collapse runs of spaces/tabs but NOT newlines: a field like "Phrasal Verb" separates its
+# entries with <br>, and flattening those turned a tidy list into one unreadable blob.
+_INLINE_SPACE_RE = re.compile(r"[^\S\n]+")
+_BLANK_LINES_RE = re.compile(r"\n{2,}")
+# Block-level markup that ends a visual line in Anki's renderer.
+_LINE_BREAK_RE = re.compile(r"<br\s*/?>|</(?:p|div|li|tr)>", re.IGNORECASE)
 # Anki search syntax characters that must be escaped inside a quoted term.
 _SEARCH_ESCAPE_RE = re.compile(r'(["\\*_])')
 # A field that is only an identifier (a bare number, a UUID, a long hex blob) is bookkeeping,
@@ -280,17 +285,25 @@ def build_query(
 
 
 def strip_html(value: str) -> str:
-    """Return ``value`` as plain readable text (tags, media refs, cloze and entities removed)."""
+    """Return ``value`` as plain readable text, KEEPING the author's line breaks.
+
+    Tags, media refs, cloze markup and entities are removed, but ``<br>`` and closing block tags
+    become newlines rather than spaces. Fields like "Phrasal Verb" list one entry per ``<br>``;
+    flattening those made the panel show a single unreadable run of text where the card itself
+    shows a tidy list.
+    """
     if not value:
         return ""
     text = _SOUND_RE.sub(" ", value)
     text = _IMG_RE.sub(" ", text)
     text = _CLOZE_RE.sub(r"\1", text)  # show the cloze answer, not the markup
-    text = re.sub(r"<br\s*/?>|</(p|div|li)>", " ", text, flags=re.IGNORECASE)
+    text = _LINE_BREAK_RE.sub("\n", text)  # keep the author's line structure
     text = _TAG_RE.sub("", text)
     for entity, replacement in _HTML_ENTITIES.items():
         text = text.replace(entity, replacement)
-    return _WHITESPACE_RE.sub(" ", text).strip()
+    text = _INLINE_SPACE_RE.sub(" ", text)
+    text = _BLANK_LINES_RE.sub("\n", text)
+    return "\n".join(line.strip() for line in text.split("\n")).strip()
 
 
 def field_media(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
