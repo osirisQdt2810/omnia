@@ -321,3 +321,35 @@ class TestBlockedSummaryDetail:
         assert BatchSummary(blocked=2).message() == (
             "Processed 0 note(s), 2 blocked — missing prerequisites."
         )
+
+
+class TestEmptyNoteTracking:
+    """Notes that generation tried and produced nothing for, so a clip can be discarded."""
+
+    def _outcome(self, nid, **kw):
+        from omnia.plugins.smart_notes.integration.batch import _NoteOutcome
+
+        return _NoteOutcome(nid, **kw)
+
+    def _apply(self, outcomes):
+        gen = BatchGenerator.__new__(BatchGenerator)
+        return gen._apply(outcomes)
+
+    def test_a_note_with_no_results_is_recorded(self):
+        summary = self._apply([self._outcome(11, blocked=2)])
+        assert summary.empty_note_ids == [11]
+
+    def test_a_note_that_generated_something_is_not_recorded(self, monkeypatch):
+        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        summary = self._apply([self._outcome(12, results=[("rule", "result")])])
+        assert summary.empty_note_ids == []
+
+    def test_a_hard_failure_is_NOT_recorded(self):
+        # Generation raising is transient; discarding the capture over a provider hiccup would
+        # lose the user's work, so a failed note is kept for a retry.
+        summary = self._apply([self._outcome(13, failed=True)])
+        assert summary.empty_note_ids == []
+
+    def test_several_empties_are_all_recorded(self):
+        summary = self._apply([self._outcome(1), self._outcome(2, blocked=1)])
+        assert summary.empty_note_ids == [1, 2]

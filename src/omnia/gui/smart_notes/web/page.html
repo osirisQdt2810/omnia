@@ -208,6 +208,10 @@
       <!-- One row per registered integration, rendered from the backend list (see 05-handlers.js
            renderIntegrations); adding an Integration server-side shows up here automatically. -->
       <div id="sn-integrations-list" class="sn-integrations-list"></div>
+      <label class="sn-opt-row" title="A clip whose smart fields all fail to generate holds nothing but the captured word, so it is not worth reviewing. Notes you type by hand are never touched, and a clip whose generation ERRORS is kept so a provider hiccup can't throw your capture away.">
+        <input type="checkbox" id="sn-opt-discard-unfilled" class="sn-check">
+        <span><b>Discard a clipped note when nothing could be generated</b><span class="sn-integ-status">Only affects notes arriving from the clippers above.</span></span>
+      </label>
     </div>
     <div class="sn-tabpane" data-pane="advanced" hidden>
       <div class="sn-modal-fields">Advanced settings.</div>

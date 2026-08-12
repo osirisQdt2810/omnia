@@ -167,6 +167,9 @@ class ConfigController:
                     "allow_empty_fields": bool(
                         opts.get("allow_empty_fields", settings.allow_empty_fields)
                     ),
+                    "discard_unfilled_clips": bool(
+                        opts.get("discard_unfilled_clips", settings.discard_unfilled_clips)
+                    ),
                     # Merge so integration keys not sent by this page are preserved.
                     "auto_generate_integrations": {
                         **settings.auto_generate_integrations,
@@ -290,6 +293,7 @@ class ConfigController:
             "generate_at_review": settings.generate_at_review,
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
+            "discard_unfilled_clips": settings.discard_unfilled_clips,
             "auto_generate_integrations": settings.auto_generate_integrations,
             "integration_status": self._integration_status(),
             # The registered integrations (key + display text), so the Integrations tab renders

@@ -443,6 +443,7 @@ class TestSaveCycleGuard:
                 generate_at_review=False,
                 regenerate_when_batching=True,
                 allow_empty_fields=False,
+                discard_unfilled_clips=True,
                 auto_generate_integrations={},
                 copy=lambda update: saved.append(update),
             ),

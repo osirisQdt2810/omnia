@@ -90,6 +90,9 @@
     optGenReview.checked = !!opts.generate_at_review;
     optRegenBatch.checked = opts.regenerate_when_batching !== false;
     optAllowEmpty.checked = !!opts.allow_empty_fields;
+    if (optDiscardUnfilled) {
+      optDiscardUnfilled.checked = opts.discard_unfilled_clips !== false;
+    }
     renderIntegrations(opts);
   }
 
@@ -275,6 +278,7 @@
       generate_at_review: optGenReview.checked,
       regenerate_when_batching: optRegenBatch.checked,
       allow_empty_fields: optAllowEmpty.checked,
+      discard_unfilled_clips: optDiscardUnfilled ? optDiscardUnfilled.checked : true,
       auto_generate_integrations: autoGenerateIntegrations
     };
   }
