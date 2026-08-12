@@ -309,3 +309,46 @@ class TestGatewayGuards:
         )
         _gateway(settings).on_note_will_be_added(col, note, 1)
         assert calls == [[1]]
+
+
+class TestDiscardUnfilledClips:
+    """A clip that generated nothing is removed, so an unreviewable card never reaches the deck."""
+
+    def _discard(self):
+        from omnia.plugins.smart_notes.integration.gateway import _discard_unfilled
+
+        return _discard_unfilled
+
+    def test_removes_the_listed_notes(self, monkeypatch):
+        removed = []
+
+        class FakeCol:
+            def remove_notes(self, ids):
+                removed.append(list(ids))
+
+        import aqt
+
+        monkeypatch.setattr(aqt, "mw", types.SimpleNamespace(col=FakeCol()), raising=False)
+        assert self._discard()([7, 8]) == 2
+        assert removed == [[7, 8]]
+
+    def test_empty_list_touches_nothing(self, monkeypatch):
+        class Boom:
+            def remove_notes(self, ids):
+                raise AssertionError("must not be called")
+
+        import aqt
+
+        monkeypatch.setattr(aqt, "mw", types.SimpleNamespace(col=Boom()), raising=False)
+        assert self._discard()([]) == 0
+
+    def test_a_removal_failure_is_swallowed(self, monkeypatch):
+        # One bad id must not break the batch's completion path.
+        class Boom:
+            def remove_notes(self, ids):
+                raise RuntimeError("db locked")
+
+        import aqt
+
+        monkeypatch.setattr(aqt, "mw", types.SimpleNamespace(col=Boom()), raising=False)
+        assert self._discard()([9]) == 0

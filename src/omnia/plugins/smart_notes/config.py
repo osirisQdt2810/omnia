@@ -182,6 +182,12 @@ class SmartNotesSettings(_Strict):
     # Per-integration auto-generate toggles (integration key -> enabled). Empty ⇒ every
     # integration OFF, so no external source triggers LLM spend until the user opts in.
     auto_generate_integrations: dict[str, bool] = Field(default_factory=dict)
+    # Discard a clipped note when auto-generation filled NOTHING — the card would hold only the
+    # captured word, which is not worth reviewing. Applies ONLY to notes arriving from an
+    # integration (the clippers), and only when generation actually ran and produced nothing:
+    # a note type with no smart-notes config never reaches this, and a note whose generation
+    # RAISED is kept so a provider hiccup cannot throw a capture away.
+    discard_unfilled_clips: bool = True
 
     def note_type_config(self, note_type: str) -> Optional[SmartNotesNoteTypeConfig]:
         """Return the config for ``note_type``, or None when it has no smart-notes config."""
