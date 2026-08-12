@@ -24,14 +24,32 @@ class TestBuildQuery:
         assert build_query("plunge") == '"plunge"'
 
     def test_scopes_to_note_types(self):
-        assert build_query("plunge", ["AnkiVocabulary"]) == '(note:"AnkiVocabulary") "plunge"'
+        assert build_query("plunge", ["AnkiVocabulary"]) == '(note:"AnkiVocabulary" "plunge")'
 
     def test_ors_multiple_note_types(self):
-        query = build_query("plunge", ["A", "B"])
-        assert query == '(note:"A" OR note:"B") "plunge"'
+        # One clause per note type, so each can carry its own field scope.
+        assert build_query("plunge", ["A", "B"]) == (
+            '((note:"A" "plunge") OR (note:"B" "plunge"))'
+        )
 
     def test_ignores_blank_note_type_entries(self):
-        assert build_query("x", ["", "  ", "A"]) == '(note:"A") "x"'
+        assert build_query("x", ["", "  ", "A"]) == '(note:"A" "x")'
+
+    def test_restricts_to_the_configured_search_fields(self):
+        query = build_query("level", ["V"], {"V": ["Word", "Meaning"]})
+        assert query == '(note:"V" ("Word:*level*" OR "Meaning:*level*"))'
+
+    def test_substring_so_a_multiword_headword_still_matches(self):
+        # "Word" holding "level up" must still be found by "level".
+        assert "*level*" in build_query("level", ["V"], {"V": ["Word"]})
+
+    def test_unlisted_note_type_still_searches_all_its_fields(self):
+        query = build_query("x", ["A", "B"], {"A": ["W"]})
+        assert '(note:"A" ("W:*x*"))' in query
+        assert '(note:"B" "x")' in query
+
+    def test_blank_field_entries_are_ignored(self):
+        assert build_query("x", ["A"], {"A": ["", "  "]}) == '(note:"A" "x")'
 
     def test_blank_word_yields_no_query(self):
         assert build_query("   ") == ""
@@ -272,3 +290,45 @@ class TestIdentifierFieldsSinkButStayVisible:
             [("W", "w"), ("B", "b"), ("A", "a"), ("Id", "42")]
         )
         assert [f.name for f in fields] == ["B", "A", "Id"]
+
+
+class TestExplicitDisplayFields:
+    """A per-note-type field list overrides the automatic pick, order included."""
+
+    PAIRS = [
+        ("Note ID", "1"),
+        ("Word", "plunge"),
+        ("Definition", "to dive"),
+        ("Meaning (vi)", "lao xuống"),
+        ("Example 1", "he plunged in"),
+    ]
+
+    def test_shows_only_the_listed_fields_in_the_listed_order(self):
+        title, fields = triage_fields(
+            self.PAIRS, word="plunge", only=("Meaning (vi)", "Definition")
+        )
+        assert title == "plunge"
+        assert [f.name for f in fields] == ["Meaning (vi)", "Definition"]
+
+    def test_is_case_insensitive_about_field_names(self):
+        _title, fields = triage_fields(self.PAIRS, word="plunge", only=("definition",))
+        assert [f.name for f in fields] == ["Definition"]
+
+    def test_unknown_field_names_are_skipped(self):
+        _title, fields = triage_fields(
+            self.PAIRS, word="plunge", only=("Definition", "Nope")
+        )
+        assert [f.name for f in fields] == ["Definition"]
+
+    def test_max_fields_does_not_truncate_an_explicit_list(self):
+        # The list IS the user's choice; capping it would silently drop what they asked for.
+        _title, fields = triage_fields(
+            self.PAIRS, word="plunge", only=("Definition", "Meaning (vi)", "Example 1"),
+            max_fields=1,
+        )
+        assert len(fields) == 3
+
+    def test_empty_list_falls_back_to_the_automatic_pick(self):
+        _title, auto = triage_fields(self.PAIRS, word="plunge")
+        _title2, explicit_empty = triage_fields(self.PAIRS, word="plunge", only=())
+        assert [f.name for f in auto] == [f.name for f in explicit_empty]
