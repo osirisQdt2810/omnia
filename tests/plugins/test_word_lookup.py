@@ -16,6 +16,7 @@ from omnia.plugins.word_lookup.logic import (
     rank_cards,
     strip_html,
     triage_fields,
+    word_boundary_pattern,
 )
 
 
@@ -37,18 +38,24 @@ class TestBuildQuery:
 
     def test_restricts_to_the_configured_search_fields(self):
         query = build_query("level", ["V"], {"V": ["Word", "Meaning"]})
-        assert query == '(note:"V" ("Word:level" OR "Meaning:level"))'
+        assert query == (
+            '(note:"V" ("Word:re:(?i)\\blevel\\b" OR "Meaning:re:(?i)\\blevel\\b"))'
+        )
 
-    def test_configured_fields_match_exactly_not_as_a_substring(self):
-        # Measured on a real collection: Word:level -> 5 notes, Word:*level* -> 10 (it drags in
-        # "levelled", "level up"). A configured field names the headword, so exact is correct.
-        query = build_query("level", ["V"], {"V": ["Word"]})
-        assert "*" not in query
-        assert '"Word:level"' in query
+    def test_configured_fields_match_whole_words_not_substrings(self):
+        # Measured on a real collection for "port": exact 5 (misses "port of call"),
+        # substring 146 (Deport, Portion, Reporter, important…), word boundary 7 — correct.
+        query = build_query("port", ["V"], {"V": ["Word"]})
+        assert "*" not in query  # not a substring search
+        assert r"\bport\b" in query
+
+    def test_field_names_with_spaces_and_parens_stay_quoted(self):
+        query = build_query("verb", ["V"], {"V": ["Word (part of speech)"]})
+        assert '"Word (part of speech):re:' in query
 
     def test_unlisted_note_type_still_searches_all_its_fields(self):
         query = build_query("x", ["A", "B"], {"A": ["W"]})
-        assert '(note:"A" ("W:x"))' in query
+        assert '(note:"A" ("W:re:' in query
         assert '(note:"B" "x")' in query
 
     def test_blank_field_entries_are_ignored(self):
@@ -335,3 +342,27 @@ class TestExplicitDisplayFields:
         _title, auto = triage_fields(self.PAIRS, word="plunge")
         _title2, explicit_empty = triage_fields(self.PAIRS, word="plunge", only=())
         assert [f.name for f in auto] == [f.name for f in explicit_empty]
+
+
+class TestWordBoundaryPattern:
+    """Whole-word matching: the middle ground between exact and substring."""
+
+    def test_wraps_a_plain_word_in_boundaries(self):
+        assert word_boundary_pattern("port") == r"(?i)\bport\b"
+
+    def test_escapes_regex_metacharacters(self):
+        # A term like "a.b" must not let "." match any character.
+        assert word_boundary_pattern("a.b") == r"(?i)\ba\.b\b"
+
+    def test_omits_a_boundary_that_could_never_match(self):
+        # \b needs a word character beside it; "c++" ends in '+', so a trailing \b would make
+        # the pattern match nothing at all.
+        assert word_boundary_pattern("c++") == r"(?i)\bc\+\+"
+        assert word_boundary_pattern("++c") == r"(?i)\+\+c\b"
+
+    def test_multi_word_terms_are_supported(self):
+        assert word_boundary_pattern("port of call").startswith(r"(?i)\bport")
+        assert word_boundary_pattern("port of call").endswith(r"call\b")
+
+    def test_is_case_insensitive(self):
+        assert word_boundary_pattern("Port").startswith("(?i)")

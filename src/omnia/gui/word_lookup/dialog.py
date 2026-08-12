@@ -82,9 +82,10 @@ class WordLookupSettingsDialog(QDialog):
         columns.addWidget(
             self._field_column(
                 "Search in",
-                "The field must match the word EXACTLY (not 'levelled' for 'level').\n"
+                "The word must appear as a WHOLE WORD: 'port' finds 'port of call', "
+                "not 'important'.\n"
                 "Empty = search every field, substring allowed.\n"
-                "Case never matters (LEVEL = Level = level).",
+                "Case never matters (PORT = Port = port).",
                 on_auto=self._auto_search,
                 attr="_search_list",
             ),
