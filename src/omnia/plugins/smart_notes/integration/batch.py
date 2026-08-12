@@ -49,6 +49,10 @@ class _NotePlan:
     fields: dict[str, str]
 
 
+# How many "<field> needs <prereq>" examples the summary tooltip names before it just counts.
+_MAX_BLOCKED_EXAMPLES = 2
+
+
 @dataclass
 class BatchSummary:
     """Counts of how a batch resolved (for the closing summary tooltip)."""
@@ -57,6 +61,9 @@ class BatchSummary:
     failed: int = 0
     skipped: int = 0
     blocked: int = 0
+    # A few "<field> needs <prereq>" strings for the blocked fields, so the summary can say WHICH
+    # field was blocked and by what (the count alone is not actionable). Bounded when rendered.
+    blocked_examples: list[str] = field(default_factory=list)
     # Per-field generation errors across all notes (a single field raising), distinct from
     # ``failed`` (a whole note that could not be processed/written at all).
     field_failures: int = 0
@@ -70,7 +77,12 @@ class BatchSummary:
         if self.skipped:
             parts.append(f"{self.skipped} skipped")
         if self.blocked:
-            parts.append(f"{self.blocked} blocked — missing prerequisites")
+            # Name the first blocked field(s) and what they were waiting for: "1 blocked" alone
+            # leaves the user with no idea which field, or that the fix is a config one (the
+            # prerequisite field is usually just switched off).
+            detail = "; ".join(self.blocked_examples[:_MAX_BLOCKED_EXAMPLES])
+            suffix = f" ({detail})" if detail else ""
+            parts.append(f"{self.blocked} blocked — missing prerequisites{suffix}")
         if self.field_failures:
             parts.append(f"{self.field_failures} field error(s)")
         prefix = "Cancelled — " if self.cancelled else ""
@@ -86,6 +98,7 @@ class _NoteOutcome:
         default_factory=list
     )
     blocked: int = 0
+    blocked_examples: list[str] = field(default_factory=list)
     # Count of this note's fields whose generation raised and was isolated (siblings still ran).
     field_failures: int = 0
     failed: bool = False
@@ -229,6 +242,10 @@ class BatchGenerator:
                 plan.nid,
                 results=results,
                 blocked=len(blocked),
+                blocked_examples=[
+                    f"{item.target_field} needs {', '.join(item.missing)}"
+                    for item in blocked[:_MAX_BLOCKED_EXAMPLES]
+                ],
                 field_failures=len(failed),
             )
         except Exception:  # one bad note must not abort the rest of the batch
@@ -243,6 +260,12 @@ class BatchGenerator:
                 summary.failed += 1
                 continue
             summary.blocked += outcome.blocked
+            for example in outcome.blocked_examples:
+                if (
+                    example not in summary.blocked_examples
+                    and len(summary.blocked_examples) < _MAX_BLOCKED_EXAMPLES
+                ):
+                    summary.blocked_examples.append(example)
             summary.field_failures += outcome.field_failures
             if not outcome.results:
                 # A note with only blocked/errored fields counts as blocked/field-error, not

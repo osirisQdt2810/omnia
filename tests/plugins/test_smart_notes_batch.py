@@ -17,7 +17,7 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.engine import GenerationService
-from omnia.plugins.smart_notes.integration.batch import BatchGenerator
+from omnia.plugins.smart_notes.integration.batch import BatchGenerator, BatchSummary
 
 
 def _note_type_config(note_type="Basic", *, enabled=True, decks=None):
@@ -296,3 +296,28 @@ class TestBatchGeneratorDeckScope:
         BatchGenerator(_generator(settings), settings).run([1], summaries.append)
         assert summaries[0].processed == 1
         assert fake.updated == [1]
+
+
+class TestBlockedSummaryDetail:
+    """The summary names WHICH field was blocked and by what — a count alone is not actionable."""
+
+    def test_names_the_blocked_field_and_its_missing_prerequisite(self):
+        summary = BatchSummary(
+            processed=0, blocked=1,
+            blocked_examples=["Word (audio filename) needs Word (audio)"],
+        )
+        assert summary.message() == (
+            "Processed 0 note(s), 1 blocked — missing prerequisites "
+            "(Word (audio filename) needs Word (audio))."
+        )
+
+    def test_caps_the_named_examples(self):
+        summary = BatchSummary(blocked=9, blocked_examples=["a needs b", "c needs d", "e needs f"])
+        message = summary.message()
+        assert "a needs b; c needs d" in message
+        assert "e needs f" not in message  # bounded so the tooltip stays readable
+
+    def test_without_examples_falls_back_to_the_plain_count(self):
+        assert BatchSummary(blocked=2).message() == (
+            "Processed 0 note(s), 2 blocked — missing prerequisites."
+        )
