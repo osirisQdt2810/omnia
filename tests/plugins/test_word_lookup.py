@@ -17,6 +17,8 @@ from omnia.plugins.word_lookup.logic import (
     strip_html,
     triage_fields,
     word_boundary_pattern,
+    word_variants,
+    words_boundary_pattern,
 )
 
 
@@ -366,3 +368,67 @@ class TestWordBoundaryPattern:
 
     def test_is_case_insensitive(self):
         assert word_boundary_pattern("Port").startswith("(?i)")
+
+
+class TestWordVariants:
+    """Rule-based de-inflection: 'loved' must still find the card filed under 'love'."""
+
+    def test_keeps_the_original_first(self):
+        assert word_variants("loved")[0] == "loved"
+
+    def test_regular_past_and_gerund(self):
+        assert "love" in word_variants("loved")
+        assert "love" in word_variants("loving")
+        assert "look" in word_variants("looked")
+
+    def test_doubled_consonant_is_undone(self):
+        assert "stop" in word_variants("stopped")
+        assert "run" in word_variants("running")
+
+    def test_never_offers_an_impossible_e_form_for_a_doubled_stem(self):
+        # "stoppe"/"runne" are not words; a doubled consonant means the base never had that e.
+        assert "stoppe" not in word_variants("stopped")
+        assert "runne" not in word_variants("running")
+
+    def test_y_forms(self):
+        assert "study" in word_variants("studies")
+        assert "study" in word_variants("studied")
+        assert "happy" in word_variants("happiest")
+
+    def test_plural_and_adverb(self):
+        assert "love" in word_variants("loves")
+        assert "quick" in word_variants("quickly")
+        assert "go" in word_variants("goes")
+
+    def test_short_words_are_left_alone(self):
+        # Stripping "as" -> "a" would match half the collection.
+        assert word_variants("as") == ("as",)
+        assert word_variants("is") == ("is",)
+
+    def test_uninflected_word_yields_just_itself(self):
+        assert word_variants("level") == ("level",)
+
+    def test_blank_input(self):
+        assert word_variants("   ") == ()
+
+    def test_is_capped(self):
+        assert len(word_variants("studies")) <= 6
+
+
+class TestVariantsInTheQuery:
+    def test_forms_are_one_alternation(self):
+        query = build_query("loved", ["V"], {"V": ["Word"]})
+        assert "(?:" in query and "love" in query
+        assert query.count("Word:re:") == 1  # one clause, not one per form
+
+    def test_can_be_switched_off(self):
+        query = build_query("loved", ["V"], {"V": ["Word"]}, match_word_forms=False)
+        assert "(?:" not in query
+        assert r"\bloved\b" in query
+
+    def test_boundary_is_dropped_only_on_the_side_that_cannot_carry_it(self):
+        # "c++" starts with a word char (\b works) but ends with '+' (a trailing \b would make
+        # the pattern match nothing), so only the RIGHT boundary is dropped.
+        assert words_boundary_pattern(["c++"]) == r"(?i)\bc\+\+"
+        assert words_boundary_pattern(["++c"]) == r"(?i)\+\+c\b"
+        assert words_boundary_pattern(["go", "goes"]) == r"(?i)\b(?:go|goes)\b"

@@ -69,6 +69,16 @@ class WordLookupSettings(_Strict):
             "``max_fields`` non-empty fields, in the note type's own field order)."
         ),
     )
+    match_word_forms: bool = Field(
+        True,
+        title="Also match other forms of the word",
+        description=(
+            "Look up plausible base forms too, so double-clicking an inflected word still "
+            "finds the card.\n"
+            "• 'loved' also tries 'love'; 'studies' tries 'study'; 'running' tries 'run'.\n"
+            "• Off = match only the word exactly as captured."
+        ),
+    )
     hidden_fields: list[str] = Field(
         default_factory=list,
         title="Never show these fields",
