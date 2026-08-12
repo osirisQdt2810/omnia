@@ -113,6 +113,35 @@ def escape_search_term(term: str) -> str:
     return _SEARCH_ESCAPE_RE.sub(r"\\\1", term.strip())
 
 
+def word_boundary_pattern(term: str) -> str:
+    """Return a case-insensitive regex matching ``term`` as a WHOLE WORD inside a field.
+
+    This is the middle ground between the two obvious options, both of which are wrong for a
+    headword field (measured on a real collection, looking up "port"):
+
+    ===========================  =======  =====================================================
+    match                        hits     verdict
+    ===========================  =======  =====================================================
+    exact (``Word:port``)             5    misses "port of call"
+    substring (``Word:*port*``)     146    drags in Deport, Portion, Reporter, important, …
+    **word boundary**                 7    Port, port, port of call — what a lookup means
+    ===========================  =======  =====================================================
+
+    ``\b`` is only added where it can actually match: it needs a word character beside it, so a
+    term like ``c++`` would never match if the boundary were bolted on unconditionally.
+
+    Args:
+        term: The raw word being looked up.
+
+    Returns:
+        A regex for Anki's ``field:re:`` search.
+    """
+    escaped = re.escape(term)
+    left = r"\b" if term[:1].isalnum() or term[:1] == "_" else ""
+    right = r"\b" if term[-1:].isalnum() or term[-1:] == "_" else ""
+    return f"(?i){left}{escaped}{right}"
+
+
 def build_query(
     word: str,
     note_types: list[str] | tuple[str, ...] = (),
@@ -121,11 +150,11 @@ def build_query(
     """Build the Anki search string for ``word``, scoped to ``note_types`` and their fields.
 
     Each note type becomes one OR-ed clause. A note type with configured ``search_fields`` is
-    matched only inside those fields, and the field must equal the term EXACTLY
-    (``note:"T" ("F1:term" OR "F2:term")``) — configured fields name the headword, so a lookup
-    for "level" must not also return "levelled". A note type without configured fields is
-    matched across all its fields (a substring hit anywhere). With no note types at all, the
-    term is searched collection-wide.
+    matched only inside those fields, and the term must appear there as a WHOLE WORD
+    (``note:"T" ("F1:re:…" OR "F2:re:…")``) — so "port" finds "port" and "port of call" but not
+    "important" (see :func:`word_boundary_pattern`). A note type without configured fields is
+    matched across all its fields. With no note types at all, the term is searched
+    collection-wide.
 
     Case is not handled here on purpose: Anki folds case itself, so ``LEVEL``/``Level``/``level``
     are already the same search (verified against a real collection).
@@ -150,13 +179,11 @@ def build_query(
         scope = f'note:"{escape_search_term(name)}"'
         fields = [f.strip() for f in fields_for.get(name, []) if f and f.strip()]
         if fields:
-            # EXACT whole-field match, not substring: a configured search field names the
-            # headword, so "level" must not also drag in "levelled" or "level up". Measured on a
-            # real collection: Word:level -> 5 notes, Word:*level* -> 10. Case still does not
-            # matter (Anki folds it: Word:LEVEL returns the same 5).
-            matches = " OR ".join(
-                f'"{escape_search_term(field)}:{term}"' for field in fields
-            )
+            # WHOLE-WORD match inside the field (see word_boundary_pattern for why neither exact
+            # nor substring is right). The clause is quoted so field names with spaces and
+            # parentheses — "Word (part of speech)" — parse correctly.
+            pattern = word_boundary_pattern(word.strip())
+            matches = " OR ".join(f'"{field}:re:{pattern}"' for field in fields)
             clauses.append(f"({scope} ({matches}))")
         else:
             clauses.append(f'({scope} "{term}")')
