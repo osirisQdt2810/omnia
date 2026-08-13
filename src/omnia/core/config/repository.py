@@ -140,7 +140,7 @@ class ConfigRepository:
         A blank/None ``voice`` only switches the provider. A non-empty value is written to the
         provider's voice field — ``voice`` for most, but ``model`` for piper (whose selectable
         "voice" is its ``.onnx`` model, not a named voice) — and skipped for a voice-less
-        provider like google_translate, whose strict model would reject the unknown key.
+        provider like google_translate, which has no voice field for the value to land in.
         """
         data = self._loader.read_file("providers.toml")
         tts = data.setdefault("tts", {})
@@ -270,7 +270,7 @@ class ConfigRepository:
 
         Most providers use ``voice``; piper has no named voice — its selectable value is the
         ``.onnx`` model, so it stores into ``model``. A voice-less provider (google_translate)
-        returns None: its strict settings model would reject either key.
+        returns None: its settings model has neither field, so the value has nowhere to land.
         """
         sub = getattr(TTSSettings(), provider, None)
         if sub is None:

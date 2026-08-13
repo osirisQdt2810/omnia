@@ -7,17 +7,12 @@ colour so the deriver renders it with a colour picker.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from omnia.core.config.base import PersistedModel
 
 
-class _Strict(BaseModel):
-    """Base model that rejects unknown keys (catches config typos early)."""
-
-    class Config:
-        extra = "forbid"
-
-
-class DisplayIntervalSettings(_Strict):
+class DisplayIntervalSettings(PersistedModel):
     """Settings for the next-interval grading-bar label."""
 
     text_color: str = Field(
