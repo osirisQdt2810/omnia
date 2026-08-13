@@ -203,6 +203,14 @@ def compile_field_rule(
     ``source_field`` so the field still generates from the base — that fallback source is flagged
     ``source_is_base_fallback`` so it is NOT treated as a derived dependency.
 
+    A ``type`` only a NEWER Omnia implements is kept verbatim on the persisted row (so it syncs
+    back intact) and neutralised HERE: ``kind`` degrades to ``"text"`` rather than tripping
+    :class:`~omnia.plugins.smart_notes.config.SmartNotesFieldRule`'s strict validator, which
+    would take down the graph / consistency views that compile every row, generatable or not.
+    Such a row is never generated —
+    :meth:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig.generatable_fields`
+    excludes it.
+
     Args:
         field_config: The persisted per-field config row.
         base_field: The note type's base (input) field, used as the empty-prompt source.
@@ -217,7 +225,7 @@ def compile_field_rule(
         source_field="" if has_prompt else base_field,
         source_is_base_fallback=not has_prompt,
         target_field=field_config.field,
-        kind=field_config.type,
+        kind=field_config.type if field_config.supports_generation() else "text",
         prompt=field_config.prompt,
         provider=field_config.provider,
         model=field_config.model,

@@ -81,13 +81,23 @@ class TestConfigRepository:
         assert isinstance(settings, TypedAccuracySettings)
         assert settings.threshold == 0.42
 
-    def test_feature_settings_rejects_unknown_keys(self, tmp_path):
-        # The plugin model is extra="forbid", so a typo in its namespace must raise.
+    def test_feature_settings_tolerates_unknown_keys(self, tmp_path):
+        """An unknown key in a plugin's namespace must NOT break that plugin's settings.
+
+        Changed deliberately (was: asserts a ``ValidationError``). ``features.toml`` lives in
+        the synced collection config (ADR-006/ADR-008), so an unknown key is normally a key a
+        NEWER Omnia wrote on another device — and this call sits inside ``PluginManager``'s
+        activation try-block, so raising meant the feature silently never enabled on the older
+        device. The plugin models are ``PersistedModel``s now: the key rides along untouched
+        and the known settings still parse.
+        """
         tmp_cfg = _tmp_config(tmp_path)
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
-        repo.update_section("overdue_guard", {"not_a_real_key": 5})
-        with pytest.raises(ValidationError):
-            repo.feature_settings("overdue_guard")
+        repo.update_section("overdue_guard", {"from_a_newer_omnia": 5})
+        settings = repo.feature_settings("overdue_guard")
+        assert settings is not None
+        assert settings.min_days == 2  # type: ignore[attr-defined]
+        assert settings.dict()["from_a_newer_omnia"] == 5  # round-trips, never dropped
 
     def test_edited_value_wins_over_default(self, tmp_path):
         tmp_cfg = _tmp_config(tmp_path)
@@ -162,8 +172,8 @@ class TestProviderConfigWrites:
         assert repo.config.tts.piper.model == "vi_VN-vais1000-medium"
 
     def test_set_active_tts_skips_voice_for_voiceless_provider(self, tmp_path):
-        # google_translate's strict model has no `voice` field; writing one would break the
-        # reload. The provider must still switch, and the config must reload cleanly.
+        # google_translate has no `voice` field; writing one would persist a key the provider
+        # never reads. The provider must still switch, and the config must reload cleanly.
         tmp_cfg = _tmp_config(tmp_path)
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_active_tts("google_translate", voice="ignored")
@@ -269,9 +279,82 @@ class TestConfigModels:
         with pytest.raises(ValidationError):
             TypedAccuracySettings(threshold=1.5)
 
-    def test_omnia_config_ignores_unknown_top_level_key(self):
+    def test_omnia_config_keeps_unknown_top_level_key(self):
         cfg = OmniaConfig.parse_obj({"unknown_future_key": 123, "log_level": "DEBUG"})
         assert cfg.log_level == "DEBUG"
+        assert cfg.dict()["unknown_future_key"] == 123
+
+
+class TestPersistedModelForwardCompat:
+    """Every model that reaches persisted config must tolerate a NEWER Omnia's keys.
+
+    ``omnia.toml``/``features.toml`` live in the synced collection config, so each device's
+    Omnia — possibly a different release — loads and rewrites the same blob. A model that
+    rejected unknown keys would brick config load (core) or silently fail to enable the feature
+    (plugins) on whichever device is older; one that ignored them would erase the newer
+    device's settings on the next write. Hence ``PersistedModel`` (``extra = "allow"``).
+    """
+
+    def test_every_registered_plugin_config_model_keeps_unknown_keys(self):
+        from omnia.core.registry import get_registered
+
+        models = {
+            plugin_id: cls.config_model
+            for plugin_id, cls in get_registered().items()
+            if cls.config_model is not None
+        }
+        assert (
+            models
+        ), "no plugin declares a config_model — the loop would prove nothing"
+        for plugin_id, model_cls in models.items():
+            settings = model_cls.parse_obj({"from_a_newer_omnia": {"nested": 1}})
+            assert settings.dict()["from_a_newer_omnia"] == {"nested": 1}, plugin_id
+
+    def test_provider_settings_keep_unknown_keys(self):
+        # [llm]/[tts] are persisted too (providers.toml), and a downgraded add-on must not
+        # fail its whole config load over a subsection key it does not know.
+        cfg = OmniaConfig.parse_obj(
+            {"llm": {"provider": "gemini", "gemini": {"thinking_budget": 2048}}}
+        )
+        assert cfg.llm.gemini.dict()["thinking_budget"] == 2048
+        assert cfg.llm.active() is cfg.llm.gemini
+
+    def test_unknown_provider_subsection_loads_and_round_trips(self):
+        """A whole ``[llm.<provider>]``/``[tts.<provider>]`` this release has never heard of.
+
+        ``extra = "allow"`` keeps such a subsection as a raw dict, so config load survives a
+        provider a NEWER Omnia added. It must then degrade, not crash: ``active()`` returns
+        None (its ``isinstance(sub, BaseModel)`` guard rejects the raw dict, so the factory
+        raises the clear "unknown provider" error lazily instead of the config bricking), and
+        the subsection is handed back verbatim on the next write.
+        """
+        raw = {
+            "llm": {"provider": "future_llm", "future_llm": {"api_key": "k"}},
+            "tts": {"provider": "future_tts", "future_tts": {"voice": "v"}},
+        }
+
+        cfg = OmniaConfig.parse_obj(raw)
+
+        assert (cfg.llm.provider, cfg.tts.provider) == ("future_llm", "future_tts")
+        assert cfg.llm.active() is None
+        assert cfg.tts.active() is None
+        dumped = cfg.dict()
+        assert dumped["llm"]["future_llm"] == {"api_key": "k"}
+        assert dumped["tts"]["future_tts"] == {"voice": "v"}
+        # …and it survives the full load → save → load cycle, not just one dump.
+        assert OmniaConfig.parse_obj(dumped).dict()["llm"]["future_llm"] == {
+            "api_key": "k"
+        }
+
+    def test_payload_models_still_reject_unknown_keys(self):
+        # The other half of the seam: a model that never reaches storage stays strict.
+        from omnia.core.config.base import StrictModel
+
+        class Payload(StrictModel):
+            value: int = 0
+
+        with pytest.raises(ValidationError):
+            Payload(value=1, typo=2)
 
 
 class TestConfigLoader:
