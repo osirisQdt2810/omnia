@@ -16,7 +16,6 @@ import types
 from typing import Any
 
 import pytest
-from pydantic import Field
 
 _qt = sys.modules["aqt.qt"]
 for _name in (
@@ -88,28 +87,17 @@ aqt.theme = _theme
 
 from omnia.gui.note_maintenance.panel import (  # noqa: E402
     NoteMaintenanceSettingsDialog,
-    _TaskOptions,
 )
 from omnia.gui.note_maintenance.preview_dialog import (  # noqa: E402
     _DIFF_COLUMN,
     _DiffPalette,
     _PreviewTree,
 )
-from omnia.plugins.note_maintenance.base import (  # noqa: E402
-    MaintenanceTask,
-    TaskConfigBase,
-)
+from omnia.plugins.note_maintenance.base import MaintenanceTask  # noqa: E402
+from omnia.plugins.note_maintenance.registry import build_tasks  # noqa: E402
+from omnia.plugins.note_maintenance.settings_merge import TaskOptions  # noqa: E402
 
 _PLUGIN_ID = "note_maintenance"
-
-
-class _DemoConfig(TaskConfigBase):
-    """A task config with one option of each kind the panel has to deal with."""
-
-    threshold: float = 0.5
-    fields: dict[str, str] = Field(default_factory=lambda: {"From": "To"})
-    # No renderer knows a list — this is what a save must not silently drop.
-    extras: list[str] = Field(default_factory=lambda: ["kept"])
 
 
 class TestDiffPalette:
@@ -146,43 +134,6 @@ class TestDiffPalette:
             '<div>− old <span style="R">word</span></div>'
             '<div>+ old <span style="A">text</span></div>'
         )
-
-
-class TestTaskOptions:
-    """What the settings panel renders, and what it has to carry through a save untouched."""
-
-    def _split(self, **overrides: Any) -> _TaskOptions:
-        return _TaskOptions(_DemoConfig(**overrides))
-
-    def test_the_tick_owns_enable_so_the_form_never_renders_it(self):
-        assert "enable" not in [name for name, _value, _field in self._split().rows]
-        assert "enable" not in self._split().passthrough
-
-    def test_scalars_are_rendered_with_their_descriptor(self):
-        rows = {name: field for name, _value, field in self._split().rows}
-
-        assert rows["threshold"] is not None
-        assert rows["threshold"].kind == "float"
-
-    def test_a_field_mapping_is_rendered_by_the_bespoke_editor(self):
-        rows = {name: field for name, _value, field in self._split().rows}
-
-        assert "fields" in rows and rows["fields"] is None
-
-    def test_an_option_no_renderer_knows_is_kept_verbatim(self):
-        # The ADR-010 hazard one layer up: writing back only what the form could draw would
-        # delete a task option a NEWER Omnia added, on the next sync.
-        split = self._split(extras=["one", "two"])
-
-        assert split.passthrough == {"extras": ["one", "two"]}
-        assert "extras" not in [name for name, _value, _field in split.rows]
-
-    def test_the_rows_keep_the_models_order(self):
-        assert [name for name, _value, _field in self._split().rows] == [
-            "order",
-            "threshold",
-            "fields",
-        ]
 
 
 class TestPreviewTreeRelayout:
@@ -263,10 +214,10 @@ class _FakeOptionsEditor:
 def _untouched_editor(task: MaintenanceTask) -> _FakeOptionsEditor:
     """What the real per-task form reports when the user edits nothing.
 
-    Built through the panel's own :class:`_TaskOptions`, so a round trip exercises the same
+    Built through the panel's own :class:`TaskOptions`, so a round trip exercises the same
     split the live form uses — the rendered rows plus what no renderer knows.
     """
-    options = _TaskOptions(task.config)
+    options = TaskOptions(task.config)
     rendered = {name: value for name, value, _field in options.rows}
     return _FakeOptionsEditor({**options.passthrough, **rendered})
 
@@ -279,8 +230,8 @@ def _dialog(repo: Any) -> NoteMaintenanceSettingsDialog:
     """
     dialog = NoteMaintenanceSettingsDialog.__new__(NoteMaintenanceSettingsDialog)
     dialog._repo = repo
-    dialog._saved_tasks = {}
-    dialog._tasks = dialog._configured_tasks()
+    dialog._stored_tasks = dialog._stored_task_sections()
+    dialog._tasks = build_tasks(dialog._stored_tasks)
     dialog._task_list = _FakeTaskList([task.is_enabled for task in dialog._tasks])
     dialog._editors = {task.task_id: _untouched_editor(task) for task in dialog._tasks}
     dialog.accepted = []
@@ -311,7 +262,9 @@ class TestSaveKeepsWhatItCannotShow:
     """
 
     def _saved(self, repo) -> dict[str, Any]:
-        return repo.feature_settings(_PLUGIN_ID).tasks
+        # Read RAW: half of these cases store something the typed read refuses, and what is
+        # being asserted is exactly what reached storage.
+        return repo.raw_section(_PLUGIN_ID).get("tasks", {})
 
     def test_a_task_section_this_build_never_heard_of_survives(
         self, config_repo, warnings
@@ -343,6 +296,55 @@ class TestSaveKeepsWhatItCannotShow:
         assert saved["a_future_option"] == ["kept"]
         # And the switch the user set is still off (the fallback did not flip it back on).
         assert saved["enable"] is False
+
+    def test_a_readable_option_is_not_reverted_by_an_unreadable_sibling(
+        self, config_repo, warnings
+    ):
+        # The save persists what the dialog SHOWS, so an option the per-task fallback dropped
+        # is written back as the shipped default: the user's find text, destroyed by a garbage
+        # ``order`` next to it.
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {
+                "tasks": {
+                    "replace_text_all_fields": {
+                        "enable": True,
+                        "order": "whenever",
+                        "find": "PROMO",
+                    }
+                }
+            },
+        )
+
+        _dialog(config_repo)._save()
+
+        saved = self._saved(config_repo)["replace_text_all_fields"]
+        assert saved["find"] == "PROMO"
+        assert saved["enable"] is True
+
+    def test_a_section_level_key_this_build_never_heard_of_keeps_the_map(
+        self, config_repo, warnings
+    ):
+        # The pass-through must not depend on the ``[note_maintenance]`` section PARSING: one
+        # key from a newer Omnia beside ``tasks`` used to make the typed read raise, and the
+        # save then wrote this build's registry over everything stored.
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {"tasks": {"a_future_task": {"enable": True}}, "some_new_key": 1},
+        )
+
+        _dialog(config_repo)._save()
+
+        assert self._saved(config_repo)["a_future_task"] == {"enable": True}
+
+    def test_a_task_entry_that_is_not_a_table_survives(self, config_repo, warnings):
+        # A type error inside ``tasks`` is the other way the typed read raises, and one that
+        # tolerating unknown KEYS cannot rescue.
+        config_repo.update_section(_PLUGIN_ID, {"tasks": {"weird": "a string"}})
+
+        _dialog(config_repo)._save()
+
+        assert self._saved(config_repo)["weird"] == "a string"
 
     def test_the_known_tasks_are_still_written(self, config_repo, warnings):
         dialog = _dialog(config_repo)
