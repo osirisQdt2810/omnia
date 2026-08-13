@@ -164,6 +164,14 @@ class TestApplyOutcomeMessage:
 
         assert message == "Omnia: 3 note(s) updated — Ctrl+Z undoes the batch."
 
+    def test_a_write_of_nothing_promises_no_undo(self):
+        # Nothing written means no undo entry was opened, so Ctrl+Z would put back whatever
+        # the user did BEFORE this run.
+        message = ApplyOutcome(missing_note_ids=(2,)).message
+
+        assert message.startswith("Omnia: 0 note(s) updated.")
+        assert "Ctrl+Z" not in message
+
     def test_skipped_notes_are_named_in_the_same_line(self):
         message = ApplyOutcome(
             written_note_count=1, missing_note_ids=(2,), stale_note_ids=(3, 4)
