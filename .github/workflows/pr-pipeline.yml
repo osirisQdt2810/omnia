@@ -142,15 +142,28 @@ jobs:
             what you checked; for a defective PR, each blocking issue with file:line, the
             concrete failure scenario, and a suggested fix.
 
-            Finally — MANDATORY LAST ACTION — write your one-word verdict to the verdict file:
-              echo APPROVE > "$RUNNER_TEMP/verdict"     # no blocking issues
-              echo BLOCKING > "$RUNNER_TEMP/verdict"    # at least one blocking issue
-            If you write nothing, the pipeline treats the review as BLOCKING.
+            MANDATORY: the comment's LAST line must be exactly one of
+              VERDICT: APPROVE
+              VERDICT: BLOCKING
+            (the merge gate machine-reads it). Additionally, also write the same word to the
+            verdict file: `echo APPROVE > "$RUNNER_TEMP/verdict"` or
+            `echo BLOCKING > "$RUNNER_TEMP/verdict"`.
+            If neither the marker nor the file exists, the pipeline treats the review as BLOCKING.
           claude_args: '--allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(echo:*)"'
       - name: Publish verdict
         id: verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
-          v=$(cat "$RUNNER_TEMP/verdict" 2>/dev/null || echo BLOCKING)
+          v=$(cat "$RUNNER_TEMP/verdict" 2>/dev/null || true)
+          if [ -z "$v" ]; then
+            echo "No verdict file — falling back to the VERDICT marker in claude[bot]'s comments."
+            v=$(gh api "repos/$REPO/issues/$PR/comments" \
+                  --jq '[.[] | select(.user.login == "claude[bot]" or .user.login == "claude") | .body] | join("\n")' \
+                | grep -oE 'VERDICT: (APPROVE|BLOCKING)' | tail -1 | awk '{print $2}' || true)
+          fi
           if [ "$v" != "APPROVE" ]; then v=BLOCKING; fi
           echo "value=$v" >> "$GITHUB_OUTPUT"
           echo "Review verdict: $v"
