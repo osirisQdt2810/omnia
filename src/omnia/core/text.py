@@ -1,4 +1,4 @@
-"""Turn a note field's stored markup into plain text.
+"""Convert between a note field's stored markup and the plain text a person wrote.
 
 An Anki field is HTML with Anki's own syntaxes mixed in: ``<b>``/``<div>`` markup, ``[sound:…]``
 references, ``<img>`` tags, cloze deletions and HTML entities. Two very different consumers need
@@ -11,10 +11,14 @@ the same thing out of it — the words a human wrote:
 Keeping one implementation in ``core`` is deliberate: the two callers live in different plugins,
 and ``plugins/*`` must not import each other (see the coupling rule), so a shared seam is the
 only place this can live once.
+
+:func:`as_field_html` is the same boundary in the other direction — plain text going BACK into a
+field — and belongs next to its inverse for the same reason: every writer of a field needs it.
 """
 
 from __future__ import annotations
 
+import html
 import re
 
 # Anki's media/markup syntaxes. A media REFERENCE must never survive into text: it is a
@@ -74,3 +78,29 @@ def strip_markup(value: str, *, keep_line_breaks: bool = True) -> str:
     text = _BLANK_LINES_RE.sub("\n", text)
     text = "\n".join(line.strip() for line in text.split("\n")).strip()
     return text.replace("\n", " ").strip() if not keep_line_breaks else text
+
+
+def as_field_html(text: str) -> str:
+    """Return plain ``text`` encoded as the HTML an Anki field stores.
+
+    The inverse direction of :func:`strip_markup`, and the boundary EVERY writer of a field has
+    to cross: a field holds HTML, so plain text cannot be put in one verbatim. Two things go
+    wrong when it is:
+
+    * a bare ``"\\n"`` renders as a single SPACE, so the author's line structure is silently
+      lost. Each newline therefore becomes ``<br>`` — text written on three lines stays on three
+      lines;
+    * an unescaped ``<`` or ``&`` is read back as the start of a tag or an entity, which is how
+      plain text turns into (broken) markup.
+
+    Escaping BEFORE the ``<br>`` substitution also makes the pair a fixed point: stripping the
+    markup off the result gives back exactly the text handed in, so a task that re-derives the
+    same text finds nothing to change on its next run.
+
+    Args:
+        text: Plain text (no markup), e.g. the output of :func:`strip_markup`.
+
+    Returns:
+        The text as storable field HTML.
+    """
+    return html.escape(text, quote=False).replace("\n", "<br>")

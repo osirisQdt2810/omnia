@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 try:  # stdlib on Python 3.11+; the vendored tomli covers 3.10 (same fallback as loader.py)
-    import tomllib
+    import tomllib  # noqa: TID251 - guarded below for Python 3.10
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
     import tomli as tomllib  # type: ignore[no-redef]
 
@@ -108,6 +108,42 @@ class TestConfigRepository:
         assert repo.feature_settings("typed_accuracy").threshold == 0.9
         # untouched defaults still present
         assert repo.feature_settings("auto_flip").delay_question_seconds == 3.0
+
+
+class TestRawSection:
+    """The read side of a SHALLOW ``update_section``: what is stored, not what parses.
+
+    A caller rewriting a whole sub-map has to start from the stored section, or its write
+    deletes the keys its own model cannot read (ADR-010, one layer above the models).
+    """
+
+    def test_returns_the_section_as_stored(self, tmp_path):
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo.update_section("typed_accuracy", {"threshold": 0.42})
+
+        assert repo.raw_section("typed_accuracy")["threshold"] == 0.42
+
+    def test_keeps_what_the_typed_read_would_refuse(self, tmp_path):
+        # A value of the WRONG TYPE makes feature_settings raise for the whole section; the
+        # raw read still hands it back, which is what keeps a save from deleting it.
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo.update_section("overdue_guard", {"min_days": "soon"})
+
+        with pytest.raises(ValidationError):
+            repo.feature_settings("overdue_guard")
+        assert repo.raw_section("overdue_guard")["min_days"] == "soon"
+
+    def test_an_absent_section_is_an_empty_dict(self, config_repo):
+        assert config_repo.raw_section("not_a_plugin") == {}
+
+    def test_the_result_is_a_copy(self, tmp_path):
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo.update_section("auto_flip", {"per_deck": {"1": {"enabled": False}}})
+
+        section = repo.raw_section("auto_flip")
+        section["per_deck"]["1"]["enabled"] = True
+
+        assert repo.raw_section("auto_flip")["per_deck"]["1"]["enabled"] is False
 
 
 class TestProviderConfigWrites:

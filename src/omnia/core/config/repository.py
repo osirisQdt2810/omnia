@@ -13,6 +13,7 @@ layer.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
@@ -86,6 +87,26 @@ class ConfigRepository:
         if model_cls is None:
             return None
         return model_cls.parse_obj(self._merged.get(plugin_id, {}))
+
+    def raw_section(self, section: str) -> dict[str, Any]:
+        """Return the merged RAW ``section``, unvalidated — the read side of a shallow write.
+
+        :meth:`update_section` merges SHALLOWLY, so a caller that rewrites a whole sub-map has
+        to start from what is actually STORED — including the keys and shapes its own model
+        cannot parse — or its write deletes them (the ADR-010 hazard, one layer above the
+        models). :meth:`feature_settings` cannot serve that: it is all-or-nothing, and a single
+        unreadable value makes it raise for the entire section, leaving the caller with nothing
+        to merge onto.
+
+        Args:
+            section: A top-level key like ``"note_maintenance"`` or ``"llm"``.
+
+        Returns:
+            A deep copy of the section as stored (so editing it cannot mutate the repository's
+            merged config), or ``{}`` when it is absent or is not a table.
+        """
+        value = self._merged.get(section)
+        return deepcopy(value) if isinstance(value, dict) else {}
 
     def llm_settings(self) -> LLMSettings:
         """Return the LLM provider settings."""

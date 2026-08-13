@@ -195,8 +195,26 @@ def _install_anki_stubs() -> None:
     anki_hooks_mod = types.ModuleType("anki.hooks")
     anki_hooks_mod.note_will_be_added = FakeHook()
     anki_mod.hooks = anki_hooks_mod
+    # anki.errors: the backend exception a shim has to catch (a deleted note is NOT found).
+    anki_errors_mod = types.ModuleType("anki.errors")
+
+    class NotFoundError(Exception):
+        """Stand-in for ``anki.errors.NotFoundError``."""
+
+    anki_errors_mod.NotFoundError = NotFoundError
+    anki_mod.errors = anki_errors_mod
+    # anki.collection: the OpChanges a CollectionOp must return even when it wrote nothing.
+    anki_collection_mod = types.ModuleType("anki.collection")
+
+    class OpChanges:
+        """Stand-in for ``anki.collection.OpChanges`` (an empty 'nothing changed')."""
+
+    anki_collection_mod.OpChanges = OpChanges
+    anki_mod.collection = anki_collection_mod
     sys.modules["anki"] = anki_mod
     sys.modules["anki.hooks"] = anki_hooks_mod
+    sys.modules["anki.errors"] = anki_errors_mod
+    sys.modules["anki.collection"] = anki_collection_mod
 
 
 _install_anki_stubs()

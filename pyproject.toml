@@ -22,7 +22,8 @@ extend-exclude = ["vendor", "models", "references"]
 
 [tool.ruff.lint]
 # Import sorting (I) is intentionally delegated to standalone isort, not ruff.
-select = ["E", "F", "W", "N", "UP", "B", "SIM", "RUF"]
+# TID is here for one rule: banning a bare `import tomllib` (see flake8-tidy-imports below).
+select = ["E", "F", "W", "N", "UP", "B", "SIM", "RUF", "TID"]
 ignore = [
     "E501",   # line length is owned by black (which won't split long strings/comments)
     "RUF001", # ambiguous unicode in strings — user-facing UI strings may be non-ASCII
@@ -36,6 +37,12 @@ ignore = [
     "UP046",  # non-pep695-generic-class
     "UP047",  # non-pep695-generic-function
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# `tomllib` is stdlib only from 3.11, and Anki's supported minimum is 3.10 — a bare import
+# passes locally and on the 3.13 CI legs, then fails collection on the 3.10 leg. It has now
+# cost two rounds; ban it so the lint says so instead of the matrix.
+"tomllib".msg = "guard it: try: import tomllib / except ModuleNotFoundError: import tomli as tomllib (Python 3.10 has no tomllib; tomli is vendored)"
 
 [tool.ruff.lint.pep8-naming]
 # Pydantic v1 validators (@validator) are implicit classmethods whose first arg is `cls`;

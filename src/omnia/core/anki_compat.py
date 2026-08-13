@@ -223,6 +223,23 @@ def update_note(note: Any, col: Optional[Any] = None) -> None:
     col.update_note(note)
 
 
+def update_notes(notes: list[Any], col: Optional[Any] = None) -> Any:
+    """Persist edits to many notes as ONE undoable batch; return the ``OpChanges``.
+
+    An EMPTY list short-circuits to an empty ``OpChanges``: ``col.update_notes([])`` still opens
+    an undo entry, so a batch that turned out to have nothing to write would otherwise leave the
+    user a do-nothing step at the top of their undo history. The returned value keeps the
+    contract a ``CollectionOp`` expects (it reads ``.count``/``.changes`` off the result).
+    """
+    if not notes:
+        from anki.collection import OpChanges
+
+        return OpChanges()
+    if col is None:
+        col = main_window().col
+    return col.update_notes(notes)
+
+
 # --- collection reads (note types, decks, notes) ---------------------------------------
 def note_type_names(col: Optional[Any] = None) -> list[str]:
     """Return every note-type (model) name in the collection."""
@@ -290,6 +307,23 @@ def get_note(nid: int, col: Optional[Any] = None) -> Any:
     if col is None:
         col = main_window().col
     return col.get_note(nid)
+
+
+def get_note_or_none(nid: int, col: Optional[Any] = None) -> Optional[Any]:
+    """Return the note with id ``nid``, or None when the collection no longer has it.
+
+    Anki raises ``NotFoundError`` for a note that was deleted; a caller working from a
+    snapshot taken earlier (a preview, a queued batch) needs "gone" as a value it can skip,
+    not an exception that aborts everything else it was going to write.
+    """
+    from anki.errors import NotFoundError
+
+    if col is None:
+        col = main_window().col
+    try:
+        return col.get_note(nid)
+    except NotFoundError:
+        return None
 
 
 def note_deck_ids(note: Any, col: Optional[Any] = None) -> list[int]:

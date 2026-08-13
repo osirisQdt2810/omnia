@@ -3,9 +3,8 @@
 ``config_form`` imports many ``aqt.qt`` symbols at module top (real Qt isn't available
 headless), so we extend conftest's ``aqt.qt`` stub with the names it binds. QComboBox needs
 real behaviour for the choice-preselect test; QPushButton/QColor/QColorDialog need enough for
-the ``_ColorButton`` picker; the check/spin widgets are DISTINCT classes (not a shared
-``object``) so ``values()``' ``isinstance`` chain can tell a colour button apart from them.
-The tested methods (``_make_widget`` staticmethod, ``values``) run without a real QDialog.
+the ``_ColorButton`` picker. What is exercised is :class:`ConfigFieldEditor` — the field ->
+control mapping and the value read back off it — which needs no QDialog at all.
 """
 
 from __future__ import annotations
@@ -159,7 +158,7 @@ _qt.QColorDialog = _FakeColorDialog
 _qt.QSpinBox = _FakeSpin
 _qt.QDoubleSpinBox = _FakeDoubleSpin
 
-from omnia.gui.config_form import PluginConfigDialog, _ColorButton  # noqa: E402
+from omnia.gui.config_form import ConfigFieldEditor, _ColorButton  # noqa: E402
 
 
 class _Color(Enum):
@@ -190,17 +189,17 @@ class TestChoiceWidgetPreselect:
     """L10: an Enum-backed choice value must preselect, not silently reset to index 0."""
 
     def test_enum_member_preselects_its_value(self):
-        widget = PluginConfigDialog._make_widget(_CHOICE_FIELD, _Color.GREEN)
+        widget = ConfigFieldEditor(_CHOICE_FIELD, _Color.GREEN).widget
         assert widget.currentText() == "green"
 
     def test_string_non_first_value_preselects(self):
-        widget = PluginConfigDialog._make_widget(_CHOICE_FIELD, "blue")
+        widget = ConfigFieldEditor(_CHOICE_FIELD, "blue").widget
         assert widget.currentText() == "blue"
 
     def test_unknown_value_is_preserved(self):
         # An out-of-range stored value must be kept (appended as its own option) and selected,
         # not silently coerced to index 0 — otherwise OK would overwrite the user's real value.
-        widget = PluginConfigDialog._make_widget(_CHOICE_FIELD, "purple")
+        widget = ConfigFieldEditor(_CHOICE_FIELD, "purple").widget
         assert widget.currentText() == "purple"
         assert "purple" in widget._items
 
@@ -212,13 +211,13 @@ class TestNumericBounds:
         field = ConfigField(
             key="offset", label="Offset", kind="int", default=0, minimum=-10, maximum=0
         )
-        widget = PluginConfigDialog._make_widget(field, -3)
+        widget = ConfigFieldEditor(field, -3).widget
         assert widget._min == -10
         assert widget._max == 0
 
     def test_int_unset_maximum_uses_default(self):
         field = ConfigField(key="n", label="N", kind="int", default=0)
-        widget = PluginConfigDialog._make_widget(field, 5)
+        widget = ConfigFieldEditor(field, 5).widget
         assert widget._min == 0
         assert widget._max == 1_000_000
 
@@ -231,16 +230,16 @@ class TestNumericBounds:
             minimum=-1.0,
             maximum=0.0,
         )
-        widget = PluginConfigDialog._make_widget(field, -0.5)
+        widget = ConfigFieldEditor(field, -0.5).widget
         assert widget._min == -1.0
         assert widget._max == 0.0
 
 
 class TestColorWidget:
-    """A ``color`` field renders a picker button that round-trips its hex through values()."""
+    """A ``color`` field renders a picker button that round-trips its hex through the editor."""
 
-    def test_make_widget_preselects_default_hex(self):
-        widget = PluginConfigDialog._make_widget(_COLOR_FIELD, "#c62828")
+    def test_the_editor_preselects_the_default_hex(self):
+        widget = ConfigFieldEditor(_COLOR_FIELD, "#c62828").widget
         assert isinstance(widget, _ColorButton)
         assert widget.hex() == "#c62828"
 
@@ -249,17 +248,14 @@ class TestColorWidget:
         assert color.kind == "color"
         assert color.default == "#c62828"
 
-    def test_values_returns_selected_hex(self):
+    def test_value_returns_selected_hex(self):
         # Build the field list from the real model so the color kind flows end-to-end, then
-        # read a picked colour back. values() runs on a bypass-built dialog (no Qt layout
-        # stack headless), and the pick is simulated by setting the hex directly.
+        # read a picked colour back; the pick is simulated by setting the hex directly.
         color = self._color_field()
-        widget = PluginConfigDialog._make_widget(color, color.default)
-        widget._hex = "#00ff00"  # simulate a pick without opening a real QColorDialog
-        dialog = PluginConfigDialog.__new__(PluginConfigDialog)
-        dialog._fields = [color]
-        dialog._widgets = {color.key: widget}
-        assert dialog.values() == {"text_color": "#00ff00"}
+        editor = ConfigFieldEditor(color, color.default)
+        editor.widget._hex = "#00ff00"  # a pick, without opening a real QColorDialog
+
+        assert editor.value() == "#00ff00"
 
     @staticmethod
     def _color_field() -> ConfigField:
