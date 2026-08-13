@@ -47,3 +47,7 @@ config/providers.toml
 references/
 # Chrome extension build artifact
 3rdparty/*.zip
+
+# Wheels a `pip download` leaves in the repo root (vendoring goes to vendor/ via
+# scripts/vendor_deps.py, never here).
+*.whl
