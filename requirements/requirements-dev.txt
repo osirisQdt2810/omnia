@@ -30,8 +30,3 @@ mypy==1.13.0
 
 # Git hook runner
 pre-commit==4.0.1
-
-# tomllib stand-in for the CI Python-3.10 matrix ONLY (tomllib is stdlib from 3.11).
-# This is the TOML *reader* used by tests; the add-on vendors only the writer (tomli_w),
-# so this shadows no vendored copy and never installs on the 3.13 runtime.
-tomli==2.2.1; python_version < "3.11"
