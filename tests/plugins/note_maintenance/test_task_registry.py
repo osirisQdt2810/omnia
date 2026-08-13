@@ -112,12 +112,40 @@ class TestBuildTasks:
         task_registry.register_task("demo")(_DemoTask)
         assert len(task_registry.build_tasks({"gone": {"enable": True}})) == 1
 
-    def test_rejects_an_unknown_option(self, clean_registry):
+
+class TestBuildTasksTolerateBadConfig:
+    """Both callers are Qt slots: a config this version can't parse must never raise there."""
+
+    def test_an_invalid_option_falls_back_to_that_tasks_defaults(self, clean_registry):
         task_registry.register_task("demo")(_DemoTask)
-        with pytest.raises(
-            ValueError
-        ):  # pydantic ValidationError subclasses ValueError
-            task_registry.build_tasks({"demo": {"nope": 1}})
+
+        (task,) = task_registry.build_tasks({"demo": {"order": "whenever"}})
+
+        assert (task.is_enabled, task.order, task.config.suffix) == (True, 100, "!")
+
+    def test_an_unknown_option_does_not_break_the_run(self, clean_registry):
+        # The mixed-version case: a newer Omnia synced down a task option this one never heard
+        # of. Whether the model keeps or rejects it, the task still has to be built.
+        task_registry.register_task("demo")(_DemoTask)
+
+        (task,) = task_registry.build_tasks({"demo": {"brand_new_option": True}})
+
+        assert task.is_enabled
+
+    def test_only_the_broken_task_loses_its_settings(self, clean_registry):
+        task_registry.register_task("demo")(_DemoTask)
+
+        class _Other(_DemoTask):
+            config_model = _DemoConfig
+
+        task_registry.register_task("other")(_Other)
+
+        demo, other = task_registry.build_tasks(
+            {"demo": {"order": "whenever"}, "other": {"order": 5, "suffix": "?"}}
+        )
+
+        assert (demo.order, demo.config.suffix) == (100, "!")
+        assert (other.order, other.config.suffix) == (5, "?")
 
 
 class TestNoteMaintenancePlugin:

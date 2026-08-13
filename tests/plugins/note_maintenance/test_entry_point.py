@@ -160,6 +160,30 @@ class TestMaintainNotes:
         assert plan.notes[0].updates() == {"SynonymsNoIPA": "modest, meek"}
         assert tooltips == []
 
+    def test_a_task_config_this_version_cannot_parse_still_runs(
+        self, gui_hooks, monkeypatch, tooltips
+    ):
+        # A hand-edited features.toml (or a section written by a NEWER Omnia and synced down)
+        # must not throw out of the menu action into Anki's traceback dialog: the broken task
+        # falls back to its defaults and the run goes ahead.
+        notes = {
+            5: _FakeNote(
+                {"Synonyms": "modest (ˈmɒdɪst), meek (miːk)", "SynonymsNoIPA": ""}
+            )
+        }
+        monkeypatch.setattr(
+            anki_compat, "get_note_or_none", lambda nid, col=None: notes.get(nid)
+        )
+        plugin = _plugin(
+            NoteMaintenanceSettings(tasks={"strip_ipa": {"order": "whenever"}})
+        )
+        previewed: list = []
+        plugin._preview = lambda plan, parent: previewed.append(plan)
+
+        plugin.maintain_notes(_FakeBrowser([5]))
+
+        assert [note.note_id for note in previewed[0]] == [5]
+
     def test_an_empty_selection_reports_and_scans_nothing(self, gui_hooks, tooltips):
         plugin = _plugin()
         previewed: list = []

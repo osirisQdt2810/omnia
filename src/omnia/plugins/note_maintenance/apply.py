@@ -34,6 +34,7 @@ class ChangeApplier:
         """
         self._plan = plan
         self._missing_note_ids: tuple[int, ...] = ()
+        self._stale_note_ids: tuple[int, ...] = ()
         self._written_note_count = 0
 
     @property
@@ -43,6 +44,15 @@ class ChangeApplier:
         Empty until :meth:`write` has run; the caller reports it once the op finishes.
         """
         return self._missing_note_ids
+
+    @property
+    def stale_note_ids(self) -> tuple[int, ...]:
+        """The planned notes whose text had been edited since the preview was taken.
+
+        Empty until :meth:`write` has run. Their changed fields are left ALONE (see
+        :meth:`write`), so the user's own edit wins over a plan that no longer describes it.
+        """
+        return self._stale_note_ids
 
     @property
     def written_note_count(self) -> int:
@@ -79,9 +89,14 @@ class ChangeApplier:
     def write(self, col: Any) -> Any:
         """Write every planned field into its note and save the batch.
 
-        A note that no longer exists is SKIPPED, not fatal: the plan is a snapshot, and one
-        note deleted since the preview must not cost the user the other 4 999 edits. The ids
-        are recorded in :attr:`missing_note_ids` so the caller can report them.
+        The plan is a SNAPSHOT, and the collection can move under it between the preview and
+        the confirmation. Two cases are skipped rather than treated as fatal, because one note
+        must not cost the user the other 4 999 edits:
+
+        * the note is gone (deleted meanwhile) — recorded in :attr:`missing_note_ids`;
+        * the field no longer holds the ``before`` the user reviewed (they edited the note, or
+          another add-on did) — recorded in :attr:`stale_note_ids`. Writing the planned value
+          there would silently revert an edit the user never saw in this diff.
 
         Args:
             col: The Anki collection (handed in by the ``CollectionOp``).
@@ -91,6 +106,7 @@ class ChangeApplier:
         """
         notes = []
         missing: list[int] = []
+        stale: list[int] = []
         for change in self._plan:
             note = anki_compat.get_note_or_none(change.note_id, col)
             if note is None:
@@ -98,7 +114,8 @@ class ChangeApplier:
                 continue
             names = set(note.keys())
             wrote = False
-            for field, value in change.updates().items():
+            for field_change in change.fields:
+                field = field_change.field
                 # A field can vanish between planning and applying (the user edited the note
                 # type). Skipping it is right — creating it would corrupt the note.
                 if field not in names:
@@ -106,13 +123,22 @@ class ChangeApplier:
                         "note %s has no field %r; skipping it", change.note_id, field
                     )
                     continue
-                note[field] = value
+                if str(note[field]) != field_change.before:
+                    logger.warning(
+                        "note %s field %r changed since the preview; leaving it alone",
+                        change.note_id,
+                        field,
+                    )
+                    stale.append(change.note_id)
+                    continue
+                note[field] = field_change.after
                 wrote = True
             # A note that gained nothing is left out: submitting it would bump its mod/usn
             # for no reason, marking it modified for the next AnkiWeb sync.
             if wrote:
                 notes.append(note)
         self._missing_note_ids = tuple(missing)
+        self._stale_note_ids = tuple(dict.fromkeys(stale))  # de-duped, in plan order
         self._written_note_count = len(notes)
         if missing:
             logger.warning(
