@@ -7,6 +7,8 @@ try:  # stdlib on Python 3.11+; the vendored tomli covers 3.10 (same fallback as
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
     import tomli as tomllib  # type: ignore[no-redef]
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -241,7 +243,12 @@ class TestSecretsOutOfConfig:
         resolved = repo.set_provider_credential_file(
             "llm", "gemini_vertex", "credentials_path", str(src)
         )
-        assert resolved.endswith("secrets/llm.gemini_vertex.credentials_path.json")
+        # as_posix(): the repository returns a native path (backslashes on Windows).
+        assert (
+            Path(resolved)
+            .as_posix()
+            .endswith("secrets/llm.gemini_vertex.credentials_path.json")
+        )
         # The loaded config resolves the ref to the absolute path of the secrets copy.
         assert repo.config.llm.gemini_vertex.credentials_path == resolved
 
