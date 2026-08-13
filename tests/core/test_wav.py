@@ -134,6 +134,26 @@ class TestParsing:
         with pytest.raises(WavFormatError, match="not a readable WAV stream"):
             WavClip.from_bytes(b"ID3\x04\x00not an mp3 either")
 
+    def test_rejects_a_chunk_whose_size_overruns_the_file(self):
+        # A partially written file: the "cue " chunk many encoders emit before "data" claims
+        # 5000 bytes but only 20 remain. The stdlib answers with a BARE RuntimeError, which
+        # must still reach the caller as WavFormatError rather than escape from_bytes.
+        fmt = (
+            b"WAVEfmt "
+            + struct.pack("<L", 16)
+            + struct.pack("<HHLLHH", 1, 1, _RATE, _RATE * 2, 2, 16)
+        )
+        body = (
+            fmt
+            + b"cue "
+            + struct.pack("<L", 5000)
+            + b"\x00" * 20
+            + b"data"
+            + struct.pack("<L", 0)
+        )
+        with pytest.raises(WavFormatError, match="RuntimeError"):
+            WavClip.from_bytes(b"RIFF" + struct.pack("<L", len(body)) + body)
+
 
 class TestConcat:
     def test_joins_frames_in_order(self):
