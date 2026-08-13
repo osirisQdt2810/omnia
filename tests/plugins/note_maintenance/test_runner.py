@@ -91,12 +91,20 @@ class TestMaintenanceRunner:
         )
         assert runner.plan([_note(Word="x")]).is_empty
 
-    def test_a_task_may_write_a_field_the_note_does_not_have_yet(self):
+    def test_a_task_cannot_create_a_field_the_note_does_not_have(self):
         runner = MaintenanceRunner([_append("!", field="Word")])
         plan = runner.plan([_note(Word="a"), _note(Other="b")])
-        # The second note has no Word field, so the task creates one -> both notes change.
-        assert plan.note_count == 2
-        assert plan.notes[1].updates() == {"Word": "!"}
+        # The second note has no Word field, so the write is dropped: the apply step cannot
+        # create one either, and planning it would preview a change that never happens.
+        assert plan.note_count == 1
+        assert plan.notes[0].updates() == {"Word": "a!"}
+
+    def test_a_dropped_field_does_not_hide_the_tasks_other_writes(self):
+        runner = MaintenanceRunner(
+            [_append("!", field="Word", order=1), _append("?", field="Gone", order=2)]
+        )
+        plan = runner.plan([_note(Word="a")])
+        assert plan.notes[0].updates() == {"Word": "a!"}
 
     def test_plan_counts_notes_and_fields(self):
         runner = MaintenanceRunner(

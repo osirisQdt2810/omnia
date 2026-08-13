@@ -6,7 +6,8 @@ can review a diff before anything touches the collection (``apply.py`` is the on
 
 Tasks compose: each one sees the note as the previous tasks left it, so two tasks writing the
 same field layer in ``order`` (the last one wins). A field the tasks end up restoring to its
-original value produces no change at all.
+original value produces no change at all, and a field the note type does not have is dropped —
+a task may reshape existing text, never add a field the note lacks.
 
 Pure module: no ``aqt``/``anki`` imports.
 """
@@ -105,10 +106,20 @@ class MaintenanceRunner:
     def _plan_note(
         note: NoteView, tasks: Sequence[MaintenanceTask]
     ) -> Optional[NoteChange]:
-        """Run ``tasks`` over one note; return its :class:`NoteChange`, or None if unchanged."""
+        """Run ``tasks`` over one note; return its :class:`NoteChange`, or None if unchanged.
+
+        A task naming a field this note type does not have is filtered out HERE, where
+        ``note.fields`` is the authoritative field list: a task may only rewrite text the note
+        already holds, never conjure a field (the apply step cannot create one either, so
+        planning it would show the user a change that never happens).
+        """
         current = note
         for task in tasks:
-            updates = task.process(current)
+            updates = {
+                name: value
+                for name, value in task.process(current).items()
+                if name in note.fields
+            }
             if updates:
                 current = current.with_updates(updates)
         changes = tuple(
