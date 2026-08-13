@@ -150,10 +150,10 @@ class NoteMaintenancePlugin(FeaturePlugin):
         """Return a runner holding this plugin's configured tasks.
 
         Reads the ``tasks`` namespace from the plugin's settings (defaults when the plugin is
-        not enabled), so the caller — the preview dialog — never parses config itself.
-
-        Raises:
-            pydantic.ValidationError: If a task's config section holds an invalid option.
+        not enabled), so the caller — the preview dialog — never parses config itself. A task
+        section this version cannot parse falls back to that task's defaults inside
+        :func:`~omnia.plugins.note_maintenance.registry.build_tasks`, so this never raises into
+        the Qt slot that triggered the run.
         """
         return MaintenanceRunner(build_tasks(self._settings().tasks))
 
