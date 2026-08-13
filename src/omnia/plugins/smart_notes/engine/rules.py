@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from omnia.core.text import strip_markup
 from omnia.plugins.smart_notes.engine.interpolation import (
     extract_field_refs,
     interpolate,
@@ -298,6 +299,10 @@ def prompt_for(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
 def tts_text(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
     """The text a tts rule SPEAKS — its referenced field(s), never the prompt's prose.
 
+    The result is STRIPPED of markup before it is spoken. A field's stored value is HTML with
+    Anki's syntaxes in it, so without this a voice reads "strong" aloud for ``<strong>`` and
+    recites media filenames from ``[sound:…]`` — see :func:`omnia.core.text.strip_markup`.
+
     A TTS field only voices field content, so when a prompt is given we extract its ``{{refs}}``
     and speak ONLY their resolved values (deduped, in order). This means a verbose
     "You are a TTS expert… {{Word}}" prompt speaks just {{Word}}'s value — the instruction text is
@@ -314,8 +319,8 @@ def tts_text(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
                 refs.append(ref)
         if refs:
             # Speak only the referenced fields' content (empty when blank — never the prose).
-            return interpolate(
-                " ".join("{{" + ref + "}}" for ref in refs), fields
-            ).strip()
-        return interpolate(rule.prompt, fields).strip()
-    return interpolate(fields.get(rule.source_field, ""), fields)
+            return strip_markup(
+                interpolate(" ".join("{{" + ref + "}}" for ref in refs), fields)
+            )
+        return strip_markup(interpolate(rule.prompt, fields))
+    return strip_markup(interpolate(fields.get(rule.source_field, ""), fields))
