@@ -8,6 +8,7 @@ POSIX (``bin/python``) and Windows (``Scripts/python.exe``) branches are covered
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -767,9 +768,18 @@ class TestInstallLock:
 class TestNoWindowFlag:
     """L14: the SubprocessRunner suppresses the flashing console window on Windows."""
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows defines CREATE_NO_WINDOW"
+    )
     def test_no_window_is_noop_off_windows(self) -> None:
         # macOS/Linux subprocess has no CREATE_NO_WINDOW, so the guard defaults it to 0 (no-op).
         assert native_runtime._NO_WINDOW == 0
+
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="CREATE_NO_WINDOW is Windows-only"
+    )
+    def test_no_window_is_create_no_window_on_windows(self) -> None:
+        assert native_runtime._NO_WINDOW == 0x08000000
 
     def test_run_passes_creationflags(self, monkeypatch) -> None:
         captured: dict = {}
