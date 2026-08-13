@@ -39,6 +39,7 @@ from aqt.qt import (  # type: ignore[attr-defined]
     QStyleOptionViewItem,
     Qt,
     QTextDocument,
+    QTimer,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -46,7 +47,8 @@ from aqt.qt import (  # type: ignore[attr-defined]
 )
 from aqt.theme import theme_manager
 
-from omnia.plugins.note_maintenance.apply import ChangeApplier
+from omnia.gui.widgets import hint_label
+from omnia.plugins.note_maintenance.apply import ApplyOutcome, ChangeApplier
 from omnia.plugins.note_maintenance.preview import NotePreview, PreviewModel
 from omnia.plugins.note_maintenance.runner import ChangePlan
 
@@ -54,6 +56,9 @@ from omnia.plugins.note_maintenance.runner import ChangePlan
 _DIFF_COLUMN = 1
 # Enough for "Note 1750124928394 — 3 field(s)" and the longest usual field name.
 _LABEL_COLUMN_WIDTH = 260
+# How long a column drag has to settle before the rows are laid out again. Long enough to
+# coalesce a whole drag into one pass, short enough that letting go feels immediate.
+_RELAYOUT_DELAY_MS = 120
 
 
 @dataclass(frozen=True)
@@ -177,6 +182,7 @@ class _PreviewTree(QTreeWidget):
         super().__init__(parent)
         self._model = model
         self._on_changed = on_changed
+        self._relayout_pending = False
 
         self.setColumnCount(2)
         self.setHeaderLabels(["Note / field", "− before   + after"])
@@ -265,9 +271,21 @@ class _PreviewTree(QTreeWidget):
         return Qt.CheckState.Unchecked
 
     def _on_section_resized(self, column: int, _old: int, _new: int) -> None:
-        """Re-lay the rows out when the diff column changes width (their height depends on it)."""
-        if column == _DIFF_COLUMN:
-            self.doItemsLayout()
+        """Schedule a re-layout when the diff column changes width (row heights depend on it).
+
+        Debounced: a drag emits ``sectionResized`` for every pixel, and each relayout re-asks
+        the delegate for the size of every row — the one cost a 5 000-note plan cannot pay per
+        pixel. One pass once the drag settles gives the same result.
+        """
+        if column != _DIFF_COLUMN or self._relayout_pending:
+            return
+        self._relayout_pending = True
+        QTimer.singleShot(_RELAYOUT_DELAY_MS, self._relayout)
+
+    def _relayout(self) -> None:
+        """Lay the rows out once, for the width the drag ended at."""
+        self._relayout_pending = False
+        self.doItemsLayout()
 
 
 class MaintenancePreviewDialog(QDialog):
@@ -287,9 +305,10 @@ class MaintenancePreviewDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(
-            self._hint(
+            hint_label(
+                self,
                 "Nothing has been written yet. Untick anything you want to keep as it is, "
-                "then Apply — the whole batch lands as ONE undo step (Ctrl+Z puts it back)."
+                "then Apply — the whole batch lands as ONE undo step (Ctrl+Z puts it back).",
             )
         )
         self._summary = QLabel()
@@ -307,20 +326,6 @@ class MaintenancePreviewDialog(QDialog):
         root.addWidget(buttons)
 
         self._refresh_summary()
-
-    def _hint(self, text: str) -> QLabel:
-        """A secondary-text label that stays readable in BOTH themes.
-
-        Derived from the window's ACTUAL text colour and softened with alpha, so the contrast
-        direction is right whatever the theme (``palette(mid)`` goes near-black on dark).
-        """
-        label = QLabel(text)
-        label.setWordWrap(True)
-        color = self.palette().color(QPalette.ColorRole.WindowText)
-        label.setStyleSheet(
-            f"color: rgba({color.red()}, {color.green()}, {color.blue()}, 165);"
-        )
-        return label
 
     def _refresh_summary(self) -> None:
         """Restate what Apply would do, and disable it when nothing is ticked."""
@@ -343,8 +348,12 @@ class MaintenancePreviewDialog(QDialog):
         self.accept()
 
 
-def _report_applied(count: int) -> None:
-    """Tell the user how many notes were written (module-level: the dialog is gone by then)."""
+def _report_applied(outcome: ApplyOutcome) -> None:
+    """Show what the write did (module-level: the dialog is gone by the time it lands).
+
+    The wording belongs to the outcome, not here: the applier is the only place that knows a
+    planned note was skipped, so phrasing the result twice would let the two drift.
+    """
     from aqt.utils import tooltip
 
-    tooltip(f"Omnia: {count} note(s) updated — Ctrl+Z undoes the batch.")
+    tooltip(outcome.message)

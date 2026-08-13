@@ -132,6 +132,43 @@ class TestBuildTasksTolerateBadConfig:
 
         assert task.is_enabled
 
+    def test_the_fallback_keeps_a_task_the_user_switched_off(self, clean_registry):
+        # The switches are not options: reverting ``enable`` would silently run a task over the
+        # user's notes because ONE of its options could not be read.
+        task_registry.register_task("demo")(_DemoTask)
+
+        (task,) = task_registry.build_tasks(
+            {"demo": {"enable": False, "order": 5, "suffix": ["not", "a", "string"]}}
+        )
+
+        assert (task.is_enabled, task.order) == (False, 5)
+        assert task.config.suffix == "!"  # only the unreadable option reverts
+
+    def test_the_fallback_keeps_a_task_the_user_switched_on(self, clean_registry):
+        class _OffByDefault(_DemoTask):
+            class _Config(_DemoConfig):
+                enable: bool = False
+
+            config_model = _Config
+
+        task_registry.register_task("off_by_default")(_OffByDefault)
+
+        (task,) = task_registry.build_tasks(
+            {"off_by_default": {"enable": True, "suffix": {"not": "a string"}}}
+        )
+
+        assert task.is_enabled
+
+    def test_an_unreadable_switch_falls_back_on_its_own(self, clean_registry):
+        # A garbage ``order`` must not take a perfectly good ``enable`` down with it.
+        task_registry.register_task("demo")(_DemoTask)
+
+        (task,) = task_registry.build_tasks(
+            {"demo": {"enable": False, "order": "whenever"}}
+        )
+
+        assert (task.is_enabled, task.order) == (False, 100)
+
     def test_only_the_broken_task_loses_its_settings(self, clean_registry):
         task_registry.register_task("demo")(_DemoTask)
 
@@ -222,7 +259,9 @@ class TestBundledDefaults:
 
         plan = runner.plan([note])
         assert plan.note_count == 1
-        settled = note.with_updates(plan.notes[0].updates())
+        settled = note.with_updates(
+            {field.field: field.after for field in plan.notes[0].fields}
+        )
         # Everything the shipped tasks can do is done: a second run finds nothing left.
         assert runner.plan([settled]).is_empty
         assert settled.field("Synonyms") == "modest (ˈmɒdɪst), meek (miːk)"

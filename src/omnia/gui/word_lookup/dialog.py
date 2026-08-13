@@ -20,7 +20,6 @@ from typing import Any, Optional
 from aqt.qt import (  # type: ignore[attr-defined]
     QAbstractItemView,
     QCheckBox,
-    QPalette,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -36,6 +35,7 @@ from aqt.qt import (  # type: ignore[attr-defined]
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
+from omnia.gui.widgets import hint_label
 from omnia.plugins.word_lookup.config import WordLookupSettings
 
 logger = get_logger("word_lookup")
@@ -72,9 +72,10 @@ class WordLookupSettingsDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(
-            self._hint(
+            hint_label(
+                self,
                 "Tick the note types the desktop clipper's magnifier should search. "
-                "Select one to choose its fields."
+                "Select one to choose its fields.",
             )
         )
 
@@ -104,7 +105,9 @@ class WordLookupSettingsDialog(QDialog):
         )
         root.addLayout(columns, 1)
 
-        self._word_forms = QCheckBox("Also match other forms (loved -> love, studies -> study)")
+        self._word_forms = QCheckBox(
+            "Also match other forms (loved -> love, studies -> study)"
+        )
         self._word_forms.setChecked(bool(settings.match_word_forms))
         self._word_forms.setToolTip(
             "Double-clicking an inflected word still finds the card filed under its base form."
@@ -139,21 +142,6 @@ class WordLookupSettingsDialog(QDialog):
 
     # -- construction helpers -------------------------------------------------------------
 
-    def _hint(self, text: str) -> QLabel:
-        """A secondary-text label that stays readable in BOTH themes.
-
-        ``palette(mid)`` (the obvious choice) resolves to a near-black under Anki's dark theme,
-        which is invisible on its dark background. Deriving from the window's ACTUAL text colour
-        and softening it with alpha keeps the contrast direction correct whatever the theme.
-        """
-        label = QLabel(text)
-        label.setWordWrap(True)
-        color = self.palette().color(QPalette.ColorRole.WindowText)
-        label.setStyleSheet(
-            f"color: rgba({color.red()}, {color.green()}, {color.blue()}, 165);"
-        )
-        return label
-
     @staticmethod
     def _spin(low: int, high: int, value: int) -> QSpinBox:
         spin = QSpinBox()
@@ -183,9 +171,7 @@ class WordLookupSettingsDialog(QDialog):
             self._note_types.addItem(item)
         self._note_types.currentItemChanged.connect(self._on_note_type_changed)
         layout.addWidget(self._note_types, 1)
-        layout.addWidget(
-            self._hint("None ticked = search the whole collection.")
-        )
+        layout.addWidget(hint_label(self, "None ticked = search the whole collection."))
         return holder
 
     def _field_column(self, title: str, hint: str, on_auto: Any, attr: str) -> QWidget:
@@ -202,8 +188,10 @@ class WordLookupSettingsDialog(QDialog):
         layout.addLayout(header)
         listing = QListWidget()
         layout.addWidget(listing, 1)
-        layout.addWidget(self._hint(hint))
-        setattr(self, attr, listing)  # explicit, so renaming a column can't rewire the lists
+        layout.addWidget(hint_label(self, hint))
+        setattr(
+            self, attr, listing
+        )  # explicit, so renaming a column can't rewire the lists
         return holder
 
     @staticmethod

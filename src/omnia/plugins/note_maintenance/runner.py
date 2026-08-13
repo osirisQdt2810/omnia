@@ -37,15 +37,6 @@ class NoteChange:
     note_id: int
     fields: tuple[FieldChange, ...]
 
-    def updates(self) -> dict[str, str]:
-        """Return ``{field: new value}`` — the changes as a mapping, for replaying onto a view.
-
-        The apply step deliberately does NOT use this: it walks :attr:`fields` so it still has
-        each change's ``before`` and can tell a stale note (edited since the preview) from one
-        that still matches what the user reviewed.
-        """
-        return {change.field: change.after for change in self.fields}
-
 
 @dataclass(frozen=True)
 class ChangePlan:

@@ -17,20 +17,15 @@ from typing import Any, Optional
 
 from aqt.qt import (  # type: ignore[attr-defined]
     QAbstractItemView,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QPalette,
     QPushButton,
-    QSpinBox,
     QStackedWidget,
     Qt,
     QTableWidget,
@@ -43,6 +38,8 @@ from pydantic import BaseModel, ValidationError
 from omnia.core.config.schema import schema_from_model
 from omnia.core.logging import get_logger
 from omnia.core.plugin import ConfigField
+from omnia.gui.config_form import ConfigFieldEditor
+from omnia.gui.widgets import hint_label
 from omnia.plugins.note_maintenance.base import MaintenanceTask
 from omnia.plugins.note_maintenance.config import NoteMaintenanceSettings
 from omnia.plugins.note_maintenance.registry import build_tasks
@@ -163,9 +160,10 @@ class _TaskOptionsEditor(QWidget):
     """The options form for ONE task, built from that task's own settings model.
 
     ``enable`` is left out — the task list's tick owns it — and every other option is rendered
-    by kind: scalars from the shared :func:`schema_from_model` descriptors (label, help, bounds
-    and all), and the field mappings the deriver skips as a :class:`_FieldMapEditor`. What no
-    renderer knows is kept by :class:`_TaskOptions` and written back unchanged.
+    by kind: scalars through the SAME :class:`~omnia.gui.config_form.ConfigFieldEditor` the
+    generic per-feature form uses (so a kind renders identically wherever it appears), and the
+    field mappings that deriver skips as a :class:`_FieldMapEditor`. What no renderer knows is
+    kept by :class:`_TaskOptions` and written back unchanged.
     """
 
     def __init__(self, task: MaintenanceTask, parent: Optional[QWidget] = None) -> None:
@@ -183,18 +181,22 @@ class _TaskOptionsEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(QLabel(f"<b>{task.name or task.task_id}</b>"))
         if task.description:
-            layout.addWidget(_hint(self, task.description))
+            layout.addWidget(hint_label(self, task.description))
 
         form = QFormLayout()
         form.setSpacing(10)
         for name, value, field in self._options.rows:
             if field is None:
-                editor = _FieldMapEditor(value)
-                self._readers[name] = editor.values
-                form.addRow(_field_label(self._options.model, name), editor)
+                mapping = _FieldMapEditor(value)
+                self._readers[name] = mapping.values
+                form.addRow(_field_label(self._options.model, name), mapping)
                 continue
-            widget = self._widget(field, value)
-            form.addRow(_labelled(field), widget)
+            editor = ConfigFieldEditor(field, value)
+            # The generic form puts the help behind an (i) button it lays out itself; this one
+            # is a two-column panel, so the help rides on the control as a tooltip instead.
+            editor.widget.setToolTip(field.help)
+            self._readers[field.key] = editor.value
+            form.addRow(_labelled(field), editor.widget)
         layout.addLayout(form)
         layout.addStretch(1)
 
@@ -206,44 +208,6 @@ class _TaskOptionsEditor(QWidget):
         """
         edited = {name: read() for name, read in self._readers.items()}
         return {**self._options.passthrough, **edited}
-
-    def _widget(self, field: ConfigField, value: Any) -> QWidget:
-        """Build the control for one scalar option and register how to read it back."""
-        if field.kind == "bool":
-            check = QCheckBox()
-            check.setChecked(bool(value))
-            check.setToolTip(field.help)
-            self._readers[field.key] = check.isChecked
-            return check
-        if field.kind == "int":
-            spin = QSpinBox()
-            # A legit ``0`` bound is falsy, so test ``is None`` rather than ``or``.
-            spin.setRange(
-                0 if field.minimum is None else int(field.minimum),
-                1_000_000 if field.maximum is None else int(field.maximum),
-            )
-            spin.setValue(int(value or 0))
-            spin.setToolTip(field.help)
-            self._readers[field.key] = spin.value
-            return spin
-        if field.kind == "float":
-            double = QDoubleSpinBox()
-            double.setDecimals(2)
-            double.setSingleStep(0.05)
-            double.setRange(
-                0.0 if field.minimum is None else float(field.minimum),
-                1_000_000.0 if field.maximum is None else float(field.maximum),
-            )
-            double.setValue(float(value or 0.0))
-            double.setToolTip(field.help)
-            self._readers[field.key] = double.value
-            return double
-        # Everything else is text — no bundled task option needs a picker, and a stringy value
-        # round-trips unharmed through a line edit.
-        line = QLineEdit(str(value or ""))
-        line.setToolTip(field.help)
-        self._readers[field.key] = line.text
-        return line
 
 
 class NoteMaintenanceSettingsDialog(QDialog):
@@ -261,12 +225,13 @@ class NoteMaintenanceSettingsDialog(QDialog):
         self.setWindowTitle("Note Maintenance — settings")
         self.resize(820, 560)
 
+        self._saved_tasks: dict[str, dict[str, Any]] = {}
         self._tasks = self._configured_tasks()
         self._editors: dict[str, _TaskOptionsEditor] = {}
 
         root = QVBoxLayout(self)
         root.addWidget(
-            _hint(
+            hint_label(
                 self,
                 "Tick the tasks a maintenance run should include. Run order decides who goes "
                 "first — two tasks touching the same field layer in that order.",
@@ -279,7 +244,7 @@ class NoteMaintenanceSettingsDialog(QDialog):
         root.addLayout(columns, 1)
 
         root.addWidget(
-            _hint(
+            hint_label(
                 self,
                 "Run it from the Browser: select the notes, right-click → "
                 "🧹 Omnia · Maintain Notes… — you review every change before anything is written.",
@@ -306,13 +271,21 @@ class NoteMaintenanceSettingsDialog(QDialog):
         fix it. Per TASK that fallback lives in :func:`build_tasks` (the one gate every caller
         goes through); what is caught here is the ``[note_maintenance]`` section as a whole
         failing to parse, which happens one layer up and only on this read.
+
+        The RAW map is kept as :attr:`_saved_tasks` for :meth:`_save` to merge onto. The tasks
+        returned here only cover what THIS build registers, and each carries only what its model
+        accepted, while ``update_section`` replaces the whole ``tasks`` map in one shallow
+        update — so saving the tasks alone would delete a section (or an option inside one) a
+        newer Omnia wrote and synced down. Same hazard as ADR-010, one layer up.
         """
         try:
             settings = self._repo.feature_settings(_PLUGIN_ID)
         except ValidationError:
             logger.exception("note_maintenance: invalid settings; showing the defaults")
             settings = None
-        return build_tasks((settings or NoteMaintenanceSettings()).tasks)
+        saved = (settings or NoteMaintenanceSettings()).tasks
+        self._saved_tasks = {task_id: dict(values) for task_id, values in saved.items()}
+        return build_tasks(saved)
 
     def _task_column(self) -> QWidget:
         holder = QWidget()
@@ -333,7 +306,7 @@ class NoteMaintenanceSettingsDialog(QDialog):
             self._task_list.addItem(item)
         self._task_list.currentRowChanged.connect(self._on_task_changed)
         layout.addWidget(self._task_list, 1)
-        layout.addWidget(_hint(self, "Unticked tasks are skipped by every run."))
+        layout.addWidget(hint_label(self, "Unticked tasks are skipped by every run."))
         return holder
 
     def _options_column(self) -> QWidget:
@@ -360,16 +333,14 @@ class NoteMaintenanceSettingsDialog(QDialog):
         """
         from aqt.utils import showWarning
 
-        tasks: dict[str, dict[str, Any]] = {}
-        for row, task in enumerate(self._tasks):
-            item = self._task_list.item(row)
-            tasks[task.task_id] = {
-                "enable": item.checkState() == Qt.CheckState.Checked,
-                **self._editors[task.task_id].values(),
-            }
         try:
-            self._repo.update_section(_PLUGIN_ID, {"tasks": tasks})
-        except OSError as exc:
+            self._repo.update_section(_PLUGIN_ID, {"tasks": self._tasks_to_save()})
+        # Broad by necessity, at the UI boundary: what a failed write raises depends on the
+        # storage backend — an anki backend error from ``col.set_config`` (the default,
+        # collection-backed one), OSError/TypeError from the TOML writer, or a ValidationError
+        # from the reload that follows. Narrowing to one of them silently swallows the others
+        # and reports the save as successful.
+        except Exception as exc:
             logger.exception("note_maintenance: could not save settings")
             showWarning(
                 f"Omnia: could not save the Note Maintenance settings.\n\n{exc}"
@@ -377,21 +348,29 @@ class NoteMaintenanceSettingsDialog(QDialog):
             return
         self.accept()
 
+    def _tasks_to_save(self) -> dict[str, dict[str, Any]]:
+        """The whole ``tasks`` map to persist: what was stored, updated with what was edited.
 
-def _hint(widget: QWidget, text: str) -> QLabel:
-    """A secondary-text label that stays readable in BOTH themes.
+        Built on top of :attr:`_saved_tasks` (never from the registry alone) because
+        ``update_section`` merges shallowly — whatever this returns IS the stored map
+        afterwards. Two things therefore survive a save by this build:
 
-    ``palette(mid)`` (the obvious choice) resolves to a near-black under Anki's dark theme,
-    which is invisible on its dark background. Deriving from the window's ACTUAL text colour
-    and softening it with alpha keeps the contrast direction correct whatever the theme.
-    """
-    label = QLabel(text)
-    label.setWordWrap(True)
-    color = widget.palette().color(QPalette.ColorRole.WindowText)
-    label.setStyleSheet(
-        f"color: rgba({color.red()}, {color.green()}, {color.blue()}, 165);"
-    )
-    return label
+        * a ``[note_maintenance.tasks.<id>]`` section for a task it does not register (a newer
+          Omnia's task, synced down), and
+        * an option inside a KNOWN task that its model could not read — including the case
+          where that made the whole section fall back to defaults.
+        """
+        tasks = {task_id: dict(values) for task_id, values in self._saved_tasks.items()}
+        for row, task in enumerate(self._tasks):
+            item = self._task_list.item(row)
+            tasks[task.task_id] = {
+                **tasks.get(task.task_id, {}),
+                "enable": item.checkState() == Qt.CheckState.Checked,
+                # The editor supplies ``order`` too (it is a scalar option of every task
+                # model), plus whatever it could not render, unchanged.
+                **self._editors[task.task_id].values(),
+            }
+        return tasks
 
 
 def _labelled(field: ConfigField) -> QLabel:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from omnia.plugins.note_maintenance.apply import ChangeApplier
+from omnia.plugins.note_maintenance.apply import ApplyOutcome, ChangeApplier
 from omnia.plugins.note_maintenance.runner import ChangePlan, FieldChange, NoteChange
 
 
@@ -77,9 +77,9 @@ class TestChangeApplier:
         assert col.update_calls == 0
 
     def test_an_empty_plan_writes_nothing_and_reports_zero(self):
-        done: list[int] = []
+        done: list[ApplyOutcome] = []
         ChangeApplier(ChangePlan()).run(parent=None, on_done=done.append)
-        assert done == [0]
+        assert done == [ApplyOutcome()]
 
 
 class TestChangeApplierStaleNotes:
@@ -96,10 +96,10 @@ class TestChangeApplierStaleNotes:
         col = _FakeCollection({1: _FakeNote(Word="edited by hand")})
         plan = _plan(NoteChange(1, (FieldChange("Word", "old", "new"),)))
         applier = ChangeApplier(plan)
-        assert applier.stale_note_ids == ()
+        assert applier.outcome.stale_note_ids == ()
 
         applier.write(col)
-        assert applier.stale_note_ids == (1,)
+        assert applier.outcome.stale_note_ids == (1,)
 
     def test_the_notes_other_fields_are_still_written(self):
         col = _FakeCollection({1: _FakeNote(Word="edited by hand", Meaning="old")})
@@ -139,10 +139,10 @@ class TestChangeApplierMissingNotes:
             NoteChange(2, (FieldChange("Word", "old", "new"),)),
         )
         applier = ChangeApplier(plan)
-        assert applier.missing_note_ids == ()
+        assert applier.outcome.missing_note_ids == ()
 
         applier.write(col)
-        assert applier.missing_note_ids == (2,)
+        assert applier.outcome.missing_note_ids == (2,)
 
     def test_reports_only_the_notes_actually_written(self):
         col = _FakeCollection({1: _FakeNote(Word="old")})
@@ -153,4 +153,36 @@ class TestChangeApplierMissingNotes:
         applier = ChangeApplier(plan)
         applier.write(col)
 
-        assert applier.written_note_count == 1
+        assert applier.outcome.written_note_count == 1
+
+
+class TestApplyOutcomeMessage:
+    """The outcome owns the wording, so a skipped note cannot be reported as a success."""
+
+    def test_a_clean_write_reports_the_count_and_the_undo(self):
+        message = ApplyOutcome(written_note_count=3).message
+
+        assert message == "Omnia: 3 note(s) updated — Ctrl+Z undoes the batch."
+
+    def test_skipped_notes_are_named_in_the_same_line(self):
+        message = ApplyOutcome(
+            written_note_count=1, missing_note_ids=(2,), stale_note_ids=(3, 4)
+        ).message
+
+        assert message.startswith("Omnia: 1 note(s) updated")
+        assert "1 note(s) had been deleted" in message
+        assert "2 note(s) changed since the preview" in message
+
+    def test_the_write_hands_its_own_outcome_to_the_message(self):
+        col = _FakeCollection({1: _FakeNote(Word="edited by hand")})
+        plan = _plan(
+            NoteChange(1, (FieldChange("Word", "old", "new"),)),
+            NoteChange(2, (FieldChange("Word", "old", "new"),)),  # deleted meanwhile
+        )
+        applier = ChangeApplier(plan)
+        applier.write(col)
+
+        message = applier.outcome.message
+        assert "0 note(s) updated" in message
+        assert "1 note(s) had been deleted" in message
+        assert "1 note(s) changed since the preview" in message

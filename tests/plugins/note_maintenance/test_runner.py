@@ -51,15 +51,20 @@ def _note(**fields: str) -> NoteView:
     return NoteView(note_id=1, note_type="Vocab", fields=dict(fields))
 
 
+def _updates(change: NoteChange) -> dict[str, str]:
+    """The change as ``{field: new value}`` — what a run WOULD leave the note holding."""
+    return {field.field: field.after for field in change.fields}
+
+
 class TestMaintenanceRunner:
     def test_tasks_run_in_order(self):
         runner = MaintenanceRunner([_append("b", order=20), _append("a", order=10)])
         plan = runner.plan([_note(Word="x")])
-        assert plan.notes[0].updates() == {"Word": "xab"}
+        assert _updates(plan.notes[0]) == {"Word": "xab"}
 
     def test_ties_keep_the_given_order(self):
         runner = MaintenanceRunner([_append("a", order=5), _append("b", order=5)])
-        assert runner.plan([_note(Word="x")]).notes[0].updates() == {"Word": "xab"}
+        assert _updates(runner.plan([_note(Word="x")]).notes[0]) == {"Word": "xab"}
 
     def test_two_tasks_on_one_field_compose(self):
         # The second task sees the first task's output, not the stored value.
@@ -74,7 +79,7 @@ class TestMaintenanceRunner:
             [_append("a", order=1), _append("b", order=2, enable=False)]
         )
         assert [task.config.suffix for task in runner.active_tasks] == ["a"]
-        assert runner.plan([_note(Word="x")]).notes[0].updates() == {"Word": "xa"}
+        assert _updates(runner.plan([_note(Word="x")]).notes[0]) == {"Word": "xa"}
 
     def test_task_returning_nothing_produces_no_entry(self):
         runner = MaintenanceRunner([_NoopTask()])
@@ -97,14 +102,14 @@ class TestMaintenanceRunner:
         # The second note has no Word field, so the write is dropped: the apply step cannot
         # create one either, and planning it would preview a change that never happens.
         assert plan.note_count == 1
-        assert plan.notes[0].updates() == {"Word": "a!"}
+        assert _updates(plan.notes[0]) == {"Word": "a!"}
 
     def test_a_dropped_field_does_not_hide_the_tasks_other_writes(self):
         runner = MaintenanceRunner(
             [_append("!", field="Word", order=1), _append("?", field="Gone", order=2)]
         )
         plan = runner.plan([_note(Word="a")])
-        assert plan.notes[0].updates() == {"Word": "a!"}
+        assert _updates(plan.notes[0]) == {"Word": "a!"}
 
     def test_plan_counts_notes_and_fields(self):
         runner = MaintenanceRunner(

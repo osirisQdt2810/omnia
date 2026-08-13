@@ -14,6 +14,7 @@ collection.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from omnia.core import anki_compat
@@ -21,6 +22,44 @@ from omnia.core.logging import get_logger
 from omnia.plugins.note_maintenance.runner import ChangePlan
 
 logger = get_logger("note_maintenance")
+
+
+@dataclass(frozen=True)
+class ApplyOutcome:
+    """What one :meth:`ChangeApplier.write` actually did — counts AND how to say them.
+
+    The write is the only place that knows a planned note was skipped, so the phrasing lives
+    with the numbers instead of being reinvented by whoever shows it: a caller that formats a
+    bare count of its own reports "N notes updated" while silently dropping the skips, which
+    is precisely the reassurance this feature must not give.
+
+    Attributes:
+        written_note_count: How many notes were submitted to the collection.
+        missing_note_ids: Planned notes that were gone by the time the write ran (deleted
+            since the preview).
+        stale_note_ids: Planned notes whose text had been edited since the preview; their
+            changed fields were left ALONE, so the user's own edit wins.
+    """
+
+    written_note_count: int = 0
+    missing_note_ids: tuple[int, ...] = ()
+    stale_note_ids: tuple[int, ...] = ()
+
+    @property
+    def message(self) -> str:
+        """One line for the user: what was written, and what was skipped instead."""
+        parts = [
+            f"Omnia: {self.written_note_count} note(s) updated — Ctrl+Z undoes the batch."
+        ]
+        if self.missing_note_ids:
+            parts.append(
+                f"{len(self.missing_note_ids)} note(s) had been deleted — skipped."
+            )
+        if self.stale_note_ids:
+            parts.append(
+                f"{len(self.stale_note_ids)} note(s) changed since the preview — left alone."
+            )
+        return " ".join(parts)
 
 
 class ChangeApplier:
@@ -33,57 +72,39 @@ class ChangeApplier:
             plan: The reviewed, confirmed plan to persist.
         """
         self._plan = plan
-        self._missing_note_ids: tuple[int, ...] = ()
-        self._stale_note_ids: tuple[int, ...] = ()
-        self._written_note_count = 0
+        self._outcome = ApplyOutcome()
 
     @property
-    def missing_note_ids(self) -> tuple[int, ...]:
-        """The planned notes that were gone by the time the write ran (deleted meanwhile).
+    def outcome(self) -> ApplyOutcome:
+        """What the last :meth:`write` did (an empty outcome before it has run)."""
+        return self._outcome
 
-        Empty until :meth:`write` has run; the caller reports it once the op finishes.
-        """
-        return self._missing_note_ids
-
-    @property
-    def stale_note_ids(self) -> tuple[int, ...]:
-        """The planned notes whose text had been edited since the preview was taken.
-
-        Empty until :meth:`write` has run. Their changed fields are left ALONE (see
-        :meth:`write`), so the user's own edit wins over a plan that no longer describes it.
-        """
-        return self._stale_note_ids
-
-    @property
-    def written_note_count(self) -> int:
-        """How many notes the last :meth:`write` actually submitted (0 before it runs)."""
-        return self._written_note_count
-
-    def run(self, parent: Any, on_done: Optional[Callable[[int], None]] = None) -> None:
+    def run(
+        self, parent: Any, on_done: Optional[Callable[[ApplyOutcome], None]] = None
+    ) -> None:
         """Apply the plan in the background as one undoable operation.
 
         The write itself runs OFF the main thread (``CollectionOp.run_in_background``); only
         ``on_done`` is marshalled back to it.
 
-        A no-op for an empty plan (``on_done`` still fires with 0, so a caller can report
-        "nothing to do" without special-casing it).
+        A no-op for an empty plan (``on_done`` still fires with an empty outcome, so a caller
+        can report "nothing to do" without special-casing it).
 
         Args:
             parent: The Qt widget the operation reports progress/errors against.
-            on_done: Called once the op succeeds, with the number of notes ACTUALLY written —
-                the planned notes minus those the write had to skip (see
-                :attr:`missing_note_ids`), so the user is never told about edits that did not
-                happen.
+            on_done: Called once the op succeeds, with the :class:`ApplyOutcome` — the notes
+                ACTUALLY written plus the ones the write had to skip, so the user is never
+                told about edits that did not happen.
         """
         if self._plan.is_empty:
             if on_done is not None:
-                on_done(0)
+                on_done(self._outcome)
             return
         from aqt.operations import CollectionOp
 
         op = CollectionOp(parent=parent, op=self.write)
         if on_done is not None:
-            op = op.success(lambda _changes: on_done(self._written_note_count))
+            op = op.success(lambda _changes: on_done(self._outcome))
         op.run_in_background()
 
     def write(self, col: Any) -> Any:
@@ -93,10 +114,10 @@ class ChangeApplier:
         the confirmation. Two cases are skipped rather than treated as fatal, because one note
         must not cost the user the other 4 999 edits:
 
-        * the note is gone (deleted meanwhile) — recorded in :attr:`missing_note_ids`;
+        * the note is gone (deleted meanwhile) — recorded in the :attr:`outcome`;
         * the field no longer holds the ``before`` the user reviewed (they edited the note, or
-          another add-on did) — recorded in :attr:`stale_note_ids`. Writing the planned value
-          there would silently revert an edit the user never saw in this diff.
+          another add-on did) — recorded there too. Writing the planned value there would
+          silently revert an edit the user never saw in this diff.
 
         Args:
             col: The Anki collection (handed in by the ``CollectionOp``).
@@ -137,9 +158,11 @@ class ChangeApplier:
             # for no reason, marking it modified for the next AnkiWeb sync.
             if wrote:
                 notes.append(note)
-        self._missing_note_ids = tuple(missing)
-        self._stale_note_ids = tuple(dict.fromkeys(stale))  # de-duped, in plan order
-        self._written_note_count = len(notes)
+        self._outcome = ApplyOutcome(
+            written_note_count=len(notes),
+            missing_note_ids=tuple(missing),
+            stale_note_ids=tuple(dict.fromkeys(stale)),  # de-duped, in plan order
+        )
         if missing:
             logger.warning(
                 "skipped %d note(s) deleted since the preview: %s",

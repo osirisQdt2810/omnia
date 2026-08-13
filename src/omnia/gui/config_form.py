@@ -4,6 +4,10 @@ Each :class:`~omnia.core.plugin.ConfigField` maps to a Qt widget by ``kind`` (bo
 int→spinbox, float→double spinbox, text/secret→line edit, choice→combo, color→colour picker).
 This is how every feature gets a settings panel without a bespoke dialog — declare fields,
 get a form.
+
+That mapping lives in :class:`ConfigFieldEditor` rather than in the dialog, so a BESPOKE
+dialog that still renders declared fields (the Note Maintenance per-task panel) reuses the
+same controls instead of growing a second widget factory that drifts from this one.
 """
 
 from __future__ import annotations
@@ -116,6 +120,90 @@ if TYPE_CHECKING:
     from omnia.core.plugin import ConfigField
 
 
+class ConfigFieldEditor:
+    """One :class:`ConfigField` rendered as a Qt control, plus how to read its value back.
+
+    Owns BOTH directions of the ``kind`` mapping so they cannot drift apart: what
+    :meth:`_build` draws for a kind is what :meth:`value` reads it back as. Shared by the
+    generic :class:`PluginConfigDialog` and by bespoke dialogs that render declared fields of
+    their own (``gui/note_maintenance/panel.py``), which is why it is a standalone class and
+    not a method on the dialog.
+
+    Attributes:
+        field: The descriptor this editor renders.
+        widget: The control — the caller places it in its own layout.
+    """
+
+    def __init__(self, field: ConfigField, value: Any) -> None:
+        """Build the control for ``field``, showing ``value``.
+
+        Args:
+            field: The field descriptor (label, kind, bounds, choices).
+            value: The current value to preselect.
+        """
+        self.field = field
+        self.widget = self._build(field, value)
+
+    def value(self) -> Any:
+        """Return the control's current value, typed as the field's ``kind`` implies."""
+        kind = self.field.kind
+        if kind == "bool":
+            return self.widget.isChecked()
+        if kind in ("int", "float"):
+            return self.widget.value()
+        if kind == "choice":
+            return self.widget.currentText()
+        if kind == "color":
+            return self.widget.hex()
+        return self.widget.text()
+
+    @staticmethod
+    def _build(field: ConfigField, value: Any) -> QWidget:
+        if field.kind == "bool":
+            w = QCheckBox()
+            w.setChecked(bool(value))
+            return w
+        if field.kind == "int":
+            w = QSpinBox()
+            # A legit ``0`` bound is falsy, so test ``is None`` — ``field.maximum or DEFAULT``
+            # would treat a real 0 as "unset" and widen the range past it.
+            minimum = 0 if field.minimum is None else int(field.minimum)
+            maximum = 1_000_000 if field.maximum is None else int(field.maximum)
+            w.setRange(minimum, maximum)
+            w.setValue(int(value or 0))
+            return w
+        if field.kind == "float":
+            w = QDoubleSpinBox()
+            w.setDecimals(2)
+            w.setSingleStep(0.1)
+            minimum = 0.0 if field.minimum is None else float(field.minimum)
+            maximum = 1_000_000.0 if field.maximum is None else float(field.maximum)
+            w.setRange(minimum, maximum)
+            w.setValue(float(value or 0.0))
+            return w
+        if field.kind == "choice":
+            w = QComboBox()
+            w.addItems(list(field.choices))
+            # settings.dict() (pydantic v1 without use_enum_values) hands back an Enum MEMBER,
+            # not its string value, so a raw ``value in field.choices`` (stringy choices) misses
+            # and the field silently resets to index 0. Normalize to the underlying value first.
+            normalized = str(getattr(value, "value", value))
+            # Preserve an out-of-range stored value as its own option instead of silently
+            # coercing to index 0 — otherwise OK would overwrite the user's real value on save.
+            if normalized and normalized not in field.choices:
+                w.addItem(normalized)
+            if normalized:
+                w.setCurrentText(normalized)
+            return w
+        if field.kind == "color":
+            return _ColorButton(str(value or ""))
+        # text / secret
+        w = QLineEdit(str(value or ""))
+        if field.kind == "secret":
+            w.setEchoMode(QLineEdit.EchoMode.Password)
+        return w
+
+
 class PluginConfigDialog(QDialog):
     """Edits a plugin's settings from its declared :class:`ConfigField` list."""
 
@@ -130,7 +218,7 @@ class PluginConfigDialog(QDialog):
         self.setWindowTitle(f"{title} — settings")
         self.setMinimumWidth(420)
         self._fields = fields
-        self._widgets: dict[str, QWidget] = {}
+        self._editors: dict[str, ConfigFieldEditor] = {}
         self._build(current)
 
     def _build(self, current: dict[str, Any]) -> None:
@@ -138,17 +226,17 @@ class PluginConfigDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(10)
         for field in self._fields:
-            widget = self._make_widget(field, current.get(field.key, field.default))
-            self._widgets[field.key] = widget
+            editor = ConfigFieldEditor(field, current.get(field.key, field.default))
+            self._editors[field.key] = editor
             label = QLabel(field.label)
             if field.help:
                 # The clickable (i) icon in the value row is the SINGLE help source — a
                 # width-limited, wrapped tooltip plus click-to-show. Deliberately NO tooltip on
                 # the label or the widget: those were unbounded and popped a screen-wide
                 # one-line strip on hover/click, duplicating the (i).
-                form.addRow(label, self._field_row(widget, field.help))
+                form.addRow(label, self._field_row(editor.widget, field.help))
             else:
-                form.addRow(label, widget)
+                form.addRow(label, editor.widget)
         outer.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -201,66 +289,6 @@ class PluginConfigDialog(QDialog):
         layout.addWidget(widget, 1)
         return row
 
-    @staticmethod
-    def _make_widget(field: ConfigField, value: Any) -> QWidget:
-        if field.kind == "bool":
-            w = QCheckBox()
-            w.setChecked(bool(value))
-            return w
-        if field.kind == "int":
-            w = QSpinBox()
-            # A legit ``0`` bound is falsy, so test ``is None`` — ``field.maximum or DEFAULT``
-            # would treat a real 0 as "unset" and widen the range past it.
-            minimum = 0 if field.minimum is None else int(field.minimum)
-            maximum = 1_000_000 if field.maximum is None else int(field.maximum)
-            w.setRange(minimum, maximum)
-            w.setValue(int(value or 0))
-            return w
-        if field.kind == "float":
-            w = QDoubleSpinBox()
-            w.setDecimals(2)
-            w.setSingleStep(0.1)
-            minimum = 0.0 if field.minimum is None else float(field.minimum)
-            maximum = 1_000_000.0 if field.maximum is None else float(field.maximum)
-            w.setRange(minimum, maximum)
-            w.setValue(float(value or 0.0))
-            return w
-        if field.kind == "choice":
-            w = QComboBox()
-            w.addItems(list(field.choices))
-            # settings.dict() (pydantic v1 without use_enum_values) hands back an Enum MEMBER,
-            # not its string value, so a raw ``value in field.choices`` (stringy choices) misses
-            # and the field silently resets to index 0. Normalize to the underlying value first.
-            normalized = str(getattr(value, "value", value))
-            # Preserve an out-of-range stored value as its own option instead of silently
-            # coercing to index 0 — otherwise OK would overwrite the user's real value on save.
-            if normalized and normalized not in field.choices:
-                w.addItem(normalized)
-            if normalized:
-                w.setCurrentText(normalized)
-            return w
-        if field.kind == "color":
-            return _ColorButton(str(value or ""))
-        # text / secret
-        w = QLineEdit(str(value or ""))
-        if field.kind == "secret":
-            w.setEchoMode(QLineEdit.EchoMode.Password)
-        return w
-
     def values(self) -> dict[str, Any]:
         """Return the edited values keyed by field key."""
-        result: dict[str, Any] = {}
-        for field in self._fields:
-            widget = self._widgets[field.key]
-            if isinstance(widget, QCheckBox):
-                result[field.key] = widget.isChecked()
-            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                result[field.key] = widget.value()
-            elif isinstance(widget, QComboBox):
-                result[field.key] = widget.currentText()
-            elif isinstance(widget, _ColorButton):
-                # A _ColorButton is a QPushButton (not a QLineEdit), so read its hex explicitly.
-                result[field.key] = widget.hex()
-            elif isinstance(widget, QLineEdit):
-                result[field.key] = widget.text()
-        return result
+        return {key: editor.value() for key, editor in self._editors.items()}
