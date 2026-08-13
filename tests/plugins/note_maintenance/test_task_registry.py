@@ -133,23 +133,47 @@ class TestNoteMaintenancePlugin:
     def test_build_runner_uses_the_configured_tasks(self):
         plugin = NoteMaintenancePlugin()
         runner = plugin.build_runner()
-        # No settings (plugin not enabled) -> every task at its defaults, all enabled.
-        assert len(runner.active_tasks) == len(task_registry.registered_tasks())
+        # No settings (plugin not enabled) -> every task at its MODEL defaults: in the shipped
+        # order, and without replace_text_all_fields, which ships off.
+        assert [task.task_id for task in runner.active_tasks] == [
+            "reformat_synonyms",
+            "strip_ipa",
+            "extract_audio_file_name",
+            "fill_first_example",
+        ]
 
     def test_enable_applies_the_settings_and_disable_restores_the_defaults(self):
         plugin = NoteMaintenancePlugin()
         ctx = _context(NoteMaintenanceSettings(tasks={"strip_ipa": {"enable": False}}))
-        total = len(task_registry.registered_tasks())
+        default_active = len(plugin.build_runner().active_tasks)
 
         plugin.on_enable(ctx)
-        assert len(plugin.build_runner().active_tasks) == total - 1
+        assert len(plugin.build_runner().active_tasks) == default_active - 1
 
         plugin.on_disable(ctx)
-        assert len(plugin.build_runner().active_tasks) == total
+        assert len(plugin.build_runner().active_tasks) == default_active
 
 
 class TestBundledDefaults:
-    """The ordering the add-on SHIPS has to settle in a single pass over a note."""
+    """What the add-on SHIPS: the defaults in the models, and a run that settles in one pass."""
+
+    def test_every_model_default_matches_the_bundled_toml(self):
+        # The defaults live in each task's config MODEL; features.example.toml only mirrors
+        # them. The collection config backend (ADR-006) never reads that file — it starts
+        # fresh from the models — so the two layers must not drift apart.
+        for task_id, values in _bundled_task_configs().items():
+            config = task_registry.registered_tasks()[task_id]().config
+            for option, expected in values.items():
+                assert getattr(config, option) == expected, (task_id, option)
+
+    def test_the_models_alone_ship_the_same_run_as_the_toml(self):
+        from_models = MaintenanceRunner(task_registry.build_tasks({})).active_tasks
+        from_toml = MaintenanceRunner(
+            task_registry.build_tasks(_bundled_task_configs())
+        ).active_tasks
+        assert [task.task_id for task in from_models] == [
+            task.task_id for task in from_toml
+        ]
 
     def test_one_pass_reaches_a_fixed_point(self):
         runner = MaintenanceRunner(task_registry.build_tasks(_bundled_task_configs()))

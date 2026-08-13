@@ -27,6 +27,11 @@ _SOUND_TAG_RE = re.compile(r"^\s*\[sound:([^\]]+)\]\s*$", re.IGNORECASE)
 class ExtractAudioFileNameConfig(TaskConfigBase):
     """Which audio fields to read, and where to put their filenames."""
 
+    order: int = Field(
+        30,
+        title="Run order",
+        description="Independent of the synonym tasks; runs after them by convention.",
+    )
     fields: dict[str, str] = Field(
         default_factory=lambda: {
             "Dictionary Definition Audio": "Dictionary Definition AudioNoTag",

@@ -18,6 +18,11 @@ class _FakeCollection:
         self.updated: list[_FakeNote] = []
 
     def get_note(self, note_id: int) -> _FakeNote:
+        # Anki raises NotFoundError for a note that no longer exists — so does the fake.
+        from anki.errors import NotFoundError
+
+        if note_id not in self._notes:
+            raise NotFoundError(f"no such note: {note_id}")
         return self._notes[note_id]
 
     def update_notes(self, notes: list[_FakeNote]) -> str:
@@ -64,3 +69,42 @@ class TestChangeApplier:
         done: list[int] = []
         ChangeApplier(ChangePlan()).run(parent=None, on_done=done.append)
         assert done == [0]
+
+
+class TestChangeApplierMissingNotes:
+    """A note deleted between the preview and the apply must not cost the whole batch."""
+
+    def test_skips_a_deleted_note_and_writes_the_rest(self):
+        col = _FakeCollection({1: _FakeNote(Word="old"), 3: _FakeNote(Word="old")})
+        plan = _plan(
+            NoteChange(1, (FieldChange("Word", "old", "new"),)),
+            NoteChange(2, (FieldChange("Word", "old", "new"),)),  # deleted meanwhile
+            NoteChange(3, (FieldChange("Word", "old", "third"),)),
+        )
+        applier = ChangeApplier(plan)
+
+        assert applier.write(col) == "op-changes"
+        assert col.updated == [{"Word": "new"}, {"Word": "third"}]
+
+    def test_records_the_missing_note_ids(self):
+        col = _FakeCollection({1: _FakeNote(Word="old")})
+        plan = _plan(
+            NoteChange(1, (FieldChange("Word", "old", "new"),)),
+            NoteChange(2, (FieldChange("Word", "old", "new"),)),
+        )
+        applier = ChangeApplier(plan)
+        assert applier.missing_note_ids == ()
+
+        applier.write(col)
+        assert applier.missing_note_ids == (2,)
+
+    def test_reports_only_the_notes_actually_written(self):
+        col = _FakeCollection({1: _FakeNote(Word="old")})
+        plan = _plan(
+            NoteChange(1, (FieldChange("Word", "old", "new"),)),
+            NoteChange(2, (FieldChange("Word", "old", "new"),)),
+        )
+        applier = ChangeApplier(plan)
+        applier.write(col)
+
+        assert applier.written_note_count == 1

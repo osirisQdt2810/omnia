@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 @dataclass(frozen=True)
@@ -56,13 +56,30 @@ class TaskConfigBase(BaseModel):
 
     Pydantic v1 (see :mod:`omnia.core.config.models` for why v1). ``extra = "forbid"`` so a
     typo in a task's options is reported instead of silently ignored.
+
+    The values here are the CONTRACT's fallback, not the shipped defaults: a task that ships
+    off, or in a particular position, re-declares ``enable``/``order`` on its own config model.
+    Defaults have to live in the model because that is the only layer every storage backend
+    reads — with the collection backend (ADR-006) the bundled ``features.example.toml`` is
+    never loaded, and the file it mirrors is created fresh from these models.
     """
 
     class Config:
         extra = "forbid"
 
-    enable: bool = True
-    order: int = 100
+    enable: bool = Field(
+        True,
+        title="Run this task",
+        description="Whether this task takes part in a maintenance run.",
+    )
+    order: int = Field(
+        100,
+        title="Run order",
+        description=(
+            "Run position — lower runs first; ties keep registration order. A task that "
+            "declares no order of its own runs last."
+        ),
+    )
 
 
 class MaintenanceTask(ABC):

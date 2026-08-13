@@ -4,10 +4,14 @@ Two fields hold the same sentence — one plain, one with the target word clozed
 the clozed one (the usual direction: that is the field being reviewed) leaves the plain field
 stale. This task copies the clozed field over when the two no longer say the same thing.
 
-"The same thing" is measured on the WORDS, not the markup: both sides are reduced to plain
-text (:func:`~omnia.core.text.strip_markup`, which also unwraps cloze deletions to their
-answer) and compared by Jaccard similarity, so ``<b>`` tags, ``{{c1::…}}`` wrappers and
-whitespace never count as a difference.
+Both the comparison and the copy go through :func:`~omnia.core.text.strip_markup` (which
+unwraps a cloze deletion to its answer):
+
+* "the same thing" is measured on the WORDS, not the markup — Jaccard similarity over the
+  stripped text, so ``<b>`` tags, ``{{c1::…}}`` wrappers and whitespace never count as a
+  difference;
+* the refill writes the STRIPPED sentence, because the target is the plain twin — a field
+  holding ``{{c1::…}}`` markup no cloze template renders is not a refill, it is a mess.
 
 Pure module: no ``aqt``/``anki`` imports.
 """
@@ -32,6 +36,11 @@ _WORD_RE = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)*|\d+", re.UNICODE)
 class FillFirstExampleConfig(TaskConfigBase):
     """Which fields hold the two copies of the sentence, and how different is too different."""
 
+    order: int = Field(
+        40,
+        title="Run order",
+        description="Independent of the other bundled tasks; runs after them by convention.",
+    )
     source_field: str = Field(
         "Clozed First Example",
         title="Source field",
@@ -40,7 +49,10 @@ class FillFirstExampleConfig(TaskConfigBase):
     target_field: str = Field(
         "First Example",
         title="Target field",
-        description="The field refilled from the source when the two have drifted apart.",
+        description=(
+            "The field refilled when the two have drifted apart. It receives the source as "
+            "PLAIN text — markup stripped and cloze deletions unwrapped to their answer."
+        ),
     )
     threshold: float = Field(
         0.75,
@@ -74,7 +86,11 @@ class FillFirstExampleTask(MaintenanceTask):
             return {}
         if self._similarity(target, source) >= self.config.threshold:
             return {}
-        return {self.config.target_field: source}
+        # The target is the PLAIN twin, so it gets the sentence as text: copying the raw source
+        # would put "{{c1::plunged}}" on a field no cloze template ever renders. Markup that
+        # carried no words at all (a lone [sound:…]) would empty the field — leave it be.
+        plain = strip_markup(source)
+        return {self.config.target_field: plain} if plain else {}
 
     @staticmethod
     def _similarity(left: str, right: str) -> float:

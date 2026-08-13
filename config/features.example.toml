@@ -22,6 +22,8 @@ force_again_after_days = 7     # if the Hard interval would exceed this, force A
 # One table per maintenance task: `enable` (does it run) + `order` (lower runs first) + the
 # task's own options. A task with no table here runs with its model defaults. Nothing is ever
 # written without the user confirming the diff first.
+# These values MIRROR each task's config model, which is where the defaults actually live — a
+# collection-backed profile never reads this file. A test pins the two together.
 # `reformat_synonyms` runs BEFORE `strip_ipa`: strip_ipa only understands an already paired
 # list ("a (x), b (y)"), so with the other order a collapsed list would need two runs to settle.
 [note_maintenance.tasks.reformat_synonyms]
