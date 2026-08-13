@@ -20,7 +20,10 @@ collection. So the rules here are generic and ordering-driven:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+
+from omnia.core.text import strip_markup
 
 # Anki's media/markup syntaxes that must never reach the UI as raw text.
 _SOUND_RE = re.compile(r"\[sound:([^\]]+)\]", re.IGNORECASE)
@@ -123,18 +126,18 @@ def escape_search_term(term: str) -> str:
 # candidate — the search simply ORs them, so an extra wrong guess costs nothing but a miss costs
 # the user the card they were looking for.
 _DEINFLECT: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("ies", ("y",)),          # studies -> study
-    ("ied", ("y",)),          # studied -> study
-    ("ier", ("y",)),          # happier -> happy
-    ("iest", ("y",)),         # happiest -> happy
-    ("ily", ("y",)),          # happily -> happy
-    ("es", ("", "e")),        # goes -> go, boxes -> box
-    ("ed", ("", "e")),        # looked -> look, loved -> love
-    ("ing", ("", "e")),       # looking -> look, loving -> love
-    ("est", ("", "e")),       # tallest -> tall
-    ("er", ("", "e")),        # taller -> tall
-    ("ly", ("",)),            # quickly -> quick
-    ("s", ("",)),             # loves -> love
+    ("ies", ("y",)),  # studies -> study
+    ("ied", ("y",)),  # studied -> study
+    ("ier", ("y",)),  # happier -> happy
+    ("iest", ("y",)),  # happiest -> happy
+    ("ily", ("y",)),  # happily -> happy
+    ("es", ("", "e")),  # goes -> go, boxes -> box
+    ("ed", ("", "e")),  # looked -> look, loved -> love
+    ("ing", ("", "e")),  # looking -> look, loving -> love
+    ("est", ("", "e")),  # tallest -> tall
+    ("er", ("", "e")),  # taller -> tall
+    ("ly", ("",)),  # quickly -> quick
+    ("s", ("",)),  # loves -> love
 )
 # A stem shorter than this is noise ("as" -> "a"). Two is enough for real bases like "go".
 _MIN_STEM = 2
@@ -287,23 +290,11 @@ def build_query(
 def strip_html(value: str) -> str:
     """Return ``value`` as plain readable text, KEEPING the author's line breaks.
 
-    Tags, media refs, cloze markup and entities are removed, but ``<br>`` and closing block tags
-    become newlines rather than spaces. Fields like "Phrasal Verb" list one entry per ``<br>``;
-    flattening those made the panel show a single unreadable run of text where the card itself
-    shows a tidy list.
+    A thin alias over the shared :func:`omnia.core.text.strip_markup`. The lookup panel and
+    text-to-speech need exactly the same cleaning, and two copies would drift — a fix applied to
+    one (media refs, cloze, entities) would silently miss the other.
     """
-    if not value:
-        return ""
-    text = _SOUND_RE.sub(" ", value)
-    text = _IMG_RE.sub(" ", text)
-    text = _CLOZE_RE.sub(r"\1", text)  # show the cloze answer, not the markup
-    text = _LINE_BREAK_RE.sub("\n", text)  # keep the author's line structure
-    text = _TAG_RE.sub("", text)
-    for entity, replacement in _HTML_ENTITIES.items():
-        text = text.replace(entity, replacement)
-    text = _INLINE_SPACE_RE.sub(" ", text)
-    text = _BLANK_LINES_RE.sub("\n", text)
-    return "\n".join(line.strip() for line in text.split("\n")).strip()
+    return strip_markup(value)
 
 
 def field_media(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -453,4 +444,6 @@ def rank_cards(cards: list[LookupCard], word: str) -> list[LookupCard]:
             return 3
         return 4
 
-    return [card for _, card in sorted(enumerate(cards), key=lambda p: (score(p[1]), p[0]))]
+    return [
+        card for _, card in sorted(enumerate(cards), key=lambda p: (score(p[1]), p[0]))
+    ]
