@@ -280,7 +280,11 @@ class _PreviewTree(QTreeWidget):
         if column != _DIFF_COLUMN or self._relayout_pending:
             return
         self._relayout_pending = True
-        QTimer.singleShot(_RELAYOUT_DELAY_MS, self._relayout)
+        # The context overload (msec, context, slot): the timer holds a BOUND METHOD of this
+        # tree, and the dialog can be closed while the drag is still settling. Tying it to the
+        # tree makes Qt drop the pending call when the tree goes, instead of calling into a
+        # deleted C++ object.
+        QTimer.singleShot(_RELAYOUT_DELAY_MS, self, self._relayout)
 
     def _relayout(self) -> None:
         """Lay the rows out once, for the width the drag ended at."""
