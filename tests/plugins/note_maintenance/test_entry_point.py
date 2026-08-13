@@ -76,6 +76,11 @@ def _all_tasks_off() -> NoteMaintenanceSettings:
     )
 
 
+def _updates(change) -> dict[str, str]:
+    """The change as ``{field: new value}`` — what a run WOULD leave the note holding."""
+    return {field.field: field.after for field in change.fields}
+
+
 class TestHookLifecycle:
     def test_enable_subscribes_the_browser_hook_disable_removes_it(self, gui_hooks):
         ctx = types.SimpleNamespace(settings=NoteMaintenanceSettings())
@@ -157,7 +162,7 @@ class TestMaintainNotes:
         assert len(previewed) == 1
         plan = previewed[0]
         assert [note.note_id for note in plan] == [5]
-        assert plan.notes[0].updates() == {"SynonymsNoIPA": "modest, meek"}
+        assert _updates(plan.notes[0]) == {"SynonymsNoIPA": "modest, meek"}
         assert tooltips == []
 
     def test_a_task_config_this_version_cannot_parse_still_runs(

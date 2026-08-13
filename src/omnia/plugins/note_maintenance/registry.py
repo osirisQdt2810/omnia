@@ -66,8 +66,9 @@ def build_tasks(configs: Mapping[str, Mapping[str, Any]]) -> list[MaintenanceTas
     NEVER raises: this is the one gate between stored config and a task, and both callers (the
     Browser run and the settings panel) are Qt slots, where an exception is an Anki traceback
     dialog. A section this version cannot parse — a hand-edited ``features.toml``, or config
-    written by a NEWER Omnia and synced down — degrades to that ONE task's shipped defaults and
-    is logged; the other tasks keep the user's settings.
+    written by a NEWER Omnia and synced down — degrades to that ONE task's shipped defaults
+    (keeping the user's ``enable``/``order``, see :func:`_build_task`) and is logged; the other
+    tasks keep the user's settings.
 
     A registered task with no entry in ``configs`` is built from its model defaults, so a
     fresh install still has working tasks. An entry naming an UNKNOWN task is ignored — a task
@@ -90,7 +91,13 @@ def build_tasks(configs: Mapping[str, Mapping[str, Any]]) -> list[MaintenanceTas
 def _build_task(
     task_id: str, task_cls: type[MaintenanceTask], values: Mapping[str, Any]
 ) -> MaintenanceTask:
-    """Build one task from ``values``, falling back to its defaults if they don't parse."""
+    """Build one task from ``values``, falling back to its defaults if they don't parse.
+
+    The fallback keeps the user's ``enable`` and ``order`` whenever those two are readable on
+    their own. They are the task's SWITCHES, not its options: reverting them turns a task the
+    user switched OFF back on (or moves it in the run order), so an option this version cannot
+    read would change what a run does to their notes. Only the unreadable option values revert.
+    """
     try:
         return task_cls.from_config(values)
     except ValidationError:
@@ -98,4 +105,26 @@ def _build_task(
             "note_maintenance: task %r has invalid settings; using its defaults",
             task_id,
         )
-        return task_cls()
+    return task_cls.from_config(_readable_switches(task_cls, values))
+
+
+def _readable_switches(
+    task_cls: type[MaintenanceTask], values: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return the ``enable``/``order`` of ``values`` that validate on their OWN.
+
+    Field-by-field (pydantic v1 ``ModelField.validate``) rather than by re-parsing the model:
+    the section is already known not to parse as a whole, and a garbage ``order`` must not
+    take a perfectly good ``enable`` down with it.
+    """
+    kept: dict[str, Any] = {}
+    for key in ("enable", "order"):
+        if key not in values:
+            continue
+        field = task_cls.config_model.__fields__.get(key)
+        if field is None:
+            continue
+        _parsed, error = field.validate(values[key], {}, loc=key)
+        if error is None:
+            kept[key] = values[key]
+    return kept
