@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from omnia.core.config.secrets import SecretsStore
 
 
@@ -38,7 +40,12 @@ class TestSecretsStore:
         ref = store.import_file("llm_gemini_vertex__credentials_path.json", str(src))
         assert ref == "secret-file:llm_gemini_vertex__credentials_path.json"
         resolved = store.resolve(ref)
-        assert resolved.endswith("secrets/llm_gemini_vertex__credentials_path.json")
+        # as_posix(): the store returns a native path, which uses backslashes on Windows.
+        assert (
+            Path(resolved)
+            .as_posix()
+            .endswith("secrets/llm_gemini_vertex__credentials_path.json")
+        )
         assert open(resolved).read() == '{"type":"service_account"}'
 
     def test_non_ref_value_passes_through(self, tmp_path):
