@@ -167,6 +167,38 @@ class TestPluginManager:
         finally:
             mgr.teardown()
 
+    def test_plugin_still_enables_with_a_newer_omnias_config_key(self, make_manager):
+        # features.toml syncs (ADR-006/ADR-008), so another device's NEWER Omnia can add a key
+        # this version never heard of. feature_settings() runs inside _activate's try-block, so
+        # a strict model would turn that key into "feature silently never enables".
+        from omnia.plugins.auto_flip.config import AutoFlipSettings
+
+        seen: list[float] = []
+
+        @registry.register("auto_flip")
+        class Fake(FeaturePlugin):
+            config_model = AutoFlipSettings
+
+            def on_enable(self, ctx):
+                seen.append(ctx.settings.delay_question_seconds)
+
+            def on_disable(self, ctx):
+                pass
+
+        mgr, repo = make_manager()
+        repo.update_section(
+            "auto_flip", {"delay_question_seconds": 4.0, "from_a_newer_omnia": True}
+        )
+        repo.set_enabled("auto_flip", True)
+        try:
+            mgr.setup()
+            assert mgr.is_active("auto_flip") is True
+            assert seen == [
+                4.0
+            ]  # the settings this version DOES understand still applied
+        finally:
+            mgr.teardown()
+
     def test_unknown_plugin_raises(self, make_manager):
         mgr, _ = make_manager()
         mgr.setup()

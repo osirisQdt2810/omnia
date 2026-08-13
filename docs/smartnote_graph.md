@@ -78,16 +78,16 @@ Quy tắc hợp nhất:
 File: [`src/omnia/plugins/smart_notes/config.py`](../src/omnia/plugins/smart_notes/config.py)
 
 ```python
-class FieldDep(_Strict):
+class FieldDep(PersistedModel):
     field: str          # tên field tiền đề
     kind: str = "hard"  # "hard" | "soft"
 
-class SmartNotesFieldConfig(_Strict):
+class SmartNotesFieldConfig(PersistedModel):
     field: str
     ...
     depends_on: list[FieldDep] = []   # các cạnh tường minh TRỎ VÀO field này
 
-class SmartNotesFieldRule(_Strict):   # bản "đã biên dịch" mà engine tiêu thụ
+class SmartNotesFieldRule(StrictModel):   # bản "đã biên dịch" mà engine tiêu thụ
     ...
     depends_on: list[FieldDep] = []
 ```

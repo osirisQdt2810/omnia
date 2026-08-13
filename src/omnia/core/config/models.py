@@ -6,7 +6,14 @@ model in ``plugins/<plugin>/config.py`` (resolved via the registry by
 :meth:`~omnia.core.config.repository.ConfigRepository.feature_settings`), so this module never
 imports ``omnia.plugins`` and the coupling rule (``core/* never imports plugins/*``) holds.
 :class:`OmniaConfig` validates only the core sections and tolerates the per-plugin sections
-(``extra = "ignore"``); the repository keeps the raw merged dict for plugin sections.
+(it is a :class:`~omnia.core.config.base.PersistedModel`, so unknown keys ride along instead
+of raising); the repository keeps the raw merged dict for plugin sections.
+
+Every model here is persisted — ``[plugins]`` into the synced collection config, ``[llm]``/
+``[tts]`` into ``providers.toml`` — and is therefore read by whatever Omnia version the user
+runs on each device, so they all extend
+:class:`~omnia.core.config.base.PersistedModel` (see that module for why unknown keys must
+survive rather than raise or be dropped).
 
 Pydantic v1 is used because v2 depends on the compiled (Rust) ``pydantic_core`` wheel, which
 is not pure-Python and would break the single cross-platform ``.ankiaddon``. v1 has a
@@ -19,12 +26,7 @@ from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field
 
-
-class _Strict(BaseModel):
-    """Base model that rejects unknown keys (catches config typos early)."""
-
-    class Config:
-        extra = "forbid"
+from omnia.core.config.base import PersistedModel
 
 
 # --- LLM provider settings ------------------------------------------------------------
@@ -32,7 +34,7 @@ class _Strict(BaseModel):
 # selects which subsection is active, so only the active provider's credentials need filling
 # in. The model ids (text/image/embedding) are common to every provider, so they live on a
 # shared base; each provider subclass adds only its own API auth and tweaks model defaults.
-class LLMModelSettings(_Strict):
+class LLMModelSettings(PersistedModel):
     """Model ids + sampling shared by every LLM provider subsection.
 
     ``embedding_model`` is reserved for a future embedding feature (no consumer yet).
@@ -92,7 +94,7 @@ class OpenAICompatibleLLMSettings(LLMModelSettings):
     embedding_model: str = "text-embedding-3-small"
 
 
-class LLMSettings(_Strict):
+class LLMSettings(PersistedModel):
     """LLM provider selection + per-provider config (one subsection per provider).
 
     ``provider`` selects the active subsection; :meth:`active` returns it (or None for an
@@ -130,14 +132,14 @@ class LLMSettings(_Strict):
 # subsection. Unlike the LLM models, TTS providers don't share a common field set (gTTS uses
 # lang/tld; piper a model path; openai a key/voice), so each has its own subsection — except
 # the openai family, which reuses one model exactly as the LLM side does.
-class GoogleTranslateTTSSettings(_Strict):
+class GoogleTranslateTTSSettings(PersistedModel):
     """``google_translate`` (free, no key, gTTS-style)."""
 
     lang: str = "en"
     tld: str = "com"  # domain ("com.vn" nudges a Vietnamese accent)
 
 
-class OpenAICompatibleTTSSettings(_Strict):
+class OpenAICompatibleTTSSettings(PersistedModel):
     """``openai`` / ``openrouter`` / ``openai_compatible`` — POSTs ``/audio/speech``."""
 
     api_key: str = ""
@@ -146,7 +148,7 @@ class OpenAICompatibleTTSSettings(_Strict):
     voice: str = "alloy"
 
 
-class GoogleCloudTTSSettings(_Strict):
+class GoogleCloudTTSSettings(PersistedModel):
     """``google_cloud`` — reuses the Google service-account auth from ``[llm.gemini_vertex]``."""
 
     lang: str = "en"
@@ -155,14 +157,14 @@ class GoogleCloudTTSSettings(_Strict):
     speaking_rate: float = 1.0
 
 
-class EdgeTTSSettings(_Strict):
+class EdgeTTSSettings(PersistedModel):
     """``edge_tts`` — Microsoft Edge online neural voices (free, keyless; pure-stdlib client)."""
 
     lang: str = "en"
     voice: str = ""  # e.g. "vi-VN-HoaiMyNeural"
 
 
-class VietTTSSettings(_Strict):
+class VietTTSSettings(PersistedModel):
     """``viettts`` — local self-hosted open-source Vietnamese TTS (OpenAI-compatible server)."""
 
     base_url: str = "http://localhost:8298/v1"
@@ -173,7 +175,7 @@ class VietTTSSettings(_Strict):
     autostart: bool = True
 
 
-class PiperTTSSettings(_Strict):
+class PiperTTSSettings(PersistedModel):
     """``piper`` — offline; needs an injected vendored native runner + a ``model`` (.onnx) path.
 
     The add-on never shells out to a ``piper`` CLI; out of the box the provider raises a clear
@@ -183,7 +185,7 @@ class PiperTTSSettings(_Strict):
     model: str = ""  # .onnx voice path
 
 
-class TTSSettings(_Strict):
+class TTSSettings(PersistedModel):
     """TTS provider selection + per-provider config (one subsection per provider).
 
     ``provider`` selects the active subsection; :meth:`active` returns it (or None if unknown,
@@ -224,25 +226,23 @@ class TTSSettings(_Strict):
 
 
 # --- top-level --------------------------------------------------------------------------
-class PluginToggle(_Strict):
+class PluginToggle(PersistedModel):
     """Whether a plugin is enabled."""
 
     enabled: bool = False
 
 
-class OmniaConfig(BaseModel):
+class OmniaConfig(PersistedModel):
     """The validated CORE configuration (the cross-cutting, non-plugin sections).
 
     Only the core seams are typed here: ``log_level``, the plugin enable-map, and the
     ``llm``/``tts`` provider settings. The per-feature sections (``[auto_flip]``,
     ``[typed_accuracy]``, …) are validated separately by each plugin's own ``config_model``
     via :meth:`~omnia.core.config.repository.ConfigRepository.feature_settings`, so this core
-    model never imports ``omnia.plugins``. ``extra = "ignore"`` lets those plugin sections
-    (and any future top-level key) ride along on the merged dict without tripping validation.
+    model never imports ``omnia.plugins``. Being a ``PersistedModel`` (``extra = "allow"``)
+    lets those plugin sections — and any key a NEWER Omnia added — ride along on the merged
+    dict without tripping validation.
     """
-
-    class Config:
-        extra = "ignore"
 
     log_level: str = "INFO"
     plugins: dict[str, PluginToggle] = Field(default_factory=dict)

@@ -6,17 +6,12 @@ The generic settings form is derived from this model via
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from omnia.core.config.base import PersistedModel
 
 
-class _Strict(BaseModel):
-    """Base model that rejects unknown keys (catches config typos early)."""
-
-    class Config:
-        extra = "forbid"
-
-
-class WordLookupSettings(_Strict):
+class WordLookupSettings(PersistedModel):
     """Settings for looking a word up in the collection from the desktop clipper."""
 
     note_types: list[str] = Field(
