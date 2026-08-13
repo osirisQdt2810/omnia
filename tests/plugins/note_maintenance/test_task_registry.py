@@ -336,3 +336,33 @@ class TestBundledDefaults:
         assert runner.plan([settled]).is_empty
         assert settled.field("Synonyms") == "modest (ˈmɒdɪst), meek (miːk)"
         assert settled.field("SynonymsNoIPA") == "modest, meek"
+
+
+class TestNonTableTaskEntryKeepsTheFeatureAlive:
+    """A task entry that is not a table must not stop the plugin from enabling.
+
+    ``PluginManager._activate`` builds the plugin context inside a try/except, so a
+    ``ValidationError`` from ``feature_settings`` is swallowed into "the feature never enables"
+    — the user loses the Browser entry with only a log line. ADR-010 keeps unknown *keys*
+    working; this pins the same tolerance for an unexpected *shape*.
+    """
+
+    def test_settings_parse_and_the_entry_survives(self):
+        from omnia.plugins.note_maintenance.config import NoteMaintenanceSettings
+
+        settings = NoteMaintenanceSettings.parse_obj(
+            {"tasks": {"strip_ipa": {"enable": False}, "weird": "a string"}}
+        )
+        assert settings.tasks["weird"] == "a string"
+        assert settings.tasks["strip_ipa"] == {"enable": False}
+        # and it round-trips, so an older build cannot strip it back out
+        assert (
+            NoteMaintenanceSettings.parse_obj(settings.dict()).tasks["weird"]
+            == "a string"
+        )
+
+    def test_a_non_table_entry_reads_as_no_stored_options(self):
+        from omnia.plugins.note_maintenance.registry import build_tasks
+
+        tasks = build_tasks({"strip_ipa": "a string"})
+        assert [t.task_id for t in tasks]  # the registry still yields runnable tasks
