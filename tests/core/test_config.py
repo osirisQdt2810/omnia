@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 try:  # stdlib on Python 3.11+; the vendored tomli covers 3.10 (same fallback as loader.py)
-    import tomllib
+    import tomllib  # noqa: TID251 - guarded below for Python 3.10
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
     import tomli as tomllib  # type: ignore[no-redef]
 

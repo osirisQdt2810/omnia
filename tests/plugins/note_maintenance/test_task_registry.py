@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import logging
 import tempfile
-import tomllib
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+try:  # stdlib on Python 3.11+; the vendored tomli covers 3.10 (same fallback as loader.py)
+    import tomllib  # noqa: TID251 - guarded here, which is what the ban asks for
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from omnia.core.plugin import AddonPaths, PluginContext
 from omnia.core.providers import ProviderHub

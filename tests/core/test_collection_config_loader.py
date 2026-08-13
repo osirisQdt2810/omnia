@@ -10,7 +10,7 @@ domains NEVER touch a file (even when a legacy one exists), no collection degrad
 from __future__ import annotations
 
 try:  # stdlib on Python 3.11+; tomli covers the 3.10 CI matrix (same fallback as loader.py)
-    import tomllib
+    import tomllib  # noqa: TID251 - guarded below for Python 3.10
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
     import tomli as tomllib  # type: ignore[no-redef]
 

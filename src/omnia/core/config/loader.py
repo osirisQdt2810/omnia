@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 try:  # stdlib on the add-on's Python 3.13; tomli is the fallback for <3.11
-    import tomllib
+    import tomllib  # noqa: TID251 - guarded below for Python 3.10
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib  # type: ignore[no-redef]
 
