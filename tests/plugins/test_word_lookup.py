@@ -27,7 +27,10 @@ class TestBuildQuery:
         assert build_query("plunge") == '"plunge"'
 
     def test_scopes_to_note_types(self):
-        assert build_query("plunge", ["AnkiVocabulary"]) == '(note:"AnkiVocabulary" "plunge")'
+        assert (
+            build_query("plunge", ["AnkiVocabulary"])
+            == '(note:"AnkiVocabulary" "plunge")'
+        )
 
     def test_ors_multiple_note_types(self):
         # One clause per note type, so each can carry its own field scope.
@@ -131,10 +134,12 @@ class TestTriageFields:
         assert [f.name for f in fields] == ["Meaning"]  # the two empties vanished
 
     def test_keeps_note_type_field_order(self):
-        _title, fields = triage_fields(
-            [("W", "w"), ("B", "b"), ("A", "a"), ("C", "c")]
-        )
-        assert [f.name for f in fields] == ["B", "A", "C"]  # authored order, not alphabetical
+        _title, fields = triage_fields([("W", "w"), ("B", "b"), ("A", "a"), ("C", "c")])
+        assert [f.name for f in fields] == [
+            "B",
+            "A",
+            "C",
+        ]  # authored order, not alphabetical
 
     def test_caps_the_number_of_fields(self):
         pairs = [("W", "w")] + [(f"F{i}", f"v{i}") for i in range(20)]
@@ -150,8 +155,12 @@ class TestTriageFields:
             [("W", "w"), ("Audio", "[sound:a.mp3]"), ("Image", '<img src="p.jpg">')]
         )
         by_name = {f.name: f for f in fields}
-        assert by_name["Audio"].kind == KIND_AUDIO and by_name["Audio"].audio == ("a.mp3",)
-        assert by_name["Image"].kind == KIND_IMAGE and by_name["Image"].images == ("p.jpg",)
+        assert by_name["Audio"].kind == KIND_AUDIO and by_name["Audio"].audio == (
+            "a.mp3",
+        )
+        assert by_name["Image"].kind == KIND_IMAGE and by_name["Image"].images == (
+            "p.jpg",
+        )
 
     def test_text_with_media_is_still_text(self):
         _, fields = triage_fields([("W", "w"), ("Ex", "he dove in [sound:e.mp3]")])
@@ -260,11 +269,17 @@ class TestRankingUsesEveryField:
         # "surf" merely mentions plunge in a synonyms field; the real "plunge" note must win
         # even though both titles are bookkeeping ids.
         surf = LookupCard(
-            note_id=1, note_type="T", deck="D", title="459",
+            note_id=1,
+            note_type="T",
+            deck="D",
+            title="459",
             fields=(LookupField(name="Synonyms", text="dive, plunge, drop"),),
         )
         plunge = LookupCard(
-            note_id=2, note_type="T", deck="D", title="460",
+            note_id=2,
+            note_type="T",
+            deck="D",
+            title="460",
             fields=(LookupField(name="Word", text="plunge"),),
         )
         ranked = rank_cards([surf, plunge], "plunge")
@@ -273,7 +288,10 @@ class TestRankingUsesEveryField:
     def test_exact_title_still_beats_a_field_match(self):
         titled = LookupCard(note_id=1, note_type="T", deck="D", title="plunge")
         fielded = LookupCard(
-            note_id=2, note_type="T", deck="D", title="x",
+            note_id=2,
+            note_type="T",
+            deck="D",
+            title="x",
             fields=(LookupField(name="Word", text="plunge"),),
         )
         assert [c.note_id for c in rank_cards([fielded, titled], "plunge")] == [1, 2]
@@ -337,7 +355,9 @@ class TestExplicitDisplayFields:
     def test_max_fields_does_not_truncate_an_explicit_list(self):
         # The list IS the user's choice; capping it would silently drop what they asked for.
         _title, fields = triage_fields(
-            self.PAIRS, word="plunge", only=("Definition", "Meaning (vi)", "Example 1"),
+            self.PAIRS,
+            word="plunge",
+            only=("Definition", "Meaning (vi)", "Example 1"),
             max_fields=1,
         )
         assert len(fields) == 3
