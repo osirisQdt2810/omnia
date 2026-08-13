@@ -25,3 +25,6 @@ enabled = false
 
 [plugins.smart_notes]
 enabled = false
+
+[plugins.note_maintenance]
+enabled = false

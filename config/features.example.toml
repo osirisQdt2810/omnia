@@ -18,3 +18,35 @@ min_days = 2                   # minimum days late before the guard can trigger
 force_again_after_days = 7     # if the Hard interval would exceed this, force Again (0 = off)
 
 # display_interval has no options.
+
+# One table per maintenance task: `enable` (does it run) + `order` (lower runs first) + the
+# task's own options. A task with no table here runs with its model defaults. Nothing is ever
+# written without the user confirming the diff first.
+[note_maintenance.tasks.strip_ipa]
+enable = true
+order = 10
+fields = { Synonyms = "SynonymsNoIPA" }   # {source = target}; empty target = strip in place
+
+[note_maintenance.tasks.extract_audio_file_name]
+enable = true
+order = 20
+fields = { "Dictionary Definition Audio" = "Dictionary Definition AudioNoTag", "First Example Audio" = "First Example AudioNoTag" }
+
+[note_maintenance.tasks.reformat_synonyms]
+enable = true
+order = 30
+field = "Synonyms"
+strict_count_match = true      # skip the field unless every word has a transcription
+
+[note_maintenance.tasks.fill_first_example]
+enable = true
+order = 40
+source_field = "Clozed First Example"
+target_field = "First Example"
+threshold = 0.75               # word-similarity (0-1) at/above which the two count as the same
+
+[note_maintenance.tasks.replace_text_all_fields]
+enable = false                 # off until you say WHAT to replace (an empty `find` is a no-op)
+order = 90
+find = ""
+replace = ""

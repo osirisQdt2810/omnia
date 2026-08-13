@@ -1,0 +1,61 @@
+"""Copy the bare filename out of an Anki ``[sound:…]`` reference into a plain-text field.
+
+``[sound:plunge.mp3]`` → ``plunge.mp3``. Card templates and external tooling often need the
+filename as text (to build a link, or to check the media folder) without the tag that makes
+Anki play it.
+
+Pure module: no ``aqt``/``anki`` imports.
+"""
+
+from __future__ import annotations
+
+import re
+
+from pydantic import Field
+
+from omnia.plugins.note_maintenance.base import (
+    MaintenanceTask,
+    NoteView,
+    TaskConfigBase,
+)
+from omnia.plugins.note_maintenance.registry import register_task
+
+# A field holding EXACTLY one sound reference (nothing else) — anything richer is left alone.
+_SOUND_TAG_RE = re.compile(r"^\s*\[sound:([^\]]+)\]\s*$", re.IGNORECASE)
+
+
+class ExtractAudioFileNameConfig(TaskConfigBase):
+    """Which audio fields to read, and where to put their filenames."""
+
+    fields: dict[str, str] = Field(
+        default_factory=lambda: {
+            "Dictionary Definition Audio": "Dictionary Definition AudioNoTag",
+            "First Example Audio": "First Example AudioNoTag",
+        },
+        title="Audio fields to read",
+        description=(
+            "``{audio field: filename field}``. The filename is written to the target field; "
+            "an EMPTY target replaces the sound tag in the source field itself."
+        ),
+    )
+
+
+@register_task("extract_audio_file_name")
+class ExtractAudioFileNameTask(MaintenanceTask):
+    """Writes the filename of a field's ``[sound:…]`` reference to a plain-text field."""
+
+    name = "Extract audio file name"
+    description = "Copy the file name out of a [sound:…] reference into a text field."
+    config_model = ExtractAudioFileNameConfig
+
+    def process(self, note: NoteView) -> dict[str, str]:
+        updates: dict[str, str] = {}
+        for source, target in self.config.fields.items():
+            match = _SOUND_TAG_RE.match(note.field(source).strip())
+            filename = (match.group(1) or "").strip() if match else ""
+            if not filename:
+                continue
+            destination = target or source
+            if note.field(destination) != filename:
+                updates[destination] = filename
+        return updates
