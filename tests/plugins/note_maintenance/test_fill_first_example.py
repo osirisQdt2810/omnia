@@ -79,3 +79,29 @@ class TestFillFirstExampleTask:
     def test_no_change_when_the_raw_values_are_identical(self):
         task = FillFirstExampleTask(_CONFIG.copy(update={"threshold": 1.0}))
         assert task.process(_note("She swam.", "She swam.")) == {}
+
+
+class TestFillFirstExampleWritesFieldHtml:
+    """The target is a stored-HTML field, so what is written has to BE html."""
+
+    def test_keeps_the_authors_line_breaks(self):
+        # A bare "\n" in stored HTML renders as a single space — the two lines would merge.
+        task = FillFirstExampleTask(_CONFIG)
+        note = _note("She swam.<br>{{c1::Then}} she rested.")
+
+        assert task.process(note) == {"First Example": "She swam.<br>Then she rested."}
+
+    def test_a_multi_line_refill_is_a_fixed_point(self):
+        task = FillFirstExampleTask(_CONFIG)
+        source = "She swam.<br>{{c1::Then}} she rested."
+        filled = task.process(_note(source))["First Example"]
+
+        assert task.process(_note(source, filled)) == {}
+
+    def test_escapes_text_that_would_be_read_back_as_markup(self):
+        # strip_markup decodes entities, so "&lt;" becomes a raw "<" that the field would
+        # then treat as the start of a tag; it has to be re-escaped on the way in.
+        task = FillFirstExampleTask(_CONFIG)
+        note = _note("5 &lt; 6 &amp; rising")
+
+        assert task.process(note) == {"First Example": "5 &lt; 6 &amp; rising"}
