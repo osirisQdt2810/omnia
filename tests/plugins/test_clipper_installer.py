@@ -6,6 +6,8 @@ injected ``install_root``, so nothing here ever touches the real ``/Applications
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from omnia.plugins.smart_notes.integration.installer import (
@@ -99,10 +101,14 @@ class TestDesktopInstall:
         assert DESKTOP.repo_url in cmds[0]
         assert cmds[1][1:3] == ["-m", "venv"]
         assert cmds[2][1:4] == ["-m", "pip", "install"] and "pip" in cmds[2][-1:]
-        assert cmds[3][1:5] == ["-m", "pip", "install", "-r"] and "pyinstaller" in cmds[3]
+        assert (
+            cmds[3][1:5] == ["-m", "pip", "install", "-r"] and "pyinstaller" in cmds[3]
+        )
         # build.py is run --no-install so the installer is the sole owner of placement
         assert cmds[4][-2:] == ["build.py", "--no-install"]
-        assert cmds[4][0].endswith("/.venv-build/bin/python")
+        # as_posix(): the installer was pinned to platform="darwin" so the LOGICAL path is
+        # POSIX, but Path renders with backslashes when the test itself runs on Windows.
+        assert Path(cmds[4][0]).as_posix().endswith("/.venv-build/bin/python")
         # macOS installs with ditto (signature-preserving) into install_root, then opens THAT path
         source = clone / "dist" / "Omnia Desktop Clipper.app"
         dest = tmp_path / "apps" / "Omnia Desktop Clipper.app"
@@ -126,7 +132,9 @@ class TestDesktopInstall:
     def test_no_host_python_raises(self, tmp_path):
         runner = _FakeRunner()
         with pytest.raises(InstallError, match="No Python"):
-            _installer(tmp_path, runner, host_python=None).install(DESKTOP, lambda _m: None)
+            _installer(tmp_path, runner, host_python=None).install(
+                DESKTOP, lambda _m: None
+            )
 
     def test_build_failure_propagates(self, tmp_path):
         runner = _FakeRunner(fail_on="build.py")
@@ -151,7 +159,9 @@ class TestDesktopInstall:
         )
         # installed (via shutil) to the per-user programs dir; launches the inner .exe
         assert (tmp_path / "apps" / "Omnia Desktop Clipper").is_dir()
-        launch = tmp_path / "apps" / "Omnia Desktop Clipper" / "Omnia Desktop Clipper.exe"
+        launch = (
+            tmp_path / "apps" / "Omnia Desktop Clipper" / "Omnia Desktop Clipper.exe"
+        )
         assert runner.spawns[-1] == ["cmd", "/c", "start", "", str(launch)]
 
     def test_linux_installs_and_launches_the_binary(self, tmp_path):
@@ -166,12 +176,17 @@ class TestDesktopInstall:
 class TestWebReveal:
     def test_clone_then_reveal_and_open_chrome(self, tmp_path):
         runner = _FakeRunner()
-        (tmp_path / "clippers" / "web_clipper").mkdir(parents=True)  # simulate the cloned dir
+        (tmp_path / "clippers" / "web_clipper").mkdir(
+            parents=True
+        )  # simulate the cloned dir
         _installer(tmp_path, runner).install(WEB, lambda _m: None)
         assert runner.runs[0][0][:2] == ["git", "clone"]  # only clones, no build
         assert len(runner.runs) == 1
         assert runner.spawns[0][:2] == ["open", "-R"]  # reveal folder
-        assert "Google Chrome" in runner.spawns[1] and "chrome://extensions/" in runner.spawns[1]
+        assert (
+            "Google Chrome" in runner.spawns[1]
+            and "chrome://extensions/" in runner.spawns[1]
+        )
         # web install also records the installed commit for upgrade detection
         marker = tmp_path / "clippers" / "web_clipper" / ".omnia-installed"
         assert marker.read_text().strip() == runner.head_sha

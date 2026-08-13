@@ -22,6 +22,7 @@ Two hard constraints shape this module:
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,6 +32,19 @@ from urllib.parse import parse_qs, urlparse
 from omnia.core.logging import get_logger
 
 logger = get_logger("word_lookup")
+
+
+class _ExclusiveBindHTTPServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer whose bind honors "port taken -> fail" on every platform.
+
+    The stdlib default ``allow_reuse_address = 1`` sets SO_REUSEADDR, which on Windows
+    lets a second socket bind a port that is already being served — a conflict would
+    silently double-bind instead of reporting False. POSIX keeps the reuse flag (there
+    it only relaxes TIME_WAIT, never an active listener).
+    """
+
+    allow_reuse_address = os.name != "nt"
+
 
 # A request that cannot get the Qt main thread within this long is reported as an error rather
 # than left hanging (the clipper shows "Anki is busy" instead of a spinner that never resolves).
@@ -85,14 +99,18 @@ class LookupService:
         if self._server is not None:
             return True
         if not self._is_loopback(self._host):
-            logger.error("word_lookup: refusing to bind non-loopback host %r", self._host)
+            logger.error(
+                "word_lookup: refusing to bind non-loopback host %r", self._host
+            )
             return False
         try:
-            self._server = ThreadingHTTPServer(
+            self._server = _ExclusiveBindHTTPServer(
                 (self._host, self._port), self._build_handler()
             )
         except OSError:
-            logger.exception("word_lookup: could not bind %s:%s", self._host, self._port)
+            logger.exception(
+                "word_lookup: could not bind %s:%s", self._host, self._port
+            )
             self._server = None
             return False
         self._thread = threading.Thread(
