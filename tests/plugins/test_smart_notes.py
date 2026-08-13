@@ -99,9 +99,33 @@ class TestSmartNotesModel:
         assert rebuilt == settings
         assert rebuilt.note_type_config("Basic").base_field == "Word"
 
-    def test_field_type_is_validated(self):
-        with pytest.raises(ValueError):
-            SmartNotesFieldConfig(field="X", type="video")
+    def test_unsupported_field_type_is_kept_verbatim_not_rejected(self):
+        """A ``type`` this version cannot generate is KEPT, not rejected and not rewritten.
+
+        Changed deliberately (was: raises): the row arrives from the SYNCED collection blob, so
+        an unknown type is what a NEWER Omnia wrote, not a typo — raising would take the whole
+        settings load down on the older device. Rewriting it would be worse still: ``store.save``
+        persists the whole tree, so this device would write the damaged row back for a note type
+        its user never touched. The row is neutralised at the consumption seams instead
+        (:meth:`supports_generation`), so it is never generated here.
+        """
+        row = SmartNotesFieldConfig(field="X", type="video", enabled=True)
+        assert (row.type, row.enabled) == ("video", True)
+        assert row.supports_generation() is False
+        assert (
+            SmartNotesFieldConfig(field="X", type="tts").supports_generation() is True
+        )
+
+    def test_generatable_fields_excludes_unsupported_type(self):
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(field="Clip", enabled=True, type="video"),
+                SmartNotesFieldConfig(field="Meaning", enabled=True, type="text"),
+            ],
+        )
+        assert [f.field for f in config.generatable_fields()] == ["Meaning"]
 
     def test_note_type_config_lookup_returns_none_when_absent(self):
         settings = SmartNotesSettings(
@@ -137,9 +161,16 @@ class TestFieldDepModel:
     def test_kind_defaults_to_hard(self):
         assert FieldDep(field="Word").kind == "hard"
 
-    def test_kind_enum_rejects_unknown_value(self):
-        with pytest.raises(ValueError):
-            FieldDep(field="Word", kind="maybe")
+    def test_unknown_kind_is_kept_verbatim(self):
+        """An unrecognised ``kind`` is preserved, not rejected.
+
+        Changed deliberately (was: raises): the edge comes from the SYNCED blob, so an unknown
+        kind is a future release's semantics. Keeping the raw string lets the older device hand
+        it back unchanged, and it is already inert here — every consumer tests for ``"hard"``,
+        so an unknown kind can only order generation, never block it (see
+        ``test_unknown_dep_kind_never_blocks`` in test_smart_notes_store.py).
+        """
+        assert FieldDep(field="Word", kind="maybe").kind == "maybe"
 
     def test_accepts_soft(self):
         assert FieldDep(field="Word", kind="soft").kind == "soft"

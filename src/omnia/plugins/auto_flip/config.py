@@ -9,17 +9,12 @@ skipped by the schema deriver.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from omnia.core.config.base import PersistedModel
 
 
-class _Strict(BaseModel):
-    """Base model that rejects unknown keys (catches config typos early)."""
-
-    class Config:
-        extra = "forbid"
-
-
-class AutoFlipDeckOverride(_Strict):
+class AutoFlipDeckOverride(PersistedModel):
     """Per-deck auto-flip override (keyed by deck id in :class:`AutoFlipSettings`).
 
     Mirrors the reference add-on's two-flag deck gate (``use_general`` / ``use_deck``):
@@ -37,7 +32,7 @@ class AutoFlipDeckOverride(_Strict):
     delay_answer_seconds: float = Field(3.0, ge=0)
 
 
-class AutoFlipSettings(_Strict):
+class AutoFlipSettings(PersistedModel):
     """Settings for the auto-flip feature."""
 
     delay_question_seconds: float = Field(
