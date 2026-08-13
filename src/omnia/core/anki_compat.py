@@ -223,6 +223,13 @@ def update_note(note: Any, col: Optional[Any] = None) -> None:
     col.update_note(note)
 
 
+def update_notes(notes: list[Any], col: Optional[Any] = None) -> Any:
+    """Persist edits to many notes as ONE undoable batch; return the ``OpChanges``."""
+    if col is None:
+        col = main_window().col
+    return col.update_notes(notes)
+
+
 # --- collection reads (note types, decks, notes) ---------------------------------------
 def note_type_names(col: Optional[Any] = None) -> list[str]:
     """Return every note-type (model) name in the collection."""

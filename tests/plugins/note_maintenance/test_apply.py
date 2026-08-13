@@ -52,6 +52,14 @@ class TestChangeApplier:
         ChangeApplier(plan).write(col)
         assert col.updated == [{"Word": "new"}]
 
+    def test_a_note_whose_every_field_was_skipped_is_not_submitted(self):
+        # Submitting it would bump its mod/usn and mark it modified for the next sync.
+        col = _FakeCollection({1: _FakeNote(Word="old")})
+        plan = _plan(NoteChange(1, (FieldChange("Gone", "", "value"),)))
+
+        ChangeApplier(plan).write(col)
+        assert col.updated == []
+
     def test_an_empty_plan_writes_nothing_and_reports_zero(self):
         done: list[int] = []
         ChangeApplier(ChangePlan()).run(parent=None, on_done=done.append)

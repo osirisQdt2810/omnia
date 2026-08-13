@@ -5,8 +5,10 @@ A maintenance run can rewrite thousands of notes at once, so the write goes thro
 puts it all back) and the UI stays responsive. Nothing else in the plugin touches the
 collection.
 
-``aqt``/``anki`` are imported INSIDE the methods, so this module imports headless and
-:meth:`ChangeApplier.write` can be unit-tested against a fake collection.
+Collection access goes through :mod:`omnia.core.anki_compat` (the shared shim, whose Anki
+imports are lazy) and ``aqt.operations`` is imported INSIDE :meth:`ChangeApplier.run`, so this
+module imports headless and :meth:`ChangeApplier.write` can be unit-tested against a fake
+collection.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Optional
 
+from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.plugins.note_maintenance.runner import ChangePlan
 
@@ -32,7 +35,10 @@ class ChangeApplier:
         self._plan = plan
 
     def run(self, parent: Any, on_done: Optional[Callable[[int], None]] = None) -> None:
-        """Apply the plan on the main thread as one undoable operation.
+        """Apply the plan in the background as one undoable operation.
+
+        The write itself runs OFF the main thread (``CollectionOp.run_in_background``); only
+        ``on_done`` is marshalled back to it.
 
         A no-op for an empty plan (``on_done`` still fires with 0, so a caller can report
         "nothing to do" without special-casing it).
@@ -64,18 +70,21 @@ class ChangeApplier:
         """
         notes = []
         for change in self._plan:
-            note = col.get_note(change.note_id)
+            note = anki_compat.get_note(change.note_id, col)
             names = set(note.keys())
+            wrote = False
             for field, value in change.updates().items():
                 # A field can vanish between planning and applying (the user edited the note
                 # type). Skipping it is right — creating it would corrupt the note.
                 if field not in names:
                     logger.warning(
-                        "note_maintenance: note %s has no field %r; skipping it",
-                        change.note_id,
-                        field,
+                        "note %s has no field %r; skipping it", change.note_id, field
                     )
                     continue
                 note[field] = value
-            notes.append(note)
-        return col.update_notes(notes)
+                wrote = True
+            # A note that gained nothing is left out: submitting it would bump its mod/usn
+            # for no reason, marking it modified for the next AnkiWeb sync.
+            if wrote:
+                notes.append(note)
+        return anki_compat.update_notes(notes, col)

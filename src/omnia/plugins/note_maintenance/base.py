@@ -118,5 +118,6 @@ class MaintenanceTask(ABC):
 
         Returns:
             ``{field name: new value}``. An empty dict means "nothing to do" — the runner
-            records no change for it.
+            records no change for it. A name the note does not have is dropped by the runner
+            (a task reshapes existing text; it cannot add a field to the note type).
         """

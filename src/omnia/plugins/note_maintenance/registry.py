@@ -50,11 +50,6 @@ def register_task(
     return decorator
 
 
-def get_task(task_id: str) -> type[MaintenanceTask] | None:
-    """Return the task class registered under ``task_id`` (or None if unknown)."""
-    return TASK_REGISTRY.get(task_id)
-
-
 def registered_tasks() -> dict[str, type[MaintenanceTask]]:
     """Return the registry mapping (a copy, in registration order)."""
     return dict(TASK_REGISTRY)
