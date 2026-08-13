@@ -34,16 +34,26 @@ concurrency:
 
 jobs:
   test:
-    name: Tests (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     permissions:
       contents: read
+    defaults:
+      run:
+        # One shell across all three OSes (the pytest command spans lines).
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        # 3.10 = Anki's minimum supported Python, 3.13 = the currently bundled one.
-        python-version: ["3.10", "3.13"]
+        # The omnia ecosystem targets Windows, macOS AND Linux; 3.13 is Anki's
+        # bundled Python everywhere. 3.10 (Anki's supported minimum) is checked
+        # once, on ubuntu.
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.13"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,7 +68,8 @@ jobs:
         run: pip install -r requirements/requirements-dev.txt
       - name: Lint (pre-commit on the PR's changes, pinned hooks)
         # Changed files only — mirrors the local staged-files hook behavior.
-        if: matrix.python-version == '3.13'
+        # One lint leg is enough; ubuntu avoids Windows CRLF noise.
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         run: >-
           pre-commit run --show-diff-on-failure
           --from-ref ${{ github.event.pull_request.base.sha }}
