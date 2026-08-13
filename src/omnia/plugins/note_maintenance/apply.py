@@ -47,9 +47,19 @@ class ApplyOutcome:
 
     @property
     def message(self) -> str:
-        """One line for the user: what was written, and what was skipped instead."""
+        """One line for the user: what was written, and what was skipped instead.
+
+        The undo is promised only when something was actually written: a write of nothing
+        deliberately opens NO undo entry (see :meth:`ChangeApplier.write`), so offering Ctrl+Z
+        there points the user at whatever they did before this run.
+        """
+        written = f"Omnia: {self.written_note_count} note(s) updated"
         parts = [
-            f"Omnia: {self.written_note_count} note(s) updated — Ctrl+Z undoes the batch."
+            (
+                f"{written} — Ctrl+Z undoes the batch."
+                if self.written_note_count
+                else f"{written}."
+            )
         ]
         if self.missing_note_ids:
             parts.append(
