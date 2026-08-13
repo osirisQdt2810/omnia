@@ -144,6 +144,56 @@ class TestBuildTasksTolerateBadConfig:
         assert (task.is_enabled, task.order) == (False, 5)
         assert task.config.suffix == "!"  # only the unreadable option reverts
 
+    def test_the_fallback_keeps_every_option_it_can_read(self, clean_registry):
+        # Not just the switches: an option that reverts is an option the settings panel then
+        # SAVES as the default, so the user's own text would be destroyed by a bad neighbour.
+        class _Pair(_DemoTask):
+            class _Config(_DemoConfig):
+                find: str = ""
+
+            config_model = _Config
+
+        task_registry.register_task("pair")(_Pair)
+
+        (task,) = task_registry.build_tasks(
+            {"pair": {"order": "whenever", "find": "PROMO", "suffix": "?"}}
+        )
+
+        assert (task.config.find, task.config.suffix) == ("PROMO", "?")
+        assert task.order == 100  # only the unreadable one reverts
+
+    def test_a_model_that_rejects_the_readable_subset_falls_back(self, clean_registry):
+        # Readable field by field does not mean parseable together, and this is a Qt slot.
+        from pydantic import root_validator
+
+        class _Paired(_DemoTask):
+            class _Config(_DemoConfig):
+                other: str = "x"
+
+                @root_validator()
+                def _both_or_neither(cls, values):  # noqa: N805
+                    if values.get("suffix") == "?" and values.get("other") != "y":
+                        raise ValueError("suffix '?' needs other 'y'")
+                    return values
+
+            config_model = _Config
+
+        task_registry.register_task("paired")(_Paired)
+
+        (task,) = task_registry.build_tasks(
+            {"paired": {"suffix": "?", "other": ["not", "a", "string"]}}
+        )
+
+        assert (task.config.suffix, task.config.other) == ("!", "x")
+
+    def test_a_task_section_that_is_not_a_table_falls_back(self, clean_registry):
+        # The settings panel hands over the RAW section, so an entry can be any shape at all.
+        task_registry.register_task("demo")(_DemoTask)
+
+        (task,) = task_registry.build_tasks({"demo": "a string"})
+
+        assert (task.is_enabled, task.order, task.config.suffix) == (True, 100, "!")
+
     def test_the_fallback_keeps_a_task_the_user_switched_on(self, clean_registry):
         class _OffByDefault(_DemoTask):
             class _Config(_DemoConfig):

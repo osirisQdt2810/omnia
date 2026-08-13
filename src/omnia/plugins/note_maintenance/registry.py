@@ -60,15 +60,15 @@ def registered_tasks() -> dict[str, type[MaintenanceTask]]:
     return dict(TASK_REGISTRY)
 
 
-def build_tasks(configs: Mapping[str, Mapping[str, Any]]) -> list[MaintenanceTask]:
+def build_tasks(configs: Mapping[str, Any]) -> list[MaintenanceTask]:
     """Instantiate every registered task, configured from ``configs``.
 
     NEVER raises: this is the one gate between stored config and a task, and both callers (the
     Browser run and the settings panel) are Qt slots, where an exception is an Anki traceback
     dialog. A section this version cannot parse — a hand-edited ``features.toml``, or config
     written by a NEWER Omnia and synced down — degrades to that ONE task's shipped defaults
-    (keeping the user's ``enable``/``order``, see :func:`_build_task`) and is logged; the other
-    tasks keep the user's settings.
+    for the values it cannot read (see :func:`_build_task`) and is logged; the other tasks keep
+    the user's settings.
 
     A registered task with no entry in ``configs`` is built from its model defaults, so a
     fresh install still has working tasks. An entry naming an UNKNOWN task is ignored — a task
@@ -76,7 +76,9 @@ def build_tasks(configs: Mapping[str, Mapping[str, Any]]) -> list[MaintenanceTas
     the whole plugin.
 
     Args:
-        configs: The plugin's ``tasks`` namespace, ``{task_id: {option: value}}``.
+        configs: The plugin's ``tasks`` namespace, ``{task_id: {option: value}}``, RAW: the
+            settings panel hands it over unvalidated (that is what keeps a section this build
+            cannot read alive through a save), so an entry may be any shape at all.
 
     Returns:
         One task instance per registered task, in registration order. Enabling/ordering is the
@@ -89,15 +91,24 @@ def build_tasks(configs: Mapping[str, Mapping[str, Any]]) -> list[MaintenanceTas
 
 
 def _build_task(
-    task_id: str, task_cls: type[MaintenanceTask], values: Mapping[str, Any]
+    task_id: str, task_cls: type[MaintenanceTask], values: Any
 ) -> MaintenanceTask:
-    """Build one task from ``values``, falling back to its defaults if they don't parse.
+    """Build one task from ``values``, keeping every value it can read.
 
-    The fallback keeps the user's ``enable`` and ``order`` whenever those two are readable on
-    their own. They are the task's SWITCHES, not its options: reverting them turns a task the
-    user switched OFF back on (or moves it in the run order), so an option this version cannot
-    read would change what a run does to their notes. Only the unreadable option values revert.
+    ONE unreadable value must cost the user only itself. Reverting the whole section instead
+    would revert ``enable``/``order`` — the task's SWITCHES — turning a task the user switched
+    OFF back on, and would revert options like a find/replace pair that decide what a run does
+    to their notes. So the fallback re-parses the section without the values this version
+    cannot read (:func:`_readable_options`), and only those revert to the task's defaults.
     """
+    if not isinstance(values, Mapping):
+        # Not a table at all (hand-edited config, or a shape a newer Omnia introduced). There
+        # is nothing to read a value out of, so the whole section reverts.
+        logger.error(
+            "note_maintenance: task %r settings are not a table; using its defaults",
+            task_id,
+        )
+        return task_cls()
     try:
         return task_cls.from_config(values)
     except ValidationError:
@@ -105,26 +116,40 @@ def _build_task(
             "note_maintenance: task %r has invalid settings; using its defaults",
             task_id,
         )
-    return task_cls.from_config(_readable_switches(task_cls, values))
+    try:
+        return task_cls.from_config(_readable_options(task_cls, values))
+    except ValidationError:
+        # Field-by-field readable does not mean parseable TOGETHER: a cross-field validator can
+        # still reject the salvaged subset, and this is a Qt slot. Everything reverts, but the
+        # run survives. (A task whose OWN defaults do not validate is a bug in the task, not
+        # stored data, and is caught by the bundled-defaults test.)
+        logger.exception(
+            "note_maintenance: task %r rejects its readable settings; using its defaults",
+            task_id,
+        )
+        return task_cls()
 
 
-def _readable_switches(
+def _readable_options(
     task_cls: type[MaintenanceTask], values: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """Return the ``enable``/``order`` of ``values`` that validate on their OWN.
+    """Return the entries of ``values`` that validate on their OWN, in stored order.
 
     Field-by-field (pydantic v1 ``ModelField.validate``) rather than by re-parsing the model:
-    the section is already known not to parse as a whole, and a garbage ``order`` must not
-    take a perfectly good ``enable`` down with it.
+    the section is already known not to parse as a whole, and a garbage ``order`` must not take
+    a perfectly good ``enable`` — or the user's find/replace text — down with it.
+
+    A key the model does not declare is left out: it is the one thing this version genuinely
+    cannot read, and it is kept where it matters — the settings panel merges onto the RAW
+    stored section (see :mod:`~omnia.plugins.note_maintenance.settings_merge`), so a save never
+    drops it.
     """
     kept: dict[str, Any] = {}
-    for key in ("enable", "order"):
-        if key not in values:
-            continue
+    for key, value in values.items():
         field = task_cls.config_model.__fields__.get(key)
         if field is None:
             continue
-        _parsed, error = field.validate(values[key], {}, loc=key)
+        _parsed, error = field.validate(value, {}, loc=key)
         if error is None:
-            kept[key] = values[key]
+            kept[key] = value
     return kept
