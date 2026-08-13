@@ -11,17 +11,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from omnia.core.config.base import PersistedModel
 
 
-class _Strict(BaseModel):
-    """Base model that rejects unknown keys (catches config typos early)."""
-
-    class Config:
-        extra = "forbid"
-
-
-class NoteMaintenanceSettings(_Strict):
+class NoteMaintenanceSettings(PersistedModel):
     """Settings for the note-maintenance feature."""
 
     tasks: dict[str, dict[str, Any]] = Field(

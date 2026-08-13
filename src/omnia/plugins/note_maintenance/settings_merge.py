@@ -56,15 +56,20 @@ class TaskOptions:
         """
         self.model = type(config)
         scalars = {field.key: field for field in schema_from_model(self.model)}
+        declared = self.model.__fields__
         self.rows: list[tuple[str, Any, Optional[ConfigField]]] = []
         self.passthrough: dict[str, Any] = {}
         for name, value in config.dict().items():
             if name == "enable":
                 continue
-            if isinstance(value, dict):
-                self.rows.append((name, value, None))
-            elif name in scalars:
+            if name in scalars:
                 self.rows.append((name, value, scalars[name]))
+            elif name in declared and isinstance(value, dict):
+                # A DECLARED mapping option — the one complex shape the scalar deriver skips
+                # and the panel renders with its bespoke editor. An UNDECLARED key that happens
+                # to hold a table is not that: the model kept it verbatim (ADR-010) and no
+                # renderer knows what it means, so it goes through untouched.
+                self.rows.append((name, value, None))
             else:
                 self.passthrough[name] = value
 

@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from omnia.core.config.base import PersistedModel
 
 
 @dataclass(frozen=True)
@@ -51,11 +53,14 @@ class NoteView:
         )
 
 
-class TaskConfigBase(BaseModel):
+class TaskConfigBase(PersistedModel):
     """Base settings every maintenance task has: whether it runs, and when.
 
-    Pydantic v1 (see :mod:`omnia.core.config.models` for why v1). ``extra = "forbid"`` so a
-    typo in a task's options is reported instead of silently ignored.
+    A task's options are persisted config (``[note_maintenance.tasks.<id>]`` in the synced
+    collection config), so this extends the shared
+    :class:`~omnia.core.config.base.PersistedModel`: an option key a NEWER Omnia added rides
+    through a load and back into storage untouched, instead of costing the older device the
+    whole section (ADR-010).
 
     The values here are the CONTRACT's fallback, not the shipped defaults: a task that ships
     off, or in a particular position, re-declares ``enable``/``order`` on its own config model.
@@ -63,9 +68,6 @@ class TaskConfigBase(BaseModel):
     reads — with the collection backend (ADR-006) the bundled ``features.example.toml`` is
     never loaded, and the file it mirrors is created fresh from these models.
     """
-
-    class Config:
-        extra = "forbid"
 
     enable: bool = Field(
         True,
@@ -112,7 +114,9 @@ class MaintenanceTask(ABC):
             The configured task.
 
         Raises:
-            pydantic.ValidationError: If ``values`` holds an unknown or invalid option.
+            pydantic.ValidationError: If ``values`` holds an invalid value for a declared
+                option. An option this version does not declare is KEPT, not rejected — the
+                section is persisted config (see :class:`TaskConfigBase`).
         """
         return cls(cls.config_model.parse_obj(dict(values)))
 
