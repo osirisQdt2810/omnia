@@ -194,7 +194,7 @@
       function (value) {
         const k = tr.querySelector(".sn-type").value;
         rebuildModel(tr, k, value);
-        rebuildVoice(tr, value);
+        rebuildVoice(tr, value, true);  // user switched provider: a stale voice must not survive
       }
     );
     rebuildModel(tr, kind, current);
@@ -229,9 +229,23 @@
    * @param {!HTMLTableRowElement} tr The row.
    * @param {string} provider The selected TTS provider.
    */
-  function rebuildVoice(tr, provider) {
+  function rebuildVoice(tr, provider, providerChanged) {
+    const entries = voiceEntries(provider);
+    if (providerChanged) {
+      // The previously saved voice belongs to the PREVIOUS provider. fillCellSelect keeps an
+      // unknown value alive as "<voice> (saved)" — right on first paint (the provider's voice
+      // list may not have been fetched yet), but wrong here: the row would keep showing a voice
+      // the new provider has never heard of, and Preview would fail on it. Drop it unless the
+      // new provider genuinely offers it.
+      const known = entries.some(function (v) {
+        return v.voice === tr.dataset.voice;
+      });
+      if (!known) {
+        tr.dataset.voice = "";
+      }
+    }
     const options = [{value: "", label: "Auto-detect"}].concat(
-      voiceEntries(provider).map(function (v) {
+      entries.map(function (v) {
         return {value: v.voice, label: v.label};
       })
     );

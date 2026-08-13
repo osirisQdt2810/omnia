@@ -258,7 +258,23 @@ class ProviderHub:
             ProviderError: When ``lang`` has no Auto-detect voice configured.
         """
         mapping = self._tts_settings.auto_voices if self._tts_settings else {}
-        value = mapping.get(lang, "")
+        lang = (lang or "").strip()
+        if not lang:
+            # The language could not be detected at all — no LLM configured, a provider error,
+            # or nothing to detect from. Blaming the Auto-detect map for language '' (which is
+            # what this used to do) points the user at the wrong setting entirely.
+            if len(mapping) == 1:
+                # Exactly one Auto-detect voice is configured, so there is nothing to choose
+                # between: use it rather than fail over a detection that was only advisory.
+                value = next(iter(mapping.values()))
+            else:
+                raise ProviderError(
+                    "Could not detect the language of the text, so no Auto-detect voice could "
+                    "be chosen. Pin a voice on the field, set the field's Language, or make "
+                    "sure a text provider is configured for language detection."
+                )
+        else:
+            value = mapping.get(lang, "")
         # A present mapping resolves; the voice MAY be empty for a language-only provider (e.g.
         # "google_translate:"), which synthesizes from the language directly.
         if not value:
