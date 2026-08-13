@@ -113,6 +113,35 @@ class TestBuildTasks:
         assert len(task_registry.build_tasks({"gone": {"enable": True}})) == 1
 
 
+class TestUnknownTaskOptionRoundTrip:
+    """ADR-010 one level down: an option key a NEWER Omnia added, inside a task's section.
+
+    The mixed-version case the ADR is about — the newer device wrote the key, this one loads
+    and rewrites the same blob. A task's own model is the layer that used to REJECT it (which
+    cost the whole section its settings); it now has to carry the key through load AND back
+    out, or the older device deletes the newer one's option on the next sync.
+    """
+
+    def test_the_task_still_builds(self, clean_registry):
+        task_registry.register_task("demo")(_DemoTask)
+
+        (task,) = task_registry.build_tasks(
+            {"demo": {"suffix": "?", "brand_new_option": True}}
+        )
+
+        assert (task.is_enabled, task.config.suffix) == (True, "?")
+
+    def test_the_unknown_key_survives_the_round_trip(self, clean_registry):
+        task_registry.register_task("demo")(_DemoTask)
+
+        (task,) = task_registry.build_tasks(
+            {"demo": {"from_a_newer_omnia": {"nested": 1}}}
+        )
+
+        # ``.dict()`` is what a save writes back, so this is the whole promise.
+        assert task.config.dict()["from_a_newer_omnia"] == {"nested": 1}
+
+
 class TestBuildTasksTolerateBadConfig:
     """Both callers are Qt slots: a config this version can't parse must never raise there."""
 
@@ -122,15 +151,6 @@ class TestBuildTasksTolerateBadConfig:
         (task,) = task_registry.build_tasks({"demo": {"order": "whenever"}})
 
         assert (task.is_enabled, task.order, task.config.suffix) == (True, 100, "!")
-
-    def test_an_unknown_option_does_not_break_the_run(self, clean_registry):
-        # The mixed-version case: a newer Omnia synced down a task option this one never heard
-        # of. Whether the model keeps or rejects it, the task still has to be built.
-        task_registry.register_task("demo")(_DemoTask)
-
-        (task,) = task_registry.build_tasks({"demo": {"brand_new_option": True}})
-
-        assert task.is_enabled
 
     def test_the_fallback_keeps_a_task_the_user_switched_off(self, clean_registry):
         # The switches are not options: reverting ``enable`` would silently run a task over the

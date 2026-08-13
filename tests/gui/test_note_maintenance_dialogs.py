@@ -286,11 +286,10 @@ class TestSaveKeepsWhatItCannotShow:
             "mode": "beta",
         }
 
-    def test_an_option_a_known_tasks_model_rejects_survives(
-        self, config_repo, warnings
-    ):
-        # The section falls back to that task's defaults for the OPTIONS it cannot read; the
-        # value itself still has to reach storage untouched, or the newer device loses it.
+    def test_an_option_key_from_a_newer_omnia_survives(self, config_repo, warnings):
+        # End of the ADR-010 chain: the task's model keeps the key, the form carries it as a
+        # passthrough, and the save has to put it back — or the older device deletes the newer
+        # one's option on the next sync.
         config_repo.update_section(
             _PLUGIN_ID,
             {"tasks": {"strip_ipa": {"enable": False, "a_future_option": ["kept"]}}},
@@ -317,6 +316,7 @@ class TestSaveKeepsWhatItCannotShow:
                         "enable": True,
                         "order": "whenever",
                         "find": "PROMO",
+                        "a_future_option": ["kept"],
                     }
                 }
             },
@@ -327,6 +327,9 @@ class TestSaveKeepsWhatItCannotShow:
         saved = self._saved(config_repo)["replace_text_all_fields"]
         assert saved["find"] == "PROMO"
         assert saved["enable"] is True
+        # The unknown key rides through on the raw stored section even though the per-task
+        # salvage (which only knows declared fields) could not carry it.
+        assert saved["a_future_option"] == ["kept"]
 
     def test_a_section_level_key_this_build_never_heard_of_keeps_the_map(
         self, config_repo, warnings

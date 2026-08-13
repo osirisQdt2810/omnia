@@ -52,6 +52,24 @@ class TestTaskOptions:
         assert split.passthrough == {"extras": ["one", "two"]}
         assert "extras" not in [name for name, _value, _field in split.rows]
 
+    def test_an_option_key_from_a_newer_omnia_is_kept_verbatim(self):
+        # The other half of the ADR-010 round trip: the task's model keeps the unknown key
+        # (it is a PersistedModel), and the form has to hand it back to the save unchanged.
+        split = TaskOptions(_DemoConfig.parse_obj({"from_a_newer_omnia": "kept"}))
+
+        assert split.passthrough["from_a_newer_omnia"] == "kept"
+
+    def test_an_unknown_key_holding_a_table_is_not_mistaken_for_a_field_map(self):
+        # Only a DECLARED mapping option gets the bespoke editor: rendering an unknown table
+        # in it would rewrite the newer Omnia's values as {str: str} — and the row label,
+        # which reads the model's field info, would not even find the field.
+        split = TaskOptions(
+            _DemoConfig.parse_obj({"from_a_newer_omnia": {"nested": 1}})
+        )
+
+        assert split.passthrough["from_a_newer_omnia"] == {"nested": 1}
+        assert "from_a_newer_omnia" not in [name for name, _v, _f in split.rows]
+
     def test_the_rows_keep_the_models_order(self):
         assert [name for name, _value, _field in self._split().rows] == [
             "order",
