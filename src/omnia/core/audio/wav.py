@@ -140,8 +140,12 @@ class WavClip:
                 framerate = reader.getframerate()
                 comptype = reader.getcomptype()
                 frames = reader.readframes(reader.getnframes())
-        except (wave.Error, EOFError) as exc:
-            raise WavFormatError(f"not a readable WAV stream: {exc}") from exc
+        except (wave.Error, EOFError, RuntimeError, struct.error) as exc:
+            # wave._Chunk.seek() raises a BARE RuntimeError when a chunk size overruns the
+            # file (Lib/wave.py:158) — a corrupt/partial WAV must still fail as WavFormatError.
+            raise WavFormatError(
+                f"not a readable WAV stream: {type(exc).__name__}: {exc}"
+            ) from exc
         if comptype != "NONE":
             raise WavFormatError(
                 f"compressed WAV (comptype={comptype!r}); only uncompressed PCM is supported."
