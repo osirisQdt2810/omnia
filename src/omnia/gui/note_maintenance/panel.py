@@ -120,12 +120,52 @@ class _FieldMapEditor(QWidget):
         return item.text().strip() if item is not None else ""
 
 
+class _TaskOptions:
+    """Splits ONE task's saved options into the rows this form renders and the rest.
+
+    Pure (no Qt), because the interesting half is what the form CANNOT render: a list-shaped
+    option, or a key a newer Omnia wrote and this version has never heard of. Those are carried
+    through the save untouched — a settings dialog that writes back only what it could draw
+    deletes the settings it did not understand (the ADR-010 hazard, one layer up).
+
+    ``enable`` is dropped from both halves: the task list's tick owns it and
+    :meth:`NoteMaintenanceSettingsDialog._save` writes it back itself.
+
+    Attributes:
+        model: The task's settings model (for a complex row's title/help).
+        rows: ``(name, value, field)`` in model order — ``field`` is the scalar descriptor to
+            render with, or None for a field mapping (a :class:`_FieldMapEditor` row).
+        passthrough: The options with no renderer, kept verbatim for the save.
+    """
+
+    def __init__(self, config: BaseModel) -> None:
+        """Classify ``config``'s options.
+
+        Args:
+            config: The task's parsed settings (an instance, so it carries current values).
+        """
+        self.model = type(config)
+        scalars = {field.key: field for field in schema_from_model(self.model)}
+        self.rows: list[tuple[str, Any, Optional[ConfigField]]] = []
+        self.passthrough: dict[str, Any] = {}
+        for name, value in config.dict().items():
+            if name == "enable":
+                continue
+            if isinstance(value, dict):
+                self.rows.append((name, value, None))
+            elif name in scalars:
+                self.rows.append((name, value, scalars[name]))
+            else:
+                self.passthrough[name] = value
+
+
 class _TaskOptionsEditor(QWidget):
     """The options form for ONE task, built from that task's own settings model.
 
     ``enable`` is left out — the task list's tick owns it — and every other option is rendered
     by kind: scalars from the shared :func:`schema_from_model` descriptors (label, help, bounds
-    and all), and the field mappings the deriver skips as a :class:`_FieldMapEditor`.
+    and all), and the field mappings the deriver skips as a :class:`_FieldMapEditor`. What no
+    renderer knows is kept by :class:`_TaskOptions` and written back unchanged.
     """
 
     def __init__(self, task: MaintenanceTask, parent: Optional[QWidget] = None) -> None:
@@ -136,9 +176,7 @@ class _TaskOptionsEditor(QWidget):
             parent: Parent widget.
         """
         super().__init__(parent)
-        model = type(task.config)
-        values = task.config.dict()
-        scalars = {field.key: field for field in schema_from_model(model)}
+        self._options = _TaskOptions(task.config)
         self._readers: dict[str, Callable[[], Any]] = {}
 
         layout = QVBoxLayout(self)
@@ -149,25 +187,25 @@ class _TaskOptionsEditor(QWidget):
 
         form = QFormLayout()
         form.setSpacing(10)
-        for name, value in values.items():
-            if name == "enable":
-                continue
-            if isinstance(value, dict):
+        for name, value, field in self._options.rows:
+            if field is None:
                 editor = _FieldMapEditor(value)
                 self._readers[name] = editor.values
-                form.addRow(_field_label(model, name), editor)
+                form.addRow(_field_label(self._options.model, name), editor)
                 continue
-            field = scalars.get(name)
-            if field is None:
-                continue  # an option no renderer knows — left to the config file
             widget = self._widget(field, value)
             form.addRow(_labelled(field), widget)
         layout.addLayout(form)
         layout.addStretch(1)
 
     def values(self) -> dict[str, Any]:
-        """Return the edited options (without ``enable``), keyed as the config file stores them."""
-        return {name: read() for name, read in self._readers.items()}
+        """Return the options to save (without ``enable``), keyed as the config file stores them.
+
+        The edited controls plus the options this form could not render, unchanged — so a save
+        never drops a setting just because the dialog did not know how to show it.
+        """
+        edited = {name: read() for name, read in self._readers.items()}
+        return {**self._options.passthrough, **edited}
 
     def _widget(self, field: ConfigField, value: Any) -> QWidget:
         """Build the control for one scalar option and register how to read it back."""
@@ -264,17 +302,17 @@ class NoteMaintenanceSettingsDialog(QDialog):
     def _configured_tasks(self) -> list[MaintenanceTask]:
         """The registered tasks carrying the user's settings (defaults if those don't parse).
 
-        A saved option the model rejects must not lock the user out of the very dialog that
-        would fix it, so an invalid section falls back to the shipped defaults (and is logged).
+        A saved value the model rejects must not lock the user out of the very dialog that would
+        fix it. Per TASK that fallback lives in :func:`build_tasks` (the one gate every caller
+        goes through); what is caught here is the ``[note_maintenance]`` section as a whole
+        failing to parse, which happens one layer up and only on this read.
         """
-        settings = self._repo.feature_settings(_PLUGIN_ID) or NoteMaintenanceSettings()
         try:
-            return build_tasks(settings.tasks)
+            settings = self._repo.feature_settings(_PLUGIN_ID)
         except ValidationError:
-            logger.exception(
-                "note_maintenance: invalid task config; showing the defaults"
-            )
-            return build_tasks({})
+            logger.exception("note_maintenance: invalid settings; showing the defaults")
+            settings = None
+        return build_tasks((settings or NoteMaintenanceSettings()).tasks)
 
     def _task_column(self) -> QWidget:
         holder = QWidget()
@@ -314,7 +352,14 @@ class NoteMaintenanceSettingsDialog(QDialog):
     # -- persistence ----------------------------------------------------------------------
 
     def _save(self) -> None:
-        """Write every task's switch, order and options back into the plugin's config section."""
+        """Write every task's switch, order and options back into the plugin's config section.
+
+        A write that fails leaves the dialog OPEN with a warning: closing it as if the settings
+        had been saved loses the user's edits AND tells them a lie they only discover the next
+        time they open the panel.
+        """
+        from aqt.utils import showWarning
+
         tasks: dict[str, dict[str, Any]] = {}
         for row, task in enumerate(self._tasks):
             item = self._task_list.item(row)
@@ -324,8 +369,12 @@ class NoteMaintenanceSettingsDialog(QDialog):
             }
         try:
             self._repo.update_section(_PLUGIN_ID, {"tasks": tasks})
-        except OSError:
+        except OSError as exc:
             logger.exception("note_maintenance: could not save settings")
+            showWarning(
+                f"Omnia: could not save the Note Maintenance settings.\n\n{exc}"
+            )
+            return
         self.accept()
 
 
