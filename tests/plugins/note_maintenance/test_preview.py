@@ -144,6 +144,42 @@ class TestPreviewModelInclusion:
         assert model.selected_plan().is_empty is True
 
 
+class TestPreviewCoversTheWholeBatch:
+    """Apply writes the model, so the model has to hold the WHOLE plan — no slice, no cap.
+
+    The dialog lists every note this model carries (an item view, not a widget per note), which
+    is what keeps "nothing is written that was not shown" true for a 5 000-note run.
+    """
+
+    def test_every_note_of_a_large_plan_stays_reviewable(self):
+        plan = ChangePlan(
+            tuple(
+                NoteChange(note_id, (FieldChange("Word", "old", "new"),))
+                for note_id in range(1, 2001)
+            )
+        )
+
+        model = PreviewModel(plan)
+
+        assert len(model.notes) == 2000
+        assert model.selected_note_count == 2000
+        assert model.selected_plan() == plan
+
+    def test_unticking_a_note_deep_in_a_large_plan_drops_only_it(self):
+        plan = ChangePlan(
+            tuple(
+                NoteChange(note_id, (FieldChange("Word", "old", "new"),))
+                for note_id in range(1, 2001)
+            )
+        )
+        model = PreviewModel(plan)
+
+        model.notes[1500].include_all(False)
+
+        assert model.selected_note_count == 1999
+        assert 1501 not in [note.note_id for note in model.selected_plan()]
+
+
 class TestApplyWritesOnlyIncludedChanges:
     """The whole point of the preview: an unticked change must never reach the collection."""
 
