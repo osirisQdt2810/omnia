@@ -33,16 +33,15 @@ from aqt.qt import (  # type: ignore[attr-defined]
     QVBoxLayout,
     QWidget,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from omnia.core.config.schema import schema_from_model
 from omnia.core.logging import get_logger
 from omnia.core.plugin import ConfigField
 from omnia.gui.config_form import ConfigFieldEditor
 from omnia.gui.widgets import hint_label
 from omnia.plugins.note_maintenance.base import MaintenanceTask
-from omnia.plugins.note_maintenance.config import NoteMaintenanceSettings
 from omnia.plugins.note_maintenance.registry import build_tasks
+from omnia.plugins.note_maintenance.settings_merge import TaskOptions, TaskSectionMerge
 
 logger = get_logger("note_maintenance")
 
@@ -117,45 +116,6 @@ class _FieldMapEditor(QWidget):
         return item.text().strip() if item is not None else ""
 
 
-class _TaskOptions:
-    """Splits ONE task's saved options into the rows this form renders and the rest.
-
-    Pure (no Qt), because the interesting half is what the form CANNOT render: a list-shaped
-    option, or a key a newer Omnia wrote and this version has never heard of. Those are carried
-    through the save untouched — a settings dialog that writes back only what it could draw
-    deletes the settings it did not understand (the ADR-010 hazard, one layer up).
-
-    ``enable`` is dropped from both halves: the task list's tick owns it and
-    :meth:`NoteMaintenanceSettingsDialog._save` writes it back itself.
-
-    Attributes:
-        model: The task's settings model (for a complex row's title/help).
-        rows: ``(name, value, field)`` in model order — ``field`` is the scalar descriptor to
-            render with, or None for a field mapping (a :class:`_FieldMapEditor` row).
-        passthrough: The options with no renderer, kept verbatim for the save.
-    """
-
-    def __init__(self, config: BaseModel) -> None:
-        """Classify ``config``'s options.
-
-        Args:
-            config: The task's parsed settings (an instance, so it carries current values).
-        """
-        self.model = type(config)
-        scalars = {field.key: field for field in schema_from_model(self.model)}
-        self.rows: list[tuple[str, Any, Optional[ConfigField]]] = []
-        self.passthrough: dict[str, Any] = {}
-        for name, value in config.dict().items():
-            if name == "enable":
-                continue
-            if isinstance(value, dict):
-                self.rows.append((name, value, None))
-            elif name in scalars:
-                self.rows.append((name, value, scalars[name]))
-            else:
-                self.passthrough[name] = value
-
-
 class _TaskOptionsEditor(QWidget):
     """The options form for ONE task, built from that task's own settings model.
 
@@ -163,7 +123,8 @@ class _TaskOptionsEditor(QWidget):
     by kind: scalars through the SAME :class:`~omnia.gui.config_form.ConfigFieldEditor` the
     generic per-feature form uses (so a kind renders identically wherever it appears), and the
     field mappings that deriver skips as a :class:`_FieldMapEditor`. What no renderer knows is
-    kept by :class:`_TaskOptions` and written back unchanged.
+    kept by :class:`~omnia.plugins.note_maintenance.settings_merge.TaskOptions` and written
+    back unchanged.
     """
 
     def __init__(self, task: MaintenanceTask, parent: Optional[QWidget] = None) -> None:
@@ -174,7 +135,7 @@ class _TaskOptionsEditor(QWidget):
             parent: Parent widget.
         """
         super().__init__(parent)
-        self._options = _TaskOptions(task.config)
+        self._options = TaskOptions(task.config)
         self._readers: dict[str, Callable[[], Any]] = {}
 
         layout = QVBoxLayout(self)
@@ -225,8 +186,8 @@ class NoteMaintenanceSettingsDialog(QDialog):
         self.setWindowTitle("Note Maintenance — settings")
         self.resize(820, 560)
 
-        self._saved_tasks: dict[str, dict[str, Any]] = {}
-        self._tasks = self._configured_tasks()
+        self._stored_tasks = self._stored_task_sections()
+        self._tasks = build_tasks(self._stored_tasks)
         self._editors: dict[str, _TaskOptionsEditor] = {}
 
         root = QVBoxLayout(self)
@@ -264,28 +225,18 @@ class NoteMaintenanceSettingsDialog(QDialog):
 
     # -- construction helpers -------------------------------------------------------------
 
-    def _configured_tasks(self) -> list[MaintenanceTask]:
-        """The registered tasks carrying the user's settings (defaults if those don't parse).
+    def _stored_task_sections(self) -> dict[str, Any]:
+        """The RAW ``[note_maintenance.tasks]`` map, exactly as it is stored.
 
-        A saved value the model rejects must not lock the user out of the very dialog that would
-        fix it. Per TASK that fallback lives in :func:`build_tasks` (the one gate every caller
-        goes through); what is caught here is the ``[note_maintenance]`` section as a whole
-        failing to parse, which happens one layer up and only on this read.
-
-        The RAW map is kept as :attr:`_saved_tasks` for :meth:`_save` to merge onto. The tasks
-        returned here only cover what THIS build registers, and each carries only what its model
-        accepted, while ``update_section`` replaces the whole ``tasks`` map in one shallow
-        update — so saving the tasks alone would delete a section (or an option inside one) a
-        newer Omnia wrote and synced down. Same hazard as ADR-010, one layer up.
+        Read raw rather than through ``feature_settings`` because the typed read is
+        all-or-nothing: ONE unreadable value anywhere in the section (a key a newer Omnia
+        added, a task entry that is not a table) makes it raise, and a save that had started
+        from an empty map would then write this build's own registry over everything the user
+        had. Both halves of the dialog work off this map — :func:`build_tasks` parses it task
+        by task and never raises, and :meth:`_tasks_to_save` merges the edits back onto it.
         """
-        try:
-            settings = self._repo.feature_settings(_PLUGIN_ID)
-        except ValidationError:
-            logger.exception("note_maintenance: invalid settings; showing the defaults")
-            settings = None
-        saved = (settings or NoteMaintenanceSettings()).tasks
-        self._saved_tasks = {task_id: dict(values) for task_id, values in saved.items()}
-        return build_tasks(saved)
+        tasks = self._repo.raw_section(_PLUGIN_ID).get("tasks", {})
+        return dict(tasks) if isinstance(tasks, dict) else {}
 
     def _task_column(self) -> QWidget:
         holder = QWidget()
@@ -348,29 +299,23 @@ class NoteMaintenanceSettingsDialog(QDialog):
             return
         self.accept()
 
-    def _tasks_to_save(self) -> dict[str, dict[str, Any]]:
+    def _tasks_to_save(self) -> dict[str, Any]:
         """The whole ``tasks`` map to persist: what was stored, updated with what was edited.
 
-        Built on top of :attr:`_saved_tasks` (never from the registry alone) because
-        ``update_section`` merges shallowly — whatever this returns IS the stored map
-        afterwards. Two things therefore survive a save by this build:
-
-        * a ``[note_maintenance.tasks.<id>]`` section for a task it does not register (a newer
-          Omnia's task, synced down), and
-        * an option inside a KNOWN task that its model could not read — including the case
-          where that made the whole section fall back to defaults.
+        The merge policy itself is pure and lives with the plugin
+        (:class:`~omnia.plugins.note_maintenance.settings_merge.TaskSectionMerge`); this only
+        reads the widgets. The editor supplies ``order`` too (it is a scalar option of every
+        task model), plus whatever it could not render, unchanged.
         """
-        tasks = {task_id: dict(values) for task_id, values in self._saved_tasks.items()}
+        merge = TaskSectionMerge(self._stored_tasks)
         for row, task in enumerate(self._tasks):
             item = self._task_list.item(row)
-            tasks[task.task_id] = {
-                **tasks.get(task.task_id, {}),
-                "enable": item.checkState() == Qt.CheckState.Checked,
-                # The editor supplies ``order`` too (it is a scalar option of every task
-                # model), plus whatever it could not render, unchanged.
-                **self._editors[task.task_id].values(),
-            }
-        return tasks
+            merge.apply(
+                task.task_id,
+                enable=item.checkState() == Qt.CheckState.Checked,
+                options=self._editors[task.task_id].values(),
+            )
+        return merge.result()
 
 
 def _labelled(field: ConfigField) -> QLabel:
