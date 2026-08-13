@@ -1,0 +1,157 @@
+# PR pipeline: tests + lint -> Claude review -> gated auto-merge.
+#
+# Merge gate — a PR auto-merges ONLY when ALL of these hold:
+#   1. tests + lint are green on the PR's head commit,
+#   2. the Claude review job produced an explicit APPROVE verdict for this run
+#      (missing/garbled verdict counts as BLOCKING — the gate fails closed),
+#   3. the PR carries the `automerge` label at merge time (the human/author
+#      intent switch: omit it and the pipeline is review-only, merge manually),
+#   4. the head commit at merge time is exactly the one this run reviewed
+#      (--match-head-commit blocks TOCTOU pushes mid-run).
+# Fork PRs cannot read the review secret, so the review job fails closed and
+# `needs` blocks the merge job; fork runs also get a read-only GITHUB_TOKEN.
+#
+# One-time repo setup (see the PR that introduced this file):
+#   - install the Claude GitHub App on the repo,
+#   - add the CLAUDE_CODE_OAUTH_TOKEN actions secret (`claude setup-token`),
+#   - create the `automerge` label.
+
+name: PR Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    branches: [main]
+
+concurrency:
+  group: pr-pipeline-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = Anki's minimum supported Python, 3.13 = the currently bundled one.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements/requirements-dev.txt
+      - name: Install dev tooling
+        run: pip install -r requirements/requirements-dev.txt
+      - name: Lint (pre-commit, pinned hooks)
+        if: matrix.python-version == '3.13'
+        run: pre-commit run --all-files --show-diff-on-failure
+      - name: Run test suite
+        # Vendored deps come from the committed vendor/universal; keyed provider
+        # tests auto-skip without creds. The three deselected suites hit live
+        # third-party endpoints (Google Translate TTS / Edge TTS) that answer
+        # datacenter IPs with 403s — a flake source, not a signal, on CI.
+        run: >-
+          pytest tests/ -q
+          --deselect tests/providers/test_tts.py::TestGoogleTranslateRealTTS
+          --deselect tests/providers/test_tts.py::TestEdgeRealTTS
+          --deselect tests/providers/test_anki_runtime.py::test_edge_tts_synthesizes_hermetically
+
+  review:
+    name: Claude review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    env:
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+    outputs:
+      verdict: ${{ steps.verdict.outputs.value }}
+    steps:
+      - name: Fail closed when the review token is missing
+        if: env.HAS_TOKEN != 'true'
+        run: |
+          echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not available (unset, or this is a fork PR). Refusing to skip review while auto-merge is possible."
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Review the PR
+        uses: anthropics/claude-code-action@c3d45e8e941e1b2ad7b278c57482d9c5bf1f35b3 # v1.0.99
+        env:
+          # Explicit gh auth: comments post as github-actions[bot], whose events
+          # can never retrigger workflows — no self-trigger loops.
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+
+            House rules to enforce (this is an Anki add-on with a pluginized architecture):
+            - plugins/* may import core/*; core/* must NEVER import plugins/*; plugins must
+              NEVER import each other. Shared logic goes into core/.
+            - Pure logic modules must not import aqt/anki at top level (tests run headless).
+            - Vendored dependencies must be pure-Python and cross-platform (macOS + Windows).
+            - Config access only through the namespaced ConfigStore, never raw addonManager calls.
+            - The Qt main thread must never block on network/LLM/TTS work.
+            - New behavior needs tests; changed behavior needs updated tests.
+
+            Inspect the change with `gh pr diff` and `gh pr view`, and read the surrounding
+            code in the checkout for context. Judge correctness (state a concrete failing
+            scenario for every defect you claim), architectural fit, test coverage, and the
+            house rules above.
+
+            Post your findings as a single `gh pr comment`: for a clean PR, a short summary of
+            what you checked; for a defective PR, each blocking issue with file:line, the
+            concrete failure scenario, and a suggested fix.
+
+            Finally — MANDATORY LAST ACTION — write your one-word verdict to the verdict file:
+              echo APPROVE > "$RUNNER_TEMP/verdict"     # no blocking issues
+              echo BLOCKING > "$RUNNER_TEMP/verdict"    # at least one blocking issue
+            If you write nothing, the pipeline treats the review as BLOCKING.
+          claude_args: '--allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(echo:*)"'
+      - name: Publish verdict
+        id: verdict
+        run: |
+          v=$(cat "$RUNNER_TEMP/verdict" 2>/dev/null || echo BLOCKING)
+          if [ "$v" != "APPROVE" ]; then v=BLOCKING; fi
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+          echo "Review verdict: $v"
+
+  merge:
+    name: Auto-merge
+    needs: [test, review]
+    if: needs.review.outputs.verdict == 'APPROVE' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge when the automerge label is present
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          # Pin the merge to the exact commit this run tested and reviewed.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Re-read labels NOW — the event payload is stale by the time review finishes.
+          labels=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')
+          if printf '%s\n' "$labels" | grep -qx automerge; then
+            gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$HEAD_SHA"
+            echo "PR #$PR merged at $HEAD_SHA."
+          else
+            echo "No automerge label — review is APPROVE but merging is left to a human."
+          fi
