@@ -4,15 +4,23 @@
 filename as text (to build a link, or to check the media folder) without the tag that makes
 Anki play it.
 
+A media reference holds a FILE NAME, not markup — Anki decodes HTML entities when it resolves
+one, so ``[sound:rock &amp; roll.mp3]`` plays ``rock & roll.mp3``. The name is therefore decoded
+and re-encoded through :func:`~omnia.core.text.as_field_html` on its way into the target field:
+copying the raw bytes across would leave a hand-written ``&`` sitting in stored HTML as the start
+of an entity.
+
 Pure module: no ``aqt``/``anki`` imports.
 """
 
 from __future__ import annotations
 
+import html
 import re
 
 from pydantic import Field
 
+from omnia.core.text import as_field_html
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,
@@ -60,7 +68,10 @@ class ExtractAudioFileNameTask(MaintenanceTask):
             filename = (match.group(1) or "").strip() if match else ""
             if not filename:
                 continue
+            # html.unescape first: the reference is stored HTML, and the file name Anki plays
+            # is its DECODED form — re-encoding that is what the target field has to hold.
+            written = as_field_html(html.unescape(filename))
             destination = target or source
-            if note.field(destination) != filename:
-                updates[destination] = filename
+            if note.field(destination) != written:
+                updates[destination] = written
         return updates

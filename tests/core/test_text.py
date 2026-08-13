@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from omnia.core.text import strip_markup
+from omnia.core.text import as_field_html, strip_markup
 
 
 class TestTagsAndEntities:
@@ -57,3 +57,27 @@ class TestEmptyResults:
 
     def test_blank_input(self):
         assert strip_markup("") == ""
+
+
+class TestAsFieldHtml:
+    """The other direction: plain text going back INTO a field, which stores HTML."""
+
+    def test_escapes_markup_characters(self):
+        assert as_field_html("5 < 6 & rising") == "5 &lt; 6 &amp; rising"
+
+    def test_line_breaks_become_br_tags(self):
+        # A bare newline in stored HTML renders as a single space — the lines would merge.
+        assert as_field_html("one\ntwo") == "one<br>two"
+
+    def test_a_quote_is_left_readable(self):
+        # Field text is never interpolated into an attribute, so quoting it would only make
+        # the stored value uglier (&quot;) for no gain.
+        assert as_field_html('he said "hi"') == 'he said "hi"'
+
+    def test_round_trips_through_strip_markup(self):
+        # The pair is a fixed point: what a task re-derives equals what it wrote last run.
+        text = "5 < 6 & rising\nreally"
+        assert strip_markup(as_field_html(text)) == text
+
+    def test_blank_input(self):
+        assert as_field_html("") == ""

@@ -14,19 +14,18 @@ unwraps a cloze deletion to its answer):
   holding ``{{c1::…}}`` markup no cloze template renders is not a refill, it is a mess.
 
 Stripped text is then re-encoded as field HTML before it is written (see
-:func:`_as_field_html`): the target is a STORED-HTML field, not a plain-text one.
+:func:`~omnia.core.text.as_field_html`): the target is a STORED-HTML field, not a plain-text one.
 
 Pure module: no ``aqt``/``anki`` imports.
 """
 
 from __future__ import annotations
 
-import html
 import re
 
 from pydantic import Field
 
-from omnia.core.text import strip_markup
+from omnia.core.text import as_field_html, strip_markup
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,
@@ -95,7 +94,7 @@ class FillFirstExampleTask(MaintenanceTask):
         # would put "{{c1::plunged}}" on a field no cloze template ever renders. Markup that
         # carried no words at all (a lone [sound:…]) would empty the field — leave it be.
         plain = strip_markup(source)
-        return {self.config.target_field: _as_field_html(plain)} if plain else {}
+        return {self.config.target_field: as_field_html(plain)} if plain else {}
 
     @staticmethod
     def _similarity(left: str, right: str) -> float:
@@ -112,23 +111,3 @@ class FillFirstExampleTask(MaintenanceTask):
 def _words(value: str) -> set[str]:
     """Return the lower-cased words of ``value`` with its markup and cloze wrappers removed."""
     return set(_WORD_RE.findall(strip_markup(value).lower()))
-
-
-def _as_field_html(text: str) -> str:
-    """Return plain ``text`` encoded as the HTML an Anki field stores.
-
-    An Anki field holds HTML, so plain text cannot be written into one verbatim. Two things go
-    wrong if it is:
-
-    * ``strip_markup`` keeps a block break as ``"\\n"`` (right for its panel/TTS consumers), and
-      a bare newline in stored HTML renders as a single SPACE — the author's line structure is
-      silently lost. Each newline therefore becomes ``<br>``: an example the author wrote on
-      three lines is still on three lines after the refill;
-    * ``strip_markup`` also decodes entities, so a source holding ``&lt;`` yields a raw ``<``
-      that the field would then read back as the start of a tag. Escaping first prevents that.
-
-    Escaping before the ``<br>`` substitution also keeps the refill a FIXED POINT: stripping the
-    markup off the result gives back exactly the text this function was handed, so a second run
-    over the same note finds nothing to change.
-    """
-    return html.escape(text, quote=False).replace("\n", "<br>")
