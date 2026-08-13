@@ -149,7 +149,9 @@ class TestPreviewTreeRelayout:
 
     def test_a_burst_of_resizes_schedules_one_pass(self, monkeypatch):
         timers: list = []
-        monkeypatch.setattr(_qt.QTimer, "singleShot", lambda _ms, fn: timers.append(fn))
+        monkeypatch.setattr(
+            _qt.QTimer, "singleShot", lambda _ms, _ctx, fn: timers.append(fn)
+        )
         done: list = []
         tree = self._tree(done)
 
@@ -162,7 +164,9 @@ class TestPreviewTreeRelayout:
 
     def test_a_later_drag_schedules_again(self, monkeypatch):
         timers: list = []
-        monkeypatch.setattr(_qt.QTimer, "singleShot", lambda _ms, fn: timers.append(fn))
+        monkeypatch.setattr(
+            _qt.QTimer, "singleShot", lambda _ms, _ctx, fn: timers.append(fn)
+        )
         tree = self._tree([])
 
         tree._on_section_resized(_DIFF_COLUMN, 0, 0)
@@ -173,7 +177,9 @@ class TestPreviewTreeRelayout:
 
     def test_the_label_column_never_schedules(self, monkeypatch):
         timers: list = []
-        monkeypatch.setattr(_qt.QTimer, "singleShot", lambda _ms, fn: timers.append(fn))
+        monkeypatch.setattr(
+            _qt.QTimer, "singleShot", lambda _ms, _ctx, fn: timers.append(fn)
+        )
 
         self._tree([])._on_section_resized(0, 0, 0)
 
