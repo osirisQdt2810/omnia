@@ -15,6 +15,11 @@
 #   - install the Claude GitHub App on the repo,
 #   - add the CLAUDE_CODE_OAUTH_TOKEN actions secret (`claude setup-token`),
 #   - create the `automerge` label.
+#
+# Known limitation (by design): a PR that MODIFIES any .github/workflows file
+# cannot pass the review job — the Claude GitHub App refuses to mint a token
+# when the workflow content differs from the default branch (anti-tampering).
+# Such PRs always need a manual merge.
 
 name: PR Pipeline
 
@@ -41,6 +46,9 @@ jobs:
         python-version: ["3.10", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so pre-commit can diff against the PR base commit.
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -48,9 +56,13 @@ jobs:
           cache-dependency-path: requirements/requirements-dev.txt
       - name: Install dev tooling
         run: pip install -r requirements/requirements-dev.txt
-      - name: Lint (pre-commit, pinned hooks)
+      - name: Lint (pre-commit on the PR's changes, pinned hooks)
+        # Changed files only — mirrors the local staged-files hook behavior.
         if: matrix.python-version == '3.13'
-        run: pre-commit run --all-files --show-diff-on-failure
+        run: >-
+          pre-commit run --show-diff-on-failure
+          --from-ref ${{ github.event.pull_request.base.sha }}
+          --to-ref HEAD
       - name: Run test suite
         # Vendored deps come from the committed vendor/universal; keyed provider
         # tests auto-skip without creds. The three deselected suites hit live
@@ -74,14 +86,17 @@ jobs:
       id-token: write
       actions: read
     env:
-      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+      # Either credential works: CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`,
+      # billed to the Claude subscription) or ANTHROPIC_API_KEY (console.anthropic.com,
+      # pay-as-you-go — independent of any claude.ai workspace/plan).
+      HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' || secrets.ANTHROPIC_API_KEY != '' }}
     outputs:
       verdict: ${{ steps.verdict.outputs.value }}
     steps:
-      - name: Fail closed when the review token is missing
+      - name: Fail closed when the review credential is missing
         if: env.HAS_TOKEN != 'true'
         run: |
-          echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not available (unset, or this is a fork PR). Refusing to skip review while auto-merge is possible."
+          echo "::error::Neither CLAUDE_CODE_OAUTH_TOKEN nor ANTHROPIC_API_KEY is available (unset, or this is a fork PR). Refusing to skip review while auto-merge is possible."
           exit 1
       - uses: actions/checkout@v4
         with:
@@ -94,6 +109,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
