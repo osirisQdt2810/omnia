@@ -20,7 +20,8 @@ collection. So the rules here are generic and ordering-driven:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 from omnia.core.text import strip_markup
 
@@ -125,18 +126,18 @@ def escape_search_term(term: str) -> str:
 # candidate — the search simply ORs them, so an extra wrong guess costs nothing but a miss costs
 # the user the card they were looking for.
 _DEINFLECT: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("ies", ("y",)),          # studies -> study
-    ("ied", ("y",)),          # studied -> study
-    ("ier", ("y",)),          # happier -> happy
-    ("iest", ("y",)),         # happiest -> happy
-    ("ily", ("y",)),          # happily -> happy
-    ("es", ("", "e")),        # goes -> go, boxes -> box
-    ("ed", ("", "e")),        # looked -> look, loved -> love
-    ("ing", ("", "e")),       # looking -> look, loving -> love
-    ("est", ("", "e")),       # tallest -> tall
-    ("er", ("", "e")),        # taller -> tall
-    ("ly", ("",)),            # quickly -> quick
-    ("s", ("",)),             # loves -> love
+    ("ies", ("y",)),  # studies -> study
+    ("ied", ("y",)),  # studied -> study
+    ("ier", ("y",)),  # happier -> happy
+    ("iest", ("y",)),  # happiest -> happy
+    ("ily", ("y",)),  # happily -> happy
+    ("es", ("", "e")),  # goes -> go, boxes -> box
+    ("ed", ("", "e")),  # looked -> look, loved -> love
+    ("ing", ("", "e")),  # looking -> look, loving -> love
+    ("est", ("", "e")),  # tallest -> tall
+    ("er", ("", "e")),  # taller -> tall
+    ("ly", ("",)),  # quickly -> quick
+    ("s", ("",)),  # loves -> love
 )
 # A stem shorter than this is noise ("as" -> "a"). Two is enough for real bases like "go".
 _MIN_STEM = 2
@@ -443,4 +444,6 @@ def rank_cards(cards: list[LookupCard], word: str) -> list[LookupCard]:
             return 3
         return 4
 
-    return [card for _, card in sorted(enumerate(cards), key=lambda p: (score(p[1]), p[0]))]
+    return [
+        card for _, card in sorted(enumerate(cards), key=lambda p: (score(p[1]), p[0]))
+    ]
