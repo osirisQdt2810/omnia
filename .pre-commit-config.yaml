@@ -4,7 +4,9 @@
 #                pre-commit run --all-files  # whole repo
 
 # Never touch vendored deps or the read-only reference add-on snapshots.
-exclude: '^(src/omnia/vendor/|references/)'
+# (vendor/ lives at the repo root since the src-only package split; the old
+# src/omnia/vendor/ path is kept for safety.)
+exclude: '^(vendor/|src/omnia/vendor/|references/)'
 
 repos:
   # General hygiene + config validators (end-of-file-fixer is intentionally NOT used).

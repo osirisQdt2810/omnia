@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+try:  # stdlib on Python 3.11+; the vendored tomli covers 3.10 (same fallback as loader.py)
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 only
+    import tomli as tomllib  # type: ignore[no-redef]
+
 import pytest
 from pydantic import ValidationError
 
@@ -191,8 +196,6 @@ class TestSecretsOutOfConfig:
         return ConfigRepository(ConfigLoader(tmp_cfg), store), tmp_cfg
 
     def test_secret_field_is_stored_as_reference_not_raw(self, tmp_path):
-        import tomllib
-
         repo, tmp_cfg = self._repo(tmp_path)
         repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "AIza-XYZ")])
         # On disk the TOML holds only a reference; the raw key is nowhere in the file.
@@ -216,8 +219,6 @@ class TestSecretsOutOfConfig:
         assert fresh.config.llm.openrouter.api_key == "sk-or-123"
 
     def test_non_secret_field_stays_inline(self, tmp_path):
-        import tomllib
-
         repo, tmp_cfg = self._repo(tmp_path)
         repo.set_provider_fields(
             "llm", "gemini_vertex", [("project", "text", "my-proj")]

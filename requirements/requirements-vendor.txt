@@ -13,6 +13,9 @@
 # pure-Python build.
 pydantic>=1.10,<2     # typed/validated config models (pure-Python)
 tomli-w>=1.0          # write config TOML (reading uses stdlib tomllib on 3.11+)
+tomli>=2.0            # read config TOML on Python 3.10 (loader.py's documented fallback —
+                      # without it a 3.10 Anki runtime crashes reading providers.toml; the
+                      # hermetic guard on the CI 3.10 matrix leg is what caught this)
 
 # --- gemini_vertex service-account auth (RS256 JWT) -----------------------------------
 rsa>=4.9               # RS256 signing of the JWT assertion (pure-Python)
