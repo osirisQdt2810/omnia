@@ -4,8 +4,8 @@ The workhorse for cleaning up a shared deck: a promo line, a stray watermark or 
 entity that was pasted into thousands of notes. The match is LITERAL (no regex, no word
 boundaries) — what the user types is what gets replaced, in every field that contains it.
 
-An empty ``find`` is a deliberate no-op, so the task can ship enabled without touching
-anything until the user says what to replace.
+The task ships DISABLED, and an empty ``find`` is a deliberate no-op on top of that: a user
+who switches it on before saying what to replace still has nothing touched.
 
 Pure module: no ``aqt``/``anki`` imports.
 """
@@ -25,6 +25,22 @@ from omnia.plugins.note_maintenance.registry import register_task
 class ReplaceTextAllFieldsConfig(TaskConfigBase):
     """The literal text to look for, and what to put in its place."""
 
+    enable: bool = Field(
+        False,
+        title="Run this task",
+        description=(
+            "Ships OFF: this task touches EVERY field, so it stays out of a run until the "
+            "user has said what to replace."
+        ),
+    )
+    order: int = Field(
+        90,
+        title="Run order",
+        description=(
+            "Runs last: a find-and-replace should see the text the other tasks have already "
+            "reshaped."
+        ),
+    )
     find: str = Field(
         "",
         title="Find",

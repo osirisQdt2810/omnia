@@ -23,10 +23,23 @@ class TestReformatSynonymsTask:
         task = ReformatSynonymsTask(ReformatSynonymsConfig(strict_count_match=True))
         assert task.process(_note("modest, meek (ˈmɒdɪst)")) == {}
 
-    def test_pairs_what_lines_up_when_not_strict(self):
+    def test_pairs_what_lines_up_and_keeps_a_spare_word_when_not_strict(self):
+        # Data loss regression: "meek" must survive an in-place rewrite it cannot be paired in.
         task = ReformatSynonymsTask(ReformatSynonymsConfig(strict_count_match=False))
         note = _note("modest, meek (ˈmɒdɪst)")
-        assert task.process(note) == {"Synonyms": "modest (ˈmɒdɪst)"}
+        assert task.process(note) == {"Synonyms": "modest (ˈmɒdɪst), meek"}
+
+    def test_keeps_spare_transcriptions_when_not_strict(self):
+        task = ReformatSynonymsTask(ReformatSynonymsConfig(strict_count_match=False))
+        note = _note("modest (ˈmɒdɪst, miːk, ˈhʌmbl̩)")
+        assert task.process(note) == {"Synonyms": "modest (ˈmɒdɪst), (miːk, ˈhʌmbl̩)"}
+
+    def test_the_non_strict_output_is_a_fixed_point(self):
+        # Whatever it emits, a second run must leave it alone (it is bracketed already).
+        task = ReformatSynonymsTask(ReformatSynonymsConfig(strict_count_match=False))
+        for raw in ("modest, meek (ˈmɒdɪst)", "modest (ˈmɒdɪst, miːk, ˈhʌmbl̩)"):
+            once = task.process(_note(raw))["Synonyms"]
+            assert task.process(_note(once)) == {}
 
     def test_no_change_without_a_trailing_group(self):
         task = ReformatSynonymsTask(ReformatSynonymsConfig())

@@ -33,6 +33,21 @@ class ChangeApplier:
             plan: The reviewed, confirmed plan to persist.
         """
         self._plan = plan
+        self._missing_note_ids: tuple[int, ...] = ()
+        self._written_note_count = 0
+
+    @property
+    def missing_note_ids(self) -> tuple[int, ...]:
+        """The planned notes that were gone by the time the write ran (deleted meanwhile).
+
+        Empty until :meth:`write` has run; the caller reports it once the op finishes.
+        """
+        return self._missing_note_ids
+
+    @property
+    def written_note_count(self) -> int:
+        """How many notes the last :meth:`write` actually submitted (0 before it runs)."""
+        return self._written_note_count
 
     def run(self, parent: Any, on_done: Optional[Callable[[int], None]] = None) -> None:
         """Apply the plan in the background as one undoable operation.
@@ -45,7 +60,10 @@ class ChangeApplier:
 
         Args:
             parent: The Qt widget the operation reports progress/errors against.
-            on_done: Called with the number of notes written once the op succeeds.
+            on_done: Called once the op succeeds, with the number of notes ACTUALLY written —
+                the planned notes minus those the write had to skip (see
+                :attr:`missing_note_ids`), so the user is never told about edits that did not
+                happen.
         """
         if self._plan.is_empty:
             if on_done is not None:
@@ -53,14 +71,17 @@ class ChangeApplier:
             return
         from aqt.operations import CollectionOp
 
-        written = self._plan.note_count
         op = CollectionOp(parent=parent, op=self.write)
         if on_done is not None:
-            op = op.success(lambda _changes: on_done(written))
+            op = op.success(lambda _changes: on_done(self._written_note_count))
         op.run_in_background()
 
     def write(self, col: Any) -> Any:
         """Write every planned field into its note and save the batch.
+
+        A note that no longer exists is SKIPPED, not fatal: the plan is a snapshot, and one
+        note deleted since the preview must not cost the user the other 4 999 edits. The ids
+        are recorded in :attr:`missing_note_ids` so the caller can report them.
 
         Args:
             col: The Anki collection (handed in by the ``CollectionOp``).
@@ -69,8 +90,12 @@ class ChangeApplier:
             The ``OpChanges`` from ``col.update_notes`` — what the op reports to Anki.
         """
         notes = []
+        missing: list[int] = []
         for change in self._plan:
-            note = anki_compat.get_note(change.note_id, col)
+            note = anki_compat.get_note_or_none(change.note_id, col)
+            if note is None:
+                missing.append(change.note_id)
+                continue
             names = set(note.keys())
             wrote = False
             for field, value in change.updates().items():
@@ -87,4 +112,12 @@ class ChangeApplier:
             # for no reason, marking it modified for the next AnkiWeb sync.
             if wrote:
                 notes.append(note)
+        self._missing_note_ids = tuple(missing)
+        self._written_note_count = len(notes)
+        if missing:
+            logger.warning(
+                "skipped %d note(s) deleted since the preview: %s",
+                len(missing),
+                missing,
+            )
         return anki_compat.update_notes(notes, col)

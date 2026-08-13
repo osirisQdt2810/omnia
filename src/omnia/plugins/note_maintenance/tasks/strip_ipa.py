@@ -27,6 +27,14 @@ _SEGMENT_RE = re.compile(r"^\s*(?P<word>[^()]+?)\s*\((?P<ipa>[^()]*)\)\s*$")
 class StripIpaConfig(TaskConfigBase):
     """Which field to read, and where to put the stripped list."""
 
+    order: int = Field(
+        20,
+        title="Run order",
+        description=(
+            "Runs AFTER reformat_synonyms (10), which is what turns a collapsed list into the "
+            "paired one this task understands."
+        ),
+    )
     fields: dict[str, str] = Field(
         default_factory=lambda: {"Synonyms": "SynonymsNoIPA"},
         title="Fields to strip",
