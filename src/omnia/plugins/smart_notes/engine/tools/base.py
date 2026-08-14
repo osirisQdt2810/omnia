@@ -52,6 +52,27 @@ class ToolError(ProviderError):
     """
 
 
+class TerminalToolError(ToolError):
+    """A failure the chain must NOT fall through: no later tool may fill this field.
+
+    Every other way a tool can end — the three outcomes and a plain :class:`ToolError` — hands
+    the field to the next tool, which is the point of a chain. That default is *wrong* whenever
+    falling through would produce something actively harmful rather than merely different, and
+    the tools seam had no way to say so.
+
+    The case that forced it is ``cloze_audio``. It exists to speak a sentence with the answer
+    replaced by silence; when it cannot mask (no cloze span, an unspliceable provider, the codec
+    runtime missing) a chain of ``[cloze_audio, ai]`` would quietly hand the same field to plain
+    TTS — which reads the sentence *with the answer in it*, because
+    :func:`omnia.core.text.strip_markup` unwraps a cloze to its answer. The card would be
+    silently ruined, and nothing in the trace would say so. Documenting "don't configure that
+    chain" is not a safeguard; refusing to continue is.
+
+    The pipeline records the attempt exactly like any other error (so the field is a
+    ``FailedField`` of kind ``"error"`` and the note is kept for a retry) and then stops.
+    """
+
+
 @dataclass(frozen=True)
 class ToolContext:
     """Everything a tool may touch. Built once per :class:`GenerationService`.

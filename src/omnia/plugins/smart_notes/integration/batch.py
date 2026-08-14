@@ -64,13 +64,21 @@ class BatchSummary:
     # A few "<field> needs <prereq>" strings for the blocked fields, so the summary can say WHICH
     # field was blocked and by what (the count alone is not actionable). Bounded when rendered.
     blocked_examples: list[str] = field(default_factory=list)
-    # Notes that WERE generatable but ended up with nothing generated (every field blocked or
-    # skipped). Notes whose type has no config never get here — they are dropped before
-    # generation — so this really means "we tried and produced nothing", which is what lets the
-    # integration gateway discard a clip that would only ever hold the captured word.
-    # A note whose generation RAISED is deliberately excluded: that is transient, and throwing
-    # the user's capture away over a provider hiccup would be worse than keeping an empty card.
+    # Notes that WERE generatable but ended up with nothing generated (every field blocked,
+    # skipped, or declined by every tool in its chain). Notes whose type has no config never get
+    # here — they are dropped before generation — so this really means "we tried, and there was
+    # nothing to make", which is what lets the integration gateway discard a clip that would
+    # only ever hold the captured word.
+    #
+    # A note that produced nothing because something BROKE is excluded and listed in
+    # ``errored_note_ids`` instead: breakage is transient (a provider outage, an expired key),
+    # and throwing the user's capture away over it would lose work that one retry would recover.
+    # That applies to a whole-note failure AND to a note whose every field errored — the latter
+    # used to be discarded, which is the gap this split closes.
     empty_note_ids: list[int] = field(default_factory=list)
+    # Notes kept for a retry: they generated nothing, but at least one field ERRORED, so
+    # "nothing to make here" is not established. Never discarded.
+    errored_note_ids: list[int] = field(default_factory=list)
     # Per-field generation errors across all notes (a single field raising), distinct from
     # ``failed`` (a whole note that could not be processed/written at all).
     field_failures: int = 0
@@ -104,6 +112,10 @@ class BatchSummary:
             parts.append(f"{self.unfilled} field(s) had no applicable tool")
         if self.tool_fallbacks:
             parts.append(f"{self.tool_fallbacks} field(s) fell back to a later tool")
+        if self.errored_note_ids:
+            # Says WHY a run that generated nothing still left notes behind — otherwise a user
+            # with auto-discard on sees clips accumulating during an outage with no explanation.
+            parts.append(f"kept {len(self.errored_note_ids)} note(s) for retry")
         prefix = "Cancelled — " if self.cancelled else ""
         return prefix + ", ".join(parts) + "."
 
@@ -307,7 +319,12 @@ class BatchGenerator:
                     and not outcome.unfilled
                 ):
                     summary.skipped += 1
-                summary.empty_note_ids.append(outcome.nid)
+                if outcome.field_failures:
+                    # Something broke, so we do NOT know there was nothing to make. Keep the
+                    # note for a retry instead of offering it to the clip discarder.
+                    summary.errored_note_ids.append(outcome.nid)
+                else:
+                    summary.empty_note_ids.append(outcome.nid)
                 continue
             if self._write_note(outcome):
                 summary.processed += 1

@@ -19,6 +19,12 @@ attempt status   meaning
 ``unknown_tool`` and ``wrong_kind`` degrade GRACEFULLY on purpose: a stale name in a synced
 config must not fail the field when a later tool can still fill it.
 
+The ONE exception to falling through is
+:class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError`: a tool raises it to say
+that continuing would be worse than failing (``cloze_audio`` unable to hide the answer, whose
+next tool would happily speak it aloud). The attempt is recorded as an ``error`` like any other
+and the chain then STOPS.
+
 The guard covers the WHOLE attempt — resolving the tool and reading its class attributes as
 much as running it — so a tool whose constructor raises, or whose class omits ``kinds``, is
 recorded as an error attempt like any other breakage instead of escaping ``run()`` and
@@ -39,6 +45,7 @@ from omnia.plugins.smart_notes.engine.tools.base import (
     Empty,
     NotApplicable,
     Produced,
+    TerminalToolError,
     ToolRequest,
 )
 from omnia.plugins.smart_notes.engine.tools.registry import resolve_tool
@@ -178,6 +185,7 @@ class GenerationPipeline:
         """
         attempts: list[ToolAttempt] = []
         for spec in rule.tools:
+            halt = False
             try:
                 attempt, result = self._attempt(spec, rule, fields)
             except Exception as exc:  # a broken tool must not fail the whole chain
@@ -190,9 +198,15 @@ class GenerationPipeline:
                     ToolAttempt(spec.name, "error", str(exc), error=exc),
                     None,
                 )
+                # ...unless the tool says falling through would be WORSE than failing: see
+                # TerminalToolError. The attempt is recorded like any other error; the chain
+                # simply ends here rather than letting a later tool fill the field.
+                halt = isinstance(exc, TerminalToolError)
             attempts.append(attempt)
             if attempt.status == "produced":
                 return PipelineResult(result, tuple(attempts))
+            if halt:
+                return PipelineResult(None, tuple(attempts))
         return PipelineResult(None, tuple(attempts))
 
     def _attempt(

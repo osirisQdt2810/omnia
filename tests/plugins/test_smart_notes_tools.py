@@ -37,6 +37,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     GenerationPipeline,
     NotApplicable,
     Produced,
+    TerminalToolError,
     Tool,
     ToolChainError,
     ToolContext,
@@ -92,6 +93,17 @@ class _BoomTool(_ProduceTool):
     def run(self, request, ctx):
         _RUNS.append(self.name)
         raise ToolError("kaput")
+
+
+class _TerminalTool(_ProduceTool):
+    """A tool for which falling through would be WORSE than failing (see cloze_audio)."""
+
+    name: ClassVar[str] = "t_terminal"
+    label: ClassVar[str] = "Terminal"
+
+    def run(self, request, ctx):
+        _RUNS.append(self.name)
+        raise TerminalToolError("would leak the answer")
 
 
 class _ImageOnlyTool(_ProduceTool):
@@ -171,6 +183,7 @@ _FAKE_TOOLS: tuple[type[Tool], ...] = (
     _DeclineTool,
     _EmptyTool,
     _BoomTool,
+    _TerminalTool,
     _ImageOnlyTool,
     _JunkTool,
     _ParamTool,
@@ -348,6 +361,50 @@ class TestPipelineMatrix:
         # The legacy one-tool chain must surface the provider's own message verbatim.
         result = GenerationPipeline(_ctx()).run(_rule("t_boom"), {})
         assert result.summary == "kaput"
+
+
+class TestTerminalFailureStopsTheChain:
+    """The one failure that must NOT fall through (phase 3).
+
+    Falling through is the point of a chain — until continuing would produce something
+    actively harmful. ``cloze_audio`` is the case that forced this: a chain of
+    ``[cloze_audio, ai]`` on a field it cannot mask would hand the sentence to plain TTS,
+    which speaks the answer, and the user would get a silently ruined card. So a tool may
+    raise :class:`TerminalToolError` to end the chain where it stands.
+    """
+
+    def test_a_later_tool_never_runs(self, fake_tools):
+        result = GenerationPipeline(_ctx()).run(_rule("t_terminal", "t_produce"), {})
+
+        assert result.produced is None
+        assert _trace(result) == [("t_terminal", "error")]
+        assert _RUNS == ["t_terminal"]  # t_produce was never given a turn
+
+    def test_an_ordinary_error_still_falls_through(self, fake_tools):
+        # The halt must be surgical: every other breakage keeps the recovering behaviour.
+        result = GenerationPipeline(_ctx()).run(_rule("t_boom", "t_produce"), {})
+
+        assert result.produced is not None
+        assert _RUNS == ["t_boom", "t_produce"]
+
+    def test_an_earlier_tool_can_still_produce_before_it(self, fake_tools):
+        # Halting is about what comes AFTER: a tool ordered before it still wins normally.
+        result = GenerationPipeline(_ctx()).run(_rule("t_produce", "t_terminal"), {})
+
+        assert result.produced is not None
+        assert _RUNS == ["t_produce"]
+
+    def test_it_counts_as_an_error_so_the_note_is_kept_for_retry(self, fake_tools):
+        result = GenerationPipeline(_ctx()).run(_rule("t_terminal"), {})
+
+        assert result.errored is True
+        assert result.summary == "would leak the answer"
+
+    def test_the_service_raises_it_as_the_chain_error_cause(self, fake_tools):
+        service = GenerationService(providers=None)
+        with pytest.raises(ToolChainError) as excinfo:
+            service.generate(_rule("t_terminal", "t_produce"), {})
+        assert isinstance(excinfo.value.cause, TerminalToolError)
 
     def test_a_detailless_attempt_summarises_as_a_sentence_not_a_status_token(
         self, fake_tools

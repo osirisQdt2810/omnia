@@ -18,6 +18,7 @@ from omnia.plugins.smart_notes.engine.rules import prompt_for, tts_text
 
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub
+    from omnia.core.providers.tts import TTSProvider
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 
 
@@ -80,14 +81,70 @@ class ImageGenerator(Generator):
         return GenerationResult("image", data=data, ext="png")
 
 
+@dataclass(frozen=True)
+class ResolvedVoice:
+    """One rule's concrete TTS provider + voice + language, ready to speak with.
+
+    Resolving a voice is a two-branch decision (a pinned voice, or the Auto-detect map keyed by
+    the detected language) that every synthesis of that rule must make the SAME way. It became
+    a value object once a second caller appeared: ``cloze_audio`` synthesizes a sentence in
+    several pieces and must splice them, which only works if every piece came from one provider
+    at one voice — so it needs to resolve ONCE and reuse, not re-decide per call.
+    """
+
+    provider: TTSProvider
+    lang: Optional[str]
+    voice: Optional[str]
+
+    @classmethod
+    def for_rule(
+        cls,
+        providers: ProviderHub,
+        detector: LanguageDetector,
+        rule: SmartNotesFieldRule,
+        text: str,
+    ) -> ResolvedVoice:
+        """Resolve the voice ``rule`` should be spoken with.
+
+        Args:
+            providers: The hub that builds the configured providers.
+            detector: The best-effort language detector (used only on the Auto-detect branch).
+            rule: The rule being generated (its ``voice``/``provider``/``language`` overrides).
+            text: The text whose language is detected when the rule pins no voice. Nothing is
+                synthesized here, so a caller that must not leak part of its text (audio cloze)
+                may pass a redacted sample.
+
+        Returns:
+            The resolved provider/voice/language.
+
+        Raises:
+            ProviderError: When Auto-detect has no voice mapped for the detected language.
+        """
+        if rule.voice:
+            # A pinned voice fixes the language; synthesize on the rule's provider directly.
+            return cls(providers.tts(provider=rule.provider), None, rule.voice)
+        # Auto-detect: find the language, then the global map's (provider, voice) for it.
+        lang = rule.language or detector.detect(providers, text)
+        picked_provider, voice = providers.resolve_auto_voice(lang or "")
+        # An empty voice (a language-only provider, e.g. google_translate) → None so the
+        # provider uses the language directly rather than an empty voice id.
+        return cls(providers.tts(provider=picked_provider), lang, voice or None)
+
+    @property
+    def audio_ext(self) -> str:
+        """The container/extension of the bytes :meth:`synthesize` returns (``wav``/``mp3``)."""
+        return self.provider.audio_ext
+
+    def synthesize(self, text: str) -> bytes:
+        """Speak ``text`` with this resolved provider/voice/language."""
+        return self.provider.synthesize(text, lang=self.lang, voice=self.voice)
+
+
 class TTSGenerator(Generator):
     """Synthesizes audio from the rule's spoken text, resolving the voice two ways.
 
     The spoken text is the interpolated prompt (or the interpolated source field when no
-    prompt is given). A rule with a concrete ``voice`` synthesizes it directly on the rule's
-    provider (honoring the per-field provider). A rule on Auto-detect (no voice) detects the
-    text's language and resolves a concrete ``(provider, voice)`` from the global
-    ``[tts.auto_voices]`` map — so every language points at a provider+voice that serves it.
+    prompt is given); :class:`ResolvedVoice` owns the pinned-voice vs Auto-detect decision.
     """
 
     def __init__(self, providers: ProviderHub, detector: LanguageDetector) -> None:
@@ -98,16 +155,7 @@ class TTSGenerator(Generator):
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> GenerationResult:
         text = tts_text(rule, fields)
-        if rule.voice:
-            # A pinned voice fixes the language; synthesize it on the rule's provider directly.
-            provider = self._providers.tts(provider=rule.provider)
-            data = provider.synthesize(text, lang=None, voice=rule.voice)
-        else:
-            # Auto-detect: find the language, then the global map's (provider, voice) for it.
-            lang = rule.language or self._detector.detect(self._providers, text)
-            picked_provider, voice = self._providers.resolve_auto_voice(lang or "")
-            provider = self._providers.tts(provider=picked_provider)
-            # An empty voice (a language-only provider, e.g. google_translate) → None so the
-            # provider uses the language directly rather than an empty voice id.
-            data = provider.synthesize(text, lang=lang, voice=voice or None)
-        return GenerationResult("tts", data=data, ext=provider.audio_ext)
+        resolved = ResolvedVoice.for_rule(self._providers, self._detector, rule, text)
+        return GenerationResult(
+            "tts", data=resolved.synthesize(text), ext=resolved.audio_ext
+        )

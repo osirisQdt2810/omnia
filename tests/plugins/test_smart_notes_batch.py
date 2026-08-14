@@ -358,6 +358,59 @@ class TestEmptyNoteTracking:
         assert summary.empty_note_ids == [1, 2]
 
 
+class TestErroredNotesAreKeptForRetry:
+    """A note whose every field ERRORED is kept, not offered to the clip discarder.
+
+    ``empty_note_ids`` means "we tried and there was nothing to make", and the gateway deletes
+    those clips. A note that generated nothing because a provider was down establishes no such
+    thing — one retry would fill it — so it belongs in its own list. It used to land in
+    ``empty_note_ids`` and be deleted, which lost the capture over a transient outage; only a
+    whole-note failure was spared.
+    """
+
+    def _outcome(self, nid, **kw):
+        from omnia.plugins.smart_notes.integration.batch import _NoteOutcome
+
+        return _NoteOutcome(nid, **kw)
+
+    def _apply(self, outcomes):
+        gen = BatchGenerator.__new__(BatchGenerator)
+        return gen._apply(outcomes)
+
+    def test_an_all_errored_note_is_kept_not_discarded(self):
+        summary = self._apply([self._outcome(21, field_failures=2)])
+
+        assert summary.empty_note_ids == []  # never handed to the discarder
+        assert summary.errored_note_ids == [21]
+
+    def test_a_partly_errored_note_is_still_kept(self):
+        summary = self._apply([self._outcome(22, blocked=1, field_failures=1)])
+
+        assert summary.empty_note_ids == []
+        assert summary.errored_note_ids == [22]
+
+    def test_a_declined_note_is_still_discardable(self):
+        # "Every tool declined" IS "nothing to make here" — exactly what discarding is for.
+        summary = self._apply([self._outcome(23, unfilled=2)])
+
+        assert summary.empty_note_ids == [23]
+        assert summary.errored_note_ids == []
+
+    def test_the_summary_says_why_notes_were_kept(self):
+        summary = self._apply([self._outcome(24, field_failures=1)])
+
+        assert summary.message() == (
+            "Processed 0 note(s), 1 field error(s), kept 1 note(s) for retry."
+        )
+
+    def test_a_clean_run_says_nothing_about_retries(self, monkeypatch):
+        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        summary = self._apply([self._outcome(25, results=[("rule", "result")])])
+
+        assert summary.errored_note_ids == []
+        assert "retry" not in summary.message()
+
+
 class TestToolChainCounters:
     """The two counters a tool chain adds to the summary (plan 4.3 + graft #5).
 

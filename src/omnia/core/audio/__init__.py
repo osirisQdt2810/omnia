@@ -8,10 +8,15 @@ headless.
 
 from __future__ import annotations
 
+# Imported for its side effect too: it registers the ``audio`` native runtime, so the Advanced
+# tab lists the codec whether or not a field is configured to use it.
+from omnia.core.audio.sidecar import SPEC, AudioSidecar
 from omnia.core.audio.wav import SAMPLE_WIDTH, WavClip, WavFormatError
 
 __all__ = [
     "SAMPLE_WIDTH",
+    "SPEC",
+    "AudioSidecar",
     "WavClip",
     "WavFormatError",
 ]
