@@ -809,6 +809,14 @@ select:disabled { opacity: 0.7; }
 .sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .sn-tools-empty { color: var(--muted); font-size: 12px; }
 .sn-tools-empty:empty { display: none; }
+/* The answer-leak warning: a chain that speaks AFTER cloze_audio is safe here but not on a
+   device whose Omnia has no cloze_audio, so it is called out rather than blocked. */
+.sn-tools-warn {
+  font-size: 12px; color: var(--fail); line-height: 1.4; margin-top: 8px;
+  background: var(--row-alt); border: 1px solid var(--fail);
+  border-radius: 8px; padding: 6px 8px;
+}
+.sn-tools-warn[hidden] { display: none; }
 .sn-tool-row {
   border: 1px solid var(--card-border); border-radius: 10px; padding: 8px 10px;
   background: var(--row-alt); display: flex; flex-direction: column; gap: 4px;
@@ -828,6 +836,9 @@ select:disabled { opacity: 0.7; }
 .sn-tool-move { font-size: 11px; padding: 3px 6px; }
 .sn-tool-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
 .sn-tool-why { font-size: 12px; color: var(--fail); line-height: 1.4; }
+/* Advice from the tool itself ("MP3 voices need the audio runtime") — informative, not a
+   blocker, so it reads as a note rather than as the red "can't use this" line above. */
+.sn-tool-note { font-size: 12px; color: var(--accent); line-height: 1.4; }
 .sn-tool-params {
   display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 2px;
 }
