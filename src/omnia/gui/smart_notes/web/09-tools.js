@@ -260,10 +260,11 @@
     const parts = problems.map(function (problem) {
       return "“" + problem.tool + "” needs " + problem.params.join(" and ");
     });
-    return (
-      parts.join("; ") +
-      ". Pick a field for each — left blank the tool guesses one, and you cannot see which."
-    );
+    const one =
+      problems.length === 1 && problems[0].params.length === 1
+        ? " Pick a field — left unset the tool guesses one, and you cannot see which."
+        : " Pick a field for each — left unset the tool guesses one, and you cannot see which.";
+    return parts.join("; ") + "." + one;
   }
 
   /** Render the whole picker: the chain in order, then the tools that could still be added. */
@@ -464,14 +465,23 @@
         entry.params[key] = input.checked;
       });
     } else if (Array.isArray(prop.enum) || /_field$/.test(key)) {
-      // A required field param offers no blank option at all: "(default)" is precisely the
-      // state Done rejects, so leaving it selectable is a trap rather than a choice.
+      // A required field param offers no blank CHOICE: "(default)" is precisely the state Done
+      // rejects, so leaving it selectable is a trap rather than an option.
       const values = Array.isArray(prop.enum)
         ? prop.enum
         : (required ? [] : [""]).concat(fieldNames());
       input = document.createElement("select");
       input.className = "sn-tool-param-input";
       let matched = false;
+      if (required && !paramFilled(entry, key)) {
+        // …but it still needs a placeholder, because a <select> whose options are all real
+        // fields SHOWS the first one as selected while the param is in fact unset — the box
+        // would read "Word" while Done insists the field is missing. This says "unset" out
+        // loud, and being disabled it cannot be chosen back.
+        const placeholder = opt("", "— pick a field —", true);
+        placeholder.disabled = true;
+        input.appendChild(placeholder);
+      }
       values.forEach(function (value) {
         const shown = value === "" ? "(default)" : value;
         input.appendChild(opt(value, shown, value === current));
