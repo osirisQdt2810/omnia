@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from omnia import envs
 from omnia.core.providers.errors import ProviderError
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
+    _GENERATION_KINDS,
     ImportGuard,
     user_tool_name,
 )
@@ -127,6 +128,9 @@ def user_tool_system_prompt() -> str:
         :class:`ImportGuard` so the instruction can never drift from the check.
     """
     allowed = ", ".join(sorted(ImportGuard.ALLOWED_MODULES))
+    # Rendered from the engine's own tuple, like `allowed` is from the guard's set, so the
+    # prompt cannot drift from the tokens GenerationResult actually accepts.
+    kind_tokens = ", ".join(repr(kind) for kind in _GENERATION_KINDS)
     return (
         "You are a senior Python engineer writing ONE plugin file for the Anki add-on Omnia. "
         "The file defines a deterministic 'tool' that fills a single note field by "
@@ -144,14 +148,16 @@ def user_tool_system_prompt() -> str:
         "2. Define EXACTLY ONE Tool subclass, decorated @register_tool with the exact name "
         "you are given, and set the same string as its `name` ClassVar.\n"
         "3. Declare the ClassVars: name, label (2-3 words), description (one sentence), "
-        'kinds = frozenset({"text"}), deterministic = True, and params_model.\n'
+        "kinds, deterministic = True, and params_model. `kinds` must match what the tool "
+        "PRODUCES — see rule 10. It is NOT always text.\n"
         "4. params_model is a pydantic model deriving from omnia.core.config.base."
         "PersistedModel, with a default for EVERY option (the tool must work with no params "
         "configured). Give each option a Field(description=...) — the settings UI renders the "
         "form from that schema. Name any option that holds a NOTE FIELD NAME `<something>_field`"
         " and return those names from `referenced_fields` so the dependency graph sees them.\n"
-        "5. `run(self, request, ctx)` returns Produced(GenerationResult('text', text=...)) on "
-        "success, NotApplicable(reason) when a precondition is unmet (an empty source field), "
+        "5. `run(self, request, ctx)` returns Produced(GenerationResult(<kind>, ...)) on "
+        "success — see rule 10 for which kind and which payload — "
+        "NotApplicable(reason) when a precondition is unmet (an empty source field), "
         "or Empty(reason) when the transform ran and found nothing. Both non-produced outcomes "
         "let the next tool in the field's chain try, so prefer them over raising.\n"
         "6. NEVER call an LLM/TTS provider, open a network connection, or touch the Anki "
@@ -177,7 +183,18 @@ def user_tool_system_prompt() -> str:
         "any other kind of file use the standard library, and fall back to rule 0 if that is "
         "not enough.\n"
         "   Everything else is ordinary Python: pathlib, subprocess and the rest are available "
-        "when a transform genuinely needs them.\n\n"
+        "when a transform genuinely needs them.\n"
+        f"10. KIND. The tool's `kinds` ClassVar and the first argument of GenerationResult must "
+        f"be the SAME token, and it is decided by what the tool produces. The tokens are "
+        f"{kind_tokens}:\n"
+        "   * text  -> GenerationResult('text', text=<str>)         a text transform\n"
+        "   * tts   -> GenerationResult('tts', data=<bytes>, ext=<ext>)   audio (or a video's "
+        "audio) — this is the kind for any SOUND file\n"
+        "   * image -> GenerationResult('image', data=<bytes>, ext=<ext>) a picture\n"
+        "   Getting this wrong fails SILENTLY in the worst way: returning bytes under 'text' "
+        "makes the test run look successful and then writes an EMPTY field on real notes, and "
+        "declaring kinds={'text'} on a tool that produces audio makes the pipeline skip it as "
+        "wrong_kind for every sound field it was written for.\n\n"
         "Requests vary widely — reshaping text, deriving one field from another, cleaning "
         "up markup, renaming, counting, reformatting a list, converting a file. There is no "
         "typical tool. The example below is ONE arbitrary instance, included to show the "

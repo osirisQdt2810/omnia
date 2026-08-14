@@ -197,6 +197,7 @@
     utSourceEl.value = data.source || "";
     utSampleEl.value = "";
     utOutEl.hidden = true;
+    showToolRisks([]);  // stale banner must not outlive its code
     utOutEl.textContent = "";
     utGenMsg.textContent = "";
     utTestMsg.textContent = "";
@@ -291,6 +292,7 @@
     utRunBtn.disabled = true;
     utTestMsg.textContent = "Running…";
     utOutEl.hidden = true;
+    showToolRisks([]);  // stale banner must not outlive its code
     send(
       "user_tool_test",
       {
@@ -320,6 +322,9 @@
     if (result.error) {
       utTestMsg.textContent = result.error;
       utOutEl.hidden = true;
+      // The banner describes code that did not run; leaving it up attributes the previous
+      // tool's reach to this one.
+      showToolRisks([]);
       return;
     }
     // The tool RAN: the user has now seen what it does, which is what Save waits for — even

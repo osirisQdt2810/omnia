@@ -674,8 +674,15 @@ _RISK_BY_MODULE: dict[str, str] = {
     "io": "reads and writes files",
     "tempfile": "creates temporary files",
     "wave": "reads and writes audio files",
-    "urllib.parse": "",  # parsing only — no network, nothing to warn about
+    "omnia.core.audio": "decodes and re-encodes audio (runs the audio runtime)",
 }
+
+#: What a bare ``open()`` means, kept beside the module map because it is the SAME sentence.
+#: ``open`` is a builtin — no import to walk — and it is precisely the call this guard stopped
+#: refusing, on the grounds that the review would be told instead. A walk that looked only at
+#: imports missed it, so a tool doing `open(dir + "/" + name, "wb")` with no imports at all
+#: raised no banner, and an absent banner affirmatively says "this only reshapes text".
+_OPEN_RISK = "reads and writes files"
 
 
 def risky_operations(code: str) -> list[str]:
@@ -702,17 +709,37 @@ def risky_operations(code: str) -> list[str]:
     except SyntaxError:
         return []  # the guard reports this properly; nothing to describe
     found: list[str] = []
+
+    def note(risk: str) -> None:
+        if risk and risk not in found:
+            found.append(risk)
+
+    def note_module(name: str) -> None:
+        """Match a dotted import against the map by longest prefix.
+
+        Both directions matter: ``import os`` is the bare key, while
+        ``from omnia.core.audio.sidecar import ...`` has to find the ``omnia.core.audio``
+        entry. Keying only on the first segment would file every ``omnia.*`` import under
+        ``omnia``; keying only on the full name misses the submodule.
+        """
+        parts = (name or "").split(".")
+        for size in range(len(parts), 0, -1):
+            risk = _RISK_BY_MODULE.get(".".join(parts[:size]))
+            if risk:
+                note(risk)
+                return
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
+            for alias in node.names:
+                note_module(alias.name)
         elif isinstance(node, ast.ImportFrom):
-            names = [node.module or ""]
-        else:
-            continue
-        for name in names:
-            risk = _RISK_BY_MODULE.get(name.split(".")[0] if name else "")
-            if risk and risk not in found:
-                found.append(risk)
+            note_module(node.module or "")
+        # The builtin needs no import, so the import walk above cannot see it — and it is the
+        # one call this guard stopped refusing.
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "open":
+                note(_OPEN_RISK)
     return found
 
 

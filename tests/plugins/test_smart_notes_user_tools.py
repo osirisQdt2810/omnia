@@ -765,6 +765,38 @@ class TestRiskyOperations:
 
         assert len(found) == len(set(found))
 
+    def test_a_bare_open_is_named_even_with_no_imports(self):
+        """The one call this guard STOPPED refusing, and the walk could not see.
+
+        `open` is a builtin, so an import walk misses it entirely. A tool doing
+        `open(folder + "/" + name, "wb")` with no imports at all raised no banner — and since
+        the banner appearing is the signal, its absence affirmatively told the reader "this
+        only reshapes text" while the tool truncated a file on disk. Dropping `open` from
+        FLAGGED_CALLS was justified by "the review is told instead", so this is that promise.
+        """
+        assert risky_operations("def r():\n    return open('c.mp4','rb').read()\n") == [
+            "reads and writes files"
+        ]
+        assert risky_operations("def r():\n    open('o.mp3','wb').write(b'x')\n") == [
+            "reads and writes files"
+        ]
+
+    def test_a_dotted_import_matches_by_longest_prefix(self):
+        # Both directions: `import os.path` must find the `os` entry, and
+        # `from omnia.core.audio.sidecar import ...` must find `omnia.core.audio` rather than
+        # filing every omnia import under a bare first segment.
+        assert risky_operations("import os.path\n") == [
+            "reads and changes files and folders"
+        ]
+        assert (
+            "audio"
+            in risky_operations("from omnia.core.audio.sidecar import AudioSidecar\n")[
+                0
+            ]
+        )
+        # …and an omnia helper that touches nothing still reports nothing.
+        assert risky_operations("from omnia.core.text import strip_markup\n") == []
+
     def test_a_syntax_error_is_left_to_the_guard(self):
         # ImportGuard reports it properly, with the line; this must not raise on the way.
         assert risky_operations("def (") == []
@@ -866,6 +898,25 @@ class TestToolAuthor:
 
         assert "ONE arbitrary instance" in prompt
         assert "pattern-matches the example" in prompt
+
+    def test_the_prompt_names_the_kind_a_media_tool_must_declare(self):
+        """A tool returning bytes under kind 'text' fails SILENTLY and destructively.
+
+        The prompt taught the model to produce media bytes while still mandating
+        `kinds = frozenset({"text"})` and `GenerationResult('text', ...)`. The test run then
+        looks successful — the tester prints "(text: 55296 bytes of .mp3)" — and on a real note
+        `materialize` branches on kind, so 'text' returns `result.text or ""` and the field is
+        set to EMPTY. The near miss is no better: the right kind with `kinds={"text"}` makes
+        the pipeline skip the tool as wrong_kind on every sound field it was written for.
+        """
+        prompt = user_tool_system_prompt()
+
+        for token in ("'text'", "'tts'", "'image'"):
+            assert token in prompt, token
+        assert "wrong_kind" in prompt  # the near miss is called out too
+        assert "EMPTY field" in prompt
+        # …and nothing mandates text any more.
+        assert 'kinds = frozenset({"text"}), deterministic' not in prompt
 
     def test_the_prompt_no_longer_claims_files_are_forbidden(self):
         prompt = user_tool_system_prompt()
