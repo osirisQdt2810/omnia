@@ -39,6 +39,21 @@ class NoteChange:
     fields: tuple[FieldChange, ...]
 
 
+def in_run_order(tasks: Iterable[MaintenanceTask]) -> list[MaintenanceTask]:
+    """Return ``tasks`` in the order a run applies them: by ``order``, ties keeping input order.
+
+    The single definition, because two of them is the bug it was written for. The settings
+    panel builds its task LIST from this too: the list's order IS the run order (it is what the
+    ▲/▼ buttons edit and what a save stamps back), so a panel that sorted differently from the
+    runner showed one sequence, ran another, and silently rewrote the stored positions to the
+    displayed ones on the next save.
+
+    Sorted, never re-registered: ``build_tasks`` yields registration order, which says nothing
+    about when a task runs.
+    """
+    return sorted(tasks, key=lambda task: task.order)
+
+
 class SkipReason(enum.Enum):
     """Why a note's own note type contributed nothing to a run.
 
@@ -147,8 +162,9 @@ class MaintenanceRunner:
         self._tasks = tuple(tasks)
         # Settled once: the task set is fixed at construction, and a mixed-note-type run asks
         # for it per note (see NoteTypePlanner).
-        enabled = [task for task in self._tasks if task.is_enabled]
-        self._active = tuple(sorted(enabled, key=lambda task: task.order))
+        self._active = tuple(
+            in_run_order(task for task in self._tasks if task.is_enabled)
+        )
 
     @property
     def active_tasks(self) -> tuple[MaintenanceTask, ...]:

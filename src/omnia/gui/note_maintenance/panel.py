@@ -51,6 +51,7 @@ from omnia.plugins.note_maintenance.base import MaintenanceTask, OptionKind
 from omnia.plugins.note_maintenance.field_choices import FieldChoices
 from omnia.plugins.note_maintenance.note_types import NoteTypeScope
 from omnia.plugins.note_maintenance.registry import build_tasks
+from omnia.plugins.note_maintenance.runner import in_run_order
 from omnia.plugins.note_maintenance.settings_merge import (
     NoteTypeSectionMerge,
     OptionRow,
@@ -181,7 +182,12 @@ class _NoteTypeTasksEditor(QWidget):
         """
         super().__init__(parent)
         self._stored_tasks = dict(stored_tasks)
-        self._tasks = build_tasks(self._stored_tasks)
+        # In RUN order, not registration order: this list IS the run order — it is what the
+        # ▲/▼ buttons edit and what a save stamps back from the row index. Built unsorted, the
+        # panel displayed one sequence while the runner used another, and the next save
+        # rewrote the stored positions to the displayed ones — silently reordering a user's
+        # tasks (and the shipped defaults on a fresh install) without them touching anything.
+        self._tasks = in_run_order(build_tasks(self._stored_tasks))
         self._editors: dict[str, _TaskOptionsEditor] = {}
 
         layout = QHBoxLayout(self)

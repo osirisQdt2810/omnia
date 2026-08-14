@@ -98,6 +98,7 @@ from omnia.gui.note_maintenance.preview_dialog import (  # noqa: E402
 )
 from omnia.plugins.note_maintenance.field_choices import FieldChoices  # noqa: E402
 from omnia.plugins.note_maintenance.registry import build_tasks  # noqa: E402
+from omnia.plugins.note_maintenance.runner import in_run_order  # noqa: E402
 from omnia.plugins.note_maintenance.settings_merge import (  # noqa: E402
     TaskOptions,
     TaskSectionMerge,
@@ -300,9 +301,9 @@ def _untouched_editor(stored_tasks: dict[str, Any]) -> _FakeNoteTypeEditor:
     trip exercises the live save path without a Qt widget.
     """
     merge = TaskSectionMerge(stored_tasks)
-    # `build_tasks` returns them in run order, which IS the list's order — so the position a
-    # save writes is the row index, exactly as `_NoteTypeTasksEditor.values()` computes it.
-    for row, task in enumerate(build_tasks(stored_tasks)):
+    # RUN order, exactly as `_NoteTypeTasksEditor` builds its list — `build_tasks` alone yields
+    # REGISTRATION order, and a fake that used it would agree with the very bug this mirrors.
+    for row, task in enumerate(in_run_order(build_tasks(stored_tasks))):
         options = TaskOptions(task.config)
         rendered = {row_.name: row_.value for row_ in options.rows}
         merge.apply(
@@ -504,7 +505,7 @@ class TestEditorIsUntouched:
         """A real `_NoteTypeTasksEditor` with only its Qt half stubbed, built as `__init__` does."""
         editor = _NoteTypeTasksEditor.__new__(_NoteTypeTasksEditor)
         editor._stored_tasks = dict(stored)
-        editor._tasks = build_tasks(editor._stored_tasks)
+        editor._tasks = in_run_order(build_tasks(editor._stored_tasks))
         editor._task_list = _FakeCheckedList(editor._tasks)
         editor._editors = {
             task.task_id: _FakeNoteTypeEditor(
@@ -627,6 +628,60 @@ class TestMultipleNoteTypes:
         assert saved["Vocab"]["enable"] is True and saved["Kanji"]["enable"] is True
         assert dialog.accepted == [True]
 
+    def test_the_list_is_built_in_run_order_not_registration_order(
+        self, config_repo, collection, warnings
+    ):
+        # THE regression. `build_tasks` yields REGISTRATION order, which says nothing about
+        # when a task runs; the runner sorts on `order`. Building the list unsorted showed one
+        # sequence while the runner used another — and since a save stamps positions from the
+        # ROW INDEX, the next save rewrote the stored order to the displayed one. A user who
+        # had moved strip_ipa to the top found it at the bottom, having touched nothing.
+        collection({"Vocab": ["Word"]})
+        stored = {
+            # Deliberately the REVERSE of registration order, written out rather than derived
+            # from the code under test — the old test built its expectation from the same call
+            # production used, so it agreed with the bug.
+            "strip_ipa": {"enable": True, "order": 10},
+            "reformat_synonyms": {"enable": True, "order": 20},
+            "extract_audio_file_name": {"enable": True, "order": 30},
+            "fill_first_example": {"enable": True, "order": 40},
+            "replace_text_all_fields": {"enable": True, "order": 50},
+        }
+        config_repo.update_section(
+            _PLUGIN_ID, {"note_types": {"Vocab": {"enable": True, "tasks": stored}}}
+        )
+        dialog = _dialog(config_repo)
+        editor = _NoteTypeTasksEditor.__new__(_NoteTypeTasksEditor)
+        editor._stored_tasks = dict(dialog._task_sections_for("Vocab"))
+        editor._tasks = in_run_order(build_tasks(editor._stored_tasks))
+
+        assert [task.task_id for task in editor._tasks] == list(stored)
+
+    def test_an_untouched_save_round_trips_the_stored_positions(
+        self, config_repo, collection, warnings
+    ):
+        # The consequence of the above: saving without touching anything must not renumber.
+        collection({"Vocab": ["Word"]})
+        stored = {
+            "strip_ipa": {"enable": True, "order": 10},
+            "reformat_synonyms": {"enable": True, "order": 20},
+            "extract_audio_file_name": {"enable": True, "order": 30},
+            "fill_first_example": {"enable": True, "order": 40},
+            "replace_text_all_fields": {"enable": True, "order": 50},
+        }
+        config_repo.update_section(
+            _PLUGIN_ID, {"note_types": {"Vocab": {"enable": True, "tasks": stored}}}
+        )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        saved = _saved(config_repo)["Vocab"]["tasks"]
+        assert {name: section["order"] for name, section in saved.items()} == {
+            name: values["order"] for name, values in stored.items()
+        }
+
     def test_the_saved_order_is_the_list_position_not_a_typed_number(
         self, config_repo, collection, warnings
     ):
@@ -645,7 +700,7 @@ class TestMultipleNoteTypes:
         saved = _saved(config_repo)["Vocab"]["tasks"]
         expected = {
             task.task_id: (row + 1) * _ORDER_STEP
-            for row, task in enumerate(build_tasks({}))
+            for row, task in enumerate(in_run_order(build_tasks({})))
         }
 
         assert {name: section["order"] for name, section in saved.items()} == expected
