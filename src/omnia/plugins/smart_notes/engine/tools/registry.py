@@ -12,6 +12,7 @@ cycle (``registry`` ← ``base``; tools ← ``registry``; ``__init__`` ← tools
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -21,7 +22,7 @@ from omnia.plugins.smart_notes.engine.tools.base import Tool
 logger = get_logger("smart_notes")
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable
 
     from omnia.plugins.smart_notes.config import CompiledToolSpec
     from omnia.plugins.smart_notes.engine.tools.base import ToolContext
@@ -160,6 +161,37 @@ class ChainConflict:
         )
 
 
+def tool_kinds(cls: type[Tool]) -> frozenset[str]:
+    """Return ``cls.kinds`` defensively, as an empty set when the class is malformed.
+
+    Reading a class attribute is not safe once the registry can hold classes this repo did not
+    write (Phase 4 loads user-authored tools from ``user_files/tools/``). ``getattr`` with a
+    default only swallows ``AttributeError`` — the likelier slip is ``kinds`` written as a
+    ``@property``, where the attribute EXISTS and is a property object, so ``kind in cls.kinds``
+    raises ``TypeError`` from whatever is walking the registry. A bare string is the other trap:
+    ``"tts" in "text"`` is a substring test, not membership.
+    """
+    try:
+        kinds = cls.kinds
+    except (
+        Exception
+    ):  # a descriptor that raises is still a malformed class, not our crash
+        logger.exception("smart_notes: tool %r could not report its kinds", cls)
+        return frozenset()
+    if isinstance(kinds, (str, bytes)) or not isinstance(kinds, Iterable):
+        logger.error(
+            "smart_notes: tool %r declares kinds=%r, which is not a set of kinds",
+            cls,
+            kinds,
+        )
+        return frozenset()
+    try:
+        return frozenset(str(kind) for kind in kinds)
+    except Exception:
+        logger.exception("smart_notes: tool %r has an unreadable kinds", cls)
+        return frozenset()
+
+
 def chain_conflict(
     specs: Iterable[CompiledToolSpec], kind: str
 ) -> Optional[ChainConflict]:
@@ -186,9 +218,7 @@ def chain_conflict(
         cls = get_tool(spec.name)
         if cls is None:
             continue
-        # Read defensively: a malformed tool class (no `kinds`) is the pipeline's problem to
-        # record as a failed attempt, not a reason to abort the whole note from here.
-        if kind not in getattr(cls, "kinds", frozenset()):
+        if kind not in tool_kinds(cls):
             continue
         serving.append((spec.name, bool(getattr(cls, "exclusive", False))))
     for name, exclusive in serving:

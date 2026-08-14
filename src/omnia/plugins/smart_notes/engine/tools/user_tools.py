@@ -78,6 +78,7 @@ from omnia.plugins.smart_notes.engine.tools.base import (
 from omnia.plugins.smart_notes.engine.tools.registry import (
     TOOL_REGISTRY,
     register_tool,
+    registered_tools,
     unregister_tool,
 )
 
@@ -597,8 +598,16 @@ class UserToolLoader:
             TOOL_REGISTRY.update(before)
 
     def unload_all(self) -> None:
-        """Unregister every tool THIS loader registered (the plugin's disable teardown)."""
-        for name in tuple(self._loaded):
+        """Unregister every ``user:`` tool in the registry (the plugin's disable teardown).
+
+        Deliberately keyed on the NAMESPACE rather than on this instance's bookkeeping. A
+        loader owns ``user:`` as a whole — that is what lets it rebind an edited file — and more
+        than one instance can exist in a process: the plugin builds one at enable, and the
+        settings dialog builds another when it opens. Iterating ``self._loaded`` meant a tool
+        authored in the dialog survived disabling the feature, because the plugin's loader had
+        never heard of it. The registry is the shared truth, so teardown reads it.
+        """
+        for name in [n for n in registered_tools() if n.startswith(USER_TOOL_PREFIX)]:
             self._unregister(name)
 
     def _register(self, name: str, cls: type[Tool]) -> None:

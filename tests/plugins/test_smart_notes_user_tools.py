@@ -758,3 +758,99 @@ class TestToolAuthor:
             ToolAuthor(llm).generate("ext", "  ")
 
         assert llm.calls == []
+
+
+class TestAMalformedToolClassCostsOnlyItsField:
+    """Reading a class attribute stopped being safe when the registry gained non-repo classes.
+
+    ``getattr(cls, "kinds", frozenset())`` only swallows AttributeError. The likelier slip in
+    generated code is ``kinds`` written as a ``@property``: the attribute EXISTS, so getattr
+    returns the property object and ``kind in cls.kinds`` raises TypeError — out of
+    ``chain_conflict``, which ran before the pipeline's per-attempt guard, taking the whole note
+    and every sibling field that had already generated with it.
+    """
+
+    @pytest.mark.parametrize("shape", ["property", "string", "raises"])
+    def test_tool_kinds_reads_a_broken_class_as_empty(self, shape):
+        from omnia.plugins.smart_notes.engine.tools.registry import tool_kinds
+
+        class _Property:
+            @property
+            def kinds(self):
+                return frozenset({"text"})
+
+        class _String:
+            kinds = "text"  # `"tts" in "text"` is a substring test, not membership
+
+        class _Raises:
+            @property
+            def kinds(self):
+                raise RuntimeError("nope")
+
+        cls = {"property": _Property, "string": _String, "raises": _Raises}[shape]
+
+        assert tool_kinds(cls) == frozenset()
+
+    def test_a_good_class_is_unaffected(self):
+        from omnia.plugins.smart_notes.engine.tools.registry import tool_kinds
+
+        class _Good:
+            kinds = frozenset({"text", "tts"})
+
+        assert tool_kinds(_Good) == frozenset({"text", "tts"})
+
+
+class TestTeardownIsKeyedOnTheNamespace:
+    """More than one loader exists per process; the registry is the shared truth.
+
+    The plugin builds a loader at enable and the settings dialog builds another when it opens.
+    Iterating a per-instance set meant a tool authored in the dialog survived disabling the
+    feature, because the plugin's loader had never heard of it — a plugin must leave no trace.
+    """
+
+    def test_unload_all_drops_a_tool_another_loader_registered(self, tmp_path):
+        from omnia.plugins.smart_notes.engine.tools.base import Empty
+        from omnia.plugins.smart_notes.engine.tools.registry import (
+            TOOL_REGISTRY,
+            get_tool,
+            register_tool,
+        )
+        from omnia.plugins.smart_notes.engine.tools.user_tools import (
+            UserToolLoader,
+            UserToolStore,
+        )
+
+        before = dict(TOOL_REGISTRY)
+        try:
+
+            class _Authored(Tool):
+                name = "user:authored-elsewhere"
+                label = "Authored elsewhere"
+                description = ""
+                kinds = frozenset({"text"})
+
+                def run(self, request, ctx):
+                    return Empty("")
+
+            register_tool("user:authored-elsewhere")(_Authored)
+            # A DIFFERENT loader instance — the plugin's, which never loaded that file.
+            plugin_loader = UserToolLoader(UserToolStore(tmp_path / "tools"))
+
+            plugin_loader.unload_all()
+
+            assert get_tool("user:authored-elsewhere") is None
+        finally:
+            TOOL_REGISTRY.clear()
+            TOOL_REGISTRY.update(before)
+
+    def test_a_builtin_is_never_dropped(self, tmp_path):
+        from omnia.plugins.smart_notes.engine.tools.registry import get_tool
+        from omnia.plugins.smart_notes.engine.tools.user_tools import (
+            UserToolLoader,
+            UserToolStore,
+        )
+
+        UserToolLoader(UserToolStore(tmp_path / "tools")).unload_all()
+
+        assert get_tool("ai") is not None
+        assert get_tool("cloze") is not None

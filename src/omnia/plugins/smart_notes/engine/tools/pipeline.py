@@ -192,7 +192,27 @@ class GenerationPipeline:
             when the chain was refused outright, or when every tool declined, came up empty,
             or broke.
         """
-        conflict = chain_conflict(rule.tools, rule.kind)
+        try:
+            conflict = chain_conflict(rule.tools, rule.kind)
+        except Exception as exc:
+            # The module docstring promises the guard covers reading a tool's class attributes
+            # as much as running it, and this call reads them BEFORE the per-attempt try. Once
+            # the registry can hold classes this repo did not write, a malformed one must cost
+            # its own field, not the note's siblings that already generated.
+            self._ctx.logger.exception(
+                "smart_notes: could not check the tool chain for %r", rule.target_field
+            )
+            return PipelineResult(
+                None,
+                (
+                    ToolAttempt(
+                        rule.tools[0].name if rule.tools else "",
+                        "error",
+                        str(exc),
+                        error=exc,
+                    ),
+                ),
+            )
         if conflict is not None:
             return self._refuse(conflict, rule)
         attempts: list[ToolAttempt] = []
