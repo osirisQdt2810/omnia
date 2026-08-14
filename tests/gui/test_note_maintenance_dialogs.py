@@ -212,12 +212,26 @@ class _FakeCheckList:
 
     def __init__(self, checked: list[bool]) -> None:
         self._items = [_FakeCheckItem(state) for state in checked]
+        self._current = 0
 
     def item(self, row: int) -> _FakeCheckItem:
         return self._items[row]
 
     def count(self) -> int:
         return len(self._items)
+
+    # -- the reorder surface `_move` drives -------------------------------------------
+    def currentRow(self) -> int:
+        return self._current
+
+    def setCurrentRow(self, row: int) -> None:
+        self._current = row
+
+    def takeItem(self, row: int) -> _FakeCheckItem:
+        return self._items.pop(row)
+
+    def insertItem(self, row: int, item: _FakeCheckItem) -> None:
+        self._items.insert(row, item)
 
 
 class _FakeNoteTypeEditor:
@@ -465,6 +479,80 @@ class _FakeTaskList:
 
     def insertItem(self, row: int, item: str) -> None:
         self.rows.insert(row, item)
+
+
+class _FakeCheckedList(_FakeCheckList):
+    """A task list whose rows are all ticked, for driving the real `values()`/`is_untouched`."""
+
+    def __init__(self, tasks: Any) -> None:
+        super().__init__([task.is_enabled for task in tasks])
+
+
+class TestEditorIsUntouched:
+    """`is_untouched` on the REAL editor — the guard that decides whether a save writes at all.
+
+    Exercised directly rather than through `_FakeNoteTypeEditor`, because the fake compares two
+    maps the test itself supplies and so agrees with whatever production does. The first version
+    of this property compared `values()` (a merge holding a section for every REGISTERED task)
+    against the RAW stored map, which for an unconfigured note type is `{}` — never equal, so
+    the guard never fired and the dialog wrote an entry for a note type nobody had touched,
+    seeded from the legacy global map. The fake could not see it; this can.
+    """
+
+    @staticmethod
+    def _editor(stored: dict[str, Any]) -> Any:
+        """A real `_NoteTypeTasksEditor` with only its Qt half stubbed, built as `__init__` does."""
+        editor = _NoteTypeTasksEditor.__new__(_NoteTypeTasksEditor)
+        editor._stored_tasks = dict(stored)
+        editor._tasks = build_tasks(editor._stored_tasks)
+        editor._task_list = _FakeCheckedList(editor._tasks)
+        editor._editors = {
+            task.task_id: _FakeNoteTypeEditor(
+                {
+                    **TaskOptions(task.config).passthrough,
+                    **{row.name: row.value for row in TaskOptions(task.config).rows},
+                },
+                seed={},
+            )
+            for task in editor._tasks
+        }
+        editor._opened_with = editor.values()  # the last line of the real __init__
+        return editor
+
+    def test_a_freshly_shown_unconfigured_note_type_is_untouched(self):
+        # THE regression. `{}` is the common case — every note type before it is configured —
+        # and it is exactly the one the broken comparison got wrong.
+        assert self._editor({}).is_untouched is True
+
+    def test_a_note_type_seeded_from_the_legacy_map_is_untouched(self):
+        # The upgrade path: the pane is seeded so the user can see what they had, and merely
+        # seeing it must not write that map onto this note type.
+        seeded = {"replace_text_all_fields": {"enable": True, "find": "PROMO"}}
+
+        assert self._editor(seeded).is_untouched is True
+
+    def test_a_note_type_already_in_merged_form_is_untouched(self):
+        # A note type saved once before: reopening and closing it changes nothing.
+        editor = self._editor({})
+
+        assert self._editor(editor.values()).is_untouched is True
+
+    def test_changing_a_tick_makes_it_touched(self):
+        editor = self._editor({})
+
+        editor._task_list.item(0).setChecked(not editor._tasks[0].is_enabled)
+
+        assert editor.is_untouched is False
+
+    def test_reordering_makes_it_touched(self):
+        editor = self._editor({})
+        editor._move_up = types.SimpleNamespace(setEnabled=lambda _v: None)
+        editor._move_down = types.SimpleNamespace(setEnabled=lambda _v: None)
+        editor._task_list.setCurrentRow(0)
+
+        editor._move(1)
+
+        assert editor.is_untouched is False
 
 
 class TestTaskReordering:

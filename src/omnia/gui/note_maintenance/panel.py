@@ -190,6 +190,12 @@ class _NoteTypeTasksEditor(QWidget):
         layout.addWidget(self._options_column(fields), 2)
         if self._task_list.count():
             self._task_list.setCurrentRow(0)
+        # What this editor would save the instant it was shown, captured once construction is
+        # complete — the baseline :attr:`is_untouched` compares against. It is NOT
+        # ``stored_tasks``: ``values()`` merges a section for every REGISTERED task, so on a
+        # note type with nothing stored the two can never be equal and the guard would never
+        # fire (which is exactly how it shipped broken the first time).
+        self._opened_with = self.values()
 
     def values(self) -> dict[str, Any]:
         """Return the ``tasks`` map to persist: what was stored, updated with what was edited.
@@ -220,8 +226,12 @@ class _NoteTypeTasksEditor(QWidget):
         happened to sort first — seeded from the legacy global task map, so ticking it later
         would silently inherit field names written for a different note type. Merely being
         looked at is not configuring.
+
+        Compared against :attr:`_opened_with` — what this editor would have saved when it was
+        first shown — so it answers "did the user change anything?" for a note type whose
+        stored map is empty, is the legacy seed, or is already in merged form alike.
         """
-        return self.values() == self._stored_tasks
+        return self.values() == self._opened_with
 
     def _task_column(self) -> QWidget:
         holder = QWidget()
