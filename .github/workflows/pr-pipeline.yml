@@ -47,13 +47,22 @@ jobs:
       fail-fast: false
       matrix:
         # The omnia ecosystem targets Windows, macOS AND Linux; 3.13 is Anki's
-        # bundled Python everywhere. 3.10 (Anki's supported minimum) is checked
-        # once, on ubuntu.
+        # bundled Python everywhere, so every OS runs it.
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.13"]
         include:
+          # EVERY interpreter between the supported minimum and the bundled one gets a leg.
+          # Testing only the two ends left 3.11/3.12 as an untested middle, and that gap has
+          # now shipped bugs twice — most recently a `mappingproxy` dataclass default that is
+          # legal from 3.12 but raises at class-creation time on 3.11, which stopped the whole
+          # add-on from importing. A missing version leg does not fail loudly; it fails on a
+          # user's machine.
           - os: ubuntu-latest
             python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
         with:
