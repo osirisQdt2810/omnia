@@ -737,9 +737,12 @@ def risky_operations(code: str) -> list[str]:
             note_module(node.module or "")
         # The builtin needs no import, so the import walk above cannot see it — and it is the
         # one call this guard stopped refusing.
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "open":
-                note(_OPEN_RISK)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "open"
+        ):
+            note(_OPEN_RISK)
     return found
 
 
