@@ -22,17 +22,17 @@ from __future__ import annotations
 
 from typing import Any, ClassVar, Optional
 
-from omnia.core.native_runtime import (
-    NativeRuntimeManager,
-    NativeRuntimeSpec,
-    default_manager,
-    register_native_runtime,
-)
 from omnia.core.network.http import HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts.base import TTSVoice
 from omnia.core.providers.tts.openai_compatible import OpenAICompatibleTTS
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.runtime.native_runtime import (
+    NativeRuntimeManager,
+    NativeRuntimeSpec,
+    default_manager,
+    register_native_runtime,
+)
 
 _DEFAULT_BASE_URL = "http://localhost:8298/v1"
 _DEFAULT_MODEL = "tts-1"

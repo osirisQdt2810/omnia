@@ -4,7 +4,7 @@ Two fields hold the same sentence — one plain, one with the target word clozed
 the clozed one (the usual direction: that is the field being reviewed) leaves the plain field
 stale. This task copies the clozed field over when the two no longer say the same thing.
 
-Both the comparison and the copy go through :func:`~omnia.core.text.strip_markup` (which
+Both the comparison and the copy go through :func:`~omnia.core.lang.text.strip_markup` (which
 unwraps a cloze deletion to its answer):
 
 * "the same thing" is measured on the WORDS, not the markup — Jaccard similarity over the
@@ -14,7 +14,7 @@ unwraps a cloze deletion to its answer):
   holding ``{{c1::…}}`` markup no cloze template renders is not a refill, it is a mess.
 
 Stripped text is then re-encoded as field HTML before it is written (see
-:func:`~omnia.core.text.as_field_html`): the target is a STORED-HTML field, not a plain-text one.
+:func:`~omnia.core.lang.text.as_field_html`): the target is a STORED-HTML field, not a plain-text one.
 
 Pure module: no ``aqt``/``anki`` imports.
 """
@@ -25,7 +25,7 @@ import re
 
 from pydantic import Field
 
-from omnia.core.text import as_field_html, strip_markup
+from omnia.core.lang.text import as_field_html, strip_markup
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,

@@ -28,13 +28,13 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from omnia.core.native_runtime import (
+from omnia.core.providers.errors import ProviderError
+from omnia.core.runtime.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
     default_manager,
     register_native_runtime,
 )
-from omnia.core.providers.errors import ProviderError
 
 #: The transcoder script the venv's python runs. A sibling module rather than a console script
 #: (piper's ``{bin}/piper``) because ``av`` is a library: we ship the CLI ourselves.

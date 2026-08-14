@@ -25,15 +25,15 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
-from omnia.core.native_runtime import (
+from omnia.core.providers.errors import ProviderError
+from omnia.core.providers.tts.base import TTSProvider, TTSVoice
+from omnia.core.providers.tts.registry import register_tts
+from omnia.core.runtime.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
     default_manager,
     register_native_runtime,
 )
-from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.tts.base import TTSProvider, TTSVoice
-from omnia.core.providers.tts.registry import register_tts
 
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient

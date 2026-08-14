@@ -316,7 +316,7 @@ class ImportGuard:
             "pydantic",
             "omnia.core.config.base",
             "omnia.core.lang",
-            "omnia.core.text",
+            "omnia.core.lang.text",
             "omnia.plugins.smart_notes.config",
             # The whole ENGINE package: the Tool contract, the outcome types, the result
             # dataclass and the pure helpers a tool defaults its params from

@@ -9,7 +9,7 @@ the injected collaborators the dialog otherwise supplies.
 
 from __future__ import annotations
 
-from omnia.core.native_runtime import (
+from omnia.core.runtime.native_runtime import (
     NativeRuntimeSpec,
     native_runtimes_by_section,
 )
@@ -64,7 +64,7 @@ class TestNativeRuntimesPayload:
         # native_runtimes_payload imports the symbol lazily from the source module, so patch
         # there too.
         monkeypatch.setattr(
-            "omnia.core.native_runtime.native_runtimes_by_section",
+            "omnia.core.runtime.native_runtime.native_runtimes_by_section",
             lambda: grouped,
         )
         manager = _FakeManager(installed={"beta"})

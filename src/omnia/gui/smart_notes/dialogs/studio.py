@@ -28,8 +28,8 @@ from aqt.theme import theme_manager
 from omnia import active_voice_cache
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.core.native_runtime import default_manager
 from omnia.core.providers.catalog import catalog_payload
+from omnia.core.runtime.native_runtime import default_manager
 from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.gui.smart_notes.dialogs.controllers import (
     AccountController,

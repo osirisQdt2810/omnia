@@ -795,7 +795,7 @@ class TestRiskyOperations:
             ]
         )
         # …and an omnia helper that touches nothing still reports nothing.
-        assert risky_operations("from omnia.core.text import strip_markup\n") == []
+        assert risky_operations("from omnia.core.lang.text import strip_markup\n") == []
 
     def test_a_syntax_error_is_left_to_the_guard(self):
         # ImportGuard reports it properly, with the line; this must not raise on the way.

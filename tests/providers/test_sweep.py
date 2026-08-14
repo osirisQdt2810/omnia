@@ -142,9 +142,9 @@ class TestTTSSweep:
         # The default runner (SidecarPiperRunner) runs piper in the add-on-managed venv
         # (ADR-005). With no runtime installed and no auto-install, it raises the clear
         # "enable it in Advanced" ProviderError from the manager rather than shelling out.
-        from omnia.core.native_runtime import NativeRuntimeManager
         from omnia.core.providers.errors import ProviderError
         from omnia.core.providers.tts.piper import SidecarPiperRunner
+        from omnia.core.runtime.native_runtime import NativeRuntimeManager
 
         # The bundled default voice exists, so resolution passes the file check and reaches the
         # manager's not-installed guard. Point the manager at an empty dir (nothing installed).

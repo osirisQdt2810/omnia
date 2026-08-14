@@ -3,7 +3,7 @@
 This file is shipped with the add-on but is **never imported by Anki's interpreter**: it
 imports :mod:`av` (PyAV), a compiled wheel that cannot be vendored and must not be installed
 into Anki's frozen Python. :class:`~omnia.core.audio.sidecar.AudioSidecar` runs it as a
-one-shot subprocess in the venv the :class:`~omnia.core.native_runtime.NativeRuntimeManager`
+one-shot subprocess in the venv the :class:`~omnia.core.runtime.native_runtime.NativeRuntimeManager`
 created, so the native FFmpeg ABI belongs to that venv's own interpreter.
 
 Two commands, both file-in/file-out::

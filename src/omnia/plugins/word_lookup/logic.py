@@ -23,12 +23,12 @@ import re
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
+from omnia.core.lang.text import strip_markup
 from omnia.core.lang.word_forms import (
     word_boundary_pattern,
     word_variants,
     words_boundary_pattern,
 )
-from omnia.core.text import strip_markup
 
 # The word-form helpers now live in ``core/lang`` (smart-notes' cloze tool needs the same
 # de-inflector); they are re-exported here so every existing caller keeps its import.
@@ -202,7 +202,7 @@ def build_query(
 def strip_html(value: str) -> str:
     """Return ``value`` as plain readable text, KEEPING the author's line breaks.
 
-    A thin alias over the shared :func:`omnia.core.text.strip_markup`. The lookup panel and
+    A thin alias over the shared :func:`omnia.core.lang.text.strip_markup`. The lookup panel and
     text-to-speech need exactly the same cleaning, and two copies would drift — a fix applied to
     one (media refs, cloze, entities) would silently miss the other.
     """

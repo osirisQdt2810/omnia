@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from omnia.core.text import strip_markup
+from omnia.core.lang.text import strip_markup
 from omnia.plugins.smart_notes.engine.interpolation import (
     extract_field_refs,
     interpolate,
@@ -342,7 +342,7 @@ def tts_text(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
 
     The result is STRIPPED of markup before it is spoken. A field's stored value is HTML with
     Anki's syntaxes in it, so without this a voice reads "strong" aloud for ``<strong>`` and
-    recites media filenames from ``[sound:…]`` — see :func:`omnia.core.text.strip_markup`.
+    recites media filenames from ``[sound:…]`` — see :func:`omnia.core.lang.text.strip_markup`.
 
     A TTS field only voices field content, so when a prompt is given we extract its ``{{refs}}``
     and speak ONLY their resolved values (deduped, in order). This means a verbose

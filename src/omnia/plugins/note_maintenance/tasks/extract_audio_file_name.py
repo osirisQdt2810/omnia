@@ -6,7 +6,7 @@ Anki play it.
 
 A media reference holds a FILE NAME, not markup — Anki decodes HTML entities when it resolves
 one, so ``[sound:rock &amp; roll.mp3]`` plays ``rock & roll.mp3``. The name is therefore decoded
-and re-encoded through :func:`~omnia.core.text.as_field_html` on its way into the target field:
+and re-encoded through :func:`~omnia.core.lang.text.as_field_html` on its way into the target field:
 copying the raw bytes across would leave a hand-written ``&`` sitting in stored HTML as the start
 of an entity.
 
@@ -20,7 +20,7 @@ import re
 
 from pydantic import Field
 
-from omnia.core.text import as_field_html
+from omnia.core.lang.text import as_field_html
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,

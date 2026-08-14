@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from omnia.core.text import as_field_html, strip_markup
+from omnia.core.lang.text import as_field_html, strip_markup
 
 
 class TestTagsAndEntities:
