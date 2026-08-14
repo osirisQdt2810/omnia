@@ -43,7 +43,7 @@
 
     tr.appendChild(makeLockCell(tr, row.prompt_locked));
 
-    const tdType = cell("sn-lockable");
+    const tdType = cell("sn-lockable");  // type: written by auto-smart, so the lock covers it
     const typeSel = makeTypeSelect(row.type || "text");
     typeSel.addEventListener("change", function () {
       onKindChange(tr, typeSel.value);
@@ -55,11 +55,11 @@
 
     tr.appendChild(makeToolsCell(tr));
 
-    tr.appendChild(cell("sn-lockable sn-provider-cell"));
-    tr.appendChild(cell("sn-lockable sn-model-cell"));
-    tr.appendChild(cell("sn-lockable sn-col-voice sn-voice-cell"));
+    tr.appendChild(cell("sn-provider-cell"));
+    tr.appendChild(cell("sn-model-cell"));
+    tr.appendChild(cell("sn-col-voice sn-voice-cell"));
 
-    const tdPrev = cell("sn-center sn-lockable");
+    const tdPrev = cell("sn-center");
     const prev = document.createElement("button");
     prev.type = "button";
     prev.className = "sn-iconbtn sn-preview";
@@ -72,7 +72,7 @@
     tdPrev.appendChild(prev);
     tr.appendChild(tdPrev);
 
-    const tdOver = cell("sn-center sn-lockable");
+    const tdOver = cell("sn-center");
     tdOver.appendChild(makeCheckbox("sn-overwrite", row.overwrite));
     tr.appendChild(tdOver);
 
@@ -276,8 +276,37 @@
    */
   function applyKindState(tr, kind) {
     const sound = isTts(kind);
-    tr.querySelector(".sn-model-cell").classList.toggle("sn-na", sound);
-    tr.querySelector(".sn-voice-cell").classList.toggle("sn-na", !sound);
+    const usesAi = chainUsesAi(tr);
+    // Provider/Model/Voice configure the AI PROVIDER. A chain that never reaches `ai` — a row
+    // set to `cloze` alone, say — does not call one, so offering those three implies a choice
+    // that changes nothing. They fade together with the kind-specific rule below.
+    tr.querySelector(".sn-provider-cell").classList.toggle("sn-na", !usesAi);
+    tr.querySelector(".sn-model-cell").classList.toggle("sn-na", sound || !usesAi);
+    tr.querySelector(".sn-voice-cell").classList.toggle("sn-na", !sound || !usesAi);
+  }
+
+  /**
+   * Whether this row's tool chain can still reach a provider.
+   *
+   * Asked of the CATALOG, not of a hardcoded "ai" name: `uses_provider` is the tool's own
+   * declaration, so this stays right for a user-authored tool and needs no second copy of the
+   * default tool's name in the JS. It is NOT `!deterministic`: a tool can invent no text (so it
+   * costs no LLM tokens) and still synthesize speech with the row's voice — the two flags
+   * answer different questions and only this one governs these three cells.
+   * @param {!HTMLTableRowElement} tr The row.
+   * @return {boolean} True when the chain is empty (the legacy "AI only" default) or holds a
+   *     tool that calls a provider — including one this build doesn't have, which cannot be
+   *     judged and must not fade the cells away on a guess.
+   */
+  function chainUsesAi(tr) {
+    const chain = readTools(tr);
+    if (!chain.length) {
+      return true;  // an empty chain compiles to the single `ai` tool
+    }
+    return chain.some(function (entry) {
+      const spec = entry && toolSpec(entry.tool);
+      return !spec || spec.uses_provider !== false;
+    });
   }
 
   /**
@@ -310,15 +339,14 @@
   function applyLockState(tr) {
     const locked = tr.querySelector(".sn-lock").classList.contains("sn-locked");
     tr.classList.toggle("sn-row-locked", locked);
-    [
-      "sn-type",
-      "sn-tools-btn",
-      "sn-provider",
-      "sn-model",
-      "sn-voice",
-      "sn-overwrite",
-      "sn-preview"
-    ].forEach(function (cls) {
+    // The lock means ONE thing: the auto-smart generator must not overwrite this row's
+    // hand-written prompt. That generator writes exactly `type` and `prompt` (authoring/
+    // author.py), so those are what freeze. Provider, model, voice, the tool chain, overwrite
+    // and preview are the user's own knobs, which no generator touches — freezing them made a
+    // locked row unconfigurable for no reason.
+    // (The prompt itself needs no `disabled`: its cell opens the editor only when the row is
+    // not locked, and it keeps the `sn-lockable` blur.)
+    ["sn-type"].forEach(function (cls) {
       const el = tr.querySelector("." + cls);
       if (el) {
         el.disabled = locked;

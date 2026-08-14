@@ -192,6 +192,18 @@ class TestChainPayloadParsing:
         assert rebuilt[0].tools == []
 
 
+def _strip_comments(source: str) -> str:
+    """Return ``source`` with ``//`` line comments removed.
+
+    These tests assert on the built page's JS as text, and this file is heavily commented —
+    including comments that NAME the very class or keyword an assertion checks is absent. Two
+    of them passed or failed on prose rather than code before this.
+    """
+    return "\n".join(
+        line.split("//")[0] if "//" in line else line for line in source.splitlines()
+    )
+
+
 class TestToolsPickerPage:
     """The column, the modal, the baked catalog, and the behaviours only the page owns."""
 
@@ -267,16 +279,38 @@ class TestToolsPickerPage:
         assert "spec.unavailable_reason" in advice
         assert 'note.className = "sn-tool-note";' in html
 
-    def test_the_picker_warns_from_the_tools_own_exclusive_flag(self):
-        # Graft #1, made generic. The runtime refuses such a chain outright; the warning is so
-        # the user fixes it before saving, and because a device on an older Omnia (which lacks
-        # the tool) would simply let the rival produce.
+    def test_done_refuses_a_chain_with_a_required_param_left_blank(self):
+        # Generic: WHICH params matter is the tool's declaration (`required_params` in the
+        # catalog), so a user-authored tool gets the same gate with no page changes. Blank is
+        # exactly the state a fallback would silently resolve, and the picker cannot show which
+        # field that fallback picks — so it refuses instead of accepting an unreadable row.
         html = self._html()
-        conflict = _js(html, "function exclusiveConflict(", 1000)
-        assert "spec.exclusive" in conflict
-        assert "(spec.kinds || []).indexOf(kind) >= 0" in conflict
+        missing = _js(html, "function missingRequired(", 900)
+        assert "spec.required_params" in _js(html, "function requiredParams(", 400)
+        # A tool this build lacks has no schema to judge; a tool that cannot serve this row's
+        # kind never runs. Neither may gate Done.
+        assert "!spec ||" in missing
+        done = _js(html, 'toolsDone.addEventListener("click"', 600)
+        assert "if (missingRequired().length) {" in done
+        assert "return;" in done  # neither written nor closed
         assert "sn-tools-warn" in html
-        assert "must be the only tool on this field" in html
+        assert "sn-tool-param-missing" in html
+
+    def test_the_required_error_appears_only_after_a_rejected_done(self):
+        # Flagging every blank the moment a tool is ticked shouts before the user has had a
+        # chance to fill anything in; once Done has been refused it stays live and self-clears.
+        html = self._html()
+        assert "toolsShowErrors = false;" in _js(html, "function openToolsPicker(", 700)
+        assert "toolsShowErrors = true;" in _js(
+            html, 'toolsDone.addEventListener("click"', 600
+        )
+        assert "toolsShowErrors ? missingRequiredMessage(" in html
+
+    def test_a_required_field_param_offers_no_blank_option(self):
+        # "(default)" IS the rejected state, so leaving it selectable is a trap, not a choice.
+        html = self._html()
+        assert "? prop.enum" in html
+        assert '(required ? [] : [""]).concat(fieldNames())' in html
 
     def test_no_feature_tools_semantics_live_in_the_picker(self):
         # The first version hard-coded `entry.tool === "cloze_audio"` plus a narrative of that
@@ -285,9 +319,87 @@ class TestToolsPickerPage:
         # belong on the tool; the page reads a declared flag.
         assert "cloze_audio" not in self._html()
 
-    def test_the_picker_is_frozen_on_a_locked_row(self):
+    def test_the_lock_freezes_only_what_the_generator_writes(self):
+        # Changed deliberately (was: asserts the tools button is frozen too). The lock means one
+        # thing — the auto-smart generator must not overwrite a hand-written prompt — and that
+        # generator writes exactly `type` and `prompt` (authoring/author.py). The tool chain,
+        # provider, model, voice, overwrite and preview are the user's own knobs; freezing them
+        # made a locked row unconfigurable for no reason anyone could point at.
         lock_state = _js(build_smart_notes_html(dark=False), "function applyLockState(")
-        assert '"sn-tools-btn"' in lock_state
+
+        assert '"sn-type"' in lock_state
+        for owned_by_the_user in (
+            '"sn-tools-btn"',
+            '"sn-provider"',
+            '"sn-voice"',
+            '"sn-overwrite"',
+        ):
+            assert owned_by_the_user not in lock_state
+
+    def test_the_lock_does_not_freeze_the_tools_cell_by_css_either(self):
+        # The mechanism that ACTUALLY froze the cell, and which a grep of `applyLockState`
+        # cannot see: the lock works through the `sn-lockable` class (`pointer-events: none`
+        # plus a blur in page.css) and a `sn-row-locked` guard on the click. Dropping the name
+        # from `applyLockState` while the cell was still BUILT as `sn-lockable` left the
+        # behaviour untouched.
+        html = self._html()
+        # Comments are stripped first: this file explains WHY the cell is not `sn-lockable`,
+        # and an assertion that greps the prose instead of the code fails on its own comment.
+        cell = _strip_comments(_js(html, "function makeToolsCell(", 800))
+
+        assert 'cell("sn-tools-cell")' in cell
+        assert "sn-lockable" not in cell
+        assert "sn-row-locked" not in cell
+        # …while the lock still covers what the auto-smart generator writes.
+        assert ".sn-row-locked .sn-lockable" in html
+        assert 'cell("sn-prompt-cell sn-lockable")' in html
+
+    def test_editing_the_chain_refreshes_the_rows_applicability(self):
+        # `applyKindState` ran at row build and on a Type change only — never when the CHAIN
+        # changed, which is the one event that decides whether the row reaches a provider. A
+        # `cloze`-only row kept its faded Provider/Model after `ai` was appended, and `.sn-na`
+        # carries `pointer-events: none`, so those cells could not even be clicked.
+        write = _js(self._html(), "function writeTools(", 900)
+
+        assert "applyKindState(tr," in write
+
+    def test_the_fade_asks_the_catalog_not_a_hardcoded_tool_name(self):
+        uses_ai = _js(self._html(), "function chainUsesAi(", 900)
+
+        assert "uses_provider" in uses_ai
+        assert "deterministic" not in uses_ai  # NOT the inverse — see the Tool contract
+        assert "!spec" in uses_ai  # a tool this build lacks cannot be judged away
+
+    def test_a_row_cannot_read_the_field_it_generates(self):
+        # A self-edge in the dependency graph, and never what the user meant: `cloze` would be
+        # asked to find its word in the very field it is about to overwrite. One click away now
+        # that the field params are required and the dropdown holds only real field names.
+        names = _js(self._html(), "function fieldNames(", 800)
+
+        assert "toolsRow && toolsRow.dataset.field" in names
+        assert "name.toLowerCase() !== own" in names
+
+    def test_deleting_a_tool_edge_repaints_the_graph(self):
+        # `from_tool` was tested on the Python side (the payload field) but not in the JS that
+        # consumes it. The branch MUTATES the row — clicking a tool edge toggles hard/soft,
+        # which writes a real depends_on entry, and Delete drops it — so returning without a
+        # repaint left the canvas drawing the old kind while Save persisted the new one.
+        remove = _strip_comments(_js(self._html(), "function removeEdge(", 1800))
+        branch = remove[remove.index("sel.fromTool") :]
+
+        assert "updateRowDep(sel.dst, sel.src, null)" in branch
+        # The repaint must come BEFORE the branch's own `return;` — matching the bare word
+        # would hit "returning" in the comment, which is why comments are stripped above.
+        assert "recomputeGraph();" in branch
+        assert branch.index("recomputeGraph();") < branch.index("return;")
+
+    def test_done_ignores_a_tool_that_cannot_serve_the_row(self):
+        # A chain synced from a device whose row had a different Type can hold, say, a tts tool
+        # on a text row. The pipeline discards it as `wrong_kind`, so refusing Done over its
+        # required params would gate on a tool that can never run.
+        missing = _js(self._html(), "function missingRequired(", 1000)
+
+        assert "(spec.kinds || []).indexOf(kind) < 0" in missing
 
     def test_params_are_merged_not_rebuilt(self):
         # A param this build cannot render (a newer release's) must survive Done: the picker

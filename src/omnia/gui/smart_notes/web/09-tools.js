@@ -16,11 +16,10 @@
    * declarations called from 03-render.js, which is concatenated BEFORE this file.
    */
 
-  // [{name, label, description, kinds, deterministic, exclusive, params_schema,
+  // [{name, label, description, kinds, deterministic, required_params, params_schema,
   //   unavailable_reason}, ...]
   // `unavailable_reason` is ADVICE ("MP3 voices need the audio runtime"), not a gate — see
-  // toolAdvice; `exclusive` is the tool's own "I must not share a chain" — see
-  // exclusiveConflict.
+  // toolAdvice; `required_params` IS a gate, and the only one here — see missingRequired.
   const TOOLS = window.__SN_TOOLS || [];
 
   const toolsModal = document.getElementById("sn-tools-modal");
@@ -36,6 +35,9 @@
   // edited. Cancel simply drops the copy, so the row is only ever touched by Done.
   let toolsRow = null;
   let toolsDraft = [];
+  // Set by a Done that was refused, so the required-param errors only appear once the user has
+  // actually tried to finish. Cleared on every open — a fresh picker starts quiet.
+  let toolsShowErrors = false;
 
   /**
    * The catalog entry for a tool name, or null when this build doesn't have it (a user tool
@@ -75,6 +77,12 @@
   function writeTools(tr, chain) {
     tr.dataset.tools = JSON.stringify(chain || []);
     updateToolsSummary(tr);
+    // Editing the chain is exactly what changes whether the row reaches a provider, and it was
+    // the one event that never re-ran the check — so a row set to `cloze` alone kept its faded
+    // Provider/Model after `ai` was appended, and `.sn-na` is `pointer-events: none`, making
+    // those cells unclickable for a chain that would use them until the table was rebuilt.
+    const typeSel = tr.querySelector(".sn-type");
+    applyKindState(tr, (typeSel && typeSel.value) || "text");
   }
 
   /**
@@ -83,14 +91,15 @@
    * @return {!HTMLTableCellElement}
    */
   function makeToolsCell(tr) {
-    const td = cell("sn-tools-cell sn-lockable");
+    // NOT `sn-lockable`: that class carries `pointer-events: none` + a blur, which is what
+    // actually froze this cell. The lock means "auto-smart must not overwrite my prompt" and
+    // that generator writes only `type` and `prompt` — the tool chain is the user's own knob.
+    const td = cell("sn-tools-cell");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "sn-btn sn-tools-btn";
     btn.addEventListener("click", function () {
-      if (!tr.classList.contains("sn-row-locked")) {
-        openToolsPicker(tr);
-      }
+      openToolsPicker(tr);
     });
     td.appendChild(btn);
     return td;
@@ -123,6 +132,7 @@
    */
   function openToolsPicker(tr) {
     toolsRow = tr;
+    toolsShowErrors = false;
     toolsDraft = readTools(tr)
       .filter(function (entry) {
         return entry && entry.tool;
@@ -187,43 +197,86 @@
   }
 
   /**
-   * The conflict in the draft chain, or null: a tool that must be alone, plus its rivals.
-   *
-   * A tool declares `exclusive` when another tool producing IN ITS PLACE would be unsafe
-   * rather than merely different. WHY is the tool's business, not the picker's — this only
-   * knows such a chain must not be built, in either order, because either order can end with
-   * the rival producing. The runtime refuses to generate the field at all while both are
-   * there; the warning is here so the user fixes it before saving, and because a device on an
-   * older Omnia (which does not have the tool) silently lets the rival produce.
-   * @return {?{tool: string, rivals: !Array<string>}} Labels of the exclusive tool and rivals.
+   * The param names a tool insists on, as a lookup. Server-side truth (`required_params` in
+   * the catalog), so a user-authored tool declares its own and this needs no changes.
+   * @param {?Object} spec The catalog entry, or null for a tool this build lacks.
+   * @return {!Object<string, boolean>}
    */
-  function exclusiveConflict() {
+  function requiredParams(spec) {
+    const required = {};
+    ((spec && spec.required_params) || []).forEach(function (key) {
+      required[key] = true;
+    });
+    return required;
+  }
+
+  /**
+   * Whether a param's current value counts as filled in.
+   * @param {!Object} entry The chain entry.
+   * @param {string} key The param name.
+   * @return {boolean}
+   */
+  function paramFilled(entry, key) {
+    const value = entry.params[key];
+    return value !== undefined && value !== null && String(value).trim() !== "";
+  }
+
+  /**
+   * The draft's unfilled required params, one entry per offending tool.
+   *
+   * A tool whose blank param silently resolves to a fallback ("the field's first prompt
+   * reference, else the base field") is unreadable in a picker: the box shows "(default)" and
+   * the user cannot tell WHICH field will be read — which, for the tools that derive their
+   * output from other fields, is exactly the choice that decides what gets generated. So a
+   * tool names those params server-side and Done refuses while any is blank, naming both.
+   *
+   * A tool this build doesn't have is skipped: its params can't be judged without its schema,
+   * and a chain authored on another device must stay editable here.
+   * @return {!Array<{tool: string, params: !Array<string>}>}
+   */
+  function missingRequired() {
+    const problems = [];
     const kind = toolsRowKind();
-    const serving = [];
     toolsDraft.forEach(function (entry) {
       const spec = toolSpec(entry.tool);
-      // A tool this build doesn't have can't be judged, and one that can't serve the row's
-      // kind never produces here — neither is a rival.
-      if (spec && (spec.kinds || []).indexOf(kind) >= 0) {
-        serving.push(spec);
-      }
-    });
-    let conflict = null;
-    serving.forEach(function (spec) {
-      if (conflict || !spec.exclusive) {
+      // Skip a tool this build lacks (no schema to judge it by) and one that cannot serve this
+      // row's kind — the pipeline discards the latter as `wrong_kind`, so refusing Done over
+      // its params gates on a tool that will never run. Reachable from a chain synced from a
+      // device whose row had a different Type.
+      if (!spec || (spec.kinds || []).indexOf(kind) < 0) {
         return;
       }
-      const rivals = [];
-      serving.forEach(function (other) {
-        if (other.name !== spec.name) {
-          rivals.push(other.label);
+      const props = (spec.params_schema && spec.params_schema.properties) || {};
+      const missing = [];
+      Object.keys(requiredParams(spec)).forEach(function (key) {
+        if (!paramFilled(entry, key)) {
+          missing.push((props[key] && props[key].title) || key);
         }
       });
-      if (rivals.length) {
-        conflict = {tool: spec.label, rivals: rivals};
+      if (missing.length) {
+        problems.push({tool: spec.label, params: missing});
       }
     });
-    return conflict;
+    return problems;
+  }
+
+  /**
+   * The one-line message for a set of unfilled required params.
+   * @param {!Array<{tool: string, params: !Array<string>}>} problems From missingRequired.
+   * @return {string} Empty when there is nothing to say.
+   */
+  function missingRequiredMessage(problems) {
+    if (!problems.length) {
+      return "";
+    }
+    const parts = problems.map(function (problem) {
+      return "“" + problem.tool + "” needs " + problem.params.join(" and ");
+    });
+    const one =
+      problems.length === 1 && problems[0].params.length === 1
+        ? " Pick a field — left unset the tool guesses one, and you cannot see which."
+        : " Pick a field for each — left unset the tool guesses one, and you cannot see which.";
+    return parts.join("; ") + "." + one;
   }
 
   /** Render the whole picker: the chain in order, then the tools that could still be added. */
@@ -247,21 +300,12 @@
       toolsDraft.length || offered
         ? ""
         : "No tool can generate this field type — it is generated by AI.";
-    const conflict = exclusiveConflict();
-    toolsWarn.textContent = conflict
-      ? "“" +
-        conflict.tool +
-        "” must be the only tool on this field: “" +
-        conflict.rivals.join("”, “") +
-        "” can generate it too and would produce in its place, which “" +
-        conflict.tool +
-        "” declares unsafe. This version refuses to generate the field at all while both " +
-        "are here, and a device on an older Omnia would simply let the other tool " +
-        "produce. Remove " +
-        (conflict.rivals.length > 1 ? "those tools" : "that tool") +
-        "."
-      : "";
-    toolsWarn.hidden = !conflict;
+    // Only AFTER a rejected Done: flagging every blank the moment a tool is ticked would shout
+    // at the user before they have had a chance to fill anything in. Once it has fired it stays
+    // live, so the message clears itself as the fields are picked.
+    const message = toolsShowErrors ? missingRequiredMessage(missingRequired()) : "";
+    toolsWarn.textContent = message;
+    toolsWarn.hidden = !message;
   }
 
   /**
@@ -346,7 +390,7 @@
       row.appendChild(note);
     }
     if (index >= 0 && spec && spec.params_schema) {
-      row.appendChild(toolParamsForm(entry, spec.params_schema));
+      row.appendChild(toolParamsForm(entry, spec.params_schema, requiredParams(spec)));
     }
     return row;
   }
@@ -392,14 +436,15 @@
    * belong to a newer release, and dropping it here would delete it on the next save).
    * @param {!Object} entry The chain entry whose params are edited in place.
    * @param {!Object} schema The tool's params_schema.
+   * @param {!Object<string, boolean>} required The params this tool will not accept blank.
    * @return {!HTMLElement}
    */
-  function toolParamsForm(entry, schema) {
+  function toolParamsForm(entry, schema, required) {
     const wrap = document.createElement("div");
     wrap.className = "sn-tool-params";
     const props = (schema && schema.properties) || {};
     Object.keys(props).forEach(function (key) {
-      wrap.appendChild(toolParamControl(entry, key, props[key] || {}));
+      wrap.appendChild(toolParamControl(entry, key, props[key] || {}, !!required[key]));
     });
     return wrap;
   }
@@ -410,16 +455,20 @@
    * @param {!Object} entry The chain entry being edited.
    * @param {string} key The param name.
    * @param {!Object} prop Its JSON-schema property.
+   * @param {boolean} required Whether the tool refuses this param blank.
    * @return {!HTMLElement}
    */
-  function toolParamControl(entry, key, prop) {
+  function toolParamControl(entry, key, prop, required) {
     const current = entry.params[key] !== undefined ? entry.params[key] : prop.default;
     const row = document.createElement("label");
     row.className = "sn-tool-param";
+    if (required && toolsShowErrors && !paramFilled(entry, key)) {
+      row.className += " sn-tool-param-missing";
+    }
     row.title = prop.description || "";
     const text = document.createElement("span");
     text.className = "sn-tool-param-label";
-    text.textContent = prop.title || key;
+    text.textContent = (prop.title || key) + (required ? " *" : "");
 
     let input;
     if (prop.type === "boolean") {
@@ -428,10 +477,23 @@
         entry.params[key] = input.checked;
       });
     } else if (Array.isArray(prop.enum) || /_field$/.test(key)) {
-      const values = Array.isArray(prop.enum) ? prop.enum : [""].concat(fieldNames());
+      // A required field param offers no blank CHOICE: "(default)" is precisely the state Done
+      // rejects, so leaving it selectable is a trap rather than an option.
+      const values = Array.isArray(prop.enum)
+        ? prop.enum
+        : (required ? [] : [""]).concat(fieldNames());
       input = document.createElement("select");
       input.className = "sn-tool-param-input";
       let matched = false;
+      if (required && !paramFilled(entry, key)) {
+        // …but it still needs a placeholder, because a <select> whose options are all real
+        // fields SHOWS the first one as selected while the param is in fact unset — the box
+        // would read "Word" while Done insists the field is missing. This says "unset" out
+        // loud, and being disabled it cannot be chosen back.
+        const placeholder = opt("", "— pick a field —", true);
+        placeholder.disabled = true;
+        input.appendChild(placeholder);
+      }
       values.forEach(function (value) {
         const shown = value === "" ? "(default)" : value;
         input.appendChild(opt(value, shown, value === current));
@@ -444,6 +506,12 @@
       }
       input.addEventListener("change", function () {
         entry.params[key] = input.value;
+        if (required && toolsShowErrors) {
+          // Re-render so the banner and the red labels track what is still missing. Without
+          // this the comment above was a promise nothing kept: filling Source Field left both
+          // labels red and the message naming both params until Done was pressed again.
+          renderToolsPicker();
+        }
       });
     } else {
       input = document.createElement("input");
@@ -460,13 +528,24 @@
     return row;
   }
 
-  /** Every field name on this note type (base first), for the `*_field` param pickers. */
+  /**
+   * Every field a tool on the OPEN row may read (base first), for the `*_field` param pickers.
+   *
+   * The row's own field is left out: a tool reading the field it generates is a self-edge in
+   * the dependency graph, and it cannot ever be what the user meant — `cloze` would be asked to
+   * find its word in the very field it is about to overwrite. Harmless while these params were
+   * optional and rarely set; one click away now that they are required and the dropdown holds
+   * nothing but real field names.
+   */
   function fieldNames() {
+    const own = ((toolsRow && toolsRow.dataset.field) || "").toLowerCase();
     const names = [baseSel.value];
     Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
       names.push(tr.dataset.field);
     });
-    return names.filter(Boolean);
+    return names.filter(function (name) {
+      return name && name.toLowerCase() !== own;
+    });
   }
 
   toolsClose.addEventListener("click", closeToolsPicker);
@@ -477,6 +556,14 @@
     }
   });
   toolsDone.addEventListener("click", function () {
+    // Done is the gate: a chain missing a required param is neither written nor closed away,
+    // because a picker that accepts it hands the user a row that silently generates from a
+    // field they never chose. Cancel still closes — it discards the draft either way.
+    toolsShowErrors = true;
+    if (missingRequired().length) {
+      renderToolsPicker();
+      return;
+    }
     if (toolsRow) {
       writeTools(toolsRow, toolsDraft);
     }

@@ -54,7 +54,7 @@
 
   let graphData = {nodes: [], edges: [], bounds: {width: 0, height: 0}};
   let graphVisible = false;
-  let selectedEdge = null; // {src, dst, derived} of the currently-selected edge
+  let selectedEdge = null; // {src, dst, derived, fromTool} of the currently-selected edge
   let posOverride = {}; // name(lower) -> {x, y} LIVE move overrides (committed to savedPositions on drop)
   // Persistent user-pinned node positions (name(lower) -> {x, y, name}); seeded from the graph's
   // node_positions and sent back on recompute/save so a moved node survives tab switch + Save.
@@ -1134,7 +1134,7 @@
       graphToastMsg("Add “" + dst + "” to the field list first.");
       return;
     }
-    selectedEdge = {src: src, dst: dst, derived: false};
+    selectedEdge = {src: src, dst: dst, derived: false, fromTool: false};
     recomputeGraph();
   }
 
@@ -1147,13 +1147,32 @@
     }
     const newKind = e.kind === "soft" ? "hard" : "soft";
     updateRowDep(e.dst, e.src, newKind);
-    selectedEdge = {src: e.src, dst: e.dst, derived: e.derived};
+    selectedEdge = {src: e.src, dst: e.dst, derived: e.derived, fromTool: !!e.from_tool};
     recomputeGraph();
   }
 
   function removeEdge(sel) {
     if (isFieldLocked(sel.dst)) {
       graphToastMsg("“" + sel.dst + "” is locked — unlock it to change its dependencies.");
+      return;
+    }
+    if (sel.fromTool) {
+      // A tool param on the dependent field names this prerequisite, so the edge itself cannot
+      // be removed here — it re-derives from the tool. What CAN be here is an explicit
+      // depends_on entry: clicking the edge toggles hard/soft, and that writes one. Drop it,
+      // say where the edge actually lives, and then REPAINT.
+      //
+      // The repaint is not optional. Mutating the row and returning early left the canvas
+      // drawing the old kind while the config held the new one — press Delete on an edge
+      // toggled to soft and the screen still said soft while Save persisted hard. That is
+      // worse than the no-op this branch was added to replace, which at least stayed truthful.
+      updateRowDep(sel.dst, sel.src, null);
+      graphToastMsg(
+        "“" + sel.dst + "” reads “" + sel.src + "” in its Tools settings — " +
+          "change it there to remove this dependency."
+      );
+      selectedEdge = null;
+      recomputeGraph();
       return;
     }
     // Deleting any edge just hides it; the prompt is reconciled later, at Save.

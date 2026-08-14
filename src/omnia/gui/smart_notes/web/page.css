@@ -809,9 +809,8 @@ select:disabled { opacity: 0.7; }
 .sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .sn-tools-empty { color: var(--muted); font-size: 12px; }
 .sn-tools-empty:empty { display: none; }
-/* The chain warning: a tool that declares itself exclusive is sharing the chain with one that
-   could produce in its place, which the runtime refuses to run. Called out, not blocked, so a
-   chain that arrived from another device can still be edited back into shape. */
+/* The Done error: a ticked tool still has a required field param blank. It appears only after
+   a Done that was refused, and clears itself as the boxes are filled. */
 .sn-tools-warn {
   font-size: 12px; color: var(--fail); line-height: 1.4; margin-top: 8px;
   background: var(--row-alt); border: 1px solid var(--fail);
@@ -846,6 +845,9 @@ select:disabled { opacity: 0.7; }
 .sn-tool-param { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .sn-tool-param-label { color: var(--muted); flex: 1; }
 .sn-tool-param-input { max-width: 55%; }
+/* The offending control after a refused Done — the message names the tool, this says which box. */
+.sn-tool-param-missing .sn-tool-param-label { color: var(--fail); font-weight: 700; }
+.sn-tool-param-missing .sn-tool-param-input { border-color: var(--fail); }
 input.sn-tool-param-input[type="checkbox"] { max-width: none; }
 
 /* --- Options → Tools tab: the user's own, LLM-authored tools ------------------------- */

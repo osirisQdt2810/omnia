@@ -658,7 +658,7 @@ interpret exactly as it is for keys:
 ## ADR-011: A safety-critical tool fails closed — no decline, no rival, no degraded value
 
 **Date**: 2026-08-14
-**Status**: Accepted
+**Status**: Superseded by ADR-012
 
 ### Context
 The smart-notes **tools** seam is built on falling through: a field carries an ordered chain
@@ -764,3 +764,68 @@ the seams enforce it generically. Three rules, all now on `Tool`/`cloze_audio`, 
 * **A pipeline-level "never fall through after tool X" config knob**: rejected — it is the same
   hard-coded knowledge, moved from the JS into config, and it would need to be set correctly on
   every field by every user.
+
+
+## ADR-012: The tool chain has exactly one rule — run in order, fall through on failure
+
+**Date**: 2026-08-14
+**Status**: Accepted
+**Supersedes**: ADR-011
+
+### Context
+ADR-011 gave the tools seam two exceptions to falling through, both existing to protect one
+tool. `cloze_audio` speaks a sentence with the answer replaced by silence; when it cannot mask,
+a chain of `[cloze_audio, ai]` would hand the same field to plain TTS, which reads the answer
+aloud (`strip_markup` unwraps `{{c1::survive}}` to `survive`). The two mechanisms were:
+
+* `TerminalToolError` — a failure that STOPS the chain rather than falling through;
+* `Tool.exclusive` + `registry.chain_conflict` — a tool that refuses to share a chain with any
+  other tool serving the same kind, checked before anything runs.
+
+Both worked. Both were also invisible from the settings UI: the picker showed an ordered list
+that the runtime would sometimes decline to run, and sometimes stop halfway, for reasons
+belonging to one tool. Reviewing the picker, the project owner ruled that a chain should
+simply run its tools in the configured order and move to the next one whenever a tool fails —
+and that this needs no exception.
+
+### Decision
+A chain runs its tools in the configured order. Every failure — a decline, an empty result, a
+raised `ToolError`, an unparsable params dict, a tool this build does not have — moves to the
+next tool. There are no exceptions, no tool can halt the chain, and no chain is refused before
+it runs. `TerminalToolError`, `Tool.exclusive` and `chain_conflict` are removed.
+
+A tool's guarantee is therefore about ITSELF, never about what follows it. `cloze_audio`'s is
+unchanged and absolute: *it* never speaks the answer — it masks or it raises, and it never
+returns `NotApplicable`.
+
+### Rationale
+A rule with one special case is a rule nobody can predict from the UI. The picker presents an
+ordered list; "these run top-down until one produces" is a sentence a user can hold, and every
+exception to it is behaviour they can only discover by hitting it. The previous design also put
+safety semantics for one tool into the shared pipeline and the shared picker, which is the
+coupling the seam exists to avoid.
+
+The protection was narrower than it looked. Halting only guards the tools ordered AFTER the
+failing one, so `[ai, cloze_audio]` — the ordering the picker's append-to-end made easiest to
+build — was never covered by it at all; that ordering needed the separate `exclusive` check.
+Two mechanisms for one hazard, neither complete alone.
+
+### Consequences
+**Positive**: one rule, stated in one sentence, identical in the picker and at runtime. The
+pipeline no longer carries any tool's semantics. `Tool` loses two class attributes and the
+registry loses a function.
+
+**Negative, and stated plainly**: a field configured `[cloze_audio, <any tts tool>]` whose
+`cloze_audio` fails WILL have the next tool speak the sentence, answer included. This is a real
+way to ruin a card, and it is now a configuration decision rather than something the runtime
+prevents. Mitigations that remain: the tool raises (never declines) so the trace always names
+the failure; its `description` and module docstring say to put no tts tool after it; and its
+`required_params` stop the commonest cause — a blank `source_field`/`word_field` guessing at
+the wrong field.
+
+### Alternatives considered
+- **Keep ADR-011.** Rejected by the ruling above.
+- **Keep only `exclusive` (refuse the chain, drop the halt).** Still a special case in the
+  shared picker and pipeline, and still a chain the UI offers but the runtime will not run.
+- **An advisory-only warning in the picker.** Not adopted here, but compatible with this ADR —
+  advice in the UI is not a special case in the chain. Worth revisiting.

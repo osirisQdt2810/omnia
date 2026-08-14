@@ -13,8 +13,7 @@ cycle (``registry`` ← ``base``; tools ← ``registry``; ``__init__`` ← tools
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine.tools.base import Tool
@@ -135,32 +134,6 @@ def tool_referenced_fields(specs: Iterable[CompiledToolSpec]) -> list[str]:
     return referenced
 
 
-@dataclass(frozen=True)
-class ChainConflict:
-    """An exclusive tool sharing a field's chain with a tool that can produce the same kind.
-
-    The chain is not merely sub-optimal, it is unsafe to RUN: whichever of the two goes first,
-    the other may fill the field in its place, and an exclusive tool declares exactly that
-    outcome to be harmful (see :attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.exclusive`).
-    A value object rather than a bare message so the pipeline can attribute its refusal to the
-    exclusive tool while the message stays in one place.
-    """
-
-    exclusive: str
-    rivals: tuple[str, ...]
-
-    @property
-    def message(self) -> str:
-        """The refusal, in words the user can act on."""
-        rivals = ", ".join(repr(name) for name in self.rivals)
-        return (
-            f"{self.exclusive!r} must be the only tool that generates this field, but "
-            f"{rivals} can generate it too and would produce in its place — which "
-            f"{self.exclusive!r} declares unsafe. Nothing was generated: remove the other "
-            "tool(s) from this field's chain."
-        )
-
-
 def tool_kinds(cls: type[Tool]) -> frozenset[str]:
     """Return ``cls.kinds`` defensively, as an empty set when the class is malformed.
 
@@ -192,42 +165,32 @@ def tool_kinds(cls: type[Tool]) -> frozenset[str]:
         return frozenset()
 
 
-def chain_conflict(
-    specs: Iterable[CompiledToolSpec], kind: str
-) -> Optional[ChainConflict]:
-    """Return why ``specs`` must not run for a field of ``kind``, or None when it may.
+def tool_required_params(cls: type[Tool]) -> frozenset[str]:
+    """Return ``cls.required_params`` defensively, empty when the class is malformed.
 
-    A chain that pairs an exclusive tool with a rival is refused in BOTH orders, because both
-    leak: the rival first simply wins, and the rival second wins whenever the exclusive tool
-    fails non-terminally or is missing from this build. Ordering the check by "who runs first"
-    is what let one of them through.
-
-    Only tools that can serve ``kind`` count as rivals — a text tool sitting in a tts field's
-    chain never produces there — and a tool this build does not have is skipped, since nothing
-    here can know what it would produce.
-
-    Args:
-        specs: The rule's compiled tool chain, in run order.
-        kind: The field's generation kind.
-
-    Returns:
-        The first conflict found, or None.
+    Same rationale as :func:`tool_kinds` — the registry can hold user-authored classes loaded
+    off disk, so a ``required_params`` written as a raising property or a bare string must cost
+    that tool its validation, not take the picker down with it.
     """
-    serving: list[tuple[str, bool]] = []
-    for spec in specs:
-        cls = get_tool(spec.name)
-        if cls is None:
-            continue
-        if kind not in tool_kinds(cls):
-            continue
-        serving.append((spec.name, bool(getattr(cls, "exclusive", False))))
-    for name, exclusive in serving:
-        if not exclusive:
-            continue
-        rivals = tuple(other for other, _ in serving if other != name)
-        if rivals:
-            return ChainConflict(name, rivals)
-    return None
+    try:
+        required = cls.required_params
+    except Exception:  # a descriptor that raises is a malformed class, not our crash
+        logger.exception(
+            "smart_notes: tool %r could not report its required params", cls
+        )
+        return frozenset()
+    if isinstance(required, (str, bytes)) or not isinstance(required, Iterable):
+        logger.error(
+            "smart_notes: tool %r declares required_params=%r, which is not a set of names",
+            cls,
+            required,
+        )
+        return frozenset()
+    try:
+        return frozenset(str(param) for param in required)
+    except Exception:
+        logger.exception("smart_notes: tool %r has an unreadable required_params", cls)
+        return frozenset()
 
 
 def tools_catalog(ctx: ToolContext) -> list[dict[str, Any]]:
@@ -241,10 +204,11 @@ def tools_catalog(ctx: ToolContext) -> list[dict[str, Any]]:
 
     Returns:
         One dict per tool, sorted by name: ``name``, ``label``, ``description``, ``kinds``
-        (sorted), ``deterministic``, ``exclusive`` (so the picker can warn about a chain the
-        pipeline would refuse, without knowing which tool it is), ``params_schema`` (the
-        pydantic JSON schema, or None) and ``unavailable_reason`` — the tool's ADVICE, which
-        the picker shows without disabling the tool (see
+        (sorted), ``deterministic``, ``uses_provider`` (what makes the row's Provider/Model/Voice
+        cells apply), ``required_params`` (the params the picker refuses to
+        leave blank — see :attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.required_params`),
+        ``params_schema`` (the pydantic JSON schema, or None) and ``unavailable_reason`` — the
+        tool's ADVICE, which the picker shows without disabling the tool (see
         :meth:`~omnia.plugins.smart_notes.engine.tools.base.Tool.availability`).
     """
     catalog: list[dict[str, Any]] = []
@@ -258,9 +222,10 @@ def tools_catalog(ctx: ToolContext) -> list[dict[str, Any]]:
                     "name": name,
                     "label": cls.label,
                     "description": cls.description,
-                    "kinds": sorted(cls.kinds),
+                    "kinds": sorted(tool_kinds(cls)),
                     "deterministic": cls.deterministic,
-                    "exclusive": cls.exclusive,
+                    "uses_provider": cls.uses_provider,
+                    "required_params": sorted(tool_required_params(cls)),
                     "params_schema": (
                         None if cls.params_model is None else cls.params_model.schema()
                     ),

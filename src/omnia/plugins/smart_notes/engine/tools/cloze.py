@@ -211,12 +211,6 @@ class ClozeParams(PersistedModel):
         "",
         description="Field holding the word to hide. Blank = the note type's base field.",
     )
-    match_word_forms: bool = Field(
-        True,
-        description=(
-            "Also match inflected forms of the word (run/running, survive/survived)."
-        ),
-    )
     separate_cards: bool = Field(
         False,
         description=(
@@ -245,7 +239,6 @@ class ClozeRewriter:
         self,
         word: str,
         *,
-        match_word_forms: bool = True,
         separate_cards: bool = False,
         mask: str = MASK_NONE,
     ) -> None:
@@ -253,13 +246,11 @@ class ClozeRewriter:
 
         Args:
             word: The headword to hide (plain text; markup is the caller's problem).
-            match_word_forms: Also hide inflected forms of the word.
             separate_cards: Number each occurrence (c1, c2, …) instead of reusing c1.
             mask: :data:`MASK_HINT_FIRST_LAST` to emit a ``s___e`` hint; anything else wraps
                 the surface with no hint.
         """
         self._word = word.strip()
-        self._match_word_forms = match_word_forms
         self._separate_cards = separate_cards
         self._mask = mask
 
@@ -383,8 +374,6 @@ class ClozeRewriter:
         serve: a sentence token counts when ITS variants meet the word's.
         """
         primary = self._word.lower()
-        if not self._match_word_forms:
-            return [primary] if primary else []
         targets = set(_HEADWORD_DEINFLECTOR.variants(self._word))
         terms = {primary}
         for start, end in spans:
@@ -435,6 +424,17 @@ class ClozeTool(Tool):
     )
     kinds: ClassVar[frozenset[str]] = frozenset({"text"})
     deterministic: ClassVar[bool] = True
+    # String surgery on the note's own fields — no provider, so a row whose whole chain is this
+    # tool has nothing to configure in Provider/Model/Voice.
+    uses_provider: ClassVar[bool] = False
+    # The two fields the target is DERIVED from — they are what makes this tool's output a
+    # function of two other fields, and what the dependency graph draws its edges from. Left
+    # blank they resolve to a fallback the picker cannot show, so a user reading the row cannot
+    # tell what will be clozed; the runtime keeps the fallbacks for chains synced from older
+    # releases, but a chain edited HERE must name both.
+    required_params: ClassVar[frozenset[str]] = frozenset(
+        {"sentence_field", "word_field"}
+    )
     params_model: ClassVar[Optional[type[BaseModel]]] = ClozeParams
 
     @classmethod
@@ -489,7 +489,6 @@ class ClozeTool(Tool):
             )
         clozed = ClozeRewriter(
             word,
-            match_word_forms=bool(params.get("match_word_forms", True)),
             separate_cards=bool(params.get("separate_cards", False)),
             mask=str(params.get("mask", MASK_NONE) or MASK_NONE),
         ).rewrite(sentence)

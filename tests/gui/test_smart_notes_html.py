@@ -70,12 +70,15 @@ class TestGraphPayload:
         assert {"Word", "Definition"} <= names
         base = next(n for n in gp["nodes"] if n["name"] == "Word")
         assert base["is_base"] is True
-        # the {{Word}} reference yields a derived, default-hard edge Word -> Definition
+        # the {{Word}} reference yields a derived, default-hard edge Word -> Definition —
+        # `from_tool` False because it came from the PROMPT, which the graph can still offer to
+        # rewrite (a tool-param edge can only be changed in the Tools picker).
         assert {
             "src": "Word",
             "dst": "Definition",
             "kind": "hard",
             "derived": True,
+            "from_tool": False,
             "cycle": False,
         } in gp["edges"]
         # every node carries a layout column/row (computed in Python)

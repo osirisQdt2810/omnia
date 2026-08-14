@@ -766,7 +766,7 @@ class TestAMalformedToolClassCostsOnlyItsField:
     ``getattr(cls, "kinds", frozenset())`` only swallows AttributeError. The likelier slip in
     generated code is ``kinds`` written as a ``@property``: the attribute EXISTS, so getattr
     returns the property object and ``kind in cls.kinds`` raises TypeError — out of
-    ``chain_conflict``, which ran before the pipeline's per-attempt guard, taking the whole note
+    ``tools_catalog``, which reads them outside the pipeline's per-attempt guard, taking the whole note
     and every sibling field that had already generated with it.
     """
 

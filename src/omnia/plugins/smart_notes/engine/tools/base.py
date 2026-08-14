@@ -53,27 +53,6 @@ class ToolError(ProviderError):
     """
 
 
-class TerminalToolError(ToolError):
-    """A failure the chain must NOT fall through: no later tool may fill this field.
-
-    Every other way a tool can end — the three outcomes and a plain :class:`ToolError` — hands
-    the field to the next tool, which is the point of a chain. That default is *wrong* whenever
-    falling through would produce something actively harmful rather than merely different, and
-    the tools seam had no way to say so.
-
-    The case that forced it is ``cloze_audio``. It exists to speak a sentence with the answer
-    replaced by silence; when it cannot mask (no cloze span, an unspliceable provider, the codec
-    runtime missing) a chain of ``[cloze_audio, ai]`` would quietly hand the same field to plain
-    TTS — which reads the sentence *with the answer in it*, because
-    :func:`omnia.core.text.strip_markup` unwraps a cloze to its answer. The card would be
-    silently ruined, and nothing in the trace would say so. Documenting "don't configure that
-    chain" is not a safeguard; refusing to continue is.
-
-    The pipeline records the attempt exactly like any other error (so the field is a
-    ``FailedField`` of kind ``"error"`` and the note is kept for a retry) and then stops.
-    """
-
-
 @dataclass(frozen=True)
 class ToolContext:
     """Everything a tool may touch. Built once per :class:`GenerationService`.
@@ -160,13 +139,21 @@ class Tool(ABC):
         kinds: The generation kinds it can serve (subset of ``{"text", "image", "tts"}``). The
             pipeline skips a tool whose ``kinds`` do not cover the rule's kind.
         deterministic: True when the tool never calls a paid/LLM endpoint.
-        exclusive: True when this tool must NOT share a chain with another tool that can
-            generate the same kind, because a sibling producing INSTEAD of it would be unsafe
-            rather than merely different. Declaring it here is what keeps the safety semantics
-            with the tool that has them: the pipeline refuses to run such a chain at all
-            (whatever the order), and the picker warns while it is being built — neither of
-            them knows WHICH tool it is. ``cloze_audio`` is the case that forced it: any other
-            tts tool on the same field speaks the answer it exists to hide.
+        uses_provider: True when the tool generates through the row's configured
+            Provider/Model/Voice. Deliberately NOT the inverse of ``deterministic``: those two
+            answer different questions and ``cloze_audio`` is the proof — it is deterministic
+            (it never invents text, so it costs no LLM tokens) yet it synthesizes speech with
+            the row's voice, so those cells very much apply to it. The settings row fades
+            Provider/Model/Voice when NO tool in the chain uses them, which is only sound with
+            the property that actually means it.
+        required_params: Param names the tools picker refuses to leave blank. A param whose
+            blank default silently resolves to something else (``cloze``'s ``sentence_field``
+            falls back to the rule's first prompt ref) is a footgun in a picker: the user sees
+            an empty box and cannot tell which field the tool will actually read. Naming them
+            here lets the picker reject Done — with the tool and param named — instead of the
+            mistake surfacing later as a wrong or silently-skipped generation. The RUNTIME
+            keeps honouring the fallbacks: a chain synced from a device on an older Omnia
+            predates this validation and must still generate.
         params_model: Pydantic model validating the field's per-tool params (None = no params).
     """
 
@@ -175,7 +162,8 @@ class Tool(ABC):
     description: ClassVar[str]
     kinds: ClassVar[frozenset[str]]
     deterministic: ClassVar[bool]
-    exclusive: ClassVar[bool] = False
+    uses_provider: ClassVar[bool] = True
+    required_params: ClassVar[frozenset[str]] = frozenset()
     params_model: ClassVar[Optional[type[BaseModel]]] = None
 
     @abstractmethod
@@ -201,9 +189,7 @@ class Tool(ABC):
 
         Called by the pipeline immediately before :meth:`run`, INSIDE the attempt's try-block:
         a params model that rejects the stored dict turns that tool into an error attempt and
-        the chain continues, rather than failing the whole field. A tool whose fall-through is
-        HARMFUL must therefore override this and re-raise as
-        :class:`TerminalToolError` — ``run`` never gets to refuse for it (``cloze_audio`` does).
+        the chain continues, rather than failing the whole field.
 
         Args:
             params: The field's raw per-tool params, as stored in config.

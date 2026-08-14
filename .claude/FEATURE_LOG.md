@@ -21,6 +21,47 @@ Format for each entry:
 
 ---
 
+## 2026-08-14 — smart_notes tools: one chain rule, honest dependency edges, a picker that refuses guesswork
+
+**What:** Three shared seams changed at once. (1) **The chain has exactly one rule** — run the
+tools in the configured order, fall through on every failure. `TerminalToolError` (a tool
+halting the chain) and `Tool.exclusive` + `registry.chain_conflict` (a tool refusing to share
+one) are removed; see **ADR-012**, which supersedes ADR-011. (2) **Tool-param dependency edges
+are labelled honestly**: a param naming a field was always a prerequisite, but the graph marked
+those edges `derived=False` — "the user drew this" — so they rendered solid and Delete silently
+no-op'd on them. They are now `derived` plus a new `from_tool` flag, and Delete names the Tools
+picker instead of doing nothing. (3) **`Tool.required_params`** — a blank field param resolves
+to a fallback the UI cannot show, so Done now refuses while one is blank, naming the tool and
+the param. Plus `Tool.uses_provider` (deliberately NOT the inverse of `deterministic` —
+`cloze_audio` is both), a lock narrowed to Type + Prompt, a randomised preview note, and
+`match_word_forms` removed (inflections always match).
+
+**Why:** The picker showed an ordered list the runtime would sometimes decline to run and
+sometimes stop halfway, for reasons belonging to one tool; the settings row lied about which
+cells applied and about what the lock froze; and a `cloze` row's dependency on the two fields
+it reads was invisible in the graph.
+
+**Files:** `plugins/smart_notes/engine/tools/{base,pipeline,registry,cloze,cloze_audio}.py`,
+`plugins/smart_notes/engine/graph.py`, `gui/smart_notes/html.py`,
+`gui/smart_notes/web/{03-render,06-graph,09-tools}.js`, `gui/smart_notes/web/page.css`,
+`core/anki_compat.py`, `.claude/DECISIONS.md` (ADR-011 superseded, ADR-012 added).
+
+**How to verify:** `pytest tests/ -q` (1713 passed). For the UI half, render the page with a
+live tool catalog and drive it over CDP: a `cloze`-only row fades Provider/Model while a
+`cloze_audio` row keeps Provider/Voice; locking a row disables only the Type select; Done is
+refused while a required field param is blank and the message narrows as they are filled;
+pressing Delete on a tool edge in the Dependencies view answers *"'Cloze' reads 'Sentence' in
+its Tools settings"*.
+
+**Notes / rollback:** The accepted cost of the ordering rule is in ADR-012 and pinned by
+`test_a_tts_tool_after_it_speaks_the_answer_and_that_is_the_configured_rule`: a field
+configured `[cloze_audio, <any tts tool>]` whose `cloze_audio` fails will have the next tool
+speak the answer. `cloze_audio`'s own guarantee is unchanged — it masks or it raises, and never
+declines. To reverse, restore the three symbols named in ADR-011 and write an ADR superseding
+ADR-012.
+
+---
+
 ## 2026-08-14 — smart_notes user-authored tools: describe a transform once, run it forever for free (Phase 4)
 
 **What:** A global **Tools tab** where the user describes a transform in plain English ("from
@@ -35,9 +76,9 @@ guarded compile + register, `ImportGuard`, `ReviewGate`, `UserToolTester`),
 `gui/.../controllers/user_tools.py` + `web/10-usertools.js` + the tab pane, `unregister_tool` on
 the registry, and `SmartNotesSettings.fields_using_tool` so a delete can name the affected fields.
 
-**Why:** The user's own reasoning — "nếu có gì đó giúp cho tránh được AI - gọi LLM thì tốt hơn -
-vì gọi LLM tốn tokens". A transform a model does not need to think about should not pay a model
-every time. The step-DSL designed for this was rejected in favour of real Python (plan decision 3).
+**Why:** Anything that can be done without calling the LLM should be, because every LLM call
+costs tokens. A transform a model does not need to think about should not pay a model every
+time. The step-DSL designed for this was rejected in favour of real Python (plan decision 3).
 
 **Security — the design delta that makes real Python defensible (stated plainly, per the module
 docstring):** a user tool runs **in-process, at the add-on's full trust level** — collection,
@@ -87,6 +128,10 @@ requires a default for every option, so defaults always run).
 ---
 
 ## 2026-08-14 — smart_notes `cloze_audio`: listening-cloze audio that never speaks the answer (Phase 3)
+
+> **Partly superseded the same day.** The `TerminalToolError` / `Tool.exclusive` mechanisms
+> described below were removed — see the "one chain rule" entry above and **ADR-012**. What
+> still holds is the tool's own guarantee: it masks or it raises, and never declines.
 
 **What:** `engine/tools/cloze_audio.py` registers `cloze_audio` (`kinds={"tts"}`,
 `deterministic=True` — it calls TTS, never an LLM). It splits the source field at the spans that
@@ -370,8 +415,9 @@ and the template's own fallback (`{{info-Ivl:}}`, the current interval) applies.
 
 **Why:** the user's `AnkiVocabulary` Back picks which audio to chain (Definition vs Example) by
 interval; `{{info-Ivl:}}` only gives the CURRENT interval, but the semantically right signal is
-the predicted NEXT one ("đang quên → Definition, thuộc rồi → Example"). Their template rule now
-prefers `omniaIntervals.next_days` (threshold kept at their 4) with `{{info-Ivl:}}` fallback.
+the predicted NEXT one — the card should show the Definition while it is still being
+forgotten and the Example once it is known. The template rule now prefers
+`omniaIntervals.next_days` (threshold kept at 4) with an `{{info-Ivl:}}` fallback.
 
 **Files:** `src/omnia/plugins/display_interval/{__init__,config}.py`, `tests/plugins/
 test_display_interval.py` (+6), `tests/conftest.py` (card_will_show FakeHook). Template updates
@@ -396,7 +442,7 @@ still-draining av_player queue in both directions.
 
 **Why:** the `AnkiVocabulary` "Word -> Mean" Back rewrite moved audio from `[sound:]`-carrying
 fields to a JS-driven `dynPlayer` — the sounds hook reported `[]`, auto-flip armed immediately and
-graded mid-playback ("nó không biết time của sound").
+graded mid-playback, because nothing told it how long the audio actually was.
 
 **Files:** `src/omnia/gui/auto_flip/web/media_watch.js` (NEW), `src/omnia/plugins/auto_flip/
 media_watch.py` (NEW loader), `…/auto_flip/__init__.py` (busy/idle ops + arm gating + per-side
@@ -1039,8 +1085,9 @@ gate — that remains a separate, unbuilt feature). `set_active_tts` deliberatel
   cards. The dialog gets a **Decks picker** (toolbar button → popover: "All decks" master +
   per-deck checkboxes; baked `all_decks`), and `decks` rides the save/auto/improve payloads.
 
-**Why:** User wanted Smart Notes config to survive restart + sync ("lưu vào database của
-anki"), and to scope a note type's generation to specific decks (All or a ticked subset).
+**Why:** Smart Notes config had to survive a restart and travel with Anki's own sync, which
+means living in the collection database rather than a file; and a note type's generation had to
+be scopeable to specific decks (All, or a ticked subset).
 
 **Files:** `plugins/smart_notes/integration/{store.py,__init__.py,review.py,batch.py}`,
 `plugins/smart_notes/__init__.py`, `plugins/smart_notes/config.py`,

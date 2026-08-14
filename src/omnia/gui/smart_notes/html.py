@@ -532,7 +532,7 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
 
     Returns:
         ``{"nodes": [{name, is_base, generatable, locked, enabled, column, row, x, y, w, h, lane}, ...],
-        "edges": [{src, dst, kind, derived, cycle}, ...], "bounds": {width, height},
+        "edges": [{src, dst, kind, derived, from_tool, cycle}, ...], "bounds": {width, height},
         "node_positions": {name: [x, y]}, "has_cycle": bool}``. ``cycle`` flags an edge that lies
         on a dependency loop and ``has_cycle`` is True when any do — the canvas highlights them and
         warns, but the graph still lays out (generation/save reject cycles separately).
@@ -594,6 +594,7 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
                 "dst": edge.dst,
                 "kind": edge.kind,
                 "derived": edge.derived,
+                "from_tool": edge.from_tool,
                 "cycle": (edge.src.strip().lower(), edge.dst.strip().lower())
                 in cycle_keys,
             }
