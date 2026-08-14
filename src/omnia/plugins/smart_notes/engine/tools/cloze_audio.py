@@ -8,34 +8,36 @@ rule:
 
     **The answer is never spoken. Ever.**
 
-Four consequences, each visible in the code below:
+Three consequences, each visible in the code below:
 
-1. **Every failure is terminal — this tool NEVER declines.** Other tools that cannot do their
-   job hand the field to the next one; here that would hand a cloze sentence to plain TTS,
-   which speaks the answer. So every way of not producing raises
-   :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError` and the chain STOPS,
-   including the failure that happens before the tool even runs: params it cannot parse (see
-   :meth:`ClozeAudioTool.parse_params`). There is deliberately no "safe decline" — not even
-   for an empty source. The reasoning that there is "no answer to leak" when THIS tool's
-   ``source_field`` holds nothing speakable is local and wrong: the next tool speaks the
-   RULE's prompt refs, so a prompt of ``{{Sentence}} {{Hint}}`` with an unspeakable
-   ``Sentence`` (``&nbsp;``, ``<br>``, ``[sound:x.mp3]`` — all non-blank, so the dependency
-   gate lets the field through) and the answer sitting in ``Hint`` leaks exactly as loudly.
-   A tool cannot reason about what a later tool would say, so it does not try.
-2. **It refuses to share a chain.** The class is
-   :attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.exclusive`, so the pipeline will
-   not run a chain that also holds another tts tool — in EITHER order. Stopping the chain only
-   protects the tools that come after it; a chain of ``[ai, cloze_audio]`` never reaches this
-   code at all, because ``ai`` produces first and speaks the sentence with the answer in it.
-3. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
+1. **This tool never DECLINES — it either masks or fails.** Other tools that cannot do their
+   job return :class:`~omnia.plugins.smart_notes.engine.tools.base.NotApplicable`, which is a
+   silent, expected fall-through. Here there is no such thing: every way of not producing
+   raises :class:`~omnia.plugins.smart_notes.engine.tools.base.ToolError`, including the
+   failure that happens before the tool even runs (params it cannot parse — see
+   :meth:`ClozeAudioTool.parse_params`), so the trace always names what went wrong. There is
+   deliberately no "safe decline" — not even for an empty source. The reasoning that there is
+   "no answer to leak" when THIS tool's ``source_field`` holds nothing speakable is local and
+   wrong: a later tool speaks the RULE's prompt refs, so a prompt of ``{{Sentence}} {{Hint}}``
+   with an unspeakable ``Sentence`` (``&nbsp;``, ``<br>``, ``[sound:x.mp3]`` — all non-blank,
+   so the dependency gate lets the field through) and the answer sitting in ``Hint`` leaks
+   exactly as loudly.
+
+   **What a failure does NOT do is stop the chain.** By project rule a chain runs in the
+   configured order and every failure falls through to the next tool. So a field configured
+   ``[cloze_audio, ai]`` whose ``cloze_audio`` fails WILL be spoken by ``ai`` — with the answer
+   audible. That is the cost of the rule, and it is a configuration decision: put nothing after
+   ``cloze_audio`` on a field whose answer must stay hidden. The tool's own guarantee is
+   narrower and absolute — *it* never speaks the answer.
+2. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
    cloze markers that say what to hide. A source that already carries ``{{cN::…}}`` (the
    natural chain: a "Definition (cloze)" text field feeding a "Definition (cloze audio)" sound
    field) masks exactly those; otherwise the word is located with
    :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher the
-   ``cloze`` tool uses — with one deliberate difference: word forms are matched here ALWAYS,
-   whatever a ``cloze`` row's ``match_word_forms`` says. Hiding an inflection the text card
-   left visible only costs a hole the user did not ask for; missing one would speak the answer.
-4. **The hidden word is measured, not estimated.** It is synthesized once and the mask is built
+   ``cloze`` tool uses, so the text card and its audio hide the same words. (Inflected forms
+   are always matched — the option that used to make that configurable was removed, because
+   missing an inflection here means speaking the answer.)
+3. **The hidden word is measured, not estimated.** It is synthesized once and the mask is built
    to its exact frame count, so the gap lasts as long as the word would have — the invariant a
    listening cloze is built on. A guessed "~90 ms per character" gap gives the answer's length
    away and desynchronises the sentence.
@@ -67,7 +69,7 @@ from omnia.core.text import CLOZE_RE, strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult, ResolvedVoice
 from omnia.plugins.smart_notes.engine.tools.base import (
     Produced,
-    TerminalToolError,
+    ToolError,
     Tool,
     ToolOutcome,
 )
@@ -285,7 +287,7 @@ class SpeechCodec(ABC):
         """Return ``data`` as a 16-bit PCM clip.
 
         Raises:
-            TerminalToolError: If the bytes cannot be turned into PCM. Terminal because the
+            ToolError: If the bytes cannot be turned into PCM. Terminal because the
                 alternative is a later tool speaking the answer.
         """
 
@@ -294,7 +296,7 @@ class SpeechCodec(ABC):
         """Return ``clip`` as the bytes of a playable media file.
 
         Raises:
-            TerminalToolError: If the clip cannot be written.
+            ToolError: If the clip cannot be written.
         """
 
 
@@ -307,7 +309,7 @@ class WavCodec(SpeechCodec):
         try:
             return WavClip.from_bytes(data)
         except WavFormatError as exc:
-            raise TerminalToolError(
+            raise ToolError(
                 f"cloze_audio cannot cut this voice's audio ({exc}). Use a WAV voice "
                 f"({_voices_named('wav')}), or install the audio runtime in Smart Notes → "
                 "Options → Advanced to handle compressed voices."
@@ -339,7 +341,7 @@ class SidecarCodec(SpeechCodec):
         try:
             return WavClip.from_bytes(wav)
         except WavFormatError as exc:
-            raise TerminalToolError(
+            raise ToolError(
                 f"the audio runtime returned audio cloze_audio cannot cut ({exc})."
             ) from exc
 
@@ -352,7 +354,7 @@ class SidecarCodec(SpeechCodec):
         try:
             return call()
         except ProviderError as exc:
-            raise TerminalToolError(
+            raise ToolError(
                 f"cloze_audio needs the audio runtime to {what} this voice's audio "
                 f"({_voices_named('mp3')} return MP3, which Anki's Python cannot open): {exc}"
             ) from exc
@@ -401,7 +403,7 @@ class MaskedAudioBuilder:
             The bytes of a file in the codec's format.
 
         Raises:
-            TerminalToolError: If a segment cannot be synthesized, the pieces disagree about
+            ToolError: If a segment cannot be synthesized, the pieces disagree about
                 their stream parameters, or nothing at all could be produced.
         """
         pieces: list[WavClip] = []
@@ -413,7 +415,7 @@ class MaskedAudioBuilder:
                 # only its length: the gap must last exactly as long as the word would have.
                 pieces.append(self._mask(self._speak(speech.hidden[index])))
         if not pieces:
-            raise TerminalToolError(
+            raise ToolError(
                 "cloze_audio produced no audio for this sentence (the voice returned nothing)."
             )
         self._verify_params(pieces)
@@ -425,9 +427,7 @@ class MaskedAudioBuilder:
             data = self._voice.synthesize(text)
         except ProviderError as exc:
             # Terminal, not a fall-through: the next tool would speak the whole sentence.
-            raise TerminalToolError(
-                f"cloze_audio could not synthesize a part: {exc}"
-            ) from exc
+            raise ToolError(f"cloze_audio could not synthesize a part: {exc}") from exc
         return self._codec.decode(data)
 
     def _mask(self, measured: WavClip) -> WavClip:
@@ -450,12 +450,12 @@ class MaskedAudioBuilder:
         — one provider answered two calls in two formats — so the user can pin a voice.
 
         Raises:
-            TerminalToolError: On the first piece whose parameters differ from the first one's.
+            ToolError: On the first piece whose parameters differ from the first one's.
         """
         head = pieces[0].params
         for piece in pieces[1:]:
             if piece.params != head:
-                raise TerminalToolError(
+                raise ToolError(
                     f"cloze_audio got audio in two different formats from one voice "
                     f"({head} and {piece.params}), which cannot be spliced."
                 )
@@ -465,29 +465,35 @@ class MaskedAudioBuilder:
 class ClozeAudioTool(Tool):
     """Speaks a sentence with the answer replaced by silence or a beep — never aloud.
 
-    Two class-level rules carry that guarantee, and both are absolute:
+    One class-level rule carries that guarantee, and it is absolute: **it never returns**
+    :class:`~omnia.plugins.smart_notes.engine.tools.base.NotApplicable`. Declining hands the
+    field to a tool that speaks whatever the RULE's prompt refs hold — not this tool's
+    ``source_field`` — so no local check can prove a decline is harmless. Every inability to
+    produce raises :class:`~omnia.plugins.smart_notes.engine.tools.base.ToolError` instead.
 
-    * **it never returns** :class:`~omnia.plugins.smart_notes.engine.tools.base.NotApplicable`.
-      Declining hands the field to a tool that speaks whatever the RULE's prompt refs hold —
-      not this tool's ``source_field`` — so no local check can prove a decline is harmless.
-      Every inability to produce raises
-      :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError` instead;
-    * **it is** :attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.exclusive`, so a chain
-      that also holds another tts tool is refused before anything runs, in either order.
+    What that guarantee does NOT cover is a LATER tool: a failure falls through like any other
+    (see the module docstring), so a chain that puts another tts tool after this one will have
+    that tool speak the answer. Configuring the chain is the user's call, not this class's.
     """
 
     name: ClassVar[str] = "cloze_audio"
     label: ClassVar[str] = "Cloze audio"
     description: ClassVar[str] = (
-        "Speak a sentence with the cloze answer replaced by silence or a beep. Must be "
-        "the field's only tool, and fails rather than let anything else read it out."
+        "Speak a sentence with the cloze answer replaced by silence or a beep. It fails "
+        "rather than speak the answer — so put no other tts tool after it on this field."
     )
     kinds: ClassVar[frozenset[str]] = frozenset({"tts"})
     # It calls TTS, never an LLM: the text is the note's own, so there is nothing to think up.
     deterministic: ClassVar[bool] = True
-    # Any other tts tool on this field speaks the sentence with the answer unwrapped into it,
-    # so sharing a chain is unsafe whatever the order (see the module docstring).
-    exclusive: ClassVar[bool] = True
+    # ...but it DOES synthesize, with the row's voice — it speaks the sentence and the word it
+    # masks. Deterministic and provider-using at once, which is why they are two flags.
+    uses_provider: ClassVar[bool] = True
+    # Both fields decide WHAT gets hidden, so guessing either one wrong is how the answer gets
+    # spoken. The runtime fallbacks stay (a chain synced from an older Omnia has neither set),
+    # but the picker will not let a NEW chain leave them blank.
+    required_params: ClassVar[frozenset[str]] = frozenset(
+        {"source_field", "word_field"}
+    )
     params_model: ClassVar[Optional[type[BaseModel]]] = ClozeAudioParams
 
     @classmethod
@@ -533,12 +539,12 @@ class ClozeAudioTool(Tool):
         would fall through to ``ai``, which speaks the sentence with the answer in it.
 
         Raises:
-            TerminalToolError: If the params do not satisfy :class:`ClozeAudioParams`.
+            ToolError: If the params do not satisfy :class:`ClozeAudioParams`.
         """
         try:
             return super().parse_params(params)
         except ValidationError as exc:
-            raise TerminalToolError(
+            raise ToolError(
                 f"cloze_audio cannot read its own settings ({exc}), so it cannot know how to "
                 "hide the answer. Refusing to fall through to a tool that would speak it — "
                 "fix the tool's options on this field."
@@ -550,11 +556,11 @@ class ClozeAudioTool(Tool):
         It never declines. EVERY failure — a source with nothing speakable in it, no cloze span
         and no word match, an unconfigured voice, audio that cannot be cut, the missing codec
         runtime — raises
-        :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError`, so the chain
+        :class:`~omnia.plugins.smart_notes.engine.tools.base.ToolError`, so the chain
         stops instead of handing the field to a tool that would read the answer aloud.
 
         Raises:
-            TerminalToolError: When the answer cannot be masked.
+            ToolError: When the answer cannot be masked.
         """
         rule = request.rule
         params = request.params
@@ -570,7 +576,7 @@ class ClozeAudioTool(Tool):
             # about the wrong field: the next tool speaks the RULE's prompt refs, and a source
             # holding only "&nbsp;" while a Hint ref holds "The cat {{c1::sat}} down." is both
             # unspeakable HERE and a leak THERE.
-            raise TerminalToolError(
+            raise ToolError(
                 "cloze_audio has nothing to speak in "
                 f"{source_field or 'the source field'}. Refusing to fall through to a tool "
                 "that would speak this field's other sources, answers included."
@@ -580,7 +586,7 @@ class ClozeAudioTool(Tool):
         ).strip()
         speech = ClozeMaskPlanner(word).plan(source)
         if speech is None:
-            raise TerminalToolError(
+            raise ToolError(
                 f"cloze_audio found nothing to hide in {source_field!r}: it carries no "
                 f"{{{{c1::…}}}} marker and {word or 'the word field'} does not occur in it. "
                 "Refusing to speak the sentence, which would give the answer away."
@@ -592,10 +598,10 @@ class ClozeAudioTool(Tool):
         # the guarantee hold for code added here later.
         try:
             return self._produce(speech, request, ctx)
-        except TerminalToolError:
+        except ToolError:
             raise
         except Exception as exc:
-            raise TerminalToolError(
+            raise ToolError(
                 f"cloze_audio could not mask the answer in {source_field!r} ({exc}). "
                 "Refusing to fall through to a tool that would speak it."
             ) from exc

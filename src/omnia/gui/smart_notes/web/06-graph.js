@@ -54,7 +54,7 @@
 
   let graphData = {nodes: [], edges: [], bounds: {width: 0, height: 0}};
   let graphVisible = false;
-  let selectedEdge = null; // {src, dst, derived} of the currently-selected edge
+  let selectedEdge = null; // {src, dst, derived, fromTool} of the currently-selected edge
   let posOverride = {}; // name(lower) -> {x, y} LIVE move overrides (committed to savedPositions on drop)
   // Persistent user-pinned node positions (name(lower) -> {x, y, name}); seeded from the graph's
   // node_positions and sent back on recompute/save so a moved node survives tab switch + Save.
@@ -1134,7 +1134,7 @@
       graphToastMsg("Add “" + dst + "” to the field list first.");
       return;
     }
-    selectedEdge = {src: src, dst: dst, derived: false};
+    selectedEdge = {src: src, dst: dst, derived: false, fromTool: false};
     recomputeGraph();
   }
 
@@ -1147,13 +1147,24 @@
     }
     const newKind = e.kind === "soft" ? "hard" : "soft";
     updateRowDep(e.dst, e.src, newKind);
-    selectedEdge = {src: e.src, dst: e.dst, derived: e.derived};
+    selectedEdge = {src: e.src, dst: e.dst, derived: e.derived, fromTool: !!e.from_tool};
     recomputeGraph();
   }
 
   function removeEdge(sel) {
     if (isFieldLocked(sel.dst)) {
       graphToastMsg("“" + sel.dst + "” is locked — unlock it to change its dependencies.");
+      return;
+    }
+    if (sel.fromTool) {
+      // This edge exists because a TOOL param on the dependent field names the prerequisite —
+      // there is no explicit entry to drop and no {{ref}} to rewrite, so every step below would
+      // be a no-op and recomputeGraph would put the edge straight back. Say where it lives
+      // instead of silently doing nothing.
+      graphToastMsg(
+        "“" + sel.dst + "” reads “" + sel.src + "” in its Tools settings — " +
+          "change it there to remove this dependency."
+      );
       return;
     }
     // Deleting any edge just hides it; the prompt is reconciled later, at Save.

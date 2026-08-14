@@ -12,6 +12,7 @@ import pytest
 
 from omnia.plugins.smart_notes.config import (
     FieldDep,
+    FieldToolConfig,
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
@@ -36,6 +37,140 @@ def _edge(graph: FieldGraph, src: str, dst: str) -> GraphEdge | None:
         if edge.src.lower() == src.lower() and edge.dst.lower() == dst.lower():
             return edge
     return None
+
+
+class TestToolParamsAreDependencyEdges:
+    """A tool that reads other fields makes the target depend on ALL of them.
+
+    The graph derives this from the tool's own ``referenced_fields``, so it holds for EVERY
+    tool — the builtins, and a user-authored one that declares its own — with no per-tool code
+    in the graph. ``cloze`` is the clearest case: its output is a function of two fields, the
+    sentence it clozes and the word it hides, so both must be generated first and both must be
+    drawn.
+    """
+
+    @staticmethod
+    def _cloze_config():
+        return _config(
+            "Word",
+            [
+                (
+                    "Sentence",
+                    {"enabled": True, "type": "text", "prompt": "ex {{Word}}"},
+                ),
+                (
+                    "Cloze",
+                    {
+                        "enabled": True,
+                        "type": "text",
+                        "tools": [
+                            FieldToolConfig(
+                                tool="cloze",
+                                params={
+                                    "sentence_field": "Sentence",
+                                    "word_field": "Word",
+                                },
+                            )
+                        ],
+                    },
+                ),
+            ],
+        )
+
+    def test_both_of_a_clozes_source_fields_become_edges(self):
+        graph = FieldGraph.from_config(self._cloze_config())
+
+        for src in ("Sentence", "Word"):
+            edge = _edge(graph, src, "Cloze")
+            assert edge is not None, f"{src} -> Cloze missing"
+            assert (
+                edge.kind == "hard"
+            )  # a tool cannot read a field that has not generated
+
+    def test_a_tool_edge_is_derived_so_the_graph_draws_it_as_computed(self):
+        # Not a hand-drawn edge: the user never added it in the Dependencies view, so showing it
+        # solid (like an explicit `depends_on`) would misreport where it came from.
+        graph = FieldGraph.from_config(self._cloze_config())
+
+        assert _edge(graph, "Sentence", "Cloze").derived is True
+        assert _edge(graph, "Sentence", "Cloze").from_tool is True
+
+    def test_a_prompt_ref_is_derived_but_not_from_tool(self):
+        # The distinction the graph's Delete needs: a prompt edge CAN be removed (Save rewrites
+        # the prompt to drop the {{ref}}); a tool edge cannot, and must say so instead.
+        graph = FieldGraph.from_config(self._cloze_config())
+
+        edge = _edge(graph, "Word", "Sentence")
+        assert edge.derived is True
+        assert edge.from_tool is False
+
+    def test_a_field_named_by_both_a_prompt_and_a_tool_counts_as_a_prompt_edge(self):
+        # Deleting it must still offer the prompt rewrite — a real, visible change — even though
+        # the tool keeps its own edge alive afterwards.
+        graph = FieldGraph.from_config(
+            _config(
+                "Word",
+                [
+                    (
+                        "Cloze",
+                        {
+                            "enabled": True,
+                            "type": "text",
+                            "prompt": "cloze {{Sentence}}",
+                            "tools": [
+                                FieldToolConfig(
+                                    tool="cloze",
+                                    params={"sentence_field": "Sentence"},
+                                )
+                            ],
+                        },
+                    ),
+                    ("Sentence", {"enabled": True, "type": "text"}),
+                ],
+            )
+        )
+
+        edge = _edge(graph, "Sentence", "Cloze")
+        assert edge.derived is True
+        assert edge.from_tool is False
+
+    def test_an_explicit_dep_still_recolours_a_tool_edge(self):
+        graph = FieldGraph.from_config(
+            _config(
+                "Word",
+                [
+                    ("Sentence", {"enabled": True, "type": "text"}),
+                    (
+                        "Cloze",
+                        {
+                            "enabled": True,
+                            "type": "text",
+                            "tools": [
+                                FieldToolConfig(
+                                    tool="cloze",
+                                    params={"sentence_field": "Sentence"},
+                                )
+                            ],
+                            "depends_on": [FieldDep(field="Sentence", kind="soft")],
+                        },
+                    ),
+                ],
+            )
+        )
+
+        assert _edge(graph, "Sentence", "Cloze").kind == "soft"
+
+    def test_a_tool_edge_orders_generation(self):
+        # The payoff: Sentence is itself generated, and Cloze reads it, so Cloze must run after.
+        from omnia.plugins.smart_notes.engine.ordering import order_rules
+        from omnia.plugins.smart_notes.engine.rules import compile_note_type_rules
+
+        order = [
+            rule.target_field
+            for rule in order_rules(compile_note_type_rules(self._cloze_config()))
+        ]
+
+        assert order.index("Sentence") < order.index("Cloze")
 
 
 class TestBuildFieldGraph:

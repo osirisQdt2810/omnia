@@ -7,6 +7,7 @@ here keeps features free of ``hasattr`` checks.
 
 from __future__ import annotations
 
+import random
 from collections.abc import Callable
 from typing import Any, Optional, TypeVar
 
@@ -348,8 +349,10 @@ def random_note_of_type(
 ) -> Any:
     """Return a note of ``note_type`` (optionally within ``deck_id``), or None if none exist.
 
-    Used by the prompt dialog's "Test With Random Note" — it just needs any real note of the
-    rule's note type to interpolate the prompt against.
+    Genuinely random, not the first hit: the preview exists to show what a rule does across a
+    real collection, and always sampling ``note_ids[0]`` made every preview of a note type
+    return the same card — so a prompt that happens to suit that one note looked correct and a
+    rule that only breaks on other notes looked fine.
     """
     if col is None:
         col = main_window().col
@@ -360,7 +363,7 @@ def random_note_of_type(
             safe_deck = escape_search_term(deck_name)
             query = f'{query} (deck:"{safe_deck}" or deck:"{safe_deck}::*")'
     note_ids = col.find_notes(query)
-    return col.get_note(note_ids[0]) if note_ids else None
+    return col.get_note(random.choice(list(note_ids))) if note_ids else None
 
 
 def pick_file(

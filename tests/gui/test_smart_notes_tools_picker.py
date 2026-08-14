@@ -267,16 +267,38 @@ class TestToolsPickerPage:
         assert "spec.unavailable_reason" in advice
         assert 'note.className = "sn-tool-note";' in html
 
-    def test_the_picker_warns_from_the_tools_own_exclusive_flag(self):
-        # Graft #1, made generic. The runtime refuses such a chain outright; the warning is so
-        # the user fixes it before saving, and because a device on an older Omnia (which lacks
-        # the tool) would simply let the rival produce.
+    def test_done_refuses_a_chain_with_a_required_param_left_blank(self):
+        # Generic: WHICH params matter is the tool's declaration (`required_params` in the
+        # catalog), so a user-authored tool gets the same gate with no page changes. Blank is
+        # exactly the state a fallback would silently resolve, and the picker cannot show which
+        # field that fallback picks — so it refuses instead of accepting an unreadable row.
         html = self._html()
-        conflict = _js(html, "function exclusiveConflict(", 1000)
-        assert "spec.exclusive" in conflict
-        assert "(spec.kinds || []).indexOf(kind) >= 0" in conflict
+        missing = _js(html, "function missingRequired(", 900)
+        assert "spec.required_params" in _js(html, "function requiredParams(", 400)
+        assert (
+            "if (!spec) {" in missing
+        )  # a tool this build lacks has no schema to judge
+        done = _js(html, 'toolsDone.addEventListener("click"', 600)
+        assert "if (missingRequired().length) {" in done
+        assert "return;" in done  # neither written nor closed
         assert "sn-tools-warn" in html
-        assert "must be the only tool on this field" in html
+        assert "sn-tool-param-missing" in html
+
+    def test_the_required_error_appears_only_after_a_rejected_done(self):
+        # Flagging every blank the moment a tool is ticked shouts before the user has had a
+        # chance to fill anything in; once Done has been refused it stays live and self-clears.
+        html = self._html()
+        assert "toolsShowErrors = false;" in _js(html, "function openToolsPicker(", 700)
+        assert "toolsShowErrors = true;" in _js(
+            html, 'toolsDone.addEventListener("click"', 600
+        )
+        assert "toolsShowErrors ? missingRequiredMessage(" in html
+
+    def test_a_required_field_param_offers_no_blank_option(self):
+        # "(default)" IS the rejected state, so leaving it selectable is a trap, not a choice.
+        html = self._html()
+        assert "? prop.enum" in html
+        assert '(required ? [] : [""]).concat(fieldNames())' in html
 
     def test_no_feature_tools_semantics_live_in_the_picker(self):
         # The first version hard-coded `entry.tool === "cloze_audio"` plus a narrative of that
@@ -285,9 +307,22 @@ class TestToolsPickerPage:
         # belong on the tool; the page reads a declared flag.
         assert "cloze_audio" not in self._html()
 
-    def test_the_picker_is_frozen_on_a_locked_row(self):
+    def test_the_lock_freezes_only_what_the_generator_writes(self):
+        # Changed deliberately (was: asserts the tools button is frozen too). The lock means one
+        # thing — the auto-smart generator must not overwrite a hand-written prompt — and that
+        # generator writes exactly `type` and `prompt` (authoring/author.py). The tool chain,
+        # provider, model, voice, overwrite and preview are the user's own knobs; freezing them
+        # made a locked row unconfigurable for no reason anyone could point at.
         lock_state = _js(build_smart_notes_html(dark=False), "function applyLockState(")
-        assert '"sn-tools-btn"' in lock_state
+
+        assert '"sn-type"' in lock_state
+        for owned_by_the_user in (
+            '"sn-tools-btn"',
+            '"sn-provider"',
+            '"sn-voice"',
+            '"sn-overwrite"',
+        ):
+            assert owned_by_the_user not in lock_state
 
     def test_params_are_merged_not_rebuilt(self):
         # A param this build cannot render (a newer release's) must survive Done: the picker

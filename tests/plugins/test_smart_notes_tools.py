@@ -37,7 +37,6 @@ from omnia.plugins.smart_notes.engine.tools import (
     GenerationPipeline,
     NotApplicable,
     Produced,
-    TerminalToolError,
     Tool,
     ToolChainError,
     ToolContext,
@@ -47,6 +46,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     registered_tools,
     resolve_tool,
     tool_referenced_fields,
+    tool_required_params,
     tools_catalog,
 )
 from omnia.plugins.smart_notes.engine.tools.pipeline import ToolAttempt
@@ -96,22 +96,23 @@ class _BoomTool(_ProduceTool):
 
 
 class _TerminalTool(_ProduceTool):
-    """A tool for which falling through would be WORSE than failing (see cloze_audio)."""
+    """A tool whose OWN contract is "never decline, always raise" (see ``cloze_audio``)."""
 
     name: ClassVar[str] = "t_terminal"
     label: ClassVar[str] = "Terminal"
 
     def run(self, request, ctx):
         _RUNS.append(self.name)
-        raise TerminalToolError("would leak the answer")
+        raise ToolError("would leak the answer")
 
 
-class _ExclusiveTool(_ProduceTool):
-    """A tool no sibling may produce in place of (see ``cloze_audio``)."""
+class _RequiringTool(_ProduceTool):
+    """A tool that names params the picker must not leave blank."""
 
-    name: ClassVar[str] = "t_exclusive"
-    label: ClassVar[str] = "Exclusive"
-    exclusive: ClassVar[bool] = True
+    name: ClassVar[str] = "t_requires"
+    label: ClassVar[str] = "Requires"
+    uses_provider: ClassVar[bool] = False
+    required_params: ClassVar[frozenset[str]] = frozenset({"sentence_field"})
 
 
 class _ImageOnlyTool(_ProduceTool):
@@ -192,7 +193,7 @@ _FAKE_TOOLS: tuple[type[Tool], ...] = (
     _EmptyTool,
     _BoomTool,
     _TerminalTool,
-    _ExclusiveTool,
+    _RequiringTool,
     _ImageOnlyTool,
     _JunkTool,
     _ParamTool,
@@ -372,143 +373,94 @@ class TestPipelineMatrix:
         assert result.summary == "kaput"
 
 
-class TestTerminalFailureStopsTheChain:
-    """The one failure that must NOT fall through (phase 3).
+class TestEveryFailureFallsThroughToTheNextTool:
+    """The chain's ONE rule: run the tools in the configured order; a failure moves to the next.
 
-    Falling through is the point of a chain — until continuing would produce something
-    actively harmful. ``cloze_audio`` is the case that forced this: a chain of
-    ``[cloze_audio, ai]`` on a field it cannot mask would hand the sentence to plain TTS,
-    which speaks the answer, and the user would get a silently ruined card. So a tool may
-    raise :class:`TerminalToolError` to end the chain where it stands.
+    There is deliberately no exception to this — no tool can halt the chain, and no tool can
+    refuse to share it. An earlier design let ``cloze_audio`` stop a chain it could not mask,
+    on the grounds that a following tts tool would speak the answer it exists to hide. That
+    was reversed: the chain's semantics are the user's to configure, and a rule with one
+    special case is one nobody can predict from the picker. The tool's guarantee stays what a
+    tool can actually promise — *it* never speaks the answer (see the ``cloze_audio`` module
+    docstring for what that does and does not cover).
     """
 
-    def test_a_later_tool_never_runs(self, fake_tools):
+    def test_a_later_tool_still_runs_after_any_failure(self, fake_tools):
         result = GenerationPipeline(_ctx()).run(_rule("t_terminal", "t_produce"), {})
 
-        assert result.produced is None
-        assert _trace(result) == [("t_terminal", "error")]
-        assert _RUNS == ["t_terminal"]  # t_produce was never given a turn
+        assert result.produced is not None
+        assert _RUNS == ["t_terminal", "t_produce"]
+        assert _trace(result) == [("t_terminal", "error"), ("t_produce", "produced")]
 
-    def test_an_ordinary_error_still_falls_through(self, fake_tools):
-        # The halt must be surgical: every other breakage keeps the recovering behaviour.
+    def test_an_ordinary_error_falls_through_the_same_way(self, fake_tools):
         result = GenerationPipeline(_ctx()).run(_rule("t_boom", "t_produce"), {})
 
         assert result.produced is not None
         assert _RUNS == ["t_boom", "t_produce"]
 
-    def test_an_earlier_tool_can_still_produce_before_it(self, fake_tools):
-        # Halting is about what comes AFTER: a tool ordered before it still wins normally.
+    def test_order_is_honoured_so_an_earlier_tool_wins(self, fake_tools):
         result = GenerationPipeline(_ctx()).run(_rule("t_produce", "t_terminal"), {})
 
         assert result.produced is not None
-        assert _RUNS == ["t_produce"]
+        assert _RUNS == ["t_produce"]  # the chain stops at the first tool that PRODUCES
 
-    def test_it_counts_as_an_error_so_the_note_is_kept_for_retry(self, fake_tools):
+    def test_a_lone_failing_tool_keeps_the_note_for_retry(self, fake_tools):
         result = GenerationPipeline(_ctx()).run(_rule("t_terminal"), {})
 
         assert result.errored is True
         assert result.summary == "would leak the answer"
 
-    def test_the_service_raises_it_as_the_chain_error_cause(self, fake_tools):
+    def test_the_service_raises_the_failure_as_the_chain_error_cause(self, fake_tools):
         service = GenerationService(providers=None)
         with pytest.raises(ToolChainError) as excinfo:
-            service.generate(_rule("t_terminal", "t_produce"), {})
-        assert isinstance(excinfo.value.cause, TerminalToolError)
+            service.generate(_rule("t_terminal"), {})
+        assert isinstance(excinfo.value.cause, ToolError)
 
-    def test_a_detailless_attempt_summarises_as_a_sentence_not_a_status_token(
-        self, fake_tools
-    ):
-        # The summary reaches the user (the batch tooltip), so a chain whose only attempt
-        # declined without a reason must not surface the raw "not_applicable" enum value.
-        class _SilentDecline(_ProduceTool):
-            name: ClassVar[str] = "t_silent"
+    def test_two_tools_of_the_same_kind_share_a_chain_freely(self, fake_tools):
+        # Nothing pre-flights a chain any more: whatever the user ticked, in whatever order,
+        # runs. Previously this pair was refused outright before either tool got a turn.
+        result = GenerationPipeline(_ctx()).run(_rule("t_terminal", "t_terminal"), {})
 
-            def run(self, request, ctx):
-                return NotApplicable()
-
-        register_tool(_SilentDecline.name)(_SilentDecline)
-        result = GenerationPipeline(_ctx()).run(_rule("t_silent"), {})
-        assert result.summary == "the tool did not apply to this field"
-
-    def test_an_unknown_tool_alone_summarises_as_a_sentence(self, fake_tools):
-        result = GenerationPipeline(_ctx()).run(_rule("t_missing"), {})
-        assert result.summary == "no tool named 't_missing'"
-
-
-class TestAnExclusiveToolRefusesToShareAChain:
-    """A chain whose OTHER tool could produce instead must not run at all.
-
-    Halting the chain (above) only protects the tools that come AFTER the terminal one, so it
-    closes exactly one ordering. The tool that must not be replaced declares itself
-    :attr:`Tool.exclusive` instead, and the pipeline refuses such a chain before anything runs
-    — the only answer that is safe whichever tool the user ticked first.
-    """
-
-    def test_a_rival_after_it_refuses_the_whole_chain(self, fake_tools):
-        result = GenerationPipeline(_ctx()).run(_rule("t_exclusive", "t_produce"), {})
-
-        assert result.produced is None
-        assert _RUNS == []  # not even the exclusive tool was given a turn
-        assert _trace(result) == [("t_exclusive", "error")]
-        assert result.errored is True  # so the note is kept for a retry
-
-    def test_a_rival_before_it_refuses_the_whole_chain(self, fake_tools):
-        # The ordering a picker that APPENDS a newly ticked tool makes easiest to build, and
-        # the one a "does anything run after it?" check cannot see at all.
-        result = GenerationPipeline(_ctx()).run(_rule("t_produce", "t_exclusive"), {})
-
-        assert result.produced is None
-        assert _RUNS == []
+        assert _RUNS == ["t_terminal", "t_terminal"]
         assert result.errored is True
 
-    def test_the_refusal_names_the_problem_and_the_fix(self, fake_tools):
-        result = GenerationPipeline(_ctx()).run(_rule("t_produce", "t_exclusive"), {})
 
-        assert "'t_exclusive'" in result.summary
-        assert "'t_produce'" in result.summary
-        assert "remove" in result.summary.lower()
+class TestTheCatalogDescribesEachToolForThePicker:
+    """What the settings page can only learn from the tool itself.
 
-    def test_alone_it_runs_normally(self, fake_tools):
-        result = GenerationPipeline(_ctx()).run(_rule("t_exclusive"), {})
+    Both flags exist because the picker must not hardcode knowledge of specific tools: a
+    user-authored tool loaded off disk gets the same treatment as a builtin.
+    """
 
-        assert result.produced is not None
-        assert _RUNS == ["t_exclusive"]
-
-    def test_a_tool_of_another_kind_is_not_a_rival(self, fake_tools):
-        # An image tool in a text field's chain can never produce there, so it can never
-        # produce INSTEAD — exclusivity is scoped to the kind, not to the whole chain.
-        result = GenerationPipeline(_ctx()).run(
-            _rule("t_exclusive", "t_image_only"), {}
-        )
-
-        assert result.produced is not None
-        assert _trace(result) == [("t_exclusive", "produced")]
-
-    def test_a_tool_this_build_lacks_is_not_a_rival(self, fake_tools):
-        # Nothing here can know what an absent tool would produce; the entry degrades to
-        # unknown_tool exactly as it always has.
-        result = GenerationPipeline(_ctx()).run(_rule("t_missing", "t_exclusive"), {})
-
-        assert _trace(result) == [
-            ("t_missing", "unknown_tool"),
-            ("t_exclusive", "produced"),
-        ]
-
-    def test_the_catalog_carries_the_flag_so_the_picker_can_warn_generically(
-        self, fake_tools
-    ):
+    def test_uses_provider_is_not_the_inverse_of_deterministic(self, fake_tools):
+        # The distinction the row's Provider/Model/Voice fade depends on. `cloze_audio` is the
+        # real case: deterministic (no LLM tokens) AND provider-using (it synthesizes speech).
         catalog = {entry["name"]: entry for entry in tools_catalog(_ctx())}
 
-        assert catalog["t_exclusive"]["exclusive"] is True
-        assert catalog["t_produce"]["exclusive"] is False  # the default
+        assert catalog["t_requires"]["deterministic"] is True
+        assert catalog["t_requires"]["uses_provider"] is False
+        assert catalog["t_produce"]["uses_provider"] is True  # the default
 
-    def test_the_service_surfaces_the_refusal_as_a_chain_error(self, fake_tools):
-        service = GenerationService(providers=None)
+    def test_required_params_reach_the_picker_so_done_can_refuse(self, fake_tools):
+        catalog = {entry["name"]: entry for entry in tools_catalog(_ctx())}
 
-        with pytest.raises(ToolChainError) as excinfo:
-            service.generate(_rule("t_exclusive", "t_produce"), {})
+        assert catalog["t_requires"]["required_params"] == ["sentence_field"]
+        assert catalog["t_produce"]["required_params"] == []  # the default
 
-        assert isinstance(excinfo.value.cause, TerminalToolError)
+    def test_a_tool_with_a_malformed_required_params_costs_only_its_own_validation(
+        self, fake_tools
+    ):
+        # Same defensiveness as `kinds`: a user tool writing `required_params` as a raising
+        # property must not take the whole picker down with it.
+        class _Broken(_ProduceTool):
+            name: ClassVar[str] = "t_broken_required"
+
+            @property  # type: ignore[misc]
+            def required_params(self):
+                raise RuntimeError("boom")
+
+        assert tool_required_params(_Broken) == frozenset()
+        assert tool_required_params(_ProduceTool) == frozenset()
 
 
 class TestPipelineIsolatesABrokenTool:

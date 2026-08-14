@@ -20,17 +20,8 @@ attempt status   meaning
 config must not fail the field when a later tool can still fill it.
 
 The ONE exception to falling through is
-:class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError`: a tool raises it to say
-that continuing would be worse than failing (``cloze_audio`` unable to hide the answer, whose
-next tool would happily speak it aloud). The attempt is recorded as an ``error`` like any other
-and the chain then STOPS.
 
 A chain can also be refused BEFORE any tool runs. A tool that declares itself
-:attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.exclusive` says a sibling producing in
-its place is harmful, and that is true in EVERY order — the sibling first simply wins, and the
-sibling second wins the moment the exclusive tool fails or is missing from the build. So such a
-chain is not run at all: the field fails with a message naming the problem, which is the only
-answer that cannot leak (see :func:`~omnia.plugins.smart_notes.engine.tools.registry.chain_conflict`).
 
 The guard covers the WHOLE attempt — resolving the tool and reading its class attributes as
 much as running it — so a tool whose constructor raises, or whose class omits ``kinds``, is
@@ -52,10 +43,9 @@ from omnia.plugins.smart_notes.engine.tools.base import (
     Empty,
     NotApplicable,
     Produced,
-    TerminalToolError,
     ToolRequest,
 )
-from omnia.plugins.smart_notes.engine.tools.registry import chain_conflict, resolve_tool
+from omnia.plugins.smart_notes.engine.tools.registry import resolve_tool
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -63,7 +53,6 @@ if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import CompiledToolSpec, SmartNotesFieldRule
     from omnia.plugins.smart_notes.engine.generators import GenerationResult
     from omnia.plugins.smart_notes.engine.tools.base import ToolContext
-    from omnia.plugins.smart_notes.engine.tools.registry import ChainConflict
 
 AttemptStatus = Literal[
     "produced", "not_applicable", "empty", "error", "unknown_tool", "wrong_kind"
@@ -192,32 +181,8 @@ class GenerationPipeline:
             when the chain was refused outright, or when every tool declined, came up empty,
             or broke.
         """
-        try:
-            conflict = chain_conflict(rule.tools, rule.kind)
-        except Exception as exc:
-            # The module docstring promises the guard covers reading a tool's class attributes
-            # as much as running it, and this call reads them BEFORE the per-attempt try. Once
-            # the registry can hold classes this repo did not write, a malformed one must cost
-            # its own field, not the note's siblings that already generated.
-            self._ctx.logger.exception(
-                "smart_notes: could not check the tool chain for %r", rule.target_field
-            )
-            return PipelineResult(
-                None,
-                (
-                    ToolAttempt(
-                        rule.tools[0].name if rule.tools else "",
-                        "error",
-                        str(exc),
-                        error=exc,
-                    ),
-                ),
-            )
-        if conflict is not None:
-            return self._refuse(conflict, rule)
         attempts: list[ToolAttempt] = []
         for spec in rule.tools:
-            halt = False
             try:
                 attempt, result = self._attempt(spec, rule, fields)
             except Exception as exc:  # a broken tool must not fail the whole chain
@@ -230,43 +195,10 @@ class GenerationPipeline:
                     ToolAttempt(spec.name, "error", str(exc), error=exc),
                     None,
                 )
-                # ...unless the tool says falling through would be WORSE than failing: see
-                # TerminalToolError. The attempt is recorded like any other error; the chain
-                # simply ends here rather than letting a later tool fill the field.
-                halt = isinstance(exc, TerminalToolError)
             attempts.append(attempt)
             if attempt.status == "produced":
                 return PipelineResult(result, tuple(attempts))
-            if halt:
-                return PipelineResult(None, tuple(attempts))
         return PipelineResult(None, tuple(attempts))
-
-    def _refuse(
-        self, conflict: ChainConflict, rule: SmartNotesFieldRule
-    ) -> PipelineResult:
-        """Fail the field without running ANY of its tools.
-
-        Recorded as one ``error`` attempt against the exclusive tool, so the field lands in the
-        batch as a ``FailedField`` of kind ``"error"`` (the note is kept for a retry) and the
-        user reads the reason wherever a chain failure is already shown.
-
-        Args:
-            conflict: The exclusivity conflict the chain carries.
-            rule: The rule whose chain was refused.
-
-        Returns:
-            An exhausted :class:`PipelineResult` carrying the single refusal attempt.
-        """
-        self._ctx.logger.warning(
-            "smart_notes: refused the tool chain for field %r — %s",
-            rule.target_field,
-            conflict.message,
-        )
-        error = TerminalToolError(conflict.message)
-        attempt = ToolAttempt(
-            conflict.exclusive, "error", conflict.message, error=error
-        )
-        return PipelineResult(None, (attempt,))
 
     def _attempt(
         self,

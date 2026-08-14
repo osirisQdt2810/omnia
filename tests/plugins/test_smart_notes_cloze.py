@@ -91,7 +91,6 @@ class TestClozeToolContract:
         assert set(properties) == {
             "sentence_field",
             "word_field",
-            "match_word_forms",
             "separate_cards",
             "mask",
         }
@@ -166,12 +165,17 @@ class TestInflectionMatrix:
         )
         assert text == "{{c1::Survived}}, he said."
 
-    def test_word_forms_can_be_switched_off(self):
-        outcome = _run(
+    def test_word_forms_are_always_matched(self):
+        # Deliberately no longer configurable (was: `match_word_forms=False` declined here).
+        # The option only ever made the tool worse — a headword field holds the lemma while the
+        # sentence inflects it, so turning matching off meant declining the common case — and
+        # cloze_audio ignored the flag anyway, so a row could hide one set of words on the text
+        # card and a different set in its audio.
+        text = _clozed(
             {"Word": "survive", "Sentence": "He survived."},
-            params={"sentence_field": "Sentence", "match_word_forms": False},
+            params={"sentence_field": "Sentence"},
         )
-        assert isinstance(outcome, NotApplicable)
+        assert text == "He {{c1::survived}}."
 
     def test_a_substring_is_never_a_match(self):
         outcome = _run(

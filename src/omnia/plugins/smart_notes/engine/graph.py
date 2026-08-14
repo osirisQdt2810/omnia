@@ -46,14 +46,23 @@ class GraphEdge:
     """A dependency edge ``src -> dst`` (``src`` is the prerequisite, ``dst`` the dependent).
 
     ``kind`` is ``"hard"`` (order + block) or ``"soft"`` (order only). ``derived`` is True when
-    the edge came from a prompt ``{{ref}}`` / source field, False when it exists only because a
-    field listed it in ``depends_on``.
+    the edge was COMPUTED from how the field is generated — a prompt ``{{ref}}`` / source field,
+    or a tool param naming another field — and False when it exists only because a field listed
+    it in ``depends_on``. The graph draws a derived edge dashed, because the user did not draw it.
+
+    ``from_tool`` narrows that: the edge comes from a tool param (a ``cloze`` row's
+    ``sentence_field``), so the way to remove it is the Tools picker, not the prompt. Both
+    flavours of derived edge look identical on screen and neither can be deleted in the graph,
+    but only a PROMPT edge can be deleted by rewriting the prompt at Save — without this flag
+    the graph would offer that rewrite for an edge it cannot possibly remove, and the edge would
+    silently reappear.
     """
 
     src: str
     dst: str
     kind: str
     derived: bool
+    from_tool: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,8 +147,11 @@ class FieldGraph:
 
         Nodes are the base field plus every field in ``config.fields``. Edges are the DERIVED
         edges — each field's prompt ``{{refs}}`` / source field (the same "source fields" notion
-        ordering uses), default kind ``"hard"`` — UNIONed with each field's explicit
-        ``depends_on`` entries. An explicit entry for the same ``(src, dst)`` overrides the
+        ordering uses) AND the fields its TOOL params name, default kind ``"hard"`` — UNIONed
+        with each field's explicit ``depends_on`` entries. A tool edge is what makes a ``cloze``
+        row depend on BOTH the fields it reads (its ``sentence_field`` and its ``word_field``);
+        it is derived like a prompt ref, and additionally flagged ``from_tool`` because only the
+        Tools picker can remove it. An explicit entry for the same ``(src, dst)`` overrides the
         derived kind; an explicit-only edge is added with ``derived=False``. Matching is
         case-insensitive and edges whose ``src`` or ``dst`` is not a known field are dropped. No
         layout is computed here.
@@ -150,6 +162,12 @@ class FieldGraph:
         Returns:
             The effective :class:`FieldGraph` (nodes + deduped edges, no coordinates).
         """
+        # Lazy, for the same reason rules.py imports it lazily: the tools package imports the
+        # generators, which import rules — importing it at module scope would cycle.
+        from omnia.plugins.smart_notes.engine.tools.registry import (
+            tool_referenced_fields,
+        )
+
         base = config.base_field.strip()
         base_lower = base.lower()
         nodes: list[FieldNode] = []
@@ -177,7 +195,12 @@ class FieldGraph:
         edges: dict[tuple[str, str], GraphEdge] = {}
 
         def add_edge(
-            src_lower: str, dst_lower: str, kind: str, *, derived: bool
+            src_lower: str,
+            dst_lower: str,
+            kind: str,
+            *,
+            derived: bool,
+            from_tool: bool = False,
         ) -> None:
             if src_lower not in display or dst_lower not in display:
                 return  # edge references a field not present in the note type — drop it
@@ -186,6 +209,7 @@ class FieldGraph:
                 dst=display[dst_lower],
                 kind=kind,
                 derived=derived,
+                from_tool=from_tool,
             )
 
         for field in config.fields:
@@ -195,13 +219,23 @@ class FieldGraph:
             # Build the same rule the engine compiles so the graph reads dependencies through
             # the single source of truth (rule_prerequisites); the graph only adds ``derived``.
             rule = compile_field_rule(field, base)
-            derived_sources = {
-                name.strip().lower() for name in rule_source_fields(rule)
+            prompt_sources = {name.strip().lower() for name in rule_source_fields(rule)}
+            tool_sources = {
+                name.strip().lower() for name in tool_referenced_fields(rule.tools)
             }
             for prereq, kind in rule_prerequisites(rule):
                 src_lower = prereq.strip().lower()
+                # A field named by BOTH a prompt ref and a tool param counts as a prompt edge:
+                # that is the one the graph can still offer to delete (rewriting the prompt),
+                # and dropping the ref is a real, visible change even while the tool keeps its
+                # own edge alive.
+                from_prompt = src_lower in prompt_sources
                 add_edge(
-                    src_lower, dst_lower, kind, derived=src_lower in derived_sources
+                    src_lower,
+                    dst_lower,
+                    kind,
+                    derived=from_prompt or src_lower in tool_sources,
+                    from_tool=not from_prompt and src_lower in tool_sources,
                 )
 
         return cls(nodes=nodes, edges=list(edges.values()))

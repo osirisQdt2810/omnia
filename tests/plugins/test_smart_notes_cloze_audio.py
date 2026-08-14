@@ -36,6 +36,7 @@ from omnia.plugins.smart_notes.config import (
 from omnia.plugins.smart_notes.engine import compile_field_rule
 from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
 from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
+from omnia.plugins.smart_notes.engine.tools.pipeline import ToolAttempt
 from omnia.plugins.smart_notes.engine.tools import (
     ClozeAudioTool,
     ClozeMaskPlanner,
@@ -44,8 +45,8 @@ from omnia.plugins.smart_notes.engine.tools import (
     MaskedSpeech,
     Produced,
     SidecarCodec,
-    TerminalToolError,
     ToolContext,
+    ToolError,
     ToolRequest,
     WavCodec,
     tools_catalog,
@@ -240,13 +241,23 @@ class TestToolContract:
         # TTS calls, but never an LLM: the words come from the note.
         assert ClozeAudioTool.deterministic is True
 
-    def test_it_declares_itself_exclusive(self):
-        # The property lives on the TOOL, so the pipeline and the picker enforce it without
-        # knowing this tool exists: any other tts tool on the same field would speak the
-        # sentence with the answer unwrapped into it.
-        assert ClozeAudioTool.exclusive is True
+    def test_it_is_deterministic_and_still_uses_the_rows_voice(self):
+        # The two flags answer different questions, and this tool is why they are separate: it
+        # invents no text (no LLM tokens) yet synthesizes speech, so the row's Provider/Voice
+        # cells apply to it and must not be faded away.
+        assert ClozeAudioTool.deterministic is True
+        assert ClozeAudioTool.uses_provider is True
         entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
-        assert entry["exclusive"] is True
+        assert entry["uses_provider"] is True
+
+    def test_it_requires_both_of_its_field_params(self):
+        # Those two decide WHAT gets hidden, so a blank one is how the answer gets spoken.
+        # Declared on the TOOL, so the picker refuses Done without knowing this tool exists.
+        assert ClozeAudioTool.required_params == frozenset(
+            {"source_field", "word_field"}
+        )
+        entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
+        assert entry["required_params"] == ["source_field", "word_field"]
 
     def test_is_in_the_catalog_with_its_params(self):
         entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
@@ -390,14 +401,14 @@ class TestNeverSpeaksTheAnswer:
         assert set(gap) == {0}
 
     def test_a_missing_span_fails_the_field_instead_of_speaking_it(self):
-        with pytest.raises(TerminalToolError, match="nothing to hide"):
+        with pytest.raises(ToolError, match="nothing to hide"):
             _run(
                 {"Word": "dog", "Sentence": "The cat sat down."},
                 params={"source_field": "Sentence"},
             )
 
     def test_an_mp3_voice_without_the_codec_fails_with_the_install_hint(self):
-        with pytest.raises(TerminalToolError) as excinfo:
+        with pytest.raises(ToolError) as excinfo:
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_FakeMp3TTS(),
@@ -407,10 +418,10 @@ class TestNeverSpeaksTheAnswer:
         message = str(excinfo.value)
         assert "Advanced" in message
         # Not a NotApplicable: a chain must not be able to fall past this.
-        assert isinstance(excinfo.value, TerminalToolError)
+        assert isinstance(excinfo.value, ToolError)
 
     def test_a_provider_failure_is_terminal_too(self):
-        with pytest.raises(TerminalToolError, match="HTTP 401"):
+        with pytest.raises(ToolError, match="HTTP 401"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_ExplodingTTS(),
@@ -435,7 +446,7 @@ class TestNeverSpeaksTheAnswer:
             fields={"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
             params=ClozeAudioTool.parse_params(rule.tools[0].params),
         )
-        with pytest.raises(TerminalToolError, match="Auto-detect voice"):
+        with pytest.raises(ToolError, match="Auto-detect voice"):
             ClozeAudioTool().run(request, ctx)
 
     def test_an_unexpected_bug_is_terminal_too(self, monkeypatch):
@@ -446,48 +457,90 @@ class TestNeverSpeaksTheAnswer:
             raise RuntimeError("unexpected")
 
         monkeypatch.setattr(module.ResolvedVoice, "for_rule", _boom)
-        with pytest.raises(TerminalToolError, match="Refusing to fall through"):
+        with pytest.raises(ToolError, match="Refusing to fall through"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 params={"source_field": "Sentence"},
             )
 
-    @pytest.mark.parametrize("order", [("cloze_audio", "ai"), ("ai", "cloze_audio")])
-    def test_pairing_it_with_ai_refuses_the_chain_in_either_order(self, order):
-        # Stopping the chain only protects what comes AFTER cloze_audio, so it closes exactly
-        # one ordering — and the picker APPENDS a newly ticked tool, which makes ("ai",
-        # "cloze_audio") the easy one to build: `ai` simply wins, speaks "The cat sat down."
-        # (strip_markup unwraps {{c1::sat}}), and nothing looks wrong. So the pairing is
-        # refused outright, even here where cloze_audio COULD have masked this sentence: a
-        # config that can leak must not run at all.
+    def test_first_in_the_chain_it_produces_and_ai_never_runs(self):
+        # The correct configuration, and the one the tool exists for: it masks, it produces,
+        # and the chain stops there — `ai` is never reached, so nothing can speak the answer.
         rule = _rule(
-            prompt="{{Sentence}}",  # what `ai` would speak: the answer, unwrapped
-            tools=tuple(
+            prompt="{{Sentence}}",
+            tools=(
                 CompiledToolSpec(
-                    name=name,
-                    params=(
-                        {"source_field": "Sentence"} if name == "cloze_audio" else {}
-                    ),
-                )
-                for name in order
+                    name="cloze_audio", params={"source_field": "Sentence"}
+                ),
+                CompiledToolSpec(name="ai"),
             ),
         )
-        voice = _FakeWavTTS()
-        ctx = _ctx(voice)
+        ctx = _ctx(_FakeWavTTS())
 
         result = GenerationPipeline(ctx).run(
             rule, {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."}
         )
 
-        assert result.produced is None
-        assert voice.spoken == []  # nothing was synthesized at all
-        assert ctx.providers.llm_calls == 0
-        # One attempt, recorded against the tool that must not be replaced — no tool ran.
+        assert result.produced is not None
+        assert result.produced.tool == "cloze_audio"
         assert [(a.tool, a.status) for a in result.attempts] == [
-            ("cloze_audio", "error")
+            ("cloze_audio", "produced")
         ]
-        assert result.errored is True  # so the note is kept for a retry, not discarded
-        assert "cloze_audio" in result.summary
+
+    @pytest.mark.parametrize(
+        ("order", "fields"),
+        [
+            # `ai` ordered FIRST simply wins — it never even reaches this tool.
+            (
+                ("ai", "cloze_audio"),
+                {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
+            ),
+            # `cloze_audio` ordered first but UNABLE to mask (no marker, and its word is not in
+            # the sentence): it raises, and the chain falls through to `ai` like any other
+            # failure.
+            (
+                ("cloze_audio", "ai"),
+                {"Word": "absent", "Sentence": "The cat sat down."},
+            ),
+        ],
+    )
+    def test_a_tts_tool_after_it_speaks_the_answer_and_that_is_the_configured_rule(
+        self, order, fields
+    ):
+        """The documented COST of "run in order, fall through on failure" — pinned, not hidden.
+
+        An earlier design refused this pairing outright (the tool declared itself exclusive,
+        and a failure halted the chain). That was reversed by an explicit project decision: a
+        chain runs in the configured order and every failure moves to the next tool, with no
+        special cases. The consequence is real and belongs in the suite rather than in a
+        comment — putting any tts tool after ``cloze_audio`` on a field whose answer must stay
+        hidden WILL have that tool speak it, because
+        :func:`omnia.core.text.strip_markup` unwraps ``{{c1::sat}}`` to ``sat``.
+
+        What this does NOT weaken is the tool's own guarantee: in both orderings below,
+        ``cloze_audio`` itself never speaks the answer — it is the SIBLING that does.
+        """
+        rule = _rule(
+            prompt="{{Sentence}}",  # what `ai` speaks: the answer, unwrapped
+            tools=tuple(
+                CompiledToolSpec(
+                    name=name,
+                    params=(
+                        {"source_field": "Sentence", "word_field": "Word"}
+                        if name == "cloze_audio"
+                        else {}
+                    ),
+                )
+                for name in order
+            ),
+        )
+        ctx = _ctx(_FakeWavTTS())
+
+        result = GenerationPipeline(ctx).run(rule, fields)
+
+        assert result.produced is not None
+        assert result.produced.tool == "ai"  # `ai` filled the field, answer and all
+        assert result.attempts[-1] == ToolAttempt("ai", "produced", "")
 
     @pytest.mark.parametrize(
         "params",
@@ -514,7 +567,7 @@ class TestNeverSpeaksTheAnswer:
         assert [(a.tool, a.status) for a in result.attempts] == [
             ("cloze_audio", "error")
         ]
-        assert isinstance(result.attempts[0].error, TerminalToolError)
+        assert isinstance(result.attempts[0].error, ToolError)
         assert voice.spoken == []
         assert result.errored is True
 
@@ -553,7 +606,7 @@ class TestNeverSpeaksTheAnswer:
         # gate lets the field through — and the answer sitting in Hint gets read out the
         # moment this tool declines. It cannot know what a later tool would say, so it never
         # declines at all.
-        with pytest.raises(TerminalToolError, match="nothing to speak"):
+        with pytest.raises(ToolError, match="nothing to speak"):
             _run(
                 {
                     "Word": "cat",
@@ -567,7 +620,7 @@ class TestNeverSpeaksTheAnswer:
     def test_it_never_declines_even_with_no_params_at_all(self):
         # The reported repro: no explicit params, so source_field defaults to the prompt's
         # first ref ("Sentence") while `ai` would speak both refs.
-        with pytest.raises(TerminalToolError):
+        with pytest.raises(ToolError):
             _run(
                 {"Word": "cat", "Sentence": "&nbsp;", "Hint": "The cat sat down."},
                 prompt="{{Sentence}} {{Hint}}",
@@ -639,7 +692,7 @@ class TestSplice:
                 self.rate = 24000 if self.spoken else _RATE
                 return super().synthesize(text, lang=lang, voice=voice)
 
-        with pytest.raises(TerminalToolError, match="two different formats"):
+        with pytest.raises(ToolError, match="two different formats"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_Drifting(),
@@ -651,7 +704,7 @@ class TestSplice:
             def synthesize(self, text, *, lang=None, voice=None):
                 return b"not a wav at all"
 
-        with pytest.raises(TerminalToolError, match="cannot cut"):
+        with pytest.raises(ToolError, match="cannot cut"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_Lying(),
@@ -671,7 +724,7 @@ class TestSplice:
                     writer.writeframes(b"\x40" * 100)
                 return buffer.getvalue()
 
-        with pytest.raises(TerminalToolError, match="16-bit"):
+        with pytest.raises(ToolError, match="16-bit"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_EightBit(),
@@ -686,7 +739,7 @@ class TestSplice:
             ResolvedVoice(_FakeWavTTS(), None, "fake-voice"), WavCodec()
         )
 
-        with pytest.raises(TerminalToolError, match="produced no audio"):
+        with pytest.raises(ToolError, match="produced no audio"):
             builder.build(MaskedSpeech(("",), ()))
 
     def test_stereo_audio_splices_when_every_segment_agrees(self):
@@ -740,7 +793,7 @@ class TestCodecSelection:
             def decode(self, data: bytes) -> bytes:
                 return b"not a wav at all"
 
-        with pytest.raises(TerminalToolError, match="the audio runtime returned"):
+        with pytest.raises(ToolError, match="the audio runtime returned"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_FakeMp3TTS(),
