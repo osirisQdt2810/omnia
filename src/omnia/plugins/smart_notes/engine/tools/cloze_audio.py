@@ -14,9 +14,10 @@ Three consequences, each visible in the code below:
    the field to the next one; here that would hand a cloze sentence to plain TTS, which speaks
    the answer. So an unmaskable field raises
    :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError` and the chain STOPS
-   — a ``[cloze_audio, ai]`` chain fails the field instead of ruining the card. The one thing
-   that still declines softly is an EMPTY source: there is no sentence, so there is no answer
-   to leak.
+   — a ``[cloze_audio, ai]`` chain fails the field instead of ruining the card. That covers
+   every way this tool can fail, including the one that happens before it even runs: params it
+   cannot parse (see :meth:`ClozeAudioTool.parse_params`). The one thing that still declines
+   softly is an EMPTY source: there is no sentence, so there is no answer to leak.
 2. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
    cloze markers that say what to hide. A source that already carries ``{{cN::…}}`` (the
    natural chain: a "Definition (cloze)" text field feeding a "Definition (cloze audio)" sound
@@ -44,12 +45,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from omnia.core.audio.sidecar import AudioSidecar
 from omnia.core.audio.wav import WavClip, WavFormatError
 from omnia.core.config.base import PersistedModel
 from omnia.core.providers.errors import ProviderError
+from omnia.core.providers.tts.registry import tts_providers_with_ext
 from omnia.core.text import CLOZE_RE, strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult, ResolvedVoice
 from omnia.plugins.smart_notes.engine.tools.base import (
@@ -85,9 +87,15 @@ STRATEGY_SIDECAR = "sidecar"
 #: sample leaves a step in the waveform, which plays back as a click.
 _FADE_MS = 10.0
 
-#: The formats each codec understands, for the picker's availability line.
-_WAV_PROVIDERS = "piper, viet-tts"
-_MP3_PROVIDERS = "edge_tts, google_translate, google_cloud, openai"
+
+def _voices_named(ext: str) -> str:
+    """Return the TTS providers that return ``ext``, as a comma-separated list for a message.
+
+    Derived from the registry rather than written out, because three user-facing messages name
+    these lists and a hand-kept copy is stale the moment a provider is added or renamed — the
+    first copy already said "viet-tts" for a provider registered as ``viettts``.
+    """
+    return ", ".join(tts_providers_with_ext(ext))
 
 
 class ClozeAudioParams(PersistedModel):
@@ -181,16 +189,14 @@ class ClozeMaskPlanner:
     the (expensive) word-form derivation happens once.
     """
 
-    def __init__(self, word: str, *, match_word_forms: bool = True) -> None:
+    def __init__(self, word: str) -> None:
         """Build a planner for ``word``.
 
         Args:
             word: The headword to hide when the value carries no cloze markers (may be blank,
                 in which case only markers can be masked).
-            match_word_forms: Also hide inflected forms of the word.
         """
         self._word = word
-        self._match_word_forms = match_word_forms
 
     def plan(self, value: str) -> Optional[MaskedSpeech]:
         """Split ``value`` into spoken segments and hidden words, or None when nothing matched.
@@ -233,9 +239,7 @@ class ClozeMaskPlanner:
             return marked
         if not self._word:
             return []
-        rewriter = ClozeRewriter(
-            self._word, match_word_forms=self._match_word_forms, separate_cards=False
-        )
+        rewriter = ClozeRewriter(self._word)
         return [(start, end) for start, end, _ in rewriter.occurrences(value)]
 
     @staticmethod
@@ -283,7 +287,7 @@ class WavCodec(SpeechCodec):
         except WavFormatError as exc:
             raise TerminalToolError(
                 f"cloze_audio cannot cut this voice's audio ({exc}). Use a WAV voice "
-                f"({_WAV_PROVIDERS}), or install the audio runtime in Smart Notes → "
+                f"({_voices_named('wav')}), or install the audio runtime in Smart Notes → "
                 "Options → Advanced to handle compressed voices."
             ) from exc
 
@@ -300,13 +304,13 @@ class SidecarCodec(SpeechCodec):
 
     ext: ClassVar[str] = "mp3"
 
-    def __init__(self, sidecar: Optional[AudioSidecar] = None) -> None:
+    def __init__(self, sidecar: AudioSidecar) -> None:
         """Initialise the codec.
 
         Args:
-            sidecar: The runtime wrapper to drive (injected in tests; defaults to a real one).
+            sidecar: The runtime wrapper to drive (the tool passes its context's).
         """
-        self._sidecar = sidecar or AudioSidecar()
+        self._sidecar = sidecar
 
     def decode(self, data: bytes) -> WavClip:
         wav = self._run(lambda: self._sidecar.decode(data), "decode")
@@ -328,7 +332,7 @@ class SidecarCodec(SpeechCodec):
         except ProviderError as exc:
             raise TerminalToolError(
                 f"cloze_audio needs the audio runtime to {what} this voice's audio "
-                f"({_MP3_PROVIDERS} return MP3, which Anki's Python cannot open): {exc}"
+                f"({_voices_named('mp3')} return MP3, which Anki's Python cannot open): {exc}"
             ) from exc
 
 
@@ -465,18 +469,44 @@ class ClozeAudioTool(Tool):
 
     @classmethod
     def availability(cls, ctx: ToolContext) -> str | None:
-        """Say which voices this tool can serve on THIS machine right now.
+        """Name what a voice on THIS machine might still need — advice, never a gate.
 
-        Never None while the codec runtime is missing, even though the tool works perfectly
-        with a WAV voice: the picker's job is to warn before a chain is saved, and "it depends
-        which voice the field resolves to" is the honest answer.
+        The tool is fully usable with nothing installed: a WAV voice (the bundled piper one
+        included) splices with the stdlib. Only an MP3 voice needs the codec runtime, and which
+        voice a FIELD uses is a per-row setting this classmethod cannot see — so a global "no"
+        would be wrong in both directions. The picker renders this next to the tool without
+        disabling it (see :meth:`Tool.availability`).
         """
-        if AudioSidecar().is_installed():
+        if ctx.audio.is_installed():
             return None
         return (
-            f"works with WAV voices ({_WAV_PROVIDERS}) now; MP3 voices "
-            f"({_MP3_PROVIDERS}) need the audio runtime — install it in Options → Advanced"
+            f"WAV voices ({_voices_named('wav')}) work as-is; MP3 voices "
+            f"({_voices_named('mp3')}) need the audio runtime — install it in "
+            "Options → Advanced"
         )
+
+    @classmethod
+    def parse_params(cls, params: Mapping[str, object]) -> dict[str, object]:
+        """Validate the stored params, treating a rejection as terminal rather than as an error.
+
+        The pipeline calls this INSIDE the attempt guard but BEFORE :meth:`run`, so the base
+        implementation's "an unparsable params dict is one failed attempt, carry on" would walk
+        straight past this tool's whole reason to exist: ``[cloze_audio, ai]`` with a
+        ``beep_hz`` of ``"auto"`` — a value a newer release could give the key (ADR-010), or a
+        hand-edited blob, or the picker's own ``Number("1e999")`` → ``Infinity`` → ``null`` —
+        would fall through to ``ai``, which speaks the sentence with the answer in it.
+
+        Raises:
+            TerminalToolError: If the params do not satisfy :class:`ClozeAudioParams`.
+        """
+        try:
+            return super().parse_params(params)
+        except ValidationError as exc:
+            raise TerminalToolError(
+                f"cloze_audio cannot read its own settings ({exc}), so it cannot know how to "
+                "hide the answer. Refusing to fall through to a tool that would speak it — "
+                "fix the tool's options on this field."
+            ) from exc
 
     def run(self, request: ToolRequest, ctx: ToolContext) -> ToolOutcome:
         """Speak this rule's sentence with its answer masked.
@@ -537,7 +567,9 @@ class ClozeAudioTool(Tool):
         voice = ResolvedVoice.for_rule(
             ctx.providers, ctx.detector, request.rule, speech.detection_text
         )
-        codec = self._codec(str(params.get("strategy", "") or ""), voice.audio_ext)
+        codec = self._codec(
+            str(params.get("strategy", "") or ""), voice.audio_ext, ctx.audio
+        )
         data = MaskedAudioBuilder(
             voice,
             codec,
@@ -548,16 +580,21 @@ class ClozeAudioTool(Tool):
         return Produced(GenerationResult("tts", data=data, ext=codec.ext))
 
     @staticmethod
-    def _codec(strategy: str, audio_ext: str) -> SpeechCodec:
+    def _codec(strategy: str, audio_ext: str, audio: AudioSidecar) -> SpeechCodec:
         """Pick the codec for a voice that returns ``audio_ext``.
 
         ``auto`` (the default, and what an unrecognised value degrades to per ADR-010) uses the
         stdlib for a WAV voice and the sidecar for anything else; the explicit values let a user
         force one — ``segments`` to keep a run install-free, ``sidecar`` to route WAV through
         PyAV as well.
+
+        Args:
+            strategy: The field's ``strategy`` param.
+            audio_ext: The format the resolved voice returns.
+            audio: The context's codec runtime, handed to the sidecar codec.
         """
         if strategy == STRATEGY_SEGMENTS:
             return WavCodec()
         if strategy == STRATEGY_SIDECAR:
-            return SidecarCodec()
-        return WavCodec() if audio_ext == WavCodec.ext else SidecarCodec()
+            return SidecarCodec(audio)
+        return WavCodec() if audio_ext == WavCodec.ext else SidecarCodec(audio)

@@ -25,7 +25,14 @@ import pytest
 
 from omnia.core.audio.wav import SAMPLE_WIDTH, WavClip
 from omnia.core.providers.errors import ProviderError
-from omnia.plugins.smart_notes.config import CompiledToolSpec, SmartNotesFieldRule
+from omnia.core.providers.tts.registry import tts_providers_with_ext
+from omnia.plugins.smart_notes.config import (
+    CompiledToolSpec,
+    SmartNotesFieldConfig,
+    SmartNotesFieldRule,
+    default_tool_chain,
+)
+from omnia.plugins.smart_notes.engine import compile_field_rule
 from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
 from omnia.plugins.smart_notes.engine.tools import (
     ClozeAudioTool,
@@ -156,11 +163,17 @@ class _NoDetector:
         return None
 
 
-def _ctx(tts=None) -> ToolContext:
+def _ctx(tts=None, *, audio=None) -> ToolContext:
+    """A tool context whose codec runtime is NOT installed unless a test says otherwise.
+
+    That is the state a fresh install is in, and the tool must work fully in it (with a WAV
+    voice), so it is the right default for every test that does not care.
+    """
     return ToolContext(
         providers=_Hub(tts if tts is not None else _FakeWavTTS()),
         detector=_NoDetector(),
         logger=logging.getLogger("omnia.test"),
+        audio=audio if audio is not None else _FakeSidecar(installed=False),
     )
 
 
@@ -178,7 +191,7 @@ def _rule(**kwargs) -> SmartNotesFieldRule:
     return SmartNotesFieldRule(**base)
 
 
-def _run(fields: dict[str, str], *, tts=None, **kwargs):
+def _run(fields: dict[str, str], *, tts=None, audio=None, **kwargs):
     """Run the tool once and return its outcome."""
     rule = _rule(**kwargs)
     request = ToolRequest(
@@ -186,7 +199,7 @@ def _run(fields: dict[str, str], *, tts=None, **kwargs):
         fields=fields,
         params=ClozeAudioTool.parse_params(rule.tools[0].params),
     )
-    return ClozeAudioTool().run(request, _ctx(tts))
+    return ClozeAudioTool().run(request, _ctx(tts, audio=audio))
 
 
 def _produced_clip(fields: dict[str, str], *, tts=None, **kwargs) -> WavClip:
@@ -239,20 +252,31 @@ class TestToolContract:
         assert properties["mode"]["enum"] == ["silence", "beep"]
         assert properties["strategy"]["enum"] == ["auto", "segments", "sidecar"]
 
-    def test_availability_tells_the_truth_about_the_codec(self, monkeypatch):
-        import omnia.plugins.smart_notes.engine.tools.cloze_audio as module
-
-        monkeypatch.setattr(
-            module, "AudioSidecar", lambda: _FakeSidecar(installed=False)
-        )
-        reason = ClozeAudioTool.availability(_ctx())
+    def test_availability_advises_about_the_codec_without_claiming_to_be_unusable(self):
+        # It must NAME what an MP3 voice needs…
+        reason = ClozeAudioTool.availability(_ctx(audio=_FakeSidecar(installed=False)))
         assert reason is not None
         assert "piper" in reason and "edge_tts" in reason and "Advanced" in reason
+        # …and say nothing once the runtime is there.
+        assert ClozeAudioTool.availability(_ctx(audio=_FakeSidecar())) is None
 
-        monkeypatch.setattr(
-            module, "AudioSidecar", lambda: _FakeSidecar(installed=True)
-        )
-        assert ClozeAudioTool.availability(_ctx()) is None
+    def test_the_provider_names_in_the_advice_come_from_the_registry(self):
+        # Hard-coded lists go stale: the first copy of this message said "viet-tts" for a
+        # provider registered as "viettts", and named "openai" without its family.
+        reason = ClozeAudioTool.availability(_ctx(audio=_FakeSidecar(installed=False)))
+        for name in tts_providers_with_ext("wav") + tts_providers_with_ext("mp3"):
+            assert name in reason
+
+    def test_a_wav_only_machine_can_still_enable_the_tool(self):
+        # The zero-install path: piper's bundled voice needs nothing, so the picker must not be
+        # able to read this as "unavailable" and grey the tool out (the reason it renders the
+        # advice without gating). A tool cannot see which voice the ROW will resolve to.
+        entry = {
+            item["name"]: item
+            for item in tools_catalog(_ctx(audio=_FakeSidecar(installed=False)))
+        }["cloze_audio"]
+        assert entry["kinds"] == ["tts"]  # the only real gate is the field's type
+        assert "work as-is" in entry["unavailable_reason"]
 
     def test_named_fields_become_dependency_edges(self):
         rule = _rule(params={"source_field": "Sentence", "word_field": "Headword"})
@@ -351,18 +375,12 @@ class TestNeverSpeaksTheAnswer:
                 params={"source_field": "Sentence"},
             )
 
-    def test_an_mp3_voice_without_the_codec_fails_with_the_install_hint(
-        self, monkeypatch
-    ):
-        import omnia.plugins.smart_notes.engine.tools.cloze_audio as module
-
-        monkeypatch.setattr(
-            module, "AudioSidecar", lambda: _FakeSidecar(installed=False)
-        )
+    def test_an_mp3_voice_without_the_codec_fails_with_the_install_hint(self):
         with pytest.raises(TerminalToolError) as excinfo:
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 tts=_FakeMp3TTS(),
+                audio=_FakeSidecar(installed=False),
                 params={"source_field": "Sentence"},
             )
         message = str(excinfo.value)
@@ -436,6 +454,40 @@ class TestNeverSpeaksTheAnswer:
         ]
         assert result.errored is True  # so the note is kept for a retry, not discarded
 
+    @pytest.mark.parametrize(
+        "params",
+        [
+            # A value a newer release could give a KNOWN key (ADR-010) or a hand-edited blob…
+            {"source_field": "Sentence", "beep_hz": "auto"},
+            # …and the one the picker itself can write: Number("1e999") is Infinity, which
+            # JSON.stringify serialises as null.
+            {"source_field": "Sentence", "beep_gain_db": None},
+        ],
+    )
+    def test_unreadable_params_stop_the_chain_instead_of_falling_through(self, params):
+        # parse_params runs INSIDE the pipeline's attempt guard but BEFORE run(), so the base
+        # "one failed attempt, carry on" would walk straight past the tool's whole purpose.
+        rule = _rule(
+            prompt="{{Sentence}}",  # what `ai` would speak: the answer, unwrapped
+            tools=(
+                CompiledToolSpec(name="cloze_audio", params=params),
+                CompiledToolSpec(name="ai"),
+            ),
+        )
+        voice = _FakeWavTTS()
+        ctx = _ctx(voice)
+
+        result = GenerationPipeline(ctx).run(
+            rule, {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."}
+        )
+
+        assert result.produced is None
+        assert [(a.tool, a.status) for a in result.attempts] == [
+            ("cloze_audio", "error")
+        ]
+        assert voice.spoken == []  # `ai` never got to read "The cat sat down." out
+        assert result.errored is True
+
     def test_a_recoverable_tool_still_falls_through(self):
         # The halt must be surgical: an ordinary error keeps the old fall-through behaviour.
         rule = _rule(
@@ -447,6 +499,19 @@ class TestNeverSpeaksTheAnswer:
         )
         result = GenerationPipeline(_ctx()).run(rule, {"Word": "cat"})
         assert [a.status for a in result.attempts] == ["wrong_kind", "produced"]
+
+    def test_no_chain_this_build_writes_itself_speaks_after_cloze_audio(self):
+        # Graft #1's other half. A chain reaches config from exactly two places: the user's
+        # picker (which now warns) and default_tool_chain(). The default must never be the
+        # leaking order, because a device WITHOUT cloze_audio degrades that entry to
+        # "unknown tool" and hands the sentence to the next voice — the one residual this
+        # feature cannot close from here.
+        assert [spec.name for spec in default_tool_chain()] == ["ai"]
+        compiled = compile_field_rule(
+            SmartNotesFieldConfig(field="Sentence (audio)", enabled=True, type="tts"),
+            "Word",
+        )
+        assert [spec.name for spec in compiled.tools] == ["ai"]
 
     def test_an_empty_source_declines_softly(self):
         # Nothing to speak means nothing to leak — the one safe fall-through.
@@ -575,23 +640,34 @@ class TestCodecSelection:
     """``strategy`` picks how the bytes are cut; ``auto`` follows the voice's format."""
 
     def test_auto_uses_the_stdlib_for_a_wav_voice(self):
-        assert isinstance(ClozeAudioTool._codec("auto", "wav"), WavCodec)
+        assert isinstance(
+            ClozeAudioTool._codec("auto", "wav", _FakeSidecar()), WavCodec
+        )
 
     def test_auto_uses_the_sidecar_for_an_mp3_voice(self):
-        assert isinstance(ClozeAudioTool._codec("auto", "mp3"), SidecarCodec)
+        assert isinstance(
+            ClozeAudioTool._codec("auto", "mp3", _FakeSidecar()), SidecarCodec
+        )
 
     def test_an_unknown_strategy_degrades_to_auto(self):
         # ADR-010: a value a newer release added must not break this one.
-        assert isinstance(ClozeAudioTool._codec("alignment", "wav"), WavCodec)
+        assert isinstance(
+            ClozeAudioTool._codec("alignment", "wav", _FakeSidecar()), WavCodec
+        )
 
-    def test_an_mp3_voice_with_the_codec_installed_produces_an_mp3(self, monkeypatch):
-        import omnia.plugins.smart_notes.engine.tools.cloze_audio as module
+    def test_the_codec_drives_the_contexts_runtime_not_a_process_wide_one(self):
+        # The sidecar is injected through the context (DIP), so a test — and a second Anki
+        # profile — never depends on the process-wide runtime manager.
+        sidecar = _FakeSidecar()
+        codec = ClozeAudioTool._codec("sidecar", "wav", sidecar)
+        assert codec._sidecar is sidecar
 
-        monkeypatch.setattr(module, "AudioSidecar", lambda: _FakeSidecar())
+    def test_an_mp3_voice_with_the_codec_installed_produces_an_mp3(self):
         voice = _FakeMp3TTS()
         outcome = _run(
             {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
             tts=voice,
+            audio=_FakeSidecar(),
             params={"source_field": "Sentence"},
         )
         assert isinstance(outcome, Produced), outcome

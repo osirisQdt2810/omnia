@@ -121,12 +121,13 @@ def tools_catalog(ctx: ToolContext) -> list[dict[str, Any]]:
     without a ``pycmd`` round-trip.
 
     Args:
-        ctx: The live tool context, so each tool can report why it is unavailable.
+        ctx: The live tool context, so each tool can report what this machine is missing.
 
     Returns:
         One dict per tool, sorted by name: ``name``, ``label``, ``description``, ``kinds``
         (sorted), ``deterministic``, ``params_schema`` (the pydantic JSON schema, or None) and
-        ``unavailable_reason`` (None when the tool can be used).
+        ``unavailable_reason`` — the tool's ADVICE, which the picker shows without disabling
+        the tool (see :meth:`~omnia.plugins.smart_notes.engine.tools.base.Tool.availability`).
     """
     catalog: list[dict[str, Any]] = []
     for name in registered_tools():
