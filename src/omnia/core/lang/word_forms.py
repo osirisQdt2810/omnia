@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from types import MappingProxyType
 
 # Inflection rules, applied to strip a suffix back towards the base form. Each entry is
@@ -44,6 +45,10 @@ _DEINFLECT: tuple[tuple[str, tuple[str, ...]], ...] = (
 #     past of "leave" and a direction; "saw" is both the past of "see" and a tool). Every base
 #     is offered, and the word itself is always kept, so an ambiguous form widens the search
 #     rather than redirecting it.
+#   * A verb whose form never changes maps to ITSELF ("cut" -> "cut"). Those entries are
+#     no-ops at runtime — ``offer`` skips a candidate already present — and are kept because the
+#     table doubles as the list of what the de-inflector knows; an absent entry reads as an
+#     oversight, a self-entry reads as a decision.
 #   * Only INFLECTED -> BASE is stored. The reverse is not needed: callers that must match a
 #     lemma against a sentence de-inflect the sentence's tokens too and compare bases, so
 #     "run" (base field) and "ran" (sentence) meet at "run".
@@ -304,6 +309,44 @@ _IRREGULAR_FORMS: dict[str, tuple[str, ...]] = {
 #: Read-only view, so the shared table cannot be mutated through a Deinflector.
 _IRREGULAR: Mapping[str, tuple[str, ...]] = MappingProxyType(_IRREGULAR_FORMS)
 
+# Forms that are ALSO ordinary headwords in their own right, so resolving one to its base names
+# a DIFFERENT word rather than another spelling of the same one: "left" is a direction as well as
+# the past of "leave", "rose" is a flower, "saw" is a tool.
+#
+# Widening is safe in one direction and destructive in the other, which is why this subset
+# exists rather than a flag on the whole table:
+#   * de-inflecting a SENTENCE's token is safe — a "leave" card should still hide the "left" in
+#     its example, and a search that also looks for "leave" costs nothing;
+#   * de-inflecting the HEADWORD is not — a "left" card would then hide every "leave" in the
+#     sentence, and the cloze tool WRITES that back to the note.
+# So the cloze tool builds a probe from :data:`UNAMBIGUOUS_IRREGULAR` while still reading tokens
+# through the full table. Word-lookup keeps the full table for both.
+_AMBIGUOUS_IRREGULARS: frozenset[str] = frozenset(
+    {
+        "left",  # direction / remaining
+        "saw",  # the tool
+        "rose",  # the flower
+        "found",  # to found
+        "lay",  # to lay something down
+        "wound",  # an injury
+        "bore",  # to bore / a bore
+        "born",  # the adjective
+        "fell",  # to fell a tree
+        "bit",  # a bit of something
+        "spat",  # a quarrel
+        "stole",  # the garment
+    }
+)
+
+#: The table minus the forms whose base is a different word (see :data:`_AMBIGUOUS_IRREGULARS`).
+UNAMBIGUOUS_IRREGULAR: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        form: bases
+        for form, bases in _IRREGULAR_FORMS.items()
+        if form not in _AMBIGUOUS_IRREGULARS
+    }
+)
+
 # A stem shorter than this is noise ("as" -> "a"). Two is enough for real bases like "go".
 _MIN_STEM = 2
 # Only de-inflect words long enough to actually carry a suffix; "as"/"is" must be left alone.
@@ -322,13 +365,23 @@ class Deinflector:
     Attributes:
         rules: ``(suffix, replacements)`` pairs, most specific first; the first matching
             suffix wins.
+        irregular: Exact ``inflected -> bases`` lookups no suffix rule can reach, consulted
+            before the length guard. Pass :data:`UNAMBIGUOUS_IRREGULAR` to drop the forms
+            whose base is a different word — what a caller that REWRITES text wants.
         min_stem: Shortest stem worth offering as a candidate.
         min_inflected: Shortest word worth de-inflecting at all.
         max_variants: Cap on the returned candidates, so a query stays small.
     """
 
     rules: tuple[tuple[str, tuple[str, ...]], ...] = _DEINFLECT
-    irregular: Mapping[str, tuple[str, ...]] = _IRREGULAR
+    # default_factory, NOT a plain default: dataclasses refuses a default whose type is
+    # unhashable, and `mappingproxy` only became hashable in 3.12 — so a bare
+    # `= _IRREGULAR` raises ValueError at CLASS-CREATION time on Python 3.11, which means the
+    # module cannot even be imported and the whole add-on fails to load. Verified on 3.11.16.
+    # The CI matrix runs 3.10 and 3.13, so 3.11 and 3.12 were the untested middle.
+    irregular: Mapping[str, tuple[str, ...]] = dataclass_field(
+        default_factory=lambda: _IRREGULAR
+    )
     min_stem: int = _MIN_STEM
     min_inflected: int = _MIN_INFLECTED
     max_variants: int = _MAX_VARIANTS

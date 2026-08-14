@@ -578,3 +578,66 @@ class TestIrregularFormsMeetTheFunctionWordFilter:
             params={"sentence_field": "Sentence"},
         )
         assert text == "The {{c1::bees}} can be loud."
+
+
+class TestAnAmbiguousIrregularNeverHidesADifferentWord:
+    """The headword's probe drops irregulars whose base is a DIFFERENT word.
+
+    "left" is a direction as well as the past of "leave". Resolving it on the headword side
+    made a "left" card hide every "leave" in its sentence — and this tool writes back to the
+    note, so it is destructive rather than merely noisy. The sentence's tokens keep the full
+    table, because that direction is safe and is the one the irregular work was added for.
+    """
+
+    @pytest.mark.parametrize(
+        ("word", "sentence", "expected"),
+        [
+            (
+                "left",
+                "Please leave your coat on the left.",
+                "Please leave your coat on the {{c1::left}}.",
+            ),
+            (
+                "rose",
+                "The rose bloomed as prices rise.",
+                "The {{c1::rose}} bloomed as prices rise.",
+            ),
+            (
+                "saw",
+                "I saw it and want to see it.",
+                "I {{c1::saw}} it and want to see it.",
+            ),
+            (
+                "found",
+                "They found what they came to find.",
+                "They {{c1::found}} what they came to find.",
+            ),
+        ],
+    )
+    def test_the_headword_hides_only_itself(self, word, sentence, expected):
+        assert (
+            _clozed(
+                {"Word": word, "Sentence": sentence},
+                params={"sentence_field": "Sentence"},
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        ("word", "sentence", "expected"),
+        [
+            ("leave", "He left yesterday.", "He {{c1::left}} yesterday."),
+            ("see", "I saw it.", "I {{c1::saw}} it."),
+            ("find", "They found it.", "They {{c1::found}} it."),
+        ],
+    )
+    def test_the_safe_direction_is_untouched(self, word, sentence, expected):
+        # A "leave" card must still hide the "left" in its example — that is the whole point of
+        # the irregular table, and only the reverse direction is restricted.
+        assert (
+            _clozed(
+                {"Word": word, "Sentence": sentence},
+                params={"sentence_field": "Sentence"},
+            )
+            == expected
+        )
