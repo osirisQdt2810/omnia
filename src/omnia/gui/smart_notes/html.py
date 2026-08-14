@@ -258,6 +258,7 @@ def resolve_base_field(
 
 def field_configs_from_payload(
     rows: list[dict[str, object]],
+    stored: list[SmartNotesFieldConfig] | None = None,
 ) -> list[SmartNotesFieldConfig]:
     """Build :class:`SmartNotesFieldConfig`s from the JS-posted row dicts (one per non-base field).
 
@@ -266,12 +267,21 @@ def field_configs_from_payload(
     ``depends_on``). A row with no ``field`` name is skipped; an invalid ``type`` falls back to
     ``"text"`` so a malformed payload can't raise during validation.
 
+    ``stored`` is the note type's CURRENTLY PERSISTED rows. The payload can only carry what the
+    table renders, so rebuilding a row from it alone would delete the state it cannot render —
+    today the ``tools`` chain (no tools column exists yet), which a newer release or another
+    device may already have configured. Passing the stored rows carries that state across a
+    save; omitting them (the graph/preview callers, which never persist) simply yields the
+    default empty chain.
+
     Args:
         rows: The row dicts posted from the page.
+        stored: The note type's persisted rows, to carry unrendered state forward from.
 
     Returns:
         Validated field configs, ready to assemble into a note-type config.
     """
+    saved = {row.field: row for row in stored or []}
     configs: list[SmartNotesFieldConfig] = []
     for row in rows:
         name = str(row.get("field", "")).strip()
@@ -280,6 +290,7 @@ def field_configs_from_payload(
         field_type = str(row.get("type", "text"))
         if field_type not in _FIELD_TYPES:
             field_type = "text"
+        previous = saved.get(name)
         configs.append(
             SmartNotesFieldConfig(
                 field=name,
@@ -293,6 +304,11 @@ def field_configs_from_payload(
                 language=str(row.get("language", "")),
                 overwrite=bool(row.get("overwrite", False)),
                 depends_on=_deps_from_payload(row.get("depends_on", [])),
+                # The page has no tools column yet, so the payload never carries a chain: keep
+                # the stored one rather than silently dropping it. When the picker lands, this
+                # is the sync point that parses the posted chain (tolerantly, as
+                # ``_deps_from_payload`` does) and falls back to this same stored value.
+                tools=list(previous.tools) if previous is not None else [],
             )
         )
     return configs
@@ -337,16 +353,22 @@ def note_type_config_from_payload(
     rows: list[dict[str, object]],
     decks: list[int] | None = None,
     positions: dict[str, object] | None = None,
+    stored: SmartNotesNoteTypeConfig | None = None,
 ) -> SmartNotesNoteTypeConfig:
     """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, rows, decks.
 
     ``positions`` is the page's pinned-node map (``{field: [x, y]}``); malformed entries (a
     value that is not a two-element list/tuple) are dropped so a bad payload can't raise.
+    ``stored`` is the note type's persisted config, whose rows carry forward the per-row state
+    the table cannot render (see :func:`field_configs_from_payload`) — the SAVE path passes it;
+    the graph/preview paths, which never persist, do not.
     """
     return SmartNotesNoteTypeConfig(
         note_type=note_type,
         base_field=base_field,
-        fields=field_configs_from_payload(rows),
+        fields=field_configs_from_payload(
+            rows, stored.fields if stored is not None else None
+        ),
         decks=[int(d) for d in (decks or [])],
         node_positions={
             str(name): [float(value[0]), float(value[1])]

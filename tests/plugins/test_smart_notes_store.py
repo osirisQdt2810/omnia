@@ -11,11 +11,14 @@ about must load here AND survive being written straight back.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from omnia.plugins.smart_notes.config import (
     FieldDep,
+    FieldToolConfig,
     SmartNotesFieldConfig,
     SmartNotesFieldRule,
     SmartNotesNoteTypeConfig,
@@ -245,6 +248,71 @@ class TestSyncedBlobForwardCompat:
         edge = FieldGraph.from_config(config).edges[0]
         assert edge.kind == "conditional"
         assert config.fields[0].depends_on[0].kind != "hard"  # never blocks generation
+
+    def test_a_legacy_config_still_writes_no_tools_key_at_all(self):
+        # The one key THIS release adds must not reach the blob until a field really has a
+        # chain: a device on a pre-ADR-010 release validates the synced blob with
+        # extra="forbid" and has no try/except around load(), so an unknown key there is not a
+        # lost setting — it is a crash on every note-add hook. A legacy config must therefore
+        # serialize exactly as a pre-tools build serialized it.
+        fake = _FakeCol()
+        fake.set_config(
+            SmartNotesStore.KEY,
+            {
+                "note_types": [
+                    {
+                        "note_type": "Basic",
+                        "base_field": "Word",
+                        "fields": [{"field": "Def", "enabled": True, "type": "text"}],
+                    }
+                ]
+            },
+        )
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        store.save(store.load())
+
+        saved = fake.get_config(SmartNotesStore.KEY)
+        assert "tools" not in json.dumps(saved)  # nowhere in the tree, at any depth
+        # …and the write is stable: loading and saving again changes nothing.
+        store.save(store.load())
+        assert fake.get_config(SmartNotesStore.KEY) == saved
+
+    def test_a_configured_tool_chain_is_persisted(self):
+        # The flip side: once the user configures a chain, the key MUST be written (and load
+        # back) — the omission above is about an empty chain carrying no information.
+        fake = _FakeCol()
+        store = SmartNotesStore(col_provider=lambda: fake)
+        settings = SmartNotesSettings(
+            note_types=[
+                SmartNotesNoteTypeConfig(
+                    note_type="Basic",
+                    base_field="Word",
+                    fields=[
+                        SmartNotesFieldConfig(
+                            field="Def",
+                            enabled=True,
+                            type="text",
+                            tools=[
+                                FieldToolConfig(
+                                    tool="cloze", params={"sentence_field": "Sentence"}
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+
+        store.save(settings)
+
+        saved_field = fake.get_config(SmartNotesStore.KEY)["note_types"][0]["fields"][0]
+        assert saved_field["tools"] == [
+            {"tool": "cloze", "params": {"sentence_field": "Sentence"}}
+        ]
+        reloaded = store.load().note_type_config("Basic")
+        assert reloaded is not None
+        assert [t.tool for t in reloaded.fields[0].tools] == ["cloze"]
 
     def test_unpersisted_rule_model_still_rejects_unknown_keys(self):
         # SmartNotesFieldRule is compiled in memory from GUI/engine input and never stored, so

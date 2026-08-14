@@ -66,6 +66,12 @@ from omnia.gui.smart_notes.dialogs.controllers.graph import (  # noqa: E402
 from omnia.gui.smart_notes.dialogs.controllers.native_runtime import (  # noqa: E402
     NativeRuntimeController,
 )
+from omnia.plugins.smart_notes.config import (  # noqa: E402
+    FieldToolConfig,
+    SmartNotesFieldConfig,
+    SmartNotesNoteTypeConfig,
+    SmartNotesSettings,
+)
 
 
 def _fake_ctx(**overrides: Any) -> types.SimpleNamespace:
@@ -435,19 +441,12 @@ class TestImprovePinnedThreadRouting:
 class TestSaveCycleGuard:
     """The save-path persistence backstop (W2): a cyclic config is refused, not persisted."""
 
-    def _save(self, rows):
-        saved: list = []
+    def _save(self, rows, stored: SmartNotesSettings | None = None):
+        """Run ``on_save`` over a fake store holding ``stored``; return (result, saved)."""
+        saved: list[SmartNotesSettings] = []
+        settings = SmartNotesSettings() if stored is None else stored
         store = types.SimpleNamespace(
-            load=lambda: types.SimpleNamespace(
-                note_types=[],
-                generate_at_review=False,
-                regenerate_when_batching=True,
-                allow_empty_fields=False,
-                discard_unfilled_clips=True,
-                auto_generate_integrations={},
-                copy=lambda update: saved.append(update),
-            ),
-            save=lambda settings: saved.append(settings),
+            load=lambda: settings, save=lambda updated: saved.append(updated)
         )
         ctrl = ConfigController(_fake_ctx(store=store), reject=lambda: None)
         result = ctrl.on_save(
@@ -471,6 +470,38 @@ class TestSaveCycleGuard:
         rows[0]["enabled"] = True
         result, _ = self._save(rows)
         assert result == {"ok": True}
+
+    def test_a_stored_tool_chain_survives_a_save_from_this_page(self):
+        # The page has no tools column, so its payload never mentions a chain — saving must
+        # NOT be how a chain configured elsewhere gets deleted.
+        stored = SmartNotesSettings(
+            note_types=[
+                SmartNotesNoteTypeConfig(
+                    note_type="Vocab",
+                    base_field="Word",
+                    fields=[
+                        SmartNotesFieldConfig(
+                            field="Definition",
+                            enabled=True,
+                            prompt="Define {{Word}}",
+                            tools=[
+                                FieldToolConfig(tool="cloze"),
+                                FieldToolConfig(tool="ai"),
+                            ],
+                        )
+                    ],
+                )
+            ]
+        )
+        rows = [_row("Definition", "Define {{Word}}")]
+        rows[0]["enabled"] = True
+
+        result, saved = self._save(rows, stored)
+
+        assert result == {"ok": True}
+        persisted = saved[0].note_type_config("Vocab")
+        assert persisted is not None
+        assert [t.tool for t in persisted.fields[0].tools] == ["cloze", "ai"]
 
 
 class TestClassifyDepsThreadRouting:

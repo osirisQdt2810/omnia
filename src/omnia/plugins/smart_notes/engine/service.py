@@ -1,7 +1,9 @@
 """The provider-backed generation service that runs smart-notes field rules.
 
-No Anki imports. :meth:`GenerationService.generate` runs one rule by dispatching to the
-matching :class:`~omnia.plugins.smart_notes.engine.generators.Generator` strategy;
+No Anki imports. :meth:`GenerationService.generate` runs one rule by handing it to the
+:class:`~omnia.plugins.smart_notes.engine.tools.pipeline.GenerationPipeline`, which tries the
+rule's ordered tool chain until one produces (a field with no configured chain compiles to the
+single ``"ai"`` tool — the provider-backed path — so behaviour is unchanged);
 :meth:`GenerationService.generate_note` compiles a
 :class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` into rules
 (:func:`~omnia.plugins.smart_notes.engine.rules.compile_note_type_rules`) and runs them in
@@ -16,20 +18,17 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from omnia.core.logging import get_logger
-from omnia.core.providers.errors import ProviderError
-from omnia.plugins.smart_notes.engine.generators import (
-    GenerationResult,
-    Generator,
-    ImageGenerator,
-    LanguageDetector,
-    TextGenerator,
-    TTSGenerator,
-)
+from omnia.plugins.smart_notes.engine.generators import LanguageDetector
 from omnia.plugins.smart_notes.engine.ordering import order_rules
 from omnia.plugins.smart_notes.engine.rules import (
     compile_note_type_rules,
     rule_prerequisites,
     should_skip_rule,
+)
+from omnia.plugins.smart_notes.engine.tools import (
+    GenerationPipeline,
+    ToolChainError,
+    ToolContext,
 )
 
 if TYPE_CHECKING:
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
         SmartNotesFieldRule,
         SmartNotesNoteTypeConfig,
     )
+    from omnia.plugins.smart_notes.engine.generators import GenerationResult
 
 logger = get_logger("smart_notes")
 
@@ -57,16 +57,25 @@ class BlockedField:
 
 @dataclass(frozen=True)
 class FailedField:
-    """A field whose generation raised (e.g. a provider/network error) and was isolated.
+    """A field whose whole tool chain ran without producing anything, and was isolated.
 
     Recording it (instead of letting the exception abort the whole note) lets sibling fields
-    that already succeeded still be written; ``error`` is the exception's message for surfacing a
+    that already succeeded still be written; ``error`` is the chain's attempt summary — for the
+    legacy single-``ai`` chain, the provider exception's own message — for surfacing a
     count/diagnostic to the user. Like a blocked field, it produces no value, so its own hard
     dependents block transitively.
+
+    ``kind`` splits the two ways a chain ends empty-handed:
+
+    * ``"error"`` — at least one tool BROKE (provider/network failure, bad params). This is the
+      only kind a pre-tools config can produce, since the ``ai`` tool either produces or raises.
+    * ``"unproductive"`` — every tool simply declined (``not_applicable``) or came up empty:
+      nothing is wrong, there was just nothing to make here.
     """
 
     field: str
     error: str
+    kind: str = "error"
 
 
 def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
@@ -90,30 +99,33 @@ class GenerationService:
     dependency order, chaining each text result into the field map so a downstream rule sees
     the freshly generated value. Per-rule ``model``/``voice`` overrides layer on top of the
     central provider config.
+
+    Generation itself is delegated to the
+    :class:`~omnia.plugins.smart_notes.engine.tools.pipeline.GenerationPipeline`: the service
+    owns note-level policy (ordering, blocking, chaining, skip rules) and the pipeline owns
+    "how is this ONE field made". Adding a tool therefore never touches this class.
     """
 
     def __init__(
         self, providers: ProviderHub, *, detect_tts_language: bool = True
     ) -> None:
-        self._providers = providers
         # When a TTS rule pins no explicit voice, ask the LLM for the spoken text's language
         # so the voice matches it (a Vietnamese word shouldn't be read by an English voice).
-        self._detect_tts_language = detect_tts_language
-        self._generators: dict[str, Generator] = {
-            "text": TextGenerator(providers),
-            "image": ImageGenerator(providers),
-            "tts": TTSGenerator(
-                providers, LanguageDetector(enabled=detect_tts_language)
-            ),
-        }
+        self._ctx = ToolContext(
+            providers=providers,
+            detector=LanguageDetector(enabled=detect_tts_language),
+            logger=logger,
+        )
+        self._pipeline = GenerationPipeline(self._ctx)
 
     def generate(
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> GenerationResult:
         """Produce the content for ``rule`` from a note's ``fields``.
 
-        Dispatches to the :class:`~omnia.plugins.smart_notes.engine.generators.Generator`
-        strategy for ``rule.kind``. A per-rule ``provider``/``model`` selects a provider
+        Runs the rule's tool chain in order and returns the first result. A field with no
+        configured chain runs the single ``"ai"`` tool, i.e. the per-kind generator this method
+        used to dispatch to directly: a per-rule ``provider``/``model`` selects a provider
         INSTANCE configured with that model (the model is fixed at construction, never threaded
         per call); for TTS the spoken text is the interpolated prompt (or the interpolated
         source field when no prompt is given) and ``voice`` overrides the configured voice.
@@ -122,12 +134,18 @@ class GenerationService:
         the card.
 
         Raises:
-            ProviderError: On bad config, an unknown kind, or a provider/network failure.
+            ToolChainError: When every tool in the chain declined, came up empty, or broke. It
+                is a :class:`~omnia.core.providers.errors.ProviderError`, and its message is
+                the chain's attempt summary — for the legacy single-``ai`` chain, the
+                provider's own error message.
         """
-        generator = self._generators.get(rule.kind)
-        if generator is None:
-            raise ProviderError(f"Unknown generation kind: {rule.kind!r}")
-        return generator.generate(rule, fields)
+        outcome = self._pipeline.run(rule, fields)
+        if outcome.produced is None:
+            chain_error = ToolChainError(outcome.attempts)
+            # `from` the tool's own exception: a caller that inspects the cause still sees
+            # a provider's status_code, and the traceback keeps the real origin.
+            raise chain_error from chain_error.cause
+        return outcome.produced
 
     def generate_note(
         self,
@@ -167,17 +185,20 @@ class GenerationService:
             force_overwrite: Regenerate every field even if its target is already non-empty
                 (the batch "regenerate when batching" path), ignoring per-field ``overwrite``.
 
-        A single field whose generation raises (e.g. a TTS field with no Auto-detect voice, or a
-        provider/network error) is isolated: the exception is logged and recorded as a
-        :class:`FailedField`, and generation continues with the remaining fields, so one
-        misconfigured field never discards siblings that already succeeded. Like a blocked field,
-        it writes no value, so its own hard dependents block transitively.
+        A single field whose tool chain produces nothing (a TTS field with no Auto-detect voice,
+        a provider/network error, or — with a deterministic chain — every tool declining) is
+        isolated: it is recorded as a :class:`FailedField` (``kind`` says which of the two it
+        was) and generation continues with the remaining fields, so one misconfigured field
+        never discards siblings that already succeeded. Like a blocked field, it writes no
+        value, so its own hard dependents block transitively. An error in a tool that a LATER
+        tool in the same chain recovers from is absorbed: the field succeeded, which is the
+        truth callers count.
 
         Returns:
             A tuple ``(results, blocked, failed)`` where ``results`` is the ``(rule, result)``
             pairs for the fields that actually generated (in run order), ``blocked`` lists the
-            fields skipped for a missing hard prerequisite, and ``failed`` lists the fields whose
-            generation raised.
+            fields skipped for a missing hard prerequisite, and ``failed`` lists the fields
+            whose tool chain produced nothing.
 
         Raises:
             SmartNotesCycleError: If the fields reference each other in a cycle. (A single field's
@@ -202,16 +223,21 @@ class GenerationService:
                 continue  # writes no value → hard dependents block transitively
             if should_skip_rule(rule, working, allow_empty_fields=allow_empty_fields):
                 continue
-            try:
-                result = self.generate(rule, working)
-            except Exception as exc:  # one field's error must not abort the note
-                logger.exception(
-                    "smart_notes: field %r failed to generate", rule.target_field
+            outcome = self._pipeline.run(rule, working)
+            if outcome.produced is None:
+                # The chain is exhausted: one field's failure must not abort the note. (The
+                # pipeline already logged any tool that raised, with its traceback.)
+                failed.append(
+                    FailedField(
+                        rule.target_field,
+                        outcome.summary,
+                        "error" if outcome.errored else "unproductive",
+                    )
                 )
-                failed.append(FailedField(rule.target_field, str(exc)))
                 # Not added to results/produced/working, so its hard dependents block
                 # transitively (same as a blocked field).
                 continue
+            result = outcome.produced
             results.append((rule, result))
             produced.add(rule.target_field.strip().lower())
             # Only text feeds downstream prompts; media (image/tts) becomes an embed ref a

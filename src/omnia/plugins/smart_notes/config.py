@@ -15,13 +15,18 @@ stores, stays a :class:`~omnia.core.config.base.StrictModel`.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import Field, validator
 
 from omnia.core.config.base import PersistedModel, StrictModel
 
 _GENERATION_TYPES = {"text", "image", "tts"}
+
+# The tool a field with no explicit chain runs: the provider-backed path smart_notes had
+# before tool chains existed. Named here rather than on the tool class so the config layer
+# never has to import the engine (the dependency runs engine → config).
+DEFAULT_TOOL_NAME = "ai"
 
 
 class FieldDep(PersistedModel):
@@ -52,6 +57,38 @@ class FieldDep(PersistedModel):
     field: str
     kind: str = "hard"
     auto: bool = False
+
+
+class FieldToolConfig(PersistedModel):
+    """One entry of a field's ordered tool chain, as persisted on the note-type row.
+
+    ``tool`` is a registered tool name (``"ai"``, ``"cloze"``, ``"user:<slug>"``); ``params``
+    are that tool's per-field options, validated against the tool's own params model when it
+    runs. A name this device does not have (a user tool authored on another machine) is kept
+    verbatim and simply skipped at run time, so the chain degrades instead of breaking.
+    """
+
+    tool: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompiledToolSpec(StrictModel):
+    """One entry of the tool chain the ENGINE runs (compiled from config, never persisted)."""
+
+    name: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+def default_tool_chain() -> tuple[CompiledToolSpec, ...]:
+    """Return the legacy chain: the single ``ai`` tool, with no params.
+
+    The one place that knows what "no tools configured" means. Used both as
+    :attr:`SmartNotesFieldRule.tools`' default (so a rule built directly — the preview and
+    custom-prompt palettes — behaves exactly as it did before tools existed) and by
+    :func:`~omnia.plugins.smart_notes.engine.rules.compile_field_rule` for an empty
+    :attr:`SmartNotesFieldConfig.tools` list.
+    """
+    return (CompiledToolSpec(name=DEFAULT_TOOL_NAME),)
 
 
 class SmartNotesFieldRule(StrictModel):
@@ -93,6 +130,10 @@ class SmartNotesFieldRule(StrictModel):
     # Explicit dependency edges threaded from the field config (union with derived {{refs}});
     # ordering + blocking read these alongside the derived edges.
     depends_on: list[FieldDep] = Field(default_factory=list)
+    # The ordered tool chain the pipeline runs for this field: the first tool that produces a
+    # result wins. Defaults to the legacy single-``ai`` chain, so a rule constructed directly
+    # (preview / custom-prompt / auto-smart) generates exactly as it did before tools existed.
+    tools: tuple[CompiledToolSpec, ...] = Field(default_factory=default_tool_chain)
 
     @validator("kind")
     def _validate_kind(cls, value: str) -> str:
@@ -135,6 +176,42 @@ class SmartNotesFieldConfig(PersistedModel):
     # "hard" dep both orders and blocks, a "soft" dep orders only. An explicit entry overrides
     # the kind of a derived edge for the same prerequisite.
     depends_on: list[FieldDep] = Field(default_factory=list)
+    # Ordered tool chain for this field, tried until one produces a result. EMPTY (the
+    # default, and what every blob written before tool chains existed carries) means the
+    # legacy single-``ai`` chain — see :func:`default_tool_chain`. Never SERIALIZED while it is
+    # empty — see :meth:`dict`.
+    tools: list[FieldToolConfig] = Field(default_factory=list)
+
+    def dict(self, **kwargs: Any) -> dict[str, Any]:
+        """Serialize the row, OMITTING ``tools`` while the chain is empty.
+
+        An empty chain carries no information — it IS the legacy default — so writing the key
+        would only announce this release's schema to the synced collection. That matters
+        because the blob syncs to devices on OTHER releases: one on a build from before
+        :class:`~omnia.core.config.base.PersistedModel` (ADR-010) still validates with
+        ``extra = "forbid"`` and has no ``try`` around
+        :meth:`~omnia.plugins.smart_notes.integration.store.SmartNotesStore.load`, so a single
+        unknown key there is not a lost setting but a crash on every note-add hook. Omitting it
+        keeps the persisted blob byte-identical to a pre-tools one for every legacy config,
+        and a field the user actually configures a chain on is the first thing that ever
+        writes the key.
+
+        Pruning lives HERE rather than in the store because the model owns the meaning of "no
+        chain": the store persists ``settings.dict()`` wholesale and would have to walk the
+        note-type tree looking for a key two levels down, and every other caller that
+        serializes a settings tree would still leak it. Pydantic v1 serializes a NESTED model
+        through that model's own ``dict()``, so this one override covers the whole tree.
+
+        Args:
+            **kwargs: Passed through to :meth:`pydantic.BaseModel.dict` unchanged.
+
+        Returns:
+            The row's serialized form, without a ``tools`` key when the chain is empty.
+        """
+        data: dict[str, Any] = super().dict(**kwargs)
+        if not data.get("tools"):
+            data.pop("tools", None)
+        return data
 
     def supports_generation(self) -> bool:
         """Whether THIS version implements the row's ``type`` (and may therefore generate it).

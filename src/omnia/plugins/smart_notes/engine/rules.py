@@ -22,6 +22,7 @@ from omnia.plugins.smart_notes.engine.interpolation import (
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
+        CompiledToolSpec,
         FieldDep,
         SmartNotesFieldConfig,
         SmartNotesFieldRule,
@@ -49,25 +50,32 @@ def rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
 def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
     """Return ``(prerequisite_field, effective_kind)`` pairs for ``rule``.
 
-    The SINGLE source of truth for what a rule depends on. Derived prerequisites (the prompt
-    ``{{refs}}`` / ``source_field`` from :func:`rule_source_fields`) default to kind ``"hard"``;
-    they are UNIONed with the rule's explicit ``depends_on`` entries, and an explicit entry for
-    the same field OVERRIDES the derived kind (e.g. recolours a derived hard edge to soft).
-    Field names keep their original case; de-duplication is case-insensitive (first occurrence
-    wins for the display name). Ordering uses every pair (both kinds order); blocking filters to
-    ``"hard"``; the graph builder adds its ``derived`` flag on top.
+    The SINGLE source of truth for what a rule depends on. Derived prerequisites default to
+    kind ``"hard"`` and come from two places: the prompt ``{{refs}}`` / ``source_field``
+    (:func:`rule_source_fields`) and the fields a TOOL param names (a ``cloze`` tool's
+    ``sentence_field``, say — :func:`~omnia.plugins.smart_notes.engine.tools.registry.tool_referenced_fields`).
+    Deriving tool edges HERE is what makes ordering, blocking and the graph UI inherit them for
+    free. They are UNIONed with the rule's explicit ``depends_on`` entries, and an explicit
+    entry for the same field OVERRIDES the derived kind (e.g. recolours a derived hard edge to
+    soft). Field names keep their original case; de-duplication is case-insensitive (first
+    occurrence wins for the display name). Ordering uses every pair (both kinds order);
+    blocking filters to ``"hard"``; the graph builder adds its ``derived`` flag on top.
 
     Args:
         rule: The compiled generation rule.
 
     Returns:
-        ``(field, kind)`` pairs in stable order: derived prerequisites first (in source order),
-        then any explicit-only prerequisites, each with its effective kind.
+        ``(field, kind)`` pairs in stable order: derived prerequisites first (prompt/source
+        refs, then tool-param refs), then any explicit-only prerequisites, each with its
+        effective kind.
     """
+    # Imported lazily: the tools package imports the generators, which import this module.
+    from omnia.plugins.smart_notes.engine.tools.registry import tool_referenced_fields
+
     override = {dep.field.strip().lower(): dep.kind for dep in rule.depends_on}
     prerequisites: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for name in rule_source_fields(rule):
+    for name in [*rule_source_fields(rule), *tool_referenced_fields(rule.tools)]:
         lower = name.strip().lower()
         if not lower or lower in seen:
             continue
@@ -191,6 +199,25 @@ def should_skip_rule(
     return False
 
 
+def _compile_tools(
+    field_config: SmartNotesFieldConfig,
+) -> tuple[CompiledToolSpec, ...]:
+    """Compile a field's persisted tool chain into the specs the pipeline runs.
+
+    An EMPTY list — what every config written before tool chains existed carries — compiles to
+    the legacy single-``ai`` chain, so those fields keep generating exactly as they did. The
+    params dict is copied so the compiled rule never aliases the persisted config.
+    """
+    from omnia.plugins.smart_notes.config import CompiledToolSpec, default_tool_chain
+
+    if not field_config.tools:
+        return default_tool_chain()
+    return tuple(
+        CompiledToolSpec(name=entry.tool, params=dict(entry.params))
+        for entry in field_config.tools
+    )
+
+
 def compile_field_rule(
     field_config: SmartNotesFieldConfig, base_field: str
 ) -> SmartNotesFieldRule:
@@ -211,6 +238,9 @@ def compile_field_rule(
     Such a row is never generated —
     :meth:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig.generatable_fields`
     excludes it.
+
+    The row's ``tools`` chain is compiled here too (see :func:`_compile_tools`), so an empty
+    chain becomes the legacy single-``ai`` chain.
 
     Args:
         field_config: The persisted per-field config row.
@@ -234,6 +264,7 @@ def compile_field_rule(
         language=field_config.language,
         overwrite=field_config.overwrite,
         depends_on=list(field_config.depends_on),
+        tools=_compile_tools(field_config),
     )
 
 
