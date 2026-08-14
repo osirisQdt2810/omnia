@@ -35,6 +35,12 @@ if TYPE_CHECKING:
 # A ```python fenced block, if the model wrapped its answer in one.
 _FENCE_RE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
 
+#: The model's ONLY permitted non-code reply: the marker, then why the request cannot be built
+#: within the tool contract. Without an escape hatch the output rules force a module out of it
+#: whatever it was asked for — and a plausible module that does the wrong thing is far worse
+#: than a refusal, because it reads as a working answer and fails silently on real notes.
+CANNOT_MARKER = "CANNOT:"
+
 # The worked example the system prompt carries. It is the user's own motivating case ("from the
 # audio filename, extract the extension") written exactly as a generated tool must look, which
 # is far more reliable than describing the shape in prose — and it doubles as the spec the
@@ -126,7 +132,15 @@ def user_tool_system_prompt() -> str:
         "The file defines a deterministic 'tool' that fills a single note field by "
         "TRANSFORMING other fields of the same note. It never calls an AI model.\n\n"
         "Output rules (all mandatory):\n"
-        "1. Output ONLY the Python module. No prose, no explanation, no code fences.\n"
+        "1. Output ONLY the Python module. No prose, no explanation, no code fences — UNLESS "
+        "rule 0 applies.\n"
+        f"0. If the request CANNOT be satisfied within these rules, reply with one line: "
+        f"'{CANNOT_MARKER} <what it would need, in plain language>' and nothing else. Do not "
+        "approximate. A tool that renames a filename when the user asked to convert the file "
+        "is worse than no tool: it looks correct, saves clean, and quietly writes wrong values "
+        "to real notes. Reach for this whenever the request needs to read or write a FILE, run "
+        "an external program, use the network, decode or transcode audio, image or video, or "
+        "reach the Anki collection — none of which a tool may do.\n"
         "2. Define EXACTLY ONE Tool subclass, decorated @register_tool with the exact name "
         "you are given, and set the same string as its `name` ClassVar.\n"
         "3. Declare the ClassVars: name, label (2-3 words), description (one sentence), "
@@ -143,9 +157,13 @@ def user_tool_system_prompt() -> str:
         "6. NEVER call an LLM/TTS provider, read or write files, open a network connection, "
         "or touch the Anki collection. `ctx` is available but a deterministic tool ignores it. "
         f"You may ONLY import from: {allowed}.\n"
-        "7. Pure standard-library string work. Keep it short, readable and commented where the "
-        "logic is not obvious — a human reads this file before it is allowed to run.\n\n"
-        "This is a complete, correct example of the required shape:\n\n"
+        "7. Pure standard-library string work on TEXT the note already holds. A tool cannot "
+        "make a new media file, so 'convert/extract/resize/transcode' requests are rule 0 "
+        "cases, not string-rewriting cases.\n"
+        "8. Keep it short, readable and commented where the logic is not obvious — a human "
+        "reads this file before it is allowed to run.\n\n"
+        "The example below shows the required SHAPE only. Do not let its subject matter steer "
+        "your answer: solve the request you were actually given.\n\n"
         f"{_EXAMPLE}"
     )
 
@@ -193,8 +211,18 @@ def parse_user_tool_reply(raw: str, slug: str) -> str:
         ProviderError: When the reply is empty or does not register the expected tool — a
             failure worth showing the user, since the dialog cannot review what it did not get.
     """
-    match = _FENCE_RE.search(raw or "")
-    code = (match.group(1) if match else (raw or "")).strip()
+    text = (raw or "").strip()
+    if text.startswith(CANNOT_MARKER):
+        reason = (
+            text[len(CANNOT_MARKER) :].strip() or "it needs something a tool cannot do"
+        )
+        raise ProviderError(
+            f"This cannot be built as a tool: {reason} A tool transforms text the note "
+            "already holds — it cannot read or write files, run programs, use the network, or "
+            "touch the collection."
+        )
+    match = _FENCE_RE.search(text)
+    code = (match.group(1) if match else text).strip()
     if not code:
         raise ProviderError("the model returned no code")
     if user_tool_name(slug) not in code:

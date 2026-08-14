@@ -336,6 +336,23 @@ class TestToolsPickerPage:
         ):
             assert owned_by_the_user not in lock_state
 
+    def test_preview_is_not_blocked_by_the_lock(self):
+        """A dead button is worse than a disabled one.
+
+        `previewRow` returned early on `sn-row-locked`, which was survivable only while the
+        cell was ALSO blurred by `sn-lockable` — the button plainly looked frozen. Narrowing
+        the lock to Type and Prompt freed the cell, and the same early return then produced a
+        fully-lit button that did nothing at all on click: no request, no message, no error.
+
+        Preview only READS the row and generates a throwaway sample, so the lock — which exists
+        to stop auto-smart overwriting a hand-written prompt — must not gate it.
+        """
+        # Wide enough to reach past this function's (long) explanatory comment.
+        preview = _strip_comments(_js(self._html(), "function previewRow(", 1400))
+
+        assert "sn-row-locked" not in preview
+        assert 'send("preview"' in preview
+
     def test_the_lock_does_not_freeze_the_tools_cell_by_css_either(self):
         # The mechanism that ACTUALLY froze the cell, and which a grep of `applyLockState`
         # cannot see: the lock works through the `sn-lockable` class (`pointer-events: none`
