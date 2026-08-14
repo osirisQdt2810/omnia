@@ -1,11 +1,12 @@
 """Tests for the note-maintenance dialogs' non-Qt parts (real Qt isn't available headless).
 
 Both modules bind their ``aqt.qt`` symbols at module top, so the stub below supplies the names
-they import — which also makes importing them a smoke test: these two files are the only ones
-in the package no other test can load. What is actually asserted is the pieces with logic in
+they import — which also makes importing them a smoke test: these files are the only ones in
+the package no other test can load. What is actually asserted is the pieces with logic in
 them: the diff palette, which turns ``diff.py``'s semantic ``<del>``/``<ins>`` marks into the
-inline styles Qt's rich text engine understands, and the settings panel's save, which decides
-what survives in the stored config — including the tasks and options this version cannot show.
+inline styles Qt's rich text engine understands, and the settings panel — which note types and
+fields it offers (read from a fake collection), and what its save keeps, including the note
+types, tasks, options and shapes this version cannot show.
 """
 
 from __future__ import annotations
@@ -93,9 +94,12 @@ from omnia.gui.note_maintenance.preview_dialog import (  # noqa: E402
     _DiffPalette,
     _PreviewTree,
 )
-from omnia.plugins.note_maintenance.base import MaintenanceTask  # noqa: E402
+from omnia.plugins.note_maintenance.field_choices import FieldChoices  # noqa: E402
 from omnia.plugins.note_maintenance.registry import build_tasks  # noqa: E402
-from omnia.plugins.note_maintenance.settings_merge import TaskOptions  # noqa: E402
+from omnia.plugins.note_maintenance.settings_merge import (  # noqa: E402
+    TaskOptions,
+    TaskSectionMerge,
+)
 
 _PLUGIN_ID = "note_maintenance"
 
@@ -186,10 +190,14 @@ class TestPreviewTreeRelayout:
         assert timers == []
 
 
-class _FakeTaskItem:
-    """The task list's row reduced to what the save reads: its tick."""
+class _FakeCheckItem:
+    """A list row reduced to what the save reads: its tick."""
 
     def __init__(self, checked: bool) -> None:
+        self._checked = checked
+
+    def setChecked(self, checked: bool) -> None:
+        """Stand in for the user clicking the tick."""
         self._checked = checked
 
     def checkState(self) -> Any:
@@ -197,52 +205,138 @@ class _FakeTaskItem:
         return getattr(_qt.Qt.CheckState, state.name)
 
 
-class _FakeTaskList:
-    """The task column: one :class:`_FakeTaskItem` per task, in the panel's own order."""
+class _FakeCheckList:
+    """A checkable column: one :class:`_FakeCheckItem` per row, in the panel's own order."""
 
     def __init__(self, checked: list[bool]) -> None:
-        self._items = [_FakeTaskItem(state) for state in checked]
+        self._items = [_FakeCheckItem(state) for state in checked]
 
-    def item(self, row: int) -> _FakeTaskItem:
+    def item(self, row: int) -> _FakeCheckItem:
         return self._items[row]
 
+    def count(self) -> int:
+        return len(self._items)
 
-class _FakeOptionsEditor:
-    """Stands in for one task's form: it only has to report the options it would save."""
 
-    def __init__(self, values: dict[str, Any]) -> None:
+class _FakeNoteTypeEditor:
+    """Stands in for one note type's task editor: it reports the task map it would save.
+
+    Carries ``is_untouched`` for the same reason the real editor does — the dialog builds an
+    editor merely by SHOWING a note type, and that must not count as configuring it.
+    """
+
+    def __init__(self, values: dict[str, Any], seed: dict[str, Any]) -> None:
         self._values = dict(values)
+        self._seed = dict(seed)
 
     def values(self) -> dict[str, Any]:
         return dict(self._values)
 
+    @property
+    def is_untouched(self) -> bool:
+        return self._values == self._seed
 
-def _untouched_editor(task: MaintenanceTask) -> _FakeOptionsEditor:
-    """What the real per-task form reports when the user edits nothing.
 
-    Built through the panel's own :class:`TaskOptions`, so a round trip exercises the same
-    split the live form uses — the rendered rows plus what no renderer knows.
+class _FakeModels:
+    """Anki's ``col.models``, reduced to the two calls ``anki_compat`` makes."""
+
+    def __init__(self, note_types: dict[str, list[str]]) -> None:
+        self._note_types = dict(note_types)
+
+    def all(self) -> list[dict[str, Any]]:
+        return [
+            {"name": name, "flds": [{"name": field} for field in fields]}
+            for name, fields in self._note_types.items()
+        ]
+
+    def by_name(self, name: str) -> Any:
+        fields = self._note_types.get(name)
+        return (
+            None
+            if fields is None
+            else {"name": name, "flds": [{"name": f} for f in fields]}
+        )
+
+
+@pytest.fixture
+def collection(monkeypatch):
+    """Point ``anki_compat`` at a fake collection; the test declares its note types."""
+
+    def _install(note_types: dict[str, list[str]]) -> None:
+        monkeypatch.setattr(
+            aqt,
+            "mw",
+            types.SimpleNamespace(
+                col=types.SimpleNamespace(models=_FakeModels(note_types))
+            ),
+            raising=False,
+        )
+
+    _install({"Vocab": ["Word", "Synonyms", "SynonymsNoIPA"]})
+    return _install
+
+
+def _untouched_editor(stored_tasks: dict[str, Any]) -> _FakeNoteTypeEditor:
+    """What one note type's real editor reports when the user edits nothing.
+
+    Mirrors ``_NoteTypeTasksEditor.values()`` exactly — the same ``TaskOptions`` split (its
+    rendered rows plus what no renderer knows) merged onto the same raw stored map — so a round
+    trip exercises the live save path without a Qt widget.
     """
-    options = TaskOptions(task.config)
-    rendered = {name: value for name, value, _field in options.rows}
-    return _FakeOptionsEditor({**options.passthrough, **rendered})
+    merge = TaskSectionMerge(stored_tasks)
+    for task in build_tasks(stored_tasks):
+        options = TaskOptions(task.config)
+        rendered = {row.name: row.value for row in options.rows}
+        merge.apply(
+            task.task_id,
+            enable=task.is_enabled,
+            options={**options.passthrough, **rendered},
+        )
+    return _FakeNoteTypeEditor(merge.result(), seed=merge.result())
 
 
 def _dialog(repo: Any) -> NoteMaintenanceSettingsDialog:
     """The dialog with its Qt half faked out, loaded from ``repo`` exactly as on open.
 
     ``__new__`` skips ``QDialog.__init__`` (no Qt headless); everything :meth:`_save` touches
-    is then filled in the same order the real constructor does.
+    is then filled in the same order — and with the same values — the real constructor does.
     """
     dialog = NoteMaintenanceSettingsDialog.__new__(NoteMaintenanceSettingsDialog)
     dialog._repo = repo
-    dialog._stored_tasks = dialog._stored_task_sections()
-    dialog._tasks = build_tasks(dialog._stored_tasks)
-    dialog._task_list = _FakeTaskList([task.is_enabled for task in dialog._tasks])
-    dialog._editors = {task.task_id: _untouched_editor(task) for task in dialog._tasks}
+    dialog._load()
+    dialog._editors = {}
+    dialog._note_type_list = _FakeCheckList(
+        [dialog._scope.is_enabled(name) for name in dialog._note_type_names]
+    )
     dialog.accepted = []
     dialog.accept = lambda: dialog.accepted.append(True)
     return dialog
+
+
+def _open(dialog: NoteMaintenanceSettingsDialog, note_type: str) -> None:
+    """Select ``note_type`` — building its editor, which is what a save then reads.
+
+    Mirrors what the real ``_on_note_type_changed`` does, including for the FIRST note type,
+    which the constructor selects itself so the pane is not blank (see :func:`_look_at`).
+    """
+    dialog._editors[note_type] = _untouched_editor(dialog._task_sections_for(note_type))
+
+
+def _configure(dialog: NoteMaintenanceSettingsDialog, note_type: str) -> None:
+    """Open ``note_type`` and CHANGE something in it, as a configuring user would."""
+    _open(dialog, note_type)
+    editor = dialog._editors[note_type]
+    dialog._editors[note_type] = _FakeNoteTypeEditor(
+        {**editor.values(), "strip_ipa": {"enable": True, "fields": {"IPA": ""}}},
+        seed=editor._seed,
+    )
+
+
+def _tick(dialog: NoteMaintenanceSettingsDialog, note_type: str, checked: bool) -> None:
+    """Tick or untick ``note_type``'s row."""
+    dialog._note_type_list.item(dialog._note_type_names.index(note_type)).setChecked(
+        checked
+    )
 
 
 @pytest.fixture
@@ -259,119 +353,425 @@ def warnings(monkeypatch):
     return messages
 
 
-class TestSaveKeepsWhatItCannotShow:
-    """``update_section`` replaces the whole ``tasks`` map, so the save must carry it all.
+class TestNoteTypeColumn:
+    """Which note types the panel offers, and which of them are ticked."""
 
-    Rebuilding that map from the registry alone deletes a section this build does not know —
-    ADR-010's data shredder one layer up, and one the model-level fix cannot reach because the
-    loss happens ABOVE the task's own model.
-    """
+    def test_the_collections_note_types_are_listed(self, config_repo, collection):
+        collection({"Vocab": ["Word"], "Basic": ["Front", "Back"]})
 
-    def _saved(self, repo) -> dict[str, Any]:
-        # Read RAW: half of these cases store something the typed read refuses, and what is
-        # being asserted is exactly what reached storage.
-        return repo.raw_section(_PLUGIN_ID).get("tasks", {})
+        assert _dialog(config_repo)._note_type_names == ["Vocab", "Basic"]
 
-    def test_a_task_section_this_build_never_heard_of_survives(
-        self, config_repo, warnings
+    def test_a_configured_note_type_the_collection_lacks_is_still_listed(
+        self, config_repo, collection
     ):
+        # Renamed, deleted, or another device's. Listing it is what lets the save keep it —
+        # and what tells the user why that note type never seems to run.
+        collection({"Vocab": ["Word"]})
         config_repo.update_section(
-            _PLUGIN_ID, {"tasks": {"a_future_task": {"enable": True, "mode": "beta"}}}
+            _PLUGIN_ID, {"note_types": {"Gone": {"enable": True}}}
         )
 
-        _dialog(config_repo)._save()
+        dialog = _dialog(config_repo)
 
-        assert self._saved(config_repo)["a_future_task"] == {
+        assert dialog._note_type_names == ["Vocab", "Gone"]
+        assert dialog._missing == ["Gone"]
+
+    def test_the_ticks_follow_the_stored_enable(self, config_repo, collection):
+        collection({"Vocab": ["Word"], "Basic": ["Front"]})
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {"note_types": {"Vocab": {"enable": True}, "Basic": {"enable": False}}},
+        )
+
+        dialog = _dialog(config_repo)
+
+        assert dialog._note_type_list.item(0).checkState() == _qt.Qt.CheckState.Checked
+        assert (
+            dialog._note_type_list.item(1).checkState() == _qt.Qt.CheckState.Unchecked
+        )
+
+
+class TestFieldDropdowns:
+    """Every field option offers THAT note type's real fields — and keeps a value it lost."""
+
+    def _choices(self, dialog: Any, note_type: str, blank: str = "") -> FieldChoices:
+        return FieldChoices(dialog._fields_of(note_type), blank_label=blank)
+
+    def test_the_fields_come_from_the_collections_note_type(
+        self, config_repo, collection
+    ):
+        collection({"Vocab": ["Word", "Synonyms"], "Basic": ["Front", "Back"]})
+        dialog = _dialog(config_repo)
+
+        assert dialog._fields_of("Vocab") == ["Word", "Synonyms"]
+        assert [
+            choice.value for choice in self._choices(dialog, "Basic").entries("Front")
+        ] == ["Front", "Back"]
+
+    def test_a_note_type_the_collection_does_not_have_offers_no_fields(
+        self, config_repo, collection
+    ):
+        collection({"Vocab": ["Word"]})
+
+        assert _dialog(config_repo)._fields_of("Gone") == []
+
+    def test_a_stored_field_the_note_type_no_longer_has_is_kept_and_marked(
+        self, config_repo, collection
+    ):
+        collection({"Vocab": ["Word", "Notes"]})
+        dialog = _dialog(config_repo)
+
+        entries = self._choices(dialog, "Vocab").entries("Synonyms")
+
+        assert entries[-1].value == "Synonyms" and entries[-1].is_stale
+        assert "not in this note type" in entries[-1].label
+
+    def test_a_stale_field_value_survives_the_save(
+        self, config_repo, collection, warnings
+    ):
+        # The dropdown marks it; the SAVE must still write it back. Replacing it with whatever
+        # sits at the top of the list is the data loss this plugin already shipped three of.
+        collection({"Vocab": ["Word", "Notes"]})
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        saved = _saved(config_repo)["Vocab"]["tasks"]["reformat_synonyms"]
+        assert saved["field"] == "Synonyms"
+
+
+class TestMultipleNoteTypes:
+    """Several note types are configured and maintained together, each keeping its own."""
+
+    def test_each_ticked_note_type_is_saved_with_its_own_tasks(
+        self, config_repo, collection, warnings
+    ):
+        collection({"Vocab": ["Word", "Synonyms"], "Kanji": ["Reading"]})
+        dialog = _dialog(config_repo)
+        for name in ("Vocab", "Kanji"):
+            _tick(dialog, name, True)
+            _open(dialog, name)
+
+        dialog._save()
+
+        saved = _saved(config_repo)
+        assert set(saved) == {"Vocab", "Kanji"}
+        assert saved["Vocab"]["enable"] is True and saved["Kanji"]["enable"] is True
+        assert saved["Vocab"]["tasks"]["strip_ipa"]["order"] == 20
+        assert dialog.accepted == [True]
+
+    def test_a_note_type_the_user_never_touched_gets_no_entry(
+        self, config_repo, collection, warnings
+    ):
+        # The config records real choices, not a copy of the collection's note types.
+        collection({"Vocab": ["Word"], "Basic": ["Front"]})
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert set(_saved(config_repo)) == {"Vocab"}
+
+    def test_merely_showing_a_note_type_is_not_configuring_it(
+        self, config_repo, collection, warnings
+    ):
+        # The constructor selects the FIRST note type so the right-hand pane is not blank,
+        # which builds its editor without the user choosing anything — and the same happens for
+        # every note type they click past. Saving then wrote an entry for it, seeded from the
+        # legacy global map, so ticking it later silently inherited field names written for a
+        # DIFFERENT note type. Being looked at is not being configured.
+        collection({"Basic": ["Front"], "Vocab": ["Word"]})
+        config_repo.update_section(
+            _PLUGIN_ID, {"tasks": {"replace_text_all_fields": {"find": "PROMO"}}}
+        )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Basic")  # what setCurrentRow(0) does on open
+        _open(dialog, "Vocab")  # …and clicking through to the next one
+
+        dialog._save()
+
+        assert _saved(config_repo) == {}
+
+    def test_ticking_a_note_type_still_carries_the_legacy_map_over(
+        self, config_repo, collection, warnings
+    ):
+        # The other half of the rule: an untouched editor IS saved when its note type is
+        # ticked, because that untouched map is the legacy seed — ticking is how an upgrade
+        # keeps what the user had configured globally.
+        collection({"Vocab": ["Word"]})
+        config_repo.update_section(
+            _PLUGIN_ID, {"tasks": {"replace_text_all_fields": {"find": "PROMO"}}}
+        )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
+        _tick(dialog, "Vocab", True)
+
+        dialog._save()
+
+        saved = _saved(config_repo)["Vocab"]
+        assert saved["enable"] is True
+        assert saved["tasks"]["replace_text_all_fields"]["find"] == "PROMO"
+
+    def test_configuring_a_note_type_saves_it_even_unticked(
+        self, config_repo, collection, warnings
+    ):
+        # Changing settings without ticking is a real edit — it must survive, so the work is
+        # still there when the note type is switched on later.
+        collection({"Vocab": ["Word"]})
+        dialog = _dialog(config_repo)
+        _configure(dialog, "Vocab")
+
+        dialog._save()
+
+        saved = _saved(config_repo)["Vocab"]
+        assert saved["enable"] is False
+        assert saved["tasks"]["strip_ipa"]["fields"] == {"IPA": ""}
+
+    def test_unticking_a_note_type_keeps_its_settings(
+        self, config_repo, collection, warnings
+    ):
+        collection({"Vocab": ["Word"]})
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {
+                "note_types": {
+                    "Vocab": {"enable": True, "tasks": {"strip_ipa": {"order": 7}}}
+                }
+            },
+        )
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", False)
+
+        dialog._save()
+
+        saved = _saved(config_repo)["Vocab"]
+        assert saved["enable"] is False
+        assert saved["tasks"] == {"strip_ipa": {"order": 7}}
+
+    def test_a_note_type_is_seeded_from_the_pre_note_type_task_map(
+        self, config_repo, collection, warnings
+    ):
+        # An upgrade must not throw away what the user had configured globally: the legacy map
+        # is the starting point for a note type that has none of its own.
+        collection({"Vocab": ["Word"]})
+        config_repo.update_section(
+            _PLUGIN_ID, {"tasks": {"replace_text_all_fields": {"find": "PROMO"}}}
+        )
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        saved = _saved(config_repo)["Vocab"]["tasks"]
+        assert saved["replace_text_all_fields"]["find"] == "PROMO"
+
+
+def _saved(repo: Any) -> dict[str, Any]:
+    """The stored ``note_types`` map, read RAW — what actually reached storage."""
+    return repo.raw_section(_PLUGIN_ID).get("note_types", {})
+
+
+class TestSaveKeepsWhatItCannotShow:
+    """``update_section`` replaces the whole map, so the save must carry it all.
+
+    Rebuilding that map from what this build knows — its registered tasks, this collection's
+    note types, the options its form can draw — deletes everything else: ADR-010's data
+    shredder one layer up, where the model-level fix cannot reach.
+    """
+
+    def test_a_note_type_this_collection_does_not_have_survives(
+        self, config_repo, collection, warnings
+    ):
+        collection({"Vocab": ["Word"]})
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {"note_types": {"Gone": {"enable": True, "tasks": {"strip_ipa": {}}}}},
+        )
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert _saved(config_repo)["Gone"] == {
+            "enable": True,
+            "tasks": {"strip_ipa": {}},
+        }
+
+    def test_a_task_section_this_build_never_heard_of_survives(
+        self, config_repo, collection, warnings
+    ):
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {
+                "note_types": {
+                    "Vocab": {
+                        "enable": True,
+                        "tasks": {"a_future_task": {"enable": True, "mode": "beta"}},
+                    }
+                }
+            },
+        )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert _saved(config_repo)["Vocab"]["tasks"]["a_future_task"] == {
             "enable": True,
             "mode": "beta",
         }
 
-    def test_an_option_key_from_a_newer_omnia_survives(self, config_repo, warnings):
+    def test_an_option_key_from_a_newer_omnia_survives(
+        self, config_repo, collection, warnings
+    ):
         # End of the ADR-010 chain: the task's model keeps the key, the form carries it as a
         # passthrough, and the save has to put it back — or the older device deletes the newer
         # one's option on the next sync.
         config_repo.update_section(
             _PLUGIN_ID,
-            {"tasks": {"strip_ipa": {"enable": False, "a_future_option": ["kept"]}}},
+            {
+                "note_types": {
+                    "Vocab": {
+                        "enable": True,
+                        "tasks": {
+                            "strip_ipa": {"enable": False, "a_future_option": ["kept"]}
+                        },
+                    }
+                }
+            },
         )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
 
-        _dialog(config_repo)._save()
+        dialog._save()
 
-        saved = self._saved(config_repo)["strip_ipa"]
+        saved = _saved(config_repo)["Vocab"]["tasks"]["strip_ipa"]
         assert saved["a_future_option"] == ["kept"]
         # And the switch the user set is still off (the fallback did not flip it back on).
         assert saved["enable"] is False
 
     def test_a_readable_option_is_not_reverted_by_an_unreadable_sibling(
-        self, config_repo, warnings
+        self, config_repo, collection, warnings
     ):
         # The save persists what the dialog SHOWS, so an option the per-task fallback dropped
-        # is written back as the shipped default: the user's find text, destroyed by a garbage
-        # ``order`` next to it.
+        # would be written back as the shipped default: the user's find text, destroyed by a
+        # garbage ``order`` next to it.
         config_repo.update_section(
             _PLUGIN_ID,
             {
-                "tasks": {
-                    "replace_text_all_fields": {
+                "note_types": {
+                    "Vocab": {
                         "enable": True,
-                        "order": "whenever",
-                        "find": "PROMO",
-                        "a_future_option": ["kept"],
+                        "tasks": {
+                            "replace_text_all_fields": {
+                                "enable": True,
+                                "order": "whenever",
+                                "find": "PROMO",
+                                "a_future_option": ["kept"],
+                            }
+                        },
                     }
                 }
             },
         )
-
-        _dialog(config_repo)._save()
-
-        saved = self._saved(config_repo)["replace_text_all_fields"]
-        assert saved["find"] == "PROMO"
-        assert saved["enable"] is True
-        # The unknown key rides through on the raw stored section even though the per-task
-        # salvage (which only knows declared fields) could not carry it.
-        assert saved["a_future_option"] == ["kept"]
-
-    def test_a_section_level_key_this_build_never_heard_of_keeps_the_map(
-        self, config_repo, warnings
-    ):
-        # The pass-through must not depend on the ``[note_maintenance]`` section PARSING: one
-        # key from a newer Omnia beside ``tasks`` used to make the typed read raise, and the
-        # save then wrote this build's registry over everything stored.
-        config_repo.update_section(
-            _PLUGIN_ID,
-            {"tasks": {"a_future_task": {"enable": True}}, "some_new_key": 1},
-        )
-
-        _dialog(config_repo)._save()
-
-        assert self._saved(config_repo)["a_future_task"] == {"enable": True}
-
-    def test_a_task_entry_that_is_not_a_table_survives(self, config_repo, warnings):
-        # A type error inside ``tasks`` is the other way the typed read raises, and one that
-        # tolerating unknown KEYS cannot rescue.
-        config_repo.update_section(_PLUGIN_ID, {"tasks": {"weird": "a string"}})
-
-        _dialog(config_repo)._save()
-
-        assert self._saved(config_repo)["weird"] == "a string"
-
-    def test_the_known_tasks_are_still_written(self, config_repo, warnings):
         dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
 
         dialog._save()
 
-        saved = self._saved(config_repo)
-        for task in dialog._tasks:
-            assert saved[task.task_id]["enable"] == task.is_enabled
-            assert saved[task.task_id]["order"] == task.order
-        assert dialog.accepted == [True]
+        saved = _saved(config_repo)["Vocab"]["tasks"]["replace_text_all_fields"]
+        assert saved["find"] == "PROMO"
+        assert saved["enable"] is True
+        assert saved["a_future_option"] == ["kept"]
+
+    def test_a_task_entry_that_is_not_a_table_survives(
+        self, config_repo, collection, warnings
+    ):
+        # A type error inside ``tasks`` is the other way the typed read raises, and one that
+        # tolerating unknown KEYS cannot rescue.
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {"note_types": {"Vocab": {"enable": True, "tasks": {"weird": "a string"}}}},
+        )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert _saved(config_repo)["Vocab"]["tasks"]["weird"] == "a string"
+
+    def test_a_note_type_entry_that_is_not_a_table_survives(
+        self, config_repo, collection, warnings
+    ):
+        config_repo.update_section(_PLUGIN_ID, {"note_types": {"Weird": "a string"}})
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert _saved(config_repo)["Weird"] == "a string"
+
+    def test_a_section_level_key_this_build_never_heard_of_keeps_the_map(
+        self, config_repo, collection, warnings
+    ):
+        # The pass-through must not depend on the ``[note_maintenance]`` section PARSING: one
+        # key from a newer Omnia beside ``note_types`` used to make the typed read raise, and
+        # the save then wrote this build's world over everything stored.
+        config_repo.update_section(
+            _PLUGIN_ID,
+            {"note_types": {"Gone": {"enable": True}}, "some_new_key": 1},
+        )
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert _saved(config_repo)["Gone"] == {"enable": True}
+
+    def test_the_pre_note_type_task_map_is_left_exactly_as_stored(
+        self, config_repo, collection, warnings
+    ):
+        # An OLDER Omnia still runs that map; this build must not rewrite or delete it.
+        config_repo.update_section(
+            _PLUGIN_ID, {"tasks": {"strip_ipa": {"enable": True, "order": 20}}}
+        )
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert config_repo.raw_section(_PLUGIN_ID)["tasks"] == {
+            "strip_ipa": {"enable": True, "order": 20}
+        }
+
+    def test_a_note_type_configured_under_another_case_is_not_forked(
+        self, config_repo, collection, warnings
+    ):
+        collection({"Vocab": ["Word"]})
+        config_repo.update_section(
+            _PLUGIN_ID, {"note_types": {"vocab": {"enable": True, "tasks": {}}}}
+        )
+        dialog = _dialog(config_repo)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        assert list(_saved(config_repo)) == ["vocab"]
 
 
 class TestSaveFailure:
     """A write that fails must not close the dialog claiming success."""
 
     def test_a_backend_error_warns_and_keeps_the_dialog_open(
-        self, config_repo, warnings
+        self, config_repo, collection, warnings
     ):
         class _BackendError(Exception):
             """What the collection backend raises — NOT an OSError."""

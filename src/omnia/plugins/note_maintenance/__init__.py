@@ -10,11 +10,17 @@ re-pair synonyms, …). Tasks are registered in a plugin-local registry rather t
 plugins of their own: they are numerous, homogeneous, and share one runner, one preview and
 one apply path.
 
+Task settings are **per note type** — a task option that names a field can only mean something
+inside one note type — and several note types can be switched on and maintained in one pass;
+see :mod:`~omnia.plugins.note_maintenance.note_types` for the stored shape and for what an
+OLDER Omnia does with it.
+
 The moving parts, split so everything but the last one is unit-testable headless:
 
 * :mod:`~omnia.plugins.note_maintenance.base` — the task contract (``NoteView`` in, changed
   fields out);
 * :mod:`~omnia.plugins.note_maintenance.registry` — ``@register_task`` + config → tasks;
+* :mod:`~omnia.plugins.note_maintenance.note_types` — a note's type → the settings it gets;
 * :mod:`~omnia.plugins.note_maintenance.runner` — notes + tasks → a ``ChangePlan`` (never writes);
 * :mod:`~omnia.plugins.note_maintenance.diff` — the plan rendered as an inline HTML diff;
 * :mod:`~omnia.plugins.note_maintenance.apply` — the ONLY writer, inside a ``CollectionOp``.
@@ -38,8 +44,8 @@ from omnia.core.registry import register
 from omnia.plugins.note_maintenance import tasks
 from omnia.plugins.note_maintenance.base import NoteView
 from omnia.plugins.note_maintenance.config import NoteMaintenanceSettings
-from omnia.plugins.note_maintenance.registry import build_tasks
-from omnia.plugins.note_maintenance.runner import ChangePlan, MaintenanceRunner
+from omnia.plugins.note_maintenance.note_types import NoteTypePlanner, NoteTypeScope
+from omnia.plugins.note_maintenance.runner import ChangePlan
 
 logger = get_logger("note_maintenance")
 
@@ -66,6 +72,9 @@ class NoteMaintenancePlugin(FeaturePlugin):
         "from its clozed twin, find-and-replace a literal string across every field.\n"
         "• Each task has its own on/off switch and a run order, so tasks touching the same "
         "field layer predictably instead of fighting.\n"
+        "• Settings are per NOTE TYPE, with every field picked from a dropdown of that note "
+        "type's real fields — tick as many note types as you like and maintain them in one "
+        "pass; a note whose type you have not set up is reported, never guessed at.\n"
         "• Nothing is written until you confirm the diff, and the whole batch is a single "
         "undo step (Ctrl+Z puts it all back)."
     )
@@ -108,6 +117,10 @@ class NoteMaintenancePlugin(FeaturePlugin):
     def maintain_notes(self, browser: Any) -> None:
         """Plan a maintenance run over the Browser's selected notes and open the preview.
 
+        The selection routinely spans note types, so each note is planned with ITS OWN note
+        type's settings and a note type that has none is reported rather than passed over in
+        silence (see :class:`~omnia.plugins.note_maintenance.note_types.NoteTypePlanner`).
+
         The scan (reading every selected note and running the tasks over it) happens OFF the
         Qt main thread — a 5 000-note selection would otherwise freeze the Browser — and only
         the preview dialog is opened back on it. Nothing is written here: the plan is a
@@ -122,14 +135,15 @@ class NoteMaintenancePlugin(FeaturePlugin):
         if not note_ids:
             tooltip("Omnia: select the notes to maintain first.")
             return
-        runner = self.build_runner()
-        if not runner.active_tasks:
+        planner = self.build_planner()
+        if not planner.has_runnable_note_type:
             tooltip(
-                "Omnia: no maintenance task is switched on (configure Note Maintenance)."
+                "Omnia: no note type has a maintenance task switched on "
+                "(configure Note Maintenance)."
             )
             return
         anki_compat.run_in_background(
-            lambda: runner.plan(_note_views(note_ids)),
+            lambda: planner.plan(_note_views(note_ids)),
             on_success=lambda plan: self._preview(plan, browser),
             parent=browser,
             label=f"Omnia: checking {len(note_ids)} note(s)…",
@@ -140,22 +154,30 @@ class NoteMaintenancePlugin(FeaturePlugin):
         from aqt.utils import tooltip
 
         if plan.is_empty:
-            tooltip("Omnia: the selected notes need no maintenance.")
+            # A selection whose note types have no settings changes nothing — and looks exactly
+            # like a selection that needed no maintenance. Say which it was.
+            summary = plan.skip_summary
+            tooltip(
+                f"Omnia: nothing to maintain. {summary}"
+                if summary
+                else "Omnia: the selected notes need no maintenance."
+            )
             return
         from omnia.gui.note_maintenance.preview_dialog import MaintenancePreviewDialog
 
         MaintenancePreviewDialog(plan, parent).exec()
 
-    def build_runner(self) -> MaintenanceRunner:
-        """Return a runner holding this plugin's configured tasks.
+    def build_planner(self) -> NoteTypePlanner:
+        """Return a planner over this plugin's per-note-type settings.
 
-        Reads the ``tasks`` namespace from the plugin's settings (defaults when the plugin is
-        not enabled), so the caller — the preview dialog — never parses config itself. A task
-        section this version cannot parse falls back to that task's defaults inside
-        :func:`~omnia.plugins.note_maintenance.registry.build_tasks`, so this never raises into
-        the Qt slot that triggered the run.
+        Reads the ``note_types`` namespace from the plugin's settings (defaults when the plugin
+        is not enabled), so the caller never parses config itself. Neither the note-type map nor
+        a task section this version cannot parse raises here — an unreadable note type is
+        skipped and reported, and an unreadable task falls back to that task's defaults inside
+        :func:`~omnia.plugins.note_maintenance.registry.build_tasks` — because the only caller
+        is the Qt slot behind a menu entry.
         """
-        return MaintenanceRunner(build_tasks(self._settings().tasks))
+        return NoteTypePlanner(NoteTypeScope(self._settings().note_types))
 
     def _settings(self) -> NoteMaintenanceSettings:
         """The plugin's settings, falling back to defaults when it is not enabled."""

@@ -315,6 +315,11 @@ class MaintenancePreviewDialog(QDialog):
                 "then Apply — the whole batch lands as ONE undo step (Ctrl+Z puts it back).",
             )
         )
+        # What the run could NOT act on. A selection spans note types and settings are per note
+        # type, so a listing that shows only the changes lets the user believe the rest was
+        # checked and found clean.
+        if plan.skipped:
+            root.addWidget(hint_label(self, plan.skip_summary))
         self._summary = QLabel()
         root.addWidget(self._summary)
         root.addWidget(_PreviewTree(self._model, self._refresh_summary, self), 1)

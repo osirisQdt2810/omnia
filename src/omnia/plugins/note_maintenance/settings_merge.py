@@ -1,4 +1,4 @@
-"""What a settings save writes back into ``[note_maintenance.tasks]``.
+"""What a settings save writes back into ``[note_maintenance]``.
 
 Pure module — no ``aqt``/``anki``, no Qt — even though its only caller is the settings dialog:
 deciding what SURVIVES a save is config policy, not GUI code, and it is the one thing in this
@@ -6,28 +6,48 @@ plugin that can destroy settings the user never sees.
 
 The hazard is ADR-010's, one layer above the models that ADR fixes.
 :meth:`~omnia.core.config.repository.ConfigRepository.update_section` merges SHALLOWLY, so
-whatever the dialog hands it *is* the stored ``tasks`` map afterwards. A dialog that rebuilds
-that map out of the tasks THIS build registers, carrying only the options its form could draw,
-therefore deletes:
+whatever the dialog hands it *is* the stored map afterwards. A dialog that rebuilds that map
+out of what THIS build knows — the tasks it registers, the note types this collection has,
+the options its form can draw — therefore deletes:
 
-* a ``[note_maintenance.tasks.<id>]`` section belonging to a task a newer Omnia added and
-  synced down, and
+* a ``[note_maintenance.note_types."…"]`` entry for a note type this collection does not have
+  (renamed, deleted, or living on another device),
+* a ``…tasks.<id>`` section belonging to a task a newer Omnia added and synced down, and
 * an option inside a KNOWN task that this version has no renderer for.
 
-:class:`TaskOptions` keeps the second kind (per task) and :class:`TaskSectionMerge` the first
-(per map), both starting from the RAW stored section so nothing they keep depends on that
-section parsing.
+:class:`SectionMerge` is the shared answer — start from the RAW stored map and layer edits onto
+it — with one subclass per map the dialog rewrites (:class:`NoteTypeSectionMerge`,
+:class:`TaskSectionMerge`) and :class:`TaskOptions` keeping the per-option half.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Optional
-
-from pydantic import BaseModel
 
 from omnia.core.config.schema import schema_from_model
 from omnia.core.plugin import ConfigField
+from omnia.plugins.note_maintenance.base import OptionKind, TaskConfigBase
+
+
+@dataclass(frozen=True)
+class OptionRow:
+    """One task option the settings form renders.
+
+    Attributes:
+        name: The option's config key.
+        value: Its current value.
+        kind: How to draw it (see :class:`~omnia.plugins.note_maintenance.base.OptionKind`).
+        field: The scalar descriptor to render with, or None for a
+            :attr:`~omnia.plugins.note_maintenance.base.OptionKind.FIELD_MAP` row (which needs
+            a bespoke editor).
+    """
+
+    name: str
+    value: Any
+    kind: OptionKind
+    field: Optional[ConfigField] = None
 
 
 class TaskOptions:
@@ -43,57 +63,94 @@ class TaskOptions:
 
     Attributes:
         model: The task's settings model (for a complex row's title/help).
-        rows: ``(name, value, field)`` in model order — ``field`` is the scalar descriptor to
-            render with, or None for a field mapping (which needs a bespoke editor).
+        rows: The renderable options as :class:`OptionRow`s, in model order.
         passthrough: The options with no renderer, kept verbatim for the save.
     """
 
-    def __init__(self, config: BaseModel) -> None:
+    def __init__(self, config: TaskConfigBase) -> None:
         """Classify ``config``'s options.
 
         Args:
             config: The task's parsed settings (an instance, so it carries current values).
         """
-        self.model = type(config)
+        self.model: type[TaskConfigBase] = type(config)
         scalars = {field.key: field for field in schema_from_model(self.model)}
         declared = self.model.__fields__
-        self.rows: list[tuple[str, Any, Optional[ConfigField]]] = []
+        self.rows: list[OptionRow] = []
         self.passthrough: dict[str, Any] = {}
         for name, value in config.dict().items():
             if name == "enable":
                 continue
+            kind = self.model.option_kind(name)
             if name in scalars:
-                self.rows.append((name, value, scalars[name]))
-            elif name in declared and isinstance(value, dict):
-                # A DECLARED mapping option — the one complex shape the scalar deriver skips
-                # and the panel renders with its bespoke editor. An UNDECLARED key that happens
-                # to hold a table is not that: the model kept it verbatim (ADR-010) and no
-                # renderer knows what it means, so it goes through untouched.
-                self.rows.append((name, value, None))
+                self.rows.append(
+                    OptionRow(
+                        name=name,
+                        value=value,
+                        # Only a NOTE_FIELD scalar is special; anything else the scalar deriver
+                        # understood is drawn by the shared editor.
+                        kind=(
+                            OptionKind.NOTE_FIELD
+                            if kind is OptionKind.NOTE_FIELD
+                            else OptionKind.SCALAR
+                        ),
+                        field=scalars[name],
+                    )
+                )
+            elif (
+                kind is OptionKind.FIELD_MAP
+                and name in declared
+                and isinstance(value, dict)
+            ):
+                # A DECLARED field map — the one complex shape the scalar deriver skips and the
+                # panel renders with its bespoke editor. An UNDECLARED key that happens to hold
+                # a table is not that: the model kept it verbatim (ADR-010) and no renderer
+                # knows what it means, so it goes through untouched.
+                self.rows.append(OptionRow(name=name, value=value, kind=kind))
             else:
                 self.passthrough[name] = value
 
 
-class TaskSectionMerge:
-    """The whole ``tasks`` map to persist: what was stored, updated with what was edited.
+class SectionMerge:
+    """A stored map of entries, updated entry by entry — never rebuilt from this build's world.
 
-    Built on the RAW stored map (never on the registry alone) because that map is replaced
-    wholesale by the save — see the module docstring. An entry this build does not touch is
-    handed back exactly as it came in, whatever shape it has: a task id this version does not
-    register, and even a value that is not a table at all, survive the round trip.
+    Built on the RAW stored map because that map is replaced wholesale by the save (see the
+    module docstring). An entry this build does not touch is handed back exactly as it came in,
+    whatever shape it has: a key this version does not know, and even a value that is not a
+    table at all, survive the round trip.
     """
 
     def __init__(self, stored: Mapping[str, Any]) -> None:
         """Start from ``stored``.
 
         Args:
-            stored: The ``[note_maintenance.tasks]`` map as it is stored, ``{task id: values}``.
-                Copied, so applying an edit never mutates the caller's map.
+            stored: The map as it is stored, ``{key: values}``. Copied, so applying an edit
+                never mutates the caller's map.
         """
-        self._tasks: dict[str, Any] = {
-            task_id: dict(values) if isinstance(values, dict) else values
-            for task_id, values in stored.items()
+        self._entries: dict[str, Any] = {
+            key: dict(values) if isinstance(values, dict) else values
+            for key, values in stored.items()
         }
+
+    def result(self) -> dict[str, Any]:
+        """Return the merged map to persist (a copy — the merge keeps its own)."""
+        return dict(self._entries)
+
+    def _merge(self, key: str, values: Mapping[str, Any]) -> None:
+        """Layer ``values`` over what was stored under ``key``.
+
+        A stored entry that is not a table cannot be merged onto; the edited values simply
+        replace it, which is what the user just asked for by editing that entry.
+        """
+        base = self._entries.get(key)
+        self._entries[key] = {
+            **(base if isinstance(base, dict) else {}),
+            **values,
+        }
+
+
+class TaskSectionMerge(SectionMerge):
+    """The ``tasks`` map of ONE note type: what was stored, updated with what was edited."""
 
     def apply(self, task_id: str, *, enable: bool, options: Mapping[str, Any]) -> None:
         """Layer one task's edited switch and options over what was stored for it.
@@ -105,15 +162,31 @@ class TaskSectionMerge:
             options: What the task's form reports — its rendered rows plus whatever it could
                 not draw, unchanged.
         """
-        base = self._tasks.get(task_id)
-        # A stored entry that is not a table cannot be merged onto; the edited values simply
-        # replace it, which is what the user just asked for by editing that task.
-        self._tasks[task_id] = {
-            **(base if isinstance(base, dict) else {}),
-            "enable": bool(enable),
-            **options,
-        }
+        self._merge(task_id, {"enable": bool(enable), **options})
 
-    def result(self) -> dict[str, Any]:
-        """Return the merged map to persist (a copy — the merge keeps its own)."""
-        return dict(self._tasks)
+
+class NoteTypeSectionMerge(SectionMerge):
+    """The whole ``note_types`` map: what was stored, updated with what was edited."""
+
+    def apply(
+        self,
+        note_type: str,
+        *,
+        enable: bool,
+        tasks: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Layer one note type's edited tick (and task map) over what was stored for it.
+
+        Args:
+            note_type: The note type whose entry this is, in its STORED spelling where it has
+                one — so ticking a note type cannot fork its settings into a second entry that
+                differs only in case.
+            enable: Whether the note type takes part in a run.
+            tasks: Its edited task map, or None when the user never opened it — the stored task
+                map is then left exactly as it is, which is the difference between "ticked a
+                note type" and "reconfigured it".
+        """
+        values: dict[str, Any] = {"enable": bool(enable)}
+        if tasks is not None:
+            values["tasks"] = dict(tasks)
+        self._merge(note_type, values)

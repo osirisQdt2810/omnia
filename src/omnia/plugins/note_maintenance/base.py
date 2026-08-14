@@ -11,6 +11,7 @@ Pure module: no ``aqt``/``anki`` imports.
 
 from __future__ import annotations
 
+import enum
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +21,30 @@ from typing import Any, ClassVar
 from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
+
+# The ``Field(..., renders_as=…)`` keyword a task uses to say what an option HOLDS. Pydantic v1
+# parks an unknown Field keyword in ``field_info.extra``, so the statement lives on the option
+# itself instead of in a table the panel would have to be edited to keep in step.
+_RENDERS_AS = "renders_as"
+
+
+class OptionKind(enum.Enum):
+    """What a task option holds, and therefore how the settings panel must render it.
+
+    A field name typed by hand fails SILENTLY at run time — the task simply finds nothing —
+    and field names differ per note type, so the panel offers the selected note type's real
+    fields instead. Only the task knows which of its options are field names, hence the
+    declaration at the option:
+
+    ``field: str = Field("Synonyms", renders_as=OptionKind.NOTE_FIELD)``
+    """
+
+    #: A plain value (number, text, switch) — rendered by the shared ``ConfigFieldEditor``.
+    SCALAR = "scalar"
+    #: ONE field name of the note type being configured — rendered as a dropdown.
+    NOTE_FIELD = "note_field"
+    #: A ``{source field: target field}`` map — rendered as two columns of dropdowns.
+    FIELD_MAP = "field_map"
 
 
 @dataclass(frozen=True)
@@ -82,6 +107,26 @@ class TaskConfigBase(PersistedModel):
             "declares no order of its own runs last."
         ),
     )
+
+    @classmethod
+    def option_kind(cls, name: str) -> OptionKind:
+        """Return what option ``name`` holds — see :class:`OptionKind`.
+
+        Args:
+            name: An option of this model. A name the model does not declare (a key a NEWER
+                Omnia wrote, kept by ADR-010) is :attr:`OptionKind.SCALAR`: nothing here knows
+                what it means, and the panel carries it through the save untouched.
+
+        Returns:
+            The declared kind, or :attr:`OptionKind.SCALAR` when the option declares none.
+        """
+        model_field = cls.__fields__.get(name)
+        if model_field is None:
+            return OptionKind.SCALAR
+        declared = model_field.field_info.extra.get(_RENDERS_AS)
+        # A kind that is not an OptionKind raises: that is OUR source being wrong, not stored
+        # data, so it must fail loudly rather than degrade to a text box.
+        return OptionKind(declared) if declared is not None else OptionKind.SCALAR
 
 
 class MaintenanceTask(ABC):
