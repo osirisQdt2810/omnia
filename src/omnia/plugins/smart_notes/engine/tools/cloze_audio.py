@@ -8,23 +8,34 @@ rule:
 
     **The answer is never spoken. Ever.**
 
-Three consequences, each visible in the code below:
+Four consequences, each visible in the code below:
 
-1. **Failure is terminal, not a fall-through.** Every other tool that cannot do its job hands
-   the field to the next one; here that would hand a cloze sentence to plain TTS, which speaks
-   the answer. So an unmaskable field raises
-   :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError` and the chain STOPS
-   — a ``[cloze_audio, ai]`` chain fails the field instead of ruining the card. That covers
-   every way this tool can fail, including the one that happens before it even runs: params it
-   cannot parse (see :meth:`ClozeAudioTool.parse_params`). The one thing that still declines
-   softly is an EMPTY source: there is no sentence, so there is no answer to leak.
-2. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
+1. **Every failure is terminal — this tool NEVER declines.** Other tools that cannot do their
+   job hand the field to the next one; here that would hand a cloze sentence to plain TTS,
+   which speaks the answer. So every way of not producing raises
+   :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError` and the chain STOPS,
+   including the failure that happens before the tool even runs: params it cannot parse (see
+   :meth:`ClozeAudioTool.parse_params`). There is deliberately no "safe decline" — not even
+   for an empty source. The reasoning that there is "no answer to leak" when THIS tool's
+   ``source_field`` holds nothing speakable is local and wrong: the next tool speaks the
+   RULE's prompt refs, so a prompt of ``{{Sentence}} {{Hint}}`` with an unspeakable
+   ``Sentence`` (``&nbsp;``, ``<br>``, ``[sound:x.mp3]`` — all non-blank, so the dependency
+   gate lets the field through) and the answer sitting in ``Hint`` leaks exactly as loudly.
+   A tool cannot reason about what a later tool would say, so it does not try.
+2. **It refuses to share a chain.** The class is
+   :attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.exclusive`, so the pipeline will
+   not run a chain that also holds another tts tool — in EITHER order. Stopping the chain only
+   protects the tools that come after it; a chain of ``[ai, cloze_audio]`` never reaches this
+   code at all, because ``ai`` produces first and speaks the sentence with the answer in it.
+3. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
    cloze markers that say what to hide. A source that already carries ``{{cN::…}}`` (the
    natural chain: a "Definition (cloze)" text field feeding a "Definition (cloze audio)" sound
    field) masks exactly those; otherwise the word is located with
    :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher the
-   ``cloze`` tool uses, so both tools agree about what counts as the word.
-3. **The hidden word is measured, not estimated.** It is synthesized once and the mask is built
+   ``cloze`` tool uses — with one deliberate difference: word forms are matched here ALWAYS,
+   whatever a ``cloze`` row's ``match_word_forms`` says. Hiding an inflection the text card
+   left visible only costs a hole the user did not ask for; missing one would speak the answer.
+4. **The hidden word is measured, not estimated.** It is synthesized once and the mask is built
    to its exact frame count, so the gap lasts as long as the word would have — the invariant a
    listening cloze is built on. A guessed "~90 ms per character" gap gives the answer's length
    away and desynchronises the sentence.
@@ -55,7 +66,6 @@ from omnia.core.providers.tts.registry import tts_providers_with_ext
 from omnia.core.text import CLOZE_RE, strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult, ResolvedVoice
 from omnia.plugins.smart_notes.engine.tools.base import (
-    NotApplicable,
     Produced,
     TerminalToolError,
     Tool,
@@ -441,17 +451,31 @@ class MaskedAudioBuilder:
 
 @register_tool("cloze_audio")
 class ClozeAudioTool(Tool):
-    """Speaks a sentence with the answer replaced by silence or a beep — never aloud."""
+    """Speaks a sentence with the answer replaced by silence or a beep — never aloud.
+
+    Two class-level rules carry that guarantee, and both are absolute:
+
+    * **it never returns** :class:`~omnia.plugins.smart_notes.engine.tools.base.NotApplicable`.
+      Declining hands the field to a tool that speaks whatever the RULE's prompt refs hold —
+      not this tool's ``source_field`` — so no local check can prove a decline is harmless.
+      Every inability to produce raises
+      :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError` instead;
+    * **it is** :attr:`~omnia.plugins.smart_notes.engine.tools.base.Tool.exclusive`, so a chain
+      that also holds another tts tool is refused before anything runs, in either order.
+    """
 
     name: ClassVar[str] = "cloze_audio"
     label: ClassVar[str] = "Cloze audio"
     description: ClassVar[str] = (
-        "Speak a sentence with the cloze answer replaced by silence or a beep. Fails "
-        "(never falls through) when it cannot hide the answer, so no tool can read it out."
+        "Speak a sentence with the cloze answer replaced by silence or a beep. Must be "
+        "the field's only tool, and fails rather than let anything else read it out."
     )
     kinds: ClassVar[frozenset[str]] = frozenset({"tts"})
     # It calls TTS, never an LLM: the text is the note's own, so there is nothing to think up.
     deterministic: ClassVar[bool] = True
+    # Any other tts tool on this field speaks the sentence with the answer unwrapped into it,
+    # so sharing a chain is unsafe whatever the order (see the module docstring).
+    exclusive: ClassVar[bool] = True
     params_model: ClassVar[Optional[type[BaseModel]]] = ClozeAudioParams
 
     @classmethod
@@ -509,13 +533,13 @@ class ClozeAudioTool(Tool):
             ) from exc
 
     def run(self, request: ToolRequest, ctx: ToolContext) -> ToolOutcome:
-        """Speak this rule's sentence with its answer masked.
+        """Speak this rule's sentence with its answer masked, or fail the field.
 
-        Declines only when there is nothing to speak. Once there IS a sentence with something
-        to hide in it, EVERY failure — no cloze span and no word match, an unconfigured voice,
-        audio that cannot be cut, the missing codec runtime — raises
+        It never declines. EVERY failure — a source with nothing speakable in it, no cloze span
+        and no word match, an unconfigured voice, audio that cannot be cut, the missing codec
+        runtime — raises
         :class:`~omnia.plugins.smart_notes.engine.tools.base.TerminalToolError`, so the chain
-        stops instead of handing the sentence to a tool that would read the answer aloud.
+        stops instead of handing the field to a tool that would read the answer aloud.
 
         Raises:
             TerminalToolError: When the answer cannot be masked.
@@ -530,9 +554,14 @@ class ClozeAudioTool(Tool):
         )
         source = field_value(request.fields, source_field)
         if not strip_markup(source).strip():
-            # No sentence at all, so there is no answer to leak: this is the one safe decline.
-            return NotApplicable(
-                f"nothing to speak — {source_field or 'the source field'} is empty"
+            # NOT a decline. "There is no sentence here, so there is nothing to leak" reasons
+            # about the wrong field: the next tool speaks the RULE's prompt refs, and a source
+            # holding only "&nbsp;" while a Hint ref holds "The cat {{c1::sat}} down." is both
+            # unspeakable HERE and a leak THERE.
+            raise TerminalToolError(
+                "cloze_audio has nothing to speak in "
+                f"{source_field or 'the source field'}. Refusing to fall through to a tool "
+                "that would speak this field's other sources, answers included."
             )
         word = strip_markup(
             field_value(request.fields, word_field), keep_line_breaks=False

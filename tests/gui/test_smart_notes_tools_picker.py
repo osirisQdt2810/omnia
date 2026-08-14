@@ -267,16 +267,23 @@ class TestToolsPickerPage:
         assert "spec.unavailable_reason" in advice
         assert 'note.className = "sn-tool-note";' in html
 
-    def test_the_picker_warns_when_a_voice_tool_runs_after_cloze_audio(self):
-        # Graft #1. On THIS build the chain is safe (cloze_audio fails terminally and stops
-        # it), but the config syncs: an Omnia without the tool skips the entry and the next TTS
-        # tool reads the sentence out WITH the answer. That residual is a warning, not a block.
+    def test_the_picker_warns_from_the_tools_own_exclusive_flag(self):
+        # Graft #1, made generic. The runtime refuses such a chain outright; the warning is so
+        # the user fixes it before saving, and because a device on an older Omnia (which lacks
+        # the tool) would simply let the rival produce.
         html = self._html()
-        speakers = _js(html, "function speakersAfterClozeAudio(", 700)
-        assert 'entry.tool === "cloze_audio"' in speakers
-        assert '(spec.kinds || []).indexOf("tts") >= 0' in speakers
+        conflict = _js(html, "function exclusiveConflict(", 1000)
+        assert "spec.exclusive" in conflict
+        assert "(spec.kinds || []).indexOf(kind) >= 0" in conflict
         assert "sn-tools-warn" in html
-        assert "reads the answer aloud" in html
+        assert "must be the only tool on this field" in html
+
+    def test_no_feature_tools_semantics_live_in_the_picker(self):
+        # The first version hard-coded `entry.tool === "cloze_audio"` plus a narrative of that
+        # tool's failure mode into shared page infrastructure — which is exactly why the check
+        # only covered the ordering that tool happened to be first in. A tool's safety rules
+        # belong on the tool; the page reads a declared flag.
+        assert "cloze_audio" not in self._html()
 
     def test_the_picker_is_frozen_on_a_locked_row(self):
         lock_state = _js(build_smart_notes_html(dark=False), "function applyLockState(")

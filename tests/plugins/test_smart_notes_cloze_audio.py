@@ -6,7 +6,8 @@ around the ways that could be broken:
 * :class:`TestNeverSpeaksTheAnswer` is the safety net. A fake voice encodes the text it was
   asked to say straight into its samples, so a test can decode the produced clip and assert the
   answer is not in ANY of it. It also proves the failure paths hard-fail instead of falling
-  through to a tool that would read the sentence out.
+  through to a tool that would read the sentence out — and that a chain pairing this tool with
+  another that could speak the field is refused before anything runs, in either order.
 * :class:`TestSpanFinding` covers where the hole goes: an already-clozed source, one that needs
   the word located, several holes, and the markup traps.
 * :class:`TestSplice` is the frame math at 22050 Hz mono — the measured-duration invariant,
@@ -33,12 +34,14 @@ from omnia.plugins.smart_notes.config import (
     default_tool_chain,
 )
 from omnia.plugins.smart_notes.engine import compile_field_rule
+from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
 from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
 from omnia.plugins.smart_notes.engine.tools import (
     ClozeAudioTool,
     ClozeMaskPlanner,
     GenerationPipeline,
-    NotApplicable,
+    MaskedAudioBuilder,
+    MaskedSpeech,
     Produced,
     SidecarCodec,
     TerminalToolError,
@@ -237,6 +240,14 @@ class TestToolContract:
         # TTS calls, but never an LLM: the words come from the note.
         assert ClozeAudioTool.deterministic is True
 
+    def test_it_declares_itself_exclusive(self):
+        # The property lives on the TOOL, so the pipeline and the picker enforce it without
+        # knowing this tool exists: any other tts tool on the same field would speak the
+        # sentence with the answer unwrapped into it.
+        assert ClozeAudioTool.exclusive is True
+        entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
+        assert entry["exclusive"] is True
+
     def test_is_in_the_catalog_with_its_params(self):
         entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
         assert entry["kinds"] == ["tts"]
@@ -325,6 +336,16 @@ class TestSpanFinding:
 
     def test_no_marker_and_no_match_plans_nothing(self):
         assert ClozeMaskPlanner("dog").plan("The cat sat.") is None
+
+    def test_no_marker_and_no_word_plans_nothing(self):
+        # Nothing says what to hide, so there is nothing this tool can safely speak.
+        assert ClozeMaskPlanner("").plan("The cat sat.") is None
+
+    def test_a_mismatched_shape_is_rejected(self):
+        # The alternating shape is what keeps a spoken segment and a hidden answer from ever
+        # being the same string; a value that breaks it must not exist at all.
+        with pytest.raises(ValueError, match="one more segment"):
+            MaskedSpeech(("The cat",), ("sat", "down"))
 
     def test_an_empty_marker_hides_nothing(self):
         assert ClozeMaskPlanner("").plan("The cat {{c1::}} sat.") is None
@@ -431,28 +452,42 @@ class TestNeverSpeaksTheAnswer:
                 params={"source_field": "Sentence"},
             )
 
-    def test_the_chain_stops_dead_so_ai_never_speaks_the_sentence(self):
-        # The scenario the taxonomy needed a new outcome for: [cloze_audio, ai] on a field
-        # cloze_audio cannot mask. If `ai` ran, it would synthesize the whole sentence — with
-        # strip_markup unwrapping {{c1::sat}} to "sat" — and hand the user a ruined card.
+    @pytest.mark.parametrize("order", [("cloze_audio", "ai"), ("ai", "cloze_audio")])
+    def test_pairing_it_with_ai_refuses_the_chain_in_either_order(self, order):
+        # Stopping the chain only protects what comes AFTER cloze_audio, so it closes exactly
+        # one ordering — and the picker APPENDS a newly ticked tool, which makes ("ai",
+        # "cloze_audio") the easy one to build: `ai` simply wins, speaks "The cat sat down."
+        # (strip_markup unwraps {{c1::sat}}), and nothing looks wrong. So the pairing is
+        # refused outright, even here where cloze_audio COULD have masked this sentence: a
+        # config that can leak must not run at all.
         rule = _rule(
-            tools=(
+            prompt="{{Sentence}}",  # what `ai` would speak: the answer, unwrapped
+            tools=tuple(
                 CompiledToolSpec(
-                    name="cloze_audio", params={"source_field": "Sentence"}
-                ),
-                CompiledToolSpec(name="ai"),
-            )
+                    name=name,
+                    params=(
+                        {"source_field": "Sentence"} if name == "cloze_audio" else {}
+                    ),
+                )
+                for name in order
+            ),
         )
-        ctx = _ctx()
+        voice = _FakeWavTTS()
+        ctx = _ctx(voice)
+
         result = GenerationPipeline(ctx).run(
-            rule, {"Word": "dog", "Sentence": "The cat sat down."}
+            rule, {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."}
         )
 
         assert result.produced is None
+        assert voice.spoken == []  # nothing was synthesized at all
+        assert ctx.providers.llm_calls == 0
+        # One attempt, recorded against the tool that must not be replaced — no tool ran.
         assert [(a.tool, a.status) for a in result.attempts] == [
             ("cloze_audio", "error")
         ]
         assert result.errored is True  # so the note is kept for a retry, not discarded
+        assert "cloze_audio" in result.summary
 
     @pytest.mark.parametrize(
         "params",
@@ -464,20 +499,14 @@ class TestNeverSpeaksTheAnswer:
             {"source_field": "Sentence", "beep_gain_db": None},
         ],
     )
-    def test_unreadable_params_stop_the_chain_instead_of_falling_through(self, params):
+    def test_unreadable_params_fail_the_field_terminally(self, params):
         # parse_params runs INSIDE the pipeline's attempt guard but BEFORE run(), so the base
-        # "one failed attempt, carry on" would walk straight past the tool's whole purpose.
-        rule = _rule(
-            prompt="{{Sentence}}",  # what `ai` would speak: the answer, unwrapped
-            tools=(
-                CompiledToolSpec(name="cloze_audio", params=params),
-                CompiledToolSpec(name="ai"),
-            ),
-        )
+        # "one failed attempt, carry on" would walk straight past the tool's whole purpose on
+        # any chain that still had somewhere to fall to.
+        rule = _rule(tools=(CompiledToolSpec(name="cloze_audio", params=params),))
         voice = _FakeWavTTS()
-        ctx = _ctx(voice)
 
-        result = GenerationPipeline(ctx).run(
+        result = GenerationPipeline(_ctx(voice)).run(
             rule, {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."}
         )
 
@@ -485,7 +514,8 @@ class TestNeverSpeaksTheAnswer:
         assert [(a.tool, a.status) for a in result.attempts] == [
             ("cloze_audio", "error")
         ]
-        assert voice.spoken == []  # `ai` never got to read "The cat sat down." out
+        assert isinstance(result.attempts[0].error, TerminalToolError)
+        assert voice.spoken == []
         assert result.errored is True
 
     def test_a_recoverable_tool_still_falls_through(self):
@@ -513,13 +543,35 @@ class TestNeverSpeaksTheAnswer:
         )
         assert [spec.name for spec in compiled.tools] == ["ai"]
 
-    def test_an_empty_source_declines_softly(self):
-        # Nothing to speak means nothing to leak — the one safe fall-through.
-        outcome = _run(
-            {"Word": "cat", "Sentence": "  "}, params={"source_field": "Sentence"}
-        )
-        assert isinstance(outcome, NotApplicable)
-        assert "empty" in outcome.reason
+    @pytest.mark.parametrize(
+        "sentence", ["", "   ", "&nbsp;", "<br>", "[sound:x.mp3]", "<b></b>"]
+    )
+    def test_a_source_with_nothing_speakable_is_terminal_not_a_decline(self, sentence):
+        # "There is no sentence here, so there is no answer to leak" reasons about the wrong
+        # field: the next tool speaks the RULE's refs, not this tool's source_field. Every
+        # value here is everyday Anki field content and NON-blank, so the hard-prerequisite
+        # gate lets the field through — and the answer sitting in Hint gets read out the
+        # moment this tool declines. It cannot know what a later tool would say, so it never
+        # declines at all.
+        with pytest.raises(TerminalToolError, match="nothing to speak"):
+            _run(
+                {
+                    "Word": "cat",
+                    "Sentence": sentence,
+                    "Hint": "The cat {{c1::sat}} down.",
+                },
+                prompt="{{Sentence}} {{Hint}}",
+                params={"source_field": "Sentence"},
+            )
+
+    def test_it_never_declines_even_with_no_params_at_all(self):
+        # The reported repro: no explicit params, so source_field defaults to the prompt's
+        # first ref ("Sentence") while `ai` would speak both refs.
+        with pytest.raises(TerminalToolError):
+            _run(
+                {"Word": "cat", "Sentence": "&nbsp;", "Hint": "The cat sat down."},
+                prompt="{{Sentence}} {{Hint}}",
+            )
 
 
 class TestSplice:
@@ -626,6 +678,17 @@ class TestSplice:
                 params={"source_field": "Sentence"},
             )
 
+    def test_a_sentence_with_nothing_in_it_produces_no_audio(self):
+        # MaskedSpeech's shape permits one empty segment and no hidden word; ClozeMaskPlanner
+        # never builds one, but the builder takes a MaskedSpeech from anywhere and must fail
+        # rather than write an empty media file into the note.
+        builder = MaskedAudioBuilder(
+            ResolvedVoice(_FakeWavTTS(), None, "fake-voice"), WavCodec()
+        )
+
+        with pytest.raises(TerminalToolError, match="produced no audio"):
+            builder.build(MaskedSpeech(("",), ()))
+
     def test_stereo_audio_splices_when_every_segment_agrees(self):
         clip = _produced_clip(
             {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
@@ -649,6 +712,13 @@ class TestCodecSelection:
             ClozeAudioTool._codec("auto", "mp3", _FakeSidecar()), SidecarCodec
         )
 
+    def test_segments_forces_the_stdlib_even_for_an_mp3_voice(self):
+        # The escape hatch for a user who wants no runtime installed: the splice is attempted
+        # with the stdlib and fails loudly if the bytes are not PCM (never silently).
+        assert isinstance(
+            ClozeAudioTool._codec("segments", "mp3", _FakeSidecar()), WavCodec
+        )
+
     def test_an_unknown_strategy_degrades_to_auto(self):
         # ADR-010: a value a newer release added must not break this one.
         assert isinstance(
@@ -661,6 +731,22 @@ class TestCodecSelection:
         sidecar = _FakeSidecar()
         codec = ClozeAudioTool._codec("sidecar", "wav", sidecar)
         assert codec._sidecar is sidecar
+
+    def test_audio_the_runtime_cannot_decode_is_refused(self):
+        # The runtime answered, but not with PCM (a codec version that returns something else,
+        # a truncated pipe). Cutting is impossible, so it fails like every other unmaskable
+        # case rather than handing the sentence on.
+        class _JunkSidecar(_FakeSidecar):
+            def decode(self, data: bytes) -> bytes:
+                return b"not a wav at all"
+
+        with pytest.raises(TerminalToolError, match="the audio runtime returned"):
+            _run(
+                {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
+                tts=_FakeMp3TTS(),
+                audio=_JunkSidecar(),
+                params={"source_field": "Sentence"},
+            )
 
     def test_an_mp3_voice_with_the_codec_installed_produces_an_mp3(self):
         voice = _FakeMp3TTS()

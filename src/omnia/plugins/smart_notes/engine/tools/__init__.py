@@ -48,6 +48,8 @@ from omnia.plugins.smart_notes.engine.tools.pipeline import (
 )
 from omnia.plugins.smart_notes.engine.tools.registry import (
     TOOL_REGISTRY,
+    ChainConflict,
+    chain_conflict,
     get_tool,
     register_tool,
     registered_tools,
@@ -60,6 +62,7 @@ __all__ = [
     "TOOL_REGISTRY",
     "AiTool",
     "AttemptStatus",
+    "ChainConflict",
     "ClozeAudioParams",
     "ClozeAudioTool",
     "ClozeMaskPlanner",
@@ -85,6 +88,7 @@ __all__ = [
     "ToolRequest",
     "WavCodec",
     "ai",
+    "chain_conflict",
     "cloze",
     "cloze_audio",
     "get_tool",

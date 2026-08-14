@@ -106,6 +106,14 @@ class _TerminalTool(_ProduceTool):
         raise TerminalToolError("would leak the answer")
 
 
+class _ExclusiveTool(_ProduceTool):
+    """A tool no sibling may produce in place of (see ``cloze_audio``)."""
+
+    name: ClassVar[str] = "t_exclusive"
+    label: ClassVar[str] = "Exclusive"
+    exclusive: ClassVar[bool] = True
+
+
 class _ImageOnlyTool(_ProduceTool):
     name: ClassVar[str] = "t_image_only"
     label: ClassVar[str] = "Image only"
@@ -184,6 +192,7 @@ _FAKE_TOOLS: tuple[type[Tool], ...] = (
     _EmptyTool,
     _BoomTool,
     _TerminalTool,
+    _ExclusiveTool,
     _ImageOnlyTool,
     _JunkTool,
     _ParamTool,
@@ -424,6 +433,82 @@ class TestTerminalFailureStopsTheChain:
     def test_an_unknown_tool_alone_summarises_as_a_sentence(self, fake_tools):
         result = GenerationPipeline(_ctx()).run(_rule("t_missing"), {})
         assert result.summary == "no tool named 't_missing'"
+
+
+class TestAnExclusiveToolRefusesToShareAChain:
+    """A chain whose OTHER tool could produce instead must not run at all.
+
+    Halting the chain (above) only protects the tools that come AFTER the terminal one, so it
+    closes exactly one ordering. The tool that must not be replaced declares itself
+    :attr:`Tool.exclusive` instead, and the pipeline refuses such a chain before anything runs
+    — the only answer that is safe whichever tool the user ticked first.
+    """
+
+    def test_a_rival_after_it_refuses_the_whole_chain(self, fake_tools):
+        result = GenerationPipeline(_ctx()).run(_rule("t_exclusive", "t_produce"), {})
+
+        assert result.produced is None
+        assert _RUNS == []  # not even the exclusive tool was given a turn
+        assert _trace(result) == [("t_exclusive", "error")]
+        assert result.errored is True  # so the note is kept for a retry
+
+    def test_a_rival_before_it_refuses_the_whole_chain(self, fake_tools):
+        # The ordering a picker that APPENDS a newly ticked tool makes easiest to build, and
+        # the one a "does anything run after it?" check cannot see at all.
+        result = GenerationPipeline(_ctx()).run(_rule("t_produce", "t_exclusive"), {})
+
+        assert result.produced is None
+        assert _RUNS == []
+        assert result.errored is True
+
+    def test_the_refusal_names_the_problem_and_the_fix(self, fake_tools):
+        result = GenerationPipeline(_ctx()).run(_rule("t_produce", "t_exclusive"), {})
+
+        assert "'t_exclusive'" in result.summary
+        assert "'t_produce'" in result.summary
+        assert "remove" in result.summary.lower()
+
+    def test_alone_it_runs_normally(self, fake_tools):
+        result = GenerationPipeline(_ctx()).run(_rule("t_exclusive"), {})
+
+        assert result.produced is not None
+        assert _RUNS == ["t_exclusive"]
+
+    def test_a_tool_of_another_kind_is_not_a_rival(self, fake_tools):
+        # An image tool in a text field's chain can never produce there, so it can never
+        # produce INSTEAD — exclusivity is scoped to the kind, not to the whole chain.
+        result = GenerationPipeline(_ctx()).run(
+            _rule("t_exclusive", "t_image_only"), {}
+        )
+
+        assert result.produced is not None
+        assert _trace(result) == [("t_exclusive", "produced")]
+
+    def test_a_tool_this_build_lacks_is_not_a_rival(self, fake_tools):
+        # Nothing here can know what an absent tool would produce; the entry degrades to
+        # unknown_tool exactly as it always has.
+        result = GenerationPipeline(_ctx()).run(_rule("t_missing", "t_exclusive"), {})
+
+        assert _trace(result) == [
+            ("t_missing", "unknown_tool"),
+            ("t_exclusive", "produced"),
+        ]
+
+    def test_the_catalog_carries_the_flag_so_the_picker_can_warn_generically(
+        self, fake_tools
+    ):
+        catalog = {entry["name"]: entry for entry in tools_catalog(_ctx())}
+
+        assert catalog["t_exclusive"]["exclusive"] is True
+        assert catalog["t_produce"]["exclusive"] is False  # the default
+
+    def test_the_service_surfaces_the_refusal_as_a_chain_error(self, fake_tools):
+        service = GenerationService(providers=None)
+
+        with pytest.raises(ToolChainError) as excinfo:
+            service.generate(_rule("t_exclusive", "t_produce"), {})
+
+        assert isinstance(excinfo.value.cause, TerminalToolError)
 
 
 class TestPipelineIsolatesABrokenTool:

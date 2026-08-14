@@ -160,6 +160,13 @@ class Tool(ABC):
         kinds: The generation kinds it can serve (subset of ``{"text", "image", "tts"}``). The
             pipeline skips a tool whose ``kinds`` do not cover the rule's kind.
         deterministic: True when the tool never calls a paid/LLM endpoint.
+        exclusive: True when this tool must NOT share a chain with another tool that can
+            generate the same kind, because a sibling producing INSTEAD of it would be unsafe
+            rather than merely different. Declaring it here is what keeps the safety semantics
+            with the tool that has them: the pipeline refuses to run such a chain at all
+            (whatever the order), and the picker warns while it is being built — neither of
+            them knows WHICH tool it is. ``cloze_audio`` is the case that forced it: any other
+            tts tool on the same field speaks the answer it exists to hide.
         params_model: Pydantic model validating the field's per-tool params (None = no params).
     """
 
@@ -168,6 +175,7 @@ class Tool(ABC):
     description: ClassVar[str]
     kinds: ClassVar[frozenset[str]]
     deterministic: ClassVar[bool]
+    exclusive: ClassVar[bool] = False
     params_model: ClassVar[Optional[type[BaseModel]]] = None
 
     @abstractmethod

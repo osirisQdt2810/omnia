@@ -809,8 +809,9 @@ select:disabled { opacity: 0.7; }
 .sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .sn-tools-empty { color: var(--muted); font-size: 12px; }
 .sn-tools-empty:empty { display: none; }
-/* The answer-leak warning: a chain that speaks AFTER cloze_audio is safe here but not on a
-   device whose Omnia has no cloze_audio, so it is called out rather than blocked. */
+/* The chain warning: a tool that declares itself exclusive is sharing the chain with one that
+   could produce in its place, which the runtime refuses to run. Called out, not blocked, so a
+   chain that arrived from another device can still be edited back into shape. */
 .sn-tools-warn {
   font-size: 12px; color: var(--fail); line-height: 1.4; margin-top: 8px;
   background: var(--row-alt); border: 1px solid var(--fail);
