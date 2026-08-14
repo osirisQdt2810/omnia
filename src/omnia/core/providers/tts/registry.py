@@ -73,6 +73,27 @@ def registered_tts_providers() -> list[str]:
     return sorted(TTS_REGISTRY)
 
 
+def tts_providers_with_ext(ext: str) -> list[str]:
+    """Return the registered provider names whose audio is in ``ext`` format, sorted.
+
+    The registry plus each class's :attr:`TTSProvider.audio_ext` is the ONE place that knows
+    which provider returns what, so a caller that has to tell a user "this needs a WAV voice"
+    derives the list instead of hard-coding it — a hard-coded list goes stale the moment a
+    provider is added, renamed, or changes format, and it then LIES in the UI.
+
+    Args:
+        ext: The container/extension to match (``"wav"``, ``"mp3"``), compared case-insensitively.
+
+    Returns:
+        The matching config names, sorted (one class bound under several names contributes each
+        of them, since a name is what the user actually configures).
+    """
+    wanted = ext.strip().lower()
+    return sorted(
+        name for name, cls in TTS_REGISTRY.items() if cls.audio_ext.lower() == wanted
+    )
+
+
 def create_tts_provider(
     config: dict[str, Any], http: Optional[HttpClient] = None
 ) -> TTSProvider:

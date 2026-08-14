@@ -100,10 +100,10 @@ class SmartNotesDialog(WebDialog):
         """The generation-tools catalog baked into the page for the per-row Tools picker.
 
         Baked (not fetched) for the same reason as the provider catalog: the first paint must
-        not depend on a ``pycmd`` round-trip. Each tool reports its own availability against the
-        LIVE context, so the picker can grey a tool out with a real reason — which is why this
-        needs the provider hub. With a broken provider config there is no hub to ask, and the
-        picker degrades to its "no tools available" state (as every other provider-backed
+        not depend on a ``pycmd`` round-trip. Each tool reports what this machine is missing
+        against the LIVE context, so the picker can print real advice beside it — which is why
+        this needs the provider hub. With a broken provider config there is no hub to ask, and
+        the picker degrades to its "no tools available" state (as every other provider-backed
         surface in this dialog does); ``build_hub`` has already logged why.
         """
         hub = self._ctx.build_hub()

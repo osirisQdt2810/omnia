@@ -28,25 +28,18 @@ _IMG_RE = re.compile(r"<img[^>]*>", re.IGNORECASE)
 # Anki's inline TTS/AV tags, which are directives rather than content. The CLOSING form
 # ([/anki:tts]) must match too, or it survives into the text and gets read aloud.
 _AV_TAG_RE = re.compile(r"\[/?anki:[^\]]*\]", re.IGNORECASE)
-# {{c1::answer}} / {{c1::answer::hint}} -> the answer (the hint is scaffolding, not content).
-_CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::[^}]*)?\}\}", re.DOTALL)
+#: One cloze deletion — ``{{c1::answer}}`` or ``{{c1::answer::hint}}``; group 1 is the ANSWER
+#: (the hint is scaffolding, not content). Public because :func:`strip_markup` unwrapping a
+#: cloze to its answer is exactly what a listening-cloze field must NOT do: the audio-cloze
+#: tool locates these spans in the raw value so it can replace them with silence, and it must
+#: agree with this module on what a cloze IS — a second copy of the pattern would drift.
+CLOZE_RE = re.compile(r"\{\{c\d+::(.*?)(?:::[^}]*)?\}\}", re.DOTALL)
 _LINE_BREAK_RE = re.compile(r"<br\s*/?>|</(?:p|div|li|tr|h[1-6])>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _INLINE_SPACE_RE = re.compile(r"[^\S\n]+")
 _BLANK_LINES_RE = re.compile(r"\n{2,}")
-
-_ENTITIES = {
-    "&nbsp;": " ",
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&quot;": '"',
-    "&#39;": "'",
-    "&apos;": "'",
-    "&mdash;": "—",
-    "&ndash;": "–",
-    "&hellip;": "…",
-}
+# Soft hyphen, zero-width space/non-joiner/joiner, word joiner, BOM.
+_INVISIBLE_RE = re.compile(r"[\u00ad\u200b\u200c\u200d\u2060\ufeff]")
 
 
 def strip_markup(value: str, *, keep_line_breaks: bool = True) -> str:
@@ -69,11 +62,20 @@ def strip_markup(value: str, *, keep_line_breaks: bool = True) -> str:
     text = _SOUND_RE.sub(" ", value)
     text = _AV_TAG_RE.sub(" ", text)
     text = _IMG_RE.sub(" ", text)
-    text = _CLOZE_RE.sub(r"\1", text)
+    text = CLOZE_RE.sub(r"\1", text)
     text = _LINE_BREAK_RE.sub("\n", text)
     text = _TAG_RE.sub("", text)
-    for entity, replacement in _ENTITIES.items():
-        text = text.replace(entity, replacement)
+    # Decode EVERY named/numeric entity, not just a hand-kept few: an undecoded one reaches a
+    # TTS provider verbatim, so "caf&eacute;" was read out as the literal characters. `&nbsp;`
+    # keeps its own mapping to a PLAIN space (html.unescape gives U+00A0, which a voice and a
+    # word-boundary regex both handle worse than " ").
+    text = text.replace("&nbsp;", " ")
+    text = html.unescape(text)
+    # Invisible formatting characters: a soft hyphen or a zero-width space is a TYPOGRAPHIC
+    # hint, not a letter. Left in, they split a word for every consumer that looks at the text
+    # — a voice reads the pieces apart, and a word-boundary match silently misses, which for
+    # cloze_audio would mean speaking an answer it thought it had hidden.
+    text = _INVISIBLE_RE.sub("", text)
     text = _INLINE_SPACE_RE.sub(" ", text)
     text = _BLANK_LINES_RE.sub("\n", text)
     text = "\n".join(line.strip() for line in text.split("\n")).strip()

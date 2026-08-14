@@ -263,6 +263,26 @@ class ClozeRewriter:
         self._separate_cards = separate_cards
         self._mask = mask
 
+    def occurrences(self, value: str) -> list[tuple[int, int, str]]:
+        """Return each occurrence of the word in ``value`` as ``(start, end, surface)``.
+
+        Offsets index the ORIGINAL value, markup included, so a caller can cut it up without
+        re-deriving anything. Public because :mod:`~omnia.plugins.smart_notes.engine.tools.cloze_audio`
+        needs the same spans for a different surgery (replacing them with silence instead of
+        wrapping them): the matcher here handles markup projection, the two-way de-inflection
+        and the function-word filter, and a second copy of that would drift from this one.
+
+        Args:
+            value: The raw sentence field value (markup included).
+
+        Returns:
+            The hits in document order; empty when the word does not occur.
+        """
+        pattern = self._pattern(value, _plain_spans(value))
+        if pattern is None:
+            return []
+        return self._matches(value, pattern)
+
     def rewrite(self, value: str) -> Optional[str]:
         """Return ``value`` with every occurrence of the word clozed, or None when it has none.
 
@@ -274,20 +294,15 @@ class ClozeRewriter:
             :class:`~omnia.plugins.smart_notes.engine.tools.base.NotApplicable`, so a chain can
             fall through to the next tool).
         """
-        spans = _plain_spans(value)
-        pattern = self._pattern(value, spans)
-        if pattern is None:
+        hits = self.occurrences(value)
+        if not hits:
             return None
         pieces: list[str] = []
         cursor = 0
-        hits = 0
-        for match_start, match_end, surface in self._matches(value, pattern):
-            hits += 1
+        for occurrence, (match_start, match_end, surface) in enumerate(hits, start=1):
             pieces.append(value[cursor:match_start])
-            pieces.append(self._wrap(surface, hits))
+            pieces.append(self._wrap(surface, occurrence))
             cursor = match_end
-        if not hits:
-            return None
         pieces.append(value[cursor:])
         return "".join(pieces)
 
@@ -447,14 +462,14 @@ class ClozeTool(Tool):
         rule = request.rule
         params = request.params
         sentence_field = str(params.get("sentence_field", "") or "").strip() or (
-            self._default_sentence_field(rule)
+            default_source_field(rule)
         )
         word_field = str(params.get("word_field", "") or "").strip() or (
-            rule.base_field or rule.source_field
+            default_word_field(rule)
         )
-        sentence = _field_value(request.fields, sentence_field)
+        sentence = field_value(request.fields, sentence_field)
         word = strip_markup(
-            _field_value(request.fields, word_field), keep_line_breaks=False
+            field_value(request.fields, word_field), keep_line_breaks=False
         ).strip()
         if not strip_markup(sentence).strip():
             return NotApplicable(
@@ -484,20 +499,27 @@ class ClozeTool(Tool):
             )
         return Produced(GenerationResult("text", text=clozed))
 
-    @staticmethod
-    def _default_sentence_field(rule: SmartNotesFieldRule) -> str:
-        """The sentence field to use when the param is blank: first prompt ref, else the base.
 
-        Reads the rule's derived sources through
-        :func:`~omnia.plugins.smart_notes.engine.rules.rule_source_fields` — the same "what does
-        this field read" helper the graph and ordering use — so the default can never point
-        somewhere the dependency graph does not already know about.
-        """
-        sources = rule_source_fields(rule)
-        return sources[0] if sources else (rule.base_field or rule.source_field)
+def default_source_field(rule: SmartNotesFieldRule) -> str:
+    """The field a cloze-ish tool reads when its param is blank: first prompt ref, else the base.
+
+    Reads the rule's derived sources through
+    :func:`~omnia.plugins.smart_notes.engine.rules.rule_source_fields` — the same "what does
+    this field read" helper the graph and ordering use — so the default can never point
+    somewhere the dependency graph does not already know about. Shared with ``cloze_audio``,
+    whose ``source_field`` must default identically or the pair would read different fields on
+    the same note.
+    """
+    sources = rule_source_fields(rule)
+    return sources[0] if sources else (rule.base_field or rule.source_field)
 
 
-def _field_value(fields: Mapping[str, str], name: str) -> str:
+def default_word_field(rule: SmartNotesFieldRule) -> str:
+    """The field holding the word to hide when the param is blank: the note type's base field."""
+    return rule.base_field or rule.source_field
+
+
+def field_value(fields: Mapping[str, str], name: str) -> str:
     """Return ``fields[name]``, matching case-insensitively (Anki field names are).
 
     Mirrors how the service's block gate compares prerequisite names, so a chain configured

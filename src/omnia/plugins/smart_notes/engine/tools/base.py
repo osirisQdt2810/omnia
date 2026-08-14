@@ -28,6 +28,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
+from omnia.core.audio.sidecar import AudioSidecar
 from omnia.core.providers.errors import ProviderError
 
 if TYPE_CHECKING:
@@ -52,17 +53,45 @@ class ToolError(ProviderError):
     """
 
 
+class TerminalToolError(ToolError):
+    """A failure the chain must NOT fall through: no later tool may fill this field.
+
+    Every other way a tool can end — the three outcomes and a plain :class:`ToolError` — hands
+    the field to the next tool, which is the point of a chain. That default is *wrong* whenever
+    falling through would produce something actively harmful rather than merely different, and
+    the tools seam had no way to say so.
+
+    The case that forced it is ``cloze_audio``. It exists to speak a sentence with the answer
+    replaced by silence; when it cannot mask (no cloze span, an unspliceable provider, the codec
+    runtime missing) a chain of ``[cloze_audio, ai]`` would quietly hand the same field to plain
+    TTS — which reads the sentence *with the answer in it*, because
+    :func:`omnia.core.text.strip_markup` unwraps a cloze to its answer. The card would be
+    silently ruined, and nothing in the trace would say so. Documenting "don't configure that
+    chain" is not a safeguard; refusing to continue is.
+
+    The pipeline records the attempt exactly like any other error (so the field is a
+    ``FailedField`` of kind ``"error"`` and the note is kept for a retry) and then stops.
+    """
+
+
 @dataclass(frozen=True)
 class ToolContext:
     """Everything a tool may touch. Built once per :class:`GenerationService`.
 
     Deliberately narrow (ISP): a tool gets the provider hub, the best-effort language detector
-    the TTS path needs, and a logger — no collection, no config store, no Anki.
+    the TTS path needs, the audio codec runtime, and a logger — no collection, no config store,
+    no Anki.
+
+    ``audio`` is here rather than constructed inside a tool for the same reason ``providers`` is
+    (DIP): the managed-venv sidecar it drives resolves the PROCESS-WIDE runtime manager, so a
+    tool that built its own could only be tested by patching a module global. It defaults to a
+    real one, which costs nothing — the manager is resolved lazily, on first use.
     """
 
     providers: ProviderHub
     detector: LanguageDetector
     logger: logging.Logger
+    audio: AudioSidecar = field(default_factory=AudioSidecar)
 
 
 @dataclass(frozen=True)
@@ -131,6 +160,13 @@ class Tool(ABC):
         kinds: The generation kinds it can serve (subset of ``{"text", "image", "tts"}``). The
             pipeline skips a tool whose ``kinds`` do not cover the rule's kind.
         deterministic: True when the tool never calls a paid/LLM endpoint.
+        exclusive: True when this tool must NOT share a chain with another tool that can
+            generate the same kind, because a sibling producing INSTEAD of it would be unsafe
+            rather than merely different. Declaring it here is what keeps the safety semantics
+            with the tool that has them: the pipeline refuses to run such a chain at all
+            (whatever the order), and the picker warns while it is being built — neither of
+            them knows WHICH tool it is. ``cloze_audio`` is the case that forced it: any other
+            tts tool on the same field speaks the answer it exists to hide.
         params_model: Pydantic model validating the field's per-tool params (None = no params).
     """
 
@@ -139,6 +175,7 @@ class Tool(ABC):
     description: ClassVar[str]
     kinds: ClassVar[frozenset[str]]
     deterministic: ClassVar[bool]
+    exclusive: ClassVar[bool] = False
     params_model: ClassVar[Optional[type[BaseModel]]] = None
 
     @abstractmethod
@@ -164,7 +201,9 @@ class Tool(ABC):
 
         Called by the pipeline immediately before :meth:`run`, INSIDE the attempt's try-block:
         a params model that rejects the stored dict turns that tool into an error attempt and
-        the chain continues, rather than failing the whole field.
+        the chain continues, rather than failing the whole field. A tool whose fall-through is
+        HARMFUL must therefore override this and re-raise as
+        :class:`TerminalToolError` — ``run`` never gets to refuse for it (``cloze_audio`` does).
 
         Args:
             params: The field's raw per-tool params, as stored in config.
@@ -203,10 +242,13 @@ class Tool(ABC):
 
     @classmethod
     def availability(cls, ctx: ToolContext) -> str | None:
-        """Return why the tool cannot be offered right now, or None when it is available.
+        """Return what this machine is missing for the tool, or None when nothing is.
 
-        The string is shown next to a grayed-out entry in the tools picker (e.g. "needs a WAV
-        TTS provider (piper/viet-tts)"). Availability is advisory: an unavailable tool still
-        runs if configured, and declines with :class:`NotApplicable`.
+        Purely **advisory**, and the picker MUST render it without disabling the tool: an
+        unavailable tool still runs when configured. A tool cannot see the row it will run on
+        (``cloze_audio``'s answer depends on the VOICE the field resolves to, which is per-row),
+        so a global verdict is a hint — "MP3 voices need the audio runtime" — never a gate. The
+        two real gates are structural and the picker owns them: the tool is not installed here,
+        or its :attr:`kinds` do not cover the row's kind.
         """
         return None

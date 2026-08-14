@@ -10,12 +10,13 @@ from __future__ import annotations
 
 # Import every builtin tool module for its registration side effect (must come first: the
 # registry is populated by these imports).
-from omnia.plugins.smart_notes.engine.tools import ai, cloze
+from omnia.plugins.smart_notes.engine.tools import ai, cloze, cloze_audio
 from omnia.plugins.smart_notes.engine.tools.ai import AiTool
 from omnia.plugins.smart_notes.engine.tools.base import (
     Empty,
     NotApplicable,
     Produced,
+    TerminalToolError,
     Tool,
     ToolContext,
     ToolError,
@@ -27,6 +28,16 @@ from omnia.plugins.smart_notes.engine.tools.cloze import (
     ClozeRewriter,
     ClozeTool,
 )
+from omnia.plugins.smart_notes.engine.tools.cloze_audio import (
+    ClozeAudioParams,
+    ClozeAudioTool,
+    ClozeMaskPlanner,
+    MaskedAudioBuilder,
+    MaskedSpeech,
+    SidecarCodec,
+    SpeechCodec,
+    WavCodec,
+)
 from omnia.plugins.smart_notes.engine.tools.pipeline import (
     AttemptStatus,
     GenerationPipeline,
@@ -37,6 +48,8 @@ from omnia.plugins.smart_notes.engine.tools.pipeline import (
 )
 from omnia.plugins.smart_notes.engine.tools.registry import (
     TOOL_REGISTRY,
+    ChainConflict,
+    chain_conflict,
     get_tool,
     register_tool,
     registered_tools,
@@ -49,14 +62,23 @@ __all__ = [
     "TOOL_REGISTRY",
     "AiTool",
     "AttemptStatus",
+    "ChainConflict",
+    "ClozeAudioParams",
+    "ClozeAudioTool",
+    "ClozeMaskPlanner",
     "ClozeParams",
     "ClozeRewriter",
     "ClozeTool",
     "Empty",
     "GenerationPipeline",
+    "MaskedAudioBuilder",
+    "MaskedSpeech",
     "NotApplicable",
     "PipelineResult",
     "Produced",
+    "SidecarCodec",
+    "SpeechCodec",
+    "TerminalToolError",
     "Tool",
     "ToolAttempt",
     "ToolChainError",
@@ -64,8 +86,11 @@ __all__ = [
     "ToolError",
     "ToolOutcome",
     "ToolRequest",
+    "WavCodec",
     "ai",
+    "chain_conflict",
     "cloze",
+    "cloze_audio",
     "get_tool",
     "register_tool",
     "registered_tools",
