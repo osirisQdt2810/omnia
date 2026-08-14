@@ -83,7 +83,26 @@ class UserToolsController:
             "user_tool_test": self.on_test,
             "user_tool_save": self.on_save,
             "user_tool_delete": self.on_delete,
+            "user_tool_open_dir": self.on_open_dir,
         }
+
+    def on_open_dir(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Open the tools folder in the OS file manager.
+
+        The whole point of the button: the folder is where the user's tools LIVE, and telling
+        them a path they then have to retype into Finder/Explorer is not a location, it is
+        homework. Qt opens it natively on every platform, so nothing here knows about macOS.
+        """
+        directory = self._loader.store.directory
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            anki_compat.open_local_path(directory)
+        # Broad at the UI boundary: what a failed open raises is platform- and Qt-dependent,
+        # and a folder that will not open must not take the Tools tab down with it.
+        except Exception as exc:
+            logger.exception("smart_notes: could not open the user tools folder")
+            return {"error": f"Could not open {directory} ({exc})."}
+        return {"ok": True}
 
     def ensure_loaded(self) -> None:
         """(Re)load every tool file into the registry — called before the catalog is baked.
@@ -139,8 +158,26 @@ class UserToolsController:
                 for name in registered_tools()
                 if not is_user_tool(name)
             ],
+            # Two forms on purpose. `directory` is the absolute path — correct on every
+            # platform because it is derived from the installed package's own location, never
+            # written down — but it is long, and inlining it in a sentence made a runtime value
+            # read as a hardcoded macOS literal. `directory_label` is the short, stable name to
+            # show; the absolute path rides along for the tooltip and the Open-folder button.
             "directory": str(self._loader.store.directory),
+            "directory_label": self._directory_label(),
         }
+
+    def _directory_label(self) -> str:
+        """The tools folder as ``user_files/tools``-style text, whatever the platform.
+
+        Relative to the add-on root when it sits underneath it (always, in a real install);
+        the absolute path is the honest fallback for a layout that does not.
+        """
+        directory = self._loader.store.directory
+        try:
+            return str(directory.relative_to(addon_user_files_dir().parent))
+        except ValueError:
+            return str(directory)
 
     def on_generate(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Write a tool's source from the user's description, OFF the Qt main thread.

@@ -857,6 +857,8 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   border-radius: 8px; padding: 8px 10px;
 }
 .sn-ut-dir { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+/* Inline with the sentence: the folder is being named, so the way to open it belongs there. */
+.sn-ut-open { font-size: 11px; padding: 1px 7px; margin-left: 2px; vertical-align: baseline; }
 .sn-ut-section { margin: 14px 0; display: flex; flex-direction: column; gap: 8px; }
 .sn-ut-list { display: flex; flex-direction: column; gap: 8px; }
 .sn-ut-card {

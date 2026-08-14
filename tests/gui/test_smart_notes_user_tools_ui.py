@@ -15,6 +15,7 @@ for ``run_in_background``, so no Qt stack and no real dialog. Every tool file is
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import sys
 import types
@@ -282,6 +283,99 @@ class TestPersistence:
         # reported instead of a file being written under a name nothing registers.
         assert "could not be loaded" in result["error"]
         assert result.get("ok") is None
+
+
+class TestTheToolsFolderIsNeverHardcoded:
+    """Where the tools live is derived, never written down — and shown as such.
+
+    The absolute path was already correct on every platform (it comes from the installed
+    package's own location), but the page inlined it into a sentence, so a runtime value read
+    as a hardcoded macOS literal. The payload now carries a SHORT label for the sentence and
+    keeps the absolute path for the tooltip and the Open-folder button.
+    """
+
+    def test_a_real_install_shows_the_short_relative_label(
+        self, registry_guard, sync_background, tmp_path, monkeypatch
+    ):
+        # The real layout: the folder sits under the add-on root, so the label is the stable
+        # `user_files/tools` — the same two words on macOS, Windows and Linux.
+        addon_root = tmp_path / "addons21" / "123456"
+        directory = addon_root / "user_files" / "tools"
+        monkeypatch.setattr(
+            "omnia.gui.smart_notes.dialogs.controllers.user_tools.addon_user_files_dir",
+            lambda: addon_root / "user_files",
+        )
+        ctrl = UserToolsController(
+            _fake_ctx(), loader=UserToolLoader(UserToolStore(directory))
+        )
+
+        payload = ctrl.on_list({})
+
+        assert payload["directory_label"] == str(pathlib.Path("user_files") / "tools")
+        # …while the absolute path rides along for the tooltip and the Open-folder button.
+        assert payload["directory"] == str(directory)
+
+    def test_a_folder_outside_the_addon_falls_back_to_the_absolute_path(
+        self, controller, store
+    ):
+        # A layout the relative form cannot express (a test store, a hand-moved folder). The
+        # honest answer is the full path, not a relative one that points somewhere else.
+        ctrl, _ctx, _pushed = controller
+
+        payload = ctrl.on_list({})
+
+        assert payload["directory_label"] == str(store.directory)
+        assert payload["directory"] == str(store.directory)
+
+    def test_the_label_follows_the_folder_rather_than_naming_a_platform(
+        self, registry_guard, sync_background, tmp_path
+    ):
+        # Two different install locations, neither of them written down anywhere: the label
+        # tracks whatever folder the loader was built with.
+        for where in ("addons21/12345/user_files/tools", "somewhere/else/tools"):
+            directory = tmp_path / where
+            ctrl = UserToolsController(
+                _fake_ctx(), loader=UserToolLoader(UserToolStore(directory))
+            )
+
+            assert ctrl.on_list({})["directory"] == str(directory)
+
+    def test_opening_the_folder_goes_through_the_cross_platform_seam(
+        self, controller, store, monkeypatch
+    ):
+        # No `sys.platform` branch anywhere — Qt resolves Finder/Explorer/xdg-open itself.
+        ctrl, _ctx, _pushed = controller
+        opened: list[Any] = []
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.open_local_path", lambda path: opened.append(path)
+        )
+
+        result = ctrl.on_open_dir({})
+
+        assert result == {"ok": True}
+        assert opened == [store.directory]
+        assert (
+            store.directory.is_dir()
+        )  # created on demand, so the open cannot fail on it
+
+    def test_a_failed_open_reports_instead_of_taking_the_tab_down(
+        self, controller, monkeypatch
+    ):
+        ctrl, _ctx, _pushed = controller
+
+        def boom(_path):
+            raise RuntimeError("no file manager")
+
+        monkeypatch.setattr("omnia.core.anki_compat.open_local_path", boom)
+
+        result = ctrl.on_open_dir({})
+
+        assert "no file manager" in result["error"]
+
+    def test_the_op_is_routed(self, controller):
+        ctrl, _ctx, _pushed = controller
+
+        assert "user_tool_open_dir" in ctrl.ops()
 
 
 class TestDelete:
