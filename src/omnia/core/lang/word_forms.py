@@ -13,7 +13,10 @@ usually matches nothing, while a missing one loses the user the card they were a
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
+from types import MappingProxyType
 
 # Inflection rules, applied to strip a suffix back towards the base form. Each entry is
 # (suffix, replacements) and every replacement that leaves a plausible stem is offered as a
@@ -33,6 +36,317 @@ _DEINFLECT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ly", ("",)),  # quickly -> quick
     ("s", ("",)),  # loves -> love
 )
+# Irregular forms, which no suffix rule can reach: "ran" shares no ending with "run". English
+# irregulars are a CLOSED set, so unlike the rules above this table is knowledge, not guesswork —
+# it is consulted first and its answers are exact.
+#
+# Two properties matter for how it is used:
+#   * A form may map to SEVERAL bases when English is genuinely ambiguous ("left" is both the
+#     past of "leave" and a direction; "saw" is both the past of "see" and a tool). Every base
+#     is offered, and the word itself is always kept, so an ambiguous form widens the search
+#     rather than redirecting it.
+#   * A verb whose form never changes maps to ITSELF ("cut" -> "cut"). Those entries are
+#     no-ops at runtime — ``offer`` skips a candidate already present — and are kept because the
+#     table doubles as the list of what the de-inflector knows; an absent entry reads as an
+#     oversight, a self-entry reads as a decision.
+#   * Only INFLECTED -> BASE is stored. The reverse is not needed: callers that must match a
+#     lemma against a sentence de-inflect the sentence's tokens too and compare bases, so
+#     "run" (base field) and "ran" (sentence) meet at "run".
+#
+# Short forms like "ran"/"ate"/"men" are why the lookup runs BEFORE the ``min_inflected``
+# guard — that guard exists to stop the suffix rules mangling short words, and an exact table
+# needs no such protection.
+_IRREGULAR_FORMS: dict[str, tuple[str, ...]] = {
+    # -- be / have / do -------------------------------------------------------------------
+    "am": ("be",),
+    "is": ("be",),
+    "are": ("be",),
+    "was": ("be",),
+    "were": ("be",),
+    "been": ("be",),
+    "being": ("be",),
+    "has": ("have",),
+    "had": ("have",),
+    "having": ("have",),
+    "does": ("do",),
+    "did": ("do",),
+    "done": ("do",),
+    "doing": ("do",),
+    # -- irregular verbs (past / past participle) -----------------------------------------
+    "arose": ("arise",),
+    "arisen": ("arise",),
+    "awoke": ("awake",),
+    "awoken": ("awake",),
+    "bore": ("bear",),
+    "borne": ("bear",),
+    "born": ("bear",),
+    "beat": ("beat",),
+    "beaten": ("beat",),
+    "became": ("become",),
+    "began": ("begin",),
+    "begun": ("begin",),
+    "bent": ("bend",),
+    "bet": ("bet",),
+    "bit": ("bite",),
+    "bitten": ("bite",),
+    "bled": ("bleed",),
+    "blew": ("blow",),
+    "blown": ("blow",),
+    "broke": ("break",),
+    "broken": ("break",),
+    "bred": ("breed",),
+    "brought": ("bring",),
+    "built": ("build",),
+    "burnt": ("burn",),
+    "burst": ("burst",),
+    "bought": ("buy",),
+    "caught": ("catch",),
+    "chose": ("choose",),
+    "chosen": ("choose",),
+    "clung": ("cling",),
+    "came": ("come",),
+    "cost": ("cost",),
+    "crept": ("creep",),
+    "cut": ("cut",),
+    "dealt": ("deal",),
+    "dug": ("dig",),
+    "drew": ("draw",),
+    "drawn": ("draw",),
+    "dreamt": ("dream",),
+    "drank": ("drink",),
+    "drunk": ("drink",),
+    "drove": ("drive",),
+    "driven": ("drive",),
+    "ate": ("eat",),
+    "eaten": ("eat",),
+    "fell": ("fall",),
+    "fallen": ("fall",),
+    "fed": ("feed",),
+    "felt": ("feel",),
+    "fought": ("fight",),
+    "found": ("find",),
+    "fled": ("flee",),
+    "flew": ("fly",),
+    "flown": ("fly",),
+    "forbade": ("forbid",),
+    "forbidden": ("forbid",),
+    "forgot": ("forget",),
+    "forgotten": ("forget",),
+    "forgave": ("forgive",),
+    "forgiven": ("forgive",),
+    "froze": ("freeze",),
+    "frozen": ("freeze",),
+    "got": ("get",),
+    "gotten": ("get",),
+    "gave": ("give",),
+    "given": ("give",),
+    "went": ("go",),
+    "gone": ("go",),
+    "grew": ("grow",),
+    "grown": ("grow",),
+    "hung": ("hang",),
+    "heard": ("hear",),
+    "hid": ("hide",),
+    "hidden": ("hide",),
+    "hit": ("hit",),
+    "held": ("hold",),
+    "hurt": ("hurt",),
+    "kept": ("keep",),
+    "knelt": ("kneel",),
+    "knew": ("know",),
+    "known": ("know",),
+    "laid": ("lay",),
+    "led": ("lead",),
+    "leant": ("lean",),
+    "leapt": ("leap",),
+    "learnt": ("learn",),
+    "left": ("leave",),
+    "lent": ("lend",),
+    "let": ("let",),
+    "lay": ("lie",),
+    "lain": ("lie",),
+    "lit": ("light",),
+    "lost": ("lose",),
+    "made": ("make",),
+    "meant": ("mean",),
+    "met": ("meet",),
+    "paid": ("pay",),
+    "put": ("put",),
+    "quit": ("quit",),
+    "read": ("read",),
+    "rode": ("ride",),
+    "ridden": ("ride",),
+    "rang": ("ring",),
+    "rung": ("ring",),
+    "rose": ("rise",),
+    "risen": ("rise",),
+    "ran": ("run",),
+    "said": ("say",),
+    "saw": ("see",),
+    "seen": ("see",),
+    "sought": ("seek",),
+    "sold": ("sell",),
+    "sent": ("send",),
+    "set": ("set",),
+    "sewn": ("sew",),
+    "shook": ("shake",),
+    "shaken": ("shake",),
+    "shone": ("shine",),
+    "shot": ("shoot",),
+    "showed": ("show",),
+    "shown": ("show",),
+    "shrank": ("shrink",),
+    "shrunk": ("shrink",),
+    "shut": ("shut",),
+    "sang": ("sing",),
+    "sung": ("sing",),
+    "sank": ("sink",),
+    "sunk": ("sink",),
+    "sat": ("sit",),
+    "slept": ("sleep",),
+    "slid": ("slide",),
+    "spoke": ("speak",),
+    "spoken": ("speak",),
+    "spent": ("spend",),
+    "spilt": ("spill",),
+    "spun": ("spin",),
+    "spat": ("spit",),
+    "split": ("split",),
+    "spread": ("spread",),
+    "sprang": ("spring",),
+    "sprung": ("spring",),
+    "stood": ("stand",),
+    "stole": ("steal",),
+    "stolen": ("steal",),
+    "stuck": ("stick",),
+    "stung": ("sting",),
+    "stank": ("stink",),
+    "stunk": ("stink",),
+    "struck": ("strike",),
+    "swore": ("swear",),
+    "sworn": ("swear",),
+    "swept": ("sweep",),
+    "swam": ("swim",),
+    "swum": ("swim",),
+    "swung": ("swing",),
+    "took": ("take",),
+    "taken": ("take",),
+    "taught": ("teach",),
+    "tore": ("tear",),
+    "torn": ("tear",),
+    "told": ("tell",),
+    "thought": ("think",),
+    "threw": ("throw",),
+    "thrown": ("throw",),
+    "understood": ("understand",),
+    "woke": ("wake",),
+    "woken": ("wake",),
+    "wore": ("wear",),
+    "worn": ("wear",),
+    "wept": ("weep",),
+    "won": ("win",),
+    "wound": ("wind",),
+    "withdrew": ("withdraw",),
+    "withdrawn": ("withdraw",),
+    "wrote": ("write",),
+    "written": ("write",),
+    # -- irregular plurals ----------------------------------------------------------------
+    "children": ("child",),
+    "men": ("man",),
+    "women": ("woman",),
+    "feet": ("foot",),
+    "teeth": ("tooth",),
+    "geese": ("goose",),
+    "mice": ("mouse",),
+    "lice": ("louse",),
+    "oxen": ("ox",),
+    "people": ("person",),
+    "lives": ("life",),
+    "knives": ("knife",),
+    "wives": ("wife",),
+    "leaves": ("leaf",),
+    "halves": ("half",),
+    "wolves": ("wolf",),
+    "shelves": ("shelf",),
+    "thieves": ("thief",),
+    "loaves": ("loaf",),
+    "calves": ("calf",),
+    "selves": ("self",),
+    "criteria": ("criterion",),
+    "phenomena": ("phenomenon",),
+    "analyses": ("analysis",),
+    "crises": ("crisis",),
+    "theses": ("thesis",),
+    "hypotheses": ("hypothesis",),
+    "diagnoses": ("diagnosis",),
+    "bases": ("basis",),
+    "indices": ("index",),
+    "matrices": ("matrix",),
+    "appendices": ("appendix",),
+    "vertices": ("vertex",),
+    "cacti": ("cactus",),
+    "fungi": ("fungus",),
+    "nuclei": ("nucleus",),
+    "radii": ("radius",),
+    "alumni": ("alumnus",),
+    "stimuli": ("stimulus",),
+    "media": ("medium",),
+    "bacteria": ("bacterium",),
+    "curricula": ("curriculum",),
+    # -- irregular comparison -------------------------------------------------------------
+    "better": ("good",),
+    "best": ("good",),
+    "worse": ("bad",),
+    "worst": ("bad",),
+    "further": ("far",),
+    "furthest": ("far",),
+    "farther": ("far",),
+    "farthest": ("far",),
+    "least": ("little",),
+    "elder": ("old",),
+    "eldest": ("old",),
+}
+#: Read-only view, so the shared table cannot be mutated through a Deinflector.
+_IRREGULAR: Mapping[str, tuple[str, ...]] = MappingProxyType(_IRREGULAR_FORMS)
+
+# Forms that are ALSO ordinary headwords in their own right, so resolving one to its base names
+# a DIFFERENT word rather than another spelling of the same one: "left" is a direction as well as
+# the past of "leave", "rose" is a flower, "saw" is a tool.
+#
+# Widening is safe in one direction and destructive in the other, which is why this subset
+# exists rather than a flag on the whole table:
+#   * de-inflecting a SENTENCE's token is safe — a "leave" card should still hide the "left" in
+#     its example, and a search that also looks for "leave" costs nothing;
+#   * de-inflecting the HEADWORD is not — a "left" card would then hide every "leave" in the
+#     sentence, and the cloze tool WRITES that back to the note.
+# So the cloze tool builds a probe from :data:`UNAMBIGUOUS_IRREGULAR` while still reading tokens
+# through the full table. Word-lookup keeps the full table for both.
+_AMBIGUOUS_IRREGULARS: frozenset[str] = frozenset(
+    {
+        "left",  # direction / remaining
+        "saw",  # the tool
+        "rose",  # the flower
+        "found",  # to found
+        "lay",  # to lay something down
+        "wound",  # an injury
+        "bore",  # to bore / a bore
+        "born",  # the adjective
+        "fell",  # to fell a tree
+        "bit",  # a bit of something
+        "spat",  # a quarrel
+        "stole",  # the garment
+    }
+)
+
+#: The table minus the forms whose base is a different word (see :data:`_AMBIGUOUS_IRREGULARS`).
+UNAMBIGUOUS_IRREGULAR: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        form: bases
+        for form, bases in _IRREGULAR_FORMS.items()
+        if form not in _AMBIGUOUS_IRREGULARS
+    }
+)
+
 # A stem shorter than this is noise ("as" -> "a"). Two is enough for real bases like "go".
 _MIN_STEM = 2
 # Only de-inflect words long enough to actually carry a suffix; "as"/"is" must be left alone.
@@ -51,12 +365,23 @@ class Deinflector:
     Attributes:
         rules: ``(suffix, replacements)`` pairs, most specific first; the first matching
             suffix wins.
+        irregular: Exact ``inflected -> bases`` lookups no suffix rule can reach, consulted
+            before the length guard. Pass :data:`UNAMBIGUOUS_IRREGULAR` to drop the forms
+            whose base is a different word — what a caller that REWRITES text wants.
         min_stem: Shortest stem worth offering as a candidate.
         min_inflected: Shortest word worth de-inflecting at all.
         max_variants: Cap on the returned candidates, so a query stays small.
     """
 
     rules: tuple[tuple[str, tuple[str, ...]], ...] = _DEINFLECT
+    # default_factory, NOT a plain default: dataclasses refuses a default whose type is
+    # unhashable, and `mappingproxy` only became hashable in 3.12 — so a bare
+    # `= _IRREGULAR` raises ValueError at CLASS-CREATION time on Python 3.11, which means the
+    # module cannot even be imported and the whole add-on fails to load. Verified on 3.11.16.
+    # The CI matrix runs 3.10 and 3.13, so 3.11 and 3.12 were the untested middle.
+    irregular: Mapping[str, tuple[str, ...]] = dataclass_field(
+        default_factory=lambda: _IRREGULAR
+    )
     min_stem: int = _MIN_STEM
     min_inflected: int = _MIN_INFLECTED
     max_variants: int = _MAX_VARIANTS
@@ -90,8 +415,15 @@ class Deinflector:
             if len(candidate) >= self.min_stem and candidate not in found:
                 found.append(candidate)
 
+        # Irregulars first: they are exact knowledge, and they must be consulted BEFORE the
+        # length guard because the shortest words in English are the most irregular ("ran",
+        # "ate", "men", "was"). The suffix rules still run afterwards — a form can be both
+        # ("leaves" is the plural of "leaf" AND the third person of "leave").
+        for irregular_base in self.irregular.get(base, ()):
+            offer(irregular_base)
+
         if len(base) < self.min_inflected:
-            return tuple(found)
+            return tuple(found[: self.max_variants])
         for suffix, replacements in self.rules:
             if not base.endswith(suffix) or len(base) - len(suffix) < self.min_stem:
                 continue

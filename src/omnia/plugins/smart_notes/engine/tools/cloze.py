@@ -34,7 +34,12 @@ from typing import TYPE_CHECKING, ClassVar, Optional
 from pydantic import BaseModel, Field
 
 from omnia.core.config.base import PersistedModel
-from omnia.core.lang.word_forms import word_variants, words_boundary_pattern
+from omnia.core.lang.word_forms import (
+    UNAMBIGUOUS_IRREGULAR,
+    Deinflector,
+    word_variants,
+    words_boundary_pattern,
+)
 from omnia.core.text import strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult
 from omnia.plugins.smart_notes.engine.rules import rule_source_fields
@@ -68,6 +73,12 @@ _OPAQUE_RE = re.compile(
     r"|\{\{c\d+::.*?\}\}",
     re.IGNORECASE | re.DOTALL,
 )
+
+# The probe built from the HEADWORD drops the irregular forms whose base is a different word
+# ("left" -> "leave", "rose" -> "rise"): resolving those would hide an unrelated word, and this
+# tool writes its output back to the note. The SENTENCE's tokens keep the full table, so a
+# "leave" card still hides the "left" in its example — the safe direction.
+_HEADWORD_DEINFLECTOR = Deinflector(irregular=UNAMBIGUOUS_IRREGULAR)
 
 # Word-ish runs used to harvest the sentence's own tokens for the inverse de-inflection.
 _TOKEN_RE = re.compile(r"\w+")
@@ -359,7 +370,7 @@ class ClozeRewriter:
         primary = self._word.lower()
         if not self._match_word_forms:
             return [primary] if primary else []
-        targets = set(word_variants(self._word))
+        targets = set(_HEADWORD_DEINFLECTOR.variants(self._word))
         terms = {primary}
         for start, end in spans:
             for token in _TOKEN_RE.findall(value[start:end]):

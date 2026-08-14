@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from omnia.core.lang.word_forms import (
     DEFAULT_DEINFLECTOR,
+    UNAMBIGUOUS_IRREGULAR,
     Deinflector,
     word_boundary_pattern,
     word_variants,
@@ -17,6 +18,7 @@ from omnia.core.lang.word_forms import (
 
 __all__ = [
     "DEFAULT_DEINFLECTOR",
+    "UNAMBIGUOUS_IRREGULAR",
     "Deinflector",
     "word_boundary_pattern",
     "word_variants",

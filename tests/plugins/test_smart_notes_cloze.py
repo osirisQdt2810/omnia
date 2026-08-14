@@ -245,13 +245,14 @@ class TestMarkupSafety:
 
 class TestMultipleOccurrences:
     def test_every_occurrence_is_hidden_on_one_card_by_default(self):
-        # "ran" is deliberately NOT hidden: the de-inflector is suffix-rule-based, so an
-        # irregular form it cannot derive is simply not a match (documented limitation).
+        # "ran" IS hidden now: the de-inflector carries an irregular table, so a form no suffix
+        # rule can reach still resolves to the headword. (This assertion used to pin the
+        # opposite as a documented limitation.)
         text = _clozed(
             {"Word": "run", "Sentence": "I run, you run, we ran."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "I {{c1::run}}, you {{c1::run}}, we ran."
+        assert text == "I {{c1::run}}, you {{c1::run}}, we {{c1::ran}}."
 
     def test_separate_cards_numbers_each_occurrence(self):
         text = _clozed(
@@ -526,4 +527,117 @@ class TestTheChainIsNotStoppedByABadRewrite:
                 params={"sentence_field": "Word", "word_field": "Word"},
             ),
             NotApplicable,
+        )
+
+
+class TestIrregularFormsMeetTheFunctionWordFilter:
+    """Where the irregular table and the speculative-stem filter overlap.
+
+    Both landed for the same reason — a cloze that silently rewrites the wrong words is worse
+    than one that declines — and they pull in opposite directions on the same short words, so
+    the boundary between them is pinned here rather than left to chance.
+    """
+
+    @pytest.mark.parametrize(
+        ("word", "sentence", "expected"),
+        [
+            (
+                "run",
+                "I run now, we ran then.",
+                "I {{c1::run}} now, we {{c1::ran}} then.",
+            ),
+            ("eat", "They ate it.", "They {{c1::ate}} it."),
+            ("go", "She went home.", "She {{c1::went}} home."),
+            ("child", "The children left.", "The {{c1::children}} left."),
+            ("good", "This is better.", "This is {{c1::better}}."),
+        ],
+    )
+    def test_an_irregular_form_is_clozed(self, word, sentence, expected):
+        assert (
+            _clozed(
+                {"Word": word, "Sentence": sentence},
+                params={"sentence_field": "Sentence"},
+            )
+            == expected
+        )
+
+    def test_a_function_word_headword_still_reaches_its_own_irregulars(self):
+        # "be" is in the filter list, but it is also this card's headword — the exemption is
+        # what lets a beginner's "be" card hide the "was" in its example.
+        text = _clozed(
+            {"Word": "be", "Sentence": "He was happy and will be fine."},
+            params={"sentence_field": "Sentence"},
+        )
+        assert text == "He {{c1::was}} happy and will {{c1::be}} fine."
+
+    def test_the_table_does_not_reopen_the_speculative_stem_hole(self):
+        # "bees" strips to the stem "be", which the table now also knows as a real base. The
+        # filter still has to keep the sentence's "be" out of a "bees" card.
+        text = _clozed(
+            {"Word": "bees", "Sentence": "The bees can be loud."},
+            params={"sentence_field": "Sentence"},
+        )
+        assert text == "The {{c1::bees}} can be loud."
+
+
+class TestAnAmbiguousIrregularNeverHidesADifferentWord:
+    """The headword's probe drops irregulars whose base is a DIFFERENT word.
+
+    "left" is a direction as well as the past of "leave". Resolving it on the headword side
+    made a "left" card hide every "leave" in its sentence — and this tool writes back to the
+    note, so it is destructive rather than merely noisy. The sentence's tokens keep the full
+    table, because that direction is safe and is the one the irregular work was added for.
+    """
+
+    @pytest.mark.parametrize(
+        ("word", "sentence", "expected"),
+        [
+            (
+                "left",
+                "Please leave your coat on the left.",
+                "Please leave your coat on the {{c1::left}}.",
+            ),
+            (
+                "rose",
+                "The rose bloomed as prices rise.",
+                "The {{c1::rose}} bloomed as prices rise.",
+            ),
+            (
+                "saw",
+                "I saw it and want to see it.",
+                "I {{c1::saw}} it and want to see it.",
+            ),
+            (
+                "found",
+                "They found what they came to find.",
+                "They {{c1::found}} what they came to find.",
+            ),
+        ],
+    )
+    def test_the_headword_hides_only_itself(self, word, sentence, expected):
+        assert (
+            _clozed(
+                {"Word": word, "Sentence": sentence},
+                params={"sentence_field": "Sentence"},
+            )
+            == expected
+        )
+
+    @pytest.mark.parametrize(
+        ("word", "sentence", "expected"),
+        [
+            ("leave", "He left yesterday.", "He {{c1::left}} yesterday."),
+            ("see", "I saw it.", "I {{c1::saw}} it."),
+            ("find", "They found it.", "They {{c1::found}} it."),
+        ],
+    )
+    def test_the_safe_direction_is_untouched(self, word, sentence, expected):
+        # A "leave" card must still hide the "left" in its example — that is the whole point of
+        # the irregular table, and only the reverse direction is restricted.
+        assert (
+            _clozed(
+                {"Word": word, "Sentence": sentence},
+                params={"sentence_field": "Sentence"},
+            )
+            == expected
         )
