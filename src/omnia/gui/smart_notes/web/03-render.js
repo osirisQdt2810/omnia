@@ -98,10 +98,10 @@
   }
 
   /**
-   * Build the Lock cell: a toggle that freezes + blurs the row's settings when on.
+   * Build the lock badge that sits in the prompt cell's corner.
    * @param {!HTMLTableRowElement} tr The owning row.
    * @param {boolean} locked Initial locked state.
-   * @return {!HTMLTableCellElement}
+   * @return {!HTMLButtonElement}
    */
   function makeLockButton(tr, locked) {
     const lock = document.createElement("button");
@@ -111,8 +111,7 @@
     // Says PROMPT, because that is all it does. It used to say "settings" — true when the lock
     // froze the whole row, and a plain lie once it was narrowed to Type and Prompt.
     lock.title = "Freeze this prompt — Auto-smart and Improve will skip it";
-    lock.addEventListener("click", function (e) {
-      e.stopPropagation();  // the cell itself opens the editor
+    lock.addEventListener("click", function () {
       const isLocked = lock.classList.toggle("sn-locked");
       lock.textContent = isLocked ? "🔒" : "🔓";
       applyLockState(tr);
@@ -121,8 +120,10 @@
   }
 
   /**
-   * Build the Prompt cell: a clickable summary that opens the popup editor when unlocked.
+   * Build the Prompt cell: a clickable summary that opens the popup editor when unlocked,
+   * plus the lock badge in its corner.
    * @param {!HTMLTableRowElement} tr The owning row.
+   * @param {boolean} locked Initial locked state of this row's prompt.
    * @return {!HTMLTableCellElement}
    */
   function makePromptCell(tr, locked) {
@@ -292,7 +293,10 @@
     // The PROMPT too: it is the instruction handed to a provider, so a chain of purely
     // deterministic tools (cloze alone, say) never reads it. Leaving it lit invites someone to
     // write a prompt for a row that will not use one and wonder why nothing changed.
-    tr.querySelector(".sn-prompt-cell").classList.toggle("sn-na", !usesAi);
+    // The BODY, not the cell: `.sn-na` sets `pointer-events: none`, which inherits — fading
+    // the cell took the lock badge inside it down too, and a row whose prompt was locked and
+    // whose chain then became AI-free could not be unlocked from this tab at all.
+    tr.querySelector(".sn-prompt-body").classList.toggle("sn-na", !usesAi);
   }
 
   /**

@@ -83,7 +83,7 @@ select:disabled { opacity: 0.7; }
 .sn-decks-all { font-weight: 700; padding: 4px 6px; }
 .sn-decks-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
 
-/* Clickable column headers (Generate / Lock / Overwrite) toggle ALL rows for that column.
+/* Clickable column headers (Generate / Overwrite) toggle ALL rows for that column.
    (No glyph — keeps the header row visually balanced; the pointer + hover signal it.) */
 .sn-th-toggle { cursor: pointer; user-select: none; }
 .sn-th-toggle:hover { color: var(--accent); }
@@ -334,15 +334,27 @@ select:disabled { opacity: 0.7; }
   border-radius: 12px;
   border: 1px solid var(--card-border); box-shadow: 0 1px 3px var(--shadow);
   background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
-  /* Ten columns do not always fit the card, and when they did not the overflow was SILENT:
-     the card's right edge cut through Voice and put Preview + Overwrite off-screen with no
-     way to reach them. Scroll horizontally instead of hiding controls. `auto` keeps the bar
-     absent whenever the table does fit. */
-  overflow-x: auto;
 }
-/* min-width, not width: the table fills the card when there is room and scrolls rather than
-   crushing its columns when there is not. */
-.sn-table { min-width: 100%; border-collapse: collapse; }
+/* Ten columns must FIT rather than scroll. `overflow-x: auto` here was the obvious fix and the
+   wrong one twice over: per CSS Overflow 3 a non-visible value on one axis computes the other
+   to `auto`, so the wrap became a scroll container in BOTH directions — which re-parents the
+   sticky header (above) to a scrollport that never scrolls vertically, silently un-pinning it;
+   and this element is a flex item of .sn-shell, exactly the inner auto-scroller the comment
+   above says blanks the whole page on QtWebEngine/macOS Metal.
+   So the widths below are capped instead. Dropping the Lock column bought most of the room. */
+.sn-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+/* Fixed layout needs the narrow columns pinned; Field and Prompt then share the remainder.
+   Percentages, so the table adapts to the dialog rather than to a guessed pixel width. */
+.sn-table th:nth-child(1)  { width: 15%; }   /* Field    */
+.sn-table th:nth-child(2)  { width: 68px; }  /* Generate */
+.sn-table th:nth-child(3)  { width: 128px; } /* Tools    */
+.sn-table th:nth-child(4)  { width: 92px; }  /* Type     */
+.sn-table th:nth-child(5)  { width: auto; }  /* Prompt — takes the slack */
+.sn-table th:nth-child(6)  { width: 13%; }   /* Provider */
+.sn-table th:nth-child(7)  { width: 13%; }   /* Model    */
+.sn-table th:nth-child(8)  { width: 13%; }   /* Voice    */
+.sn-table th:nth-child(9)  { width: 62px; }  /* Preview  */
+.sn-table th:nth-child(10) { width: 76px; }  /* Overwrite */
 .sn-table thead th {
   position: sticky; top: 0; z-index: 2; text-align: center;
   font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -375,7 +387,7 @@ select:disabled { opacity: 0.7; }
 }
 
 /* Prompt cell: a clickable summary that opens the popup editor (never edited inline). */
-.sn-prompt-cell { cursor: pointer; min-width: 220px; }
+.sn-prompt-cell { cursor: pointer; min-width: 0; }
 .sn-prompt-summary {
   border: 1px dashed var(--input-border); border-radius: 8px; padding: 6px 8px;
   min-height: 30px; line-height: 1.4; color: var(--fg);
@@ -414,10 +426,12 @@ select:disabled { opacity: 0.7; }
 .sn-iconbtn:active { transform: scale(0.94); }
 .sn-iconbtn:disabled { opacity: 0.5; cursor: default; }
 
-.sn-provider, .sn-model, .sn-voice { min-width: 120px; max-width: 180px; }
-/* "English (US) · Neural2-C" and friends are long enough to stretch the whole table, so the
-   select is capped and ellipsised — the full name stays available in the dropdown itself. */
-.sn-voice { text-overflow: ellipsis; }
+/* width:100% inside a fixed-layout column: the SELECT follows its column rather than the
+   column following the longest option. "English (US) · Neural2-C" used to widen the table on
+   its own; the full name is still readable in the open dropdown. */
+.sn-provider, .sn-model, .sn-voice {
+  width: 100%; min-width: 0; max-width: 100%; text-overflow: ellipsis;
+}
 /* The Voice column only appears once at least one row is a sound field. */
 .sn-table:not(.sn-has-sound) .sn-col-voice { display: none; }
 .sn-check { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
@@ -827,8 +841,10 @@ select:disabled { opacity: 0.7; }
    can serve the row's kind, in run order, with ▲/▼ and a params mini-form. */
 .sn-tools-cell { white-space: nowrap; }
 .sn-tools-btn {
-  max-width: 190px; overflow: hidden; text-overflow: ellipsis;
-  display: flex; align-items: center; gap: 3px; flex-wrap: nowrap;
+  /* Wraps rather than clipping: `text-overflow` does nothing on a flex container, so a
+     three-tool chain was being cut mid-chip with no sign there was more. */
+  max-width: 100%; display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  justify-content: center; row-gap: 2px;
 }
 /* Each tool wears its own chip, so a chain reads as a sequence of named steps rather than one
    run-on string. The base chip is the fallback for a user-authored tool this build does not
@@ -850,7 +866,7 @@ select:disabled { opacity: 0.7; }
   background: color-mix(in srgb, var(--ok, #30a46c) 12%, transparent);
 }
 /* A user-authored tool (`user:<slug>` → `user-<slug>`), distinct from both. */
-[class*="sn-chip-user-"] {
+.sn-tools-btn [class*="sn-chip-user-"] {
   border-color: var(--accent-2, #8b7cf6); color: var(--accent-2, #8b7cf6);
   background: color-mix(in srgb, var(--accent-2, #8b7cf6) 12%, transparent);
 }

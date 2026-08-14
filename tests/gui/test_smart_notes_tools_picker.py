@@ -192,6 +192,15 @@ class TestChainPayloadParsing:
         assert rebuilt[0].tools == []
 
 
+def _strip_css_comments(source: str) -> str:
+    """Return ``source`` with ``/* … */`` blocks removed.
+
+    Same reason as :func:`_strip_comments` for JS: this stylesheet explains WHY a declaration
+    is absent, naming it, and an assertion that greps the prose fails on its own comment.
+    """
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
+
 def _strip_comments(source: str) -> str:
     """Return ``source`` with ``//`` line comments removed.
 
@@ -360,9 +369,9 @@ class TestToolsPickerPage:
     def test_the_prompt_fades_when_the_chain_never_reaches_a_provider(self):
         # The prompt is the instruction handed to a provider. A chain of purely deterministic
         # tools never reads it, so offering it invites a prompt that changes nothing.
-        state = _js(self._html(), "function applyKindState(", 1200)
+        state = _js(self._html(), "function applyKindState(", 1400)
 
-        assert '.sn-prompt-cell").classList.toggle("sn-na", !usesAi)' in state
+        assert '.sn-prompt-body").classList.toggle("sn-na", !usesAi)' in state
 
     def test_each_tool_gets_its_own_chip(self):
         # "Cloze audio → AI" as one run-on string could not show which step costs money. Each
@@ -377,13 +386,39 @@ class TestToolsPickerPage:
         assert ".sn-chip-cloze-audio" in html
         assert ".sn-chip-cloze_audio" not in html
 
-    def test_the_table_scrolls_rather_than_clipping_its_last_columns(self):
-        # Reported from a screenshot: the card's right edge cut through Voice and put Preview
-        # and Overwrite outside the modal, with no way to reach them.
-        html = self._html()
+    def test_the_table_fits_instead_of_becoming_a_scroll_container(self):
+        """Reported from a screenshot: the card's right edge cut through Voice and put Preview
+        and Overwrite outside the modal, unreachable.
 
-        assert "overflow-x: auto;" in html
-        assert ".sn-table { min-width: 100%;" in html  # fills, but is not crushed
+        `overflow-x: auto` was the obvious fix and wrong twice. Per CSS Overflow 3 a
+        non-visible value on ONE axis computes the other to `auto`, so the wrap became a scroll
+        container in BOTH — re-parenting the sticky header to a scrollport that never scrolls
+        vertically. And this element is a flex item of `.sn-shell`, which is exactly the inner
+        auto-scroller the comment above it says blanks the whole page on QtWebEngine/macOS
+        Metal. The columns are sized to FIT instead.
+        """
+        css = _strip_css_comments(self._html())
+        # Scoped to the wrap's OWN rule: an unrelated `overflow-x: auto` elsewhere in the sheet
+        # (the user-tool source viewer needs one) must not make this pass or fail by accident.
+        wrap = css[css.index(".sn-table-wrap {") :].split("}")[0]
+
+        assert "overflow" not in wrap
+        assert "table-layout: fixed" in css
+        # The narrow columns are pinned so Field and Prompt absorb the remainder.
+        assert ".sn-table th:nth-child(10)" in css
+
+    def test_the_lock_badge_survives_the_prompt_fade(self):
+        """`.sn-na` sets `pointer-events: none`, and that INHERITS.
+
+        Fading the prompt CELL took the lock badge inside it down with it: lock a prompt, then
+        set the row's chain to `cloze` alone, and the badge became unclickable while
+        `applyLockState` kept Type disabled — the row could not be unlocked from this tab at
+        all. The same 'a dead button is worse than a disabled one' as the preview fix.
+        """
+        state = _js(self._html(), "function applyKindState(", 1400)
+
+        assert '.sn-prompt-body").classList.toggle("sn-na"' in state
+        assert '.sn-prompt-cell").classList.toggle("sn-na"' not in state
 
     def test_preview_is_not_blocked_by_the_lock(self):
         """A dead button is worse than a disabled one.
