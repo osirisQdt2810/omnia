@@ -938,6 +938,10 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   background: color-mix(in srgb, var(--accent-2) 10%, transparent);
 }
 .sn-ut-risks[hidden] { display: none; }
+/* Which staged file the next test will read. Quiet — it is a statement of fact, not a warning
+   — but present, so "why did it read THAT?" is answerable without opening a file dialog. */
+.sn-ut-samplefile { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+.sn-ut-samplefile[hidden] { display: none; }
 /* Inline with the sentence: the folder is being named, so the way to open it belongs there. */
 .sn-ut-open { font-size: 11px; padding: 1px 7px; margin-left: 2px; vertical-align: baseline; }
 .sn-ut-section { margin: 14px 0; display: flex; flex-direction: column; gap: 8px; }

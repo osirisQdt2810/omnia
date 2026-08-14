@@ -36,6 +36,8 @@
   const utTestMsg = document.getElementById("sn-ut-testmsg");
   const utOutEl = document.getElementById("sn-ut-out");
   const utRisksEl = document.getElementById("sn-ut-risks");
+  const utPickEl = document.getElementById("sn-ut-pick");
+  const utSampleFileEl = document.getElementById("sn-ut-sample-file");
   const utSaveBtn = document.getElementById("sn-ut-save");
   const utCancelBtn = document.getElementById("sn-ut-cancel");
   const utSaveMsg = document.getElementById("sn-ut-savemsg");
@@ -52,6 +54,13 @@
 
   // Opening the folder is the point: a path the user has to retype into Finder/Explorer is
   // homework, not a location. Qt does the platform difference on the Python side.
+  utPickEl.addEventListener("click", pickSampleFile);
+  // Typing over the reference means the staged file is no longer what is being tested; the
+  // note stops claiming otherwise. The stage itself is cleared by the next pick or on close.
+  utSampleEl.addEventListener("input", function () {
+    utSampleFileEl.hidden = true;
+  });
+
   utOpenEl.addEventListener("click", function () {
     send("user_tool_open_dir", {}, function (res) {
       if (res && res.error) {
@@ -198,6 +207,7 @@
     utSampleEl.value = "";
     utOutEl.hidden = true;
     showToolRisks([]);  // stale banner must not outlive its code
+    utSampleFileEl.hidden = true;
     utOutEl.textContent = "";
     utGenMsg.textContent = "";
     utTestMsg.textContent = "";
@@ -274,6 +284,9 @@
     }
     utGenMsg.textContent = "Written — read it, then run it on a sample.";
     utSourceEl.value = (res && res.source) || "";
+    // Before Run, not after it: pressing Run EXECUTES this code, and the review gate requires
+    // pressing it, so a banner that only appears in the result describes damage already done.
+    showToolRisks((res && res.risks) || []);
     if (!utSlug) {
       utSlug = slug;  // the name is fixed once code has been written for it
       utLabelEl.disabled = true;
@@ -292,7 +305,8 @@
     utRunBtn.disabled = true;
     utTestMsg.textContent = "Running…";
     utOutEl.hidden = true;
-    showToolRisks([]);  // stale banner must not outlive its code
+    // The banner is NOT cleared here. It describes the code about to run, and clearing it at
+    // the moment of execution is exactly backwards.
     send(
       "user_tool_test",
       {
@@ -330,14 +344,44 @@
     // The tool RAN: the user has now seen what it does, which is what Save waits for — even
     // when what it does is decline or fail.
     utTestedSource = utSourceEl.value;
+    // A tool that reads media declines until a file is staged, and its own message will say
+    // something like "no collection" — true from inside the tool, and unhelpful here, where
+    // the actual fix is one button away. Point at it rather than leaving the user to guess.
+    const needsFile = !result.ok && utSampleFileEl.hidden;
     utTestMsg.textContent = result.ok
       ? "It produced a result."
-      : "It ran, but produced nothing (" + (result.status || "") + ").";
+      : "It ran, but produced nothing (" + (result.status || "") + ")." +
+        (needsFile ? " If it reads a file, pick one with “Choose file…”." : "");
     utOutEl.textContent = result.ok ? result.output : result.detail || "(no detail)";
     utOutEl.hidden = false;
     showToolRisks(result.risks || []);
     refreshSaveState();
   };
+
+  /**
+   * Choose a file for the sample, and put its Anki reference in the box.
+   *
+   * The chosen file is staged OUTSIDE the collection and the test's media folder points at the
+   * stage, so testing never adds to synced media (see MediaSampleStage). Picking again
+   * replaces the previous file rather than accumulating copies of everything browsed through.
+   */
+  function pickSampleFile() {
+    utTestMsg.textContent = "";
+    send("user_tool_pick_sample", {}, function (res) {
+      const result = res || {};
+      if (result.error) {
+        utTestMsg.textContent = result.error;
+        return;
+      }
+      if (!result.reference) {
+        return;  // cancelled — leave whatever was typed alone
+      }
+      utSampleEl.value = result.reference;
+      utSampleFileEl.textContent =
+        "Testing against " + result.name + " — staged outside your collection.";
+      utSampleFileEl.hidden = false;
+    });
+  }
 
   /**
    * Say what this tool reaches for, ABOVE the code, before it is approved.

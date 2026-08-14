@@ -99,6 +99,16 @@ class SmartNotesDialog(WebDialog):
             height=640,
         )
 
+    def closeEvent(self, evt: Any) -> None:  # noqa: N802 (Qt override name)
+        """Drop anything the session staged, then let the base tear the webview down.
+
+        A Try-it run may have copied a file the user picked into a temp folder so the test
+        could resolve a media reference. It is session-scoped by design — nothing should
+        survive the dialog that created it.
+        """
+        self._user_tools.dispose()
+        super().closeEvent(evt)
+
     def _tools_payload(self) -> list[dict[str, Any]]:
         """The generation-tools catalog baked into the page for the per-row Tools picker.
 

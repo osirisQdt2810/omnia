@@ -385,16 +385,24 @@ def pick_file(
     title: str = "Select a file",
     file_filter: str = "All files (*)",
     parent: Optional[Any] = None,
+    start_dir: str = "",
 ) -> str:
     """Open a native file picker and return the chosen path ("" if cancelled).
 
-    Main-thread only (called from a pycmd handler). Used by the Keys subtab to browse for a
-    service-account JSON key.
+    Main-thread only (called from a pycmd handler).
+
+    Args:
+        title: The dialog title.
+        file_filter: Qt filter string.
+        parent: Parent widget.
+        start_dir: Where the picker opens. Defaulting this to the collection's media folder is
+            what makes "test my tool against a file already in my collection" one click instead
+            of a hunt through a per-platform profile path the user has never had to know.
     """
     from aqt.qt import QFileDialog
 
     path, _ = QFileDialog.getOpenFileName(
-        parent or main_window(), title, "", file_filter
+        parent or main_window(), title, start_dir, file_filter
     )
     return str(path or "")
 

@@ -298,13 +298,45 @@ class TestTheTestRunIsRepresentative:
     the dialog.
     """
 
-    def test_the_test_context_resolves_the_media_folder(self, controller, monkeypatch):
+    def test_the_test_context_never_points_at_the_live_collection(
+        self, controller, monkeypatch, tmp_path
+    ):
+        """A test run executes arbitrary code that may open files for WRITING.
+
+        Pointing it at the real media folder makes pressing Run destructive: a tool that
+        writes its output back over its input truncates the user's own file, and the review
+        gate REQUIRES pressing Run. So a test resolves media only against the stage, whose
+        contents are copies.
+        """
         ctrl, _ctx, _pushed = controller
         monkeypatch.setattr(
             "omnia.core.anki_compat.media_dir", lambda col=None: "/collection/media"
         )
 
-        assert ctrl._tool_context().media_dir() == "/collection/media"
+        assert ctrl._tool_context().media_dir() != "/collection/media"
+        assert ctrl._tool_context().media_dir() == ""  # nothing staged yet
+
+        chosen = tmp_path / "clip.mp4"
+        chosen.write_bytes(b"x")
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
+        )
+        ctrl.on_pick_sample({})
+
+        # …and once a file is picked, it resolves — against the copy, not the original.
+        staged = ctrl._tool_context().media_dir()
+        assert staged and staged != "/collection/media"
+        assert (pathlib.Path(staged) / "clip.mp4").exists()
+
+    def test_generation_still_uses_the_real_collection(self, monkeypatch):
+        # The safety narrowing is for the TEST path only. A real run must see real media.
+        from omnia.plugins.smart_notes.engine.tools import resolve_media_dir
+
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.media_dir", lambda col=None: "/collection/media"
+        )
+
+        assert resolve_media_dir() == "/collection/media"
 
     def test_both_context_builders_use_the_same_resolver(self):
         # One resolver, so neither site can drift from the other again.
@@ -314,6 +346,130 @@ class TestTheTestRunIsRepresentative:
 
         assert gui.resolve_media_dir is resolve_media_dir
         assert service.resolve_media_dir is resolve_media_dir
+
+
+class TestTheMediaSample:
+    """Testing a tool that reads a FILE.
+
+    Typing `[sound:x.mp3]` by hand only works if x.mp3 is already in the collection — exactly
+    what someone testing a NEW conversion does not have. So the sample can be a file the user
+    picks, staged OUTSIDE the collection with the test's media folder pointed at the stage: the
+    reference resolves, the tool reads a real file, and nothing is added to synced media.
+    """
+
+    def test_picking_a_file_returns_the_reference_and_stages_it(
+        self, controller, monkeypatch, tmp_path
+    ):
+        ctrl, _ctx, _pushed = controller
+        chosen = tmp_path / "clip.mp4"
+        chosen.write_bytes(b"data")
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
+        )
+
+        result = ctrl.on_pick_sample({})
+
+        assert result["reference"] == "[sound:clip.mp4]"
+        assert result["name"] == "clip.mp4"
+        # …and the tool under test resolves that reference against the stage.
+        staged = pathlib.Path(ctrl._tool_context().media_dir()) / "clip.mp4"
+        assert staged.read_bytes() == b"data"
+
+    def test_the_picker_opens_in_the_collection_media_folder(
+        self, controller, monkeypatch, tmp_path
+    ):
+        # The interesting files are already there, and its real path is a per-platform profile
+        # location the user has never needed to know.
+        ctrl, _ctx, _pushed = controller
+        seen: dict = {}
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.media_dir", lambda col=None: "/collection/media"
+        )
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file",
+            lambda **kw: seen.update(kw) or "",
+        )
+
+        ctrl.on_pick_sample({})
+
+        assert seen["start_dir"] == "/collection/media"
+
+    def test_the_collection_is_never_written_to(
+        self, controller, monkeypatch, tmp_path
+    ):
+        # The whole reason for staging: Anki SYNCS media, so a test that copied its sample in
+        # would push it to every device — and pushing a deletion afterwards is no better.
+        ctrl, _ctx, _pushed = controller
+        collection = tmp_path / "collection.media"
+        collection.mkdir()
+        chosen = tmp_path / "outside.mp4"
+        chosen.write_bytes(b"data")
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.media_dir", lambda col=None: str(collection)
+        )
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
+        )
+
+        ctrl.on_pick_sample({})
+
+        assert list(collection.iterdir()) == []
+
+    def test_picking_again_removes_the_previous_file(
+        self, controller, monkeypatch, tmp_path
+    ):
+        # Otherwise a session accumulates a copy of everything the user browsed through.
+        ctrl, _ctx, _pushed = controller
+        first, second = tmp_path / "a.mp3", tmp_path / "b.mp3"
+        first.write_bytes(b"1")
+        second.write_bytes(b"2")
+
+        monkeypatch.setattr("omnia.core.anki_compat.pick_file", lambda **_k: str(first))
+        ctrl.on_pick_sample({})
+        staged_first = pathlib.Path(ctrl._tool_context().media_dir()) / "a.mp3"
+        assert staged_first.exists()
+
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(second)
+        )
+        ctrl.on_pick_sample({})
+
+        assert not staged_first.exists()
+        assert (pathlib.Path(ctrl._tool_context().media_dir()) / "b.mp3").exists()
+
+    def test_cancelling_changes_nothing(self, controller, monkeypatch):
+        ctrl, _ctx, _pushed = controller
+        monkeypatch.setattr("omnia.core.anki_compat.pick_file", lambda **_k: "")
+
+        assert ctrl.on_pick_sample({}) == {}
+
+    def test_an_unreadable_file_reports_instead_of_raising(
+        self, controller, monkeypatch, tmp_path
+    ):
+        ctrl, _ctx, _pushed = controller
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(tmp_path / "gone.mp4")
+        )
+
+        assert "error" in ctrl.on_pick_sample({})
+
+    def test_disposing_removes_the_staging_folder(
+        self, controller, monkeypatch, tmp_path
+    ):
+        # Called from closeEvent: nothing staged for a test may outlive the dialog.
+        ctrl, _ctx, _pushed = controller
+        chosen = tmp_path / "c.mp3"
+        chosen.write_bytes(b"x")
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
+        )
+        ctrl.on_pick_sample({})
+        stage = pathlib.Path(ctrl._tool_context().media_dir())
+        assert stage.exists()
+
+        ctrl.dispose()
+
+        assert not stage.exists()
 
 
 class TestTheReviewIsToldWhatTheToolReaches:
