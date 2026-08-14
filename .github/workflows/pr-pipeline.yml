@@ -2,6 +2,7 @@
 #
 # Merge gate — a PR auto-merges ONLY when ALL of these hold:
 #   1. tests + lint are green on the PR's head commit,
+#   1b. the PR description carries every section of the PR template,
 #   2. the Claude review job produced an explicit APPROVE verdict for this run
 #      (missing/garbled verdict counts as BLOCKING — the gate fails closed),
 #   3. the PR carries the `automerge` label at merge time (the human/author
@@ -93,6 +94,48 @@ jobs:
           --deselect tests/providers/test_tts.py::TestGoogleTranslateRealTTS
           --deselect tests/providers/test_tts.py::TestEdgeRealTTS
           --deselect tests/providers/test_anki_runtime.py::test_edge_tts_synthesizes_hermetically
+
+  pr-body:
+    name: PR description
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # A template only PRE-FILLS the web UI — `gh pr create --body` bypasses it entirely, and
+      # that is how most of this repo's PRs are opened. So the format is checked here rather
+      # than hoped for. Headings only: what goes UNDER them is a judgement call a grep cannot
+      # make, but a missing section is unambiguous.
+      - name: Require the template's sections
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # Normalise before matching: the GitHub web editor stores CRLF and readily leaves a
+          # trailing space on a heading line. Neither changes what the heading SAYS, and a
+          # format check that fails on invisible characters teaches people to ignore it.
+          normalised=$(printf '%s' "$BODY" | tr -d '\r' | sed 's/[[:space:]]*$//')
+          missing=()
+          while IFS= read -r heading; do
+            [ -z "$heading" ] && continue
+            grep -qxF "$heading" <<< "$normalised" || missing+=("$heading")
+          done <<'HEADINGS'
+          ## Context
+          ## Content / Changes
+          ## Test Plan
+          ### Test Details
+          ### Test Output / Feature Demonstration
+          HEADINGS
+          if [ ${#missing[@]} -gt 0 ]; then
+            printf 'PR description is missing required section(s):\n'
+            printf '  %s\n' "${missing[@]}"
+            printf '\nStart from .github/pull_request_template.md and keep every heading.\n'
+            printf 'A section that does not apply gets "N/A — <reason>", not a deletion.\n'
+            printf '\nAfter fixing the description, re-run this by toggling the automerge\n'
+            printf 'label — `edited` is deliberately not a trigger, so a typo fix does not\n'
+            printf 'restart six test legs and a Claude review.\n'
+            exit 1
+          fi
+          echo "All required sections present."
 
   coverage:
     name: Coverage
@@ -213,7 +256,7 @@ jobs:
 
   merge:
     name: Auto-merge
-    needs: [test, review]
+    needs: [test, pr-body, review]
     if: needs.review.outputs.verdict == 'APPROVE' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
