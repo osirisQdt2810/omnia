@@ -37,7 +37,7 @@ api_key = ""
 # — then CONFIRM the one you pick with a real call, because ListModels still lists retired ids:
 #   curl -s -X POST ".../v1beta/models/<id>:generateContent?key=$KEY" \
 #        -H 'Content-Type: application/json' -d '{"contents":[{"parts":[{"text":"hi"}]}]}'
-text_model = "gemini-3.7-flash"
+text_model = "gemini-3.6-flash"
 image_model = ""
 embedding_model = ""
 

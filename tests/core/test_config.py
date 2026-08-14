@@ -37,7 +37,7 @@ class TestConfigRepository:
         # The AI Studio subsection too: its id drifted to a retired one once (Google 404s
         # "no longer available to new users"), and only a live-credentialed run caught it.
         # Pin BOTH halves — the template and the model default, which are separate sources.
-        assert cfg.llm.gemini.text_model == "gemini-3.7-flash"
+        assert cfg.llm.gemini.text_model == "gemini-3.6-flash"
         # TTS uses the same per-provider shape.
         assert cfg.tts.google_translate.lang == "en"
         assert cfg.tts.active() is cfg.tts.google_translate
@@ -477,37 +477,61 @@ def _tmp_config(tmp_path):
     return tmp_path
 
 
-class TestNoRetiredModelIdsAreOffered:
-    """Every id the add-on can hand to a provider must be one that still answers.
+class TestShippedModelDefaultsAreOffered:
+    """Every model id the add-on ships must be one its own picker offers for that provider.
 
-    Google retires ids while `ListModels` keeps listing them, so a dead id survives in code
-    until someone with credentials runs generation and gets a 404. These pins are the cheap
-    half of that check: the DEFAULTS and the picker must never carry an id we know is gone.
+    This is an ALLOWLIST on purpose. A denylist ("not one of the ids we know are dead") passes
+    for a typo and for an id that was never served, which is the same broken-on-first-call
+    outcome it is supposed to prevent. Tying the default to the picker also keeps the two
+    halves from drifting apart, which is exactly how a retired id survived here before.
+
+    The two Gemini endpoints have separate lists because they retire ids on different
+    schedules — AI Studio dropped gemini-2.5-* while Vertex still serves them.
     """
 
-    RETIRED = ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro")
-
-    def test_the_model_defaults_are_not_retired_ids(self):
+    def test_each_shipped_default_is_in_its_own_providers_picker(self):
         from omnia.core.config.models import GeminiLLMSettings, GeminiVertexLLMSettings
-
-        assert GeminiLLMSettings().text_model not in self.RETIRED
-        assert GeminiVertexLLMSettings().text_model not in self.RETIRED
-
-    def test_the_factory_fallback_is_not_a_retired_id(self):
-        # The factory's own `config.get("model", <default>)` is a third source of truth,
-        # reachable whenever a caller builds a provider from a dict without a model.
-        import inspect
-
-        from omnia.core.providers.llm import factory
-
-        source = inspect.getsource(factory)
-        for dead in self.RETIRED:
-            assert dead not in source
-
-    def test_the_picker_offers_no_retired_id(self):
         from omnia.core.providers import catalog
 
-        for provider in ("gemini", "gemini_vertex"):
+        for provider, settings in (
+            ("gemini", GeminiLLMSettings()),
+            ("gemini_vertex", GeminiVertexLLMSettings()),
+        ):
             offered = catalog.text_models(provider)
             assert offered, f"{provider} offers no text model at all"
-            assert not set(offered) & set(self.RETIRED)
+            assert (
+                settings.text_model in offered
+            ), f"{provider} ships {settings.text_model!r} but its picker does not offer it"
+
+    def test_the_factory_fallback_calls_a_model_the_picker_offers(self):
+        # The factory's own `config.get("model", <default>)` is a third source of truth,
+        # reachable whenever a caller builds a provider from a dict with no model. Assert the
+        # BEHAVIOUR — the id in the URL it actually requests — rather than scanning source
+        # text, which would trip over a retired id merely mentioned in a comment.
+        from omnia.core.providers import catalog
+        from omnia.core.providers.llm.factory import create_llm_provider
+
+        called: dict[str, str] = {}
+
+        class _CapturingHttp:
+            def post_json(self, url, payload, *, headers=None):
+                called["url"] = url
+                return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+
+        provider = create_llm_provider(
+            {"provider": "gemini", "api_key": "k"}, _CapturingHttp()
+        )
+        provider.generate_text("hi")
+
+        offered = catalog.text_models("gemini")
+        assert any(
+            f"/models/{model}:" in called["url"] for model in offered
+        ), f"the factory default calls {called['url']!r}, which is not an offered model"
+
+    def test_the_endpoints_keep_separate_lists(self):
+        # Regression pin: they were one shared constant, so delisting an id retired on AI Studio
+        # silently removed it from Vertex, where it still works and is the shipped default.
+        from omnia.core.providers import catalog
+
+        assert "gemini-2.5-flash" in catalog.text_models("gemini_vertex")
+        assert "gemini-2.5-flash" not in catalog.text_models("gemini")

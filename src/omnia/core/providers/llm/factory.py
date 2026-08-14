@@ -43,7 +43,7 @@ def _build_openai(config: dict[str, Any], http: Optional[HttpClient]) -> LLMProv
 def _build_gemini(config: dict[str, Any], http: Optional[HttpClient]) -> LLMProvider:
     return GeminiProvider(
         api_key=config.get("api_key", ""),
-        model=config.get("model", "gemini-3.7-flash"),
+        model=config.get("model", "gemini-3.6-flash"),
         image_model=config.get("image_model", ""),
         temperature=float(config.get("temperature", 0.7)),
         http=http,
