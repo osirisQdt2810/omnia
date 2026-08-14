@@ -739,6 +739,40 @@ class TestToolAuthor:
         with pytest.raises(ProviderError, match="user:ext"):
             parse_user_tool_reply('@register_tool("ai")\n', "ext")
 
+    def test_a_refusal_is_surfaced_rather_than_treated_as_broken_code(self):
+        """The model must be able to say no — and be believed.
+
+        Rule 1 of the system prompt forbids prose, so a model asked for something the tool
+        contract cannot express had no move except to invent a module. That is how a request to
+        EXTRACT AUDIO from an mp4 came back as a tool that renames ".mp4" to ".mp3" in a
+        string: plausible, clean, saves fine, and silently writes a reference to a file that
+        was never created. Rule 0 gives it a way out, and this makes the way out land in front
+        of the user instead of reading as a failed generation.
+        """
+        with pytest.raises(ProviderError, match="cannot be built as a tool") as excinfo:
+            parse_user_tool_reply(
+                "CANNOT: it needs to decode the video and re-encode its audio track.",
+                "ext",
+            )
+
+        # The model's own reason reaches the user — a bare "cannot" teaches them nothing.
+        assert "re-encode its audio track" in str(excinfo.value)
+        # …and so does the boundary that caused it.
+        assert "cannot read or write files" in str(excinfo.value)
+
+    def test_a_refusal_with_no_reason_still_explains_the_boundary(self):
+        with pytest.raises(ProviderError, match="cannot be built as a tool"):
+            parse_user_tool_reply("CANNOT:", "ext")
+
+    def test_code_that_merely_mentions_cannot_is_still_code(self):
+        # The marker only counts at the very start of the reply; a tool whose comment or
+        # message contains the word must not be mistaken for a refusal.
+        code = parse_user_tool_reply(
+            '@register_tool("user:ext")\n# CANNOT: happen mid-file\n', "ext"
+        )
+
+        assert code.startswith("@register_tool")
+
     def test_an_empty_reply_is_rejected(self):
         with pytest.raises(ProviderError, match="no code"):
             parse_user_tool_reply("   ", "ext")
