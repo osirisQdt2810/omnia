@@ -213,12 +213,15 @@ class TestSaveNeedsATestRun:
         )
 
     def test_a_source_that_does_not_compile_is_not_marked_tested(self, controller):
+        # `import os` is allowed now, so the refusal has to come from a source that is still
+        # genuinely unusable — one that registers no tool at all.
         ctrl, _ctx, pushed = controller
+        broken = "import socket\n"
 
-        ctrl.on_test({"slug": "ext", "source": "import os\n", "sample": ""})
+        ctrl.on_test({"slug": "ext", "source": broken, "sample": ""})
 
-        assert "may not import 'os'" in pushed[-1]
-        assert "error" in ctrl.on_save({"slug": "ext", "source": "import os\n"})
+        assert "may not import 'socket'" in pushed[-1]
+        assert "error" in ctrl.on_save({"slug": "ext", "source": broken})
 
     def test_testing_reports_the_output_the_user_sees(self, controller):
         result = _test_run(controller)

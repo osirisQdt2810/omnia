@@ -91,6 +91,24 @@ def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
     return [field for field, kind in rule_prerequisites(rule) if kind == "hard"]
 
 
+def _media_dir() -> str:
+    """The collection's media folder, resolved lazily so this module stays headless.
+
+    ``anki_compat`` is imported INSIDE the call, not at module scope: this file is pure logic
+    by the repo's coupling rule and is imported by tests that have no collection. Called only
+    when a tool actually asks for the folder, which is on the worker thread, after Anki exists.
+    """
+    from omnia.core import anki_compat
+
+    try:
+        return anki_compat.media_dir()
+    # Broad on purpose: a tool asking where the media lives must get "" and decline cleanly,
+    # not take the whole field down because the collection was closed mid-run.
+    except Exception:
+        logger.exception("smart_notes: could not resolve the collection media folder")
+        return ""
+
+
 class GenerationService:
     """Runs field-generation rules against the configured providers.
 
@@ -115,6 +133,10 @@ class GenerationService:
             providers=providers,
             detector=LanguageDetector(enabled=detect_tts_language),
             logger=logger,
+            # Passed as the FUNCTION, not its result: this constructor runs on the Qt main
+            # thread while a tool runs on a worker, and resolving the collection here would
+            # both touch Anki at build time and break every headless test of this service.
+            media_dir=_media_dir,
         )
         self._pipeline = GenerationPipeline(self._ctx)
 

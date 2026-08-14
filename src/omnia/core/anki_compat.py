@@ -217,6 +217,20 @@ def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str
     return str(col.media.write_data(filename, data))
 
 
+def media_dir(col: Optional[Any] = None) -> str:
+    """Return the collection's media folder — where ``[sound:x.mp3]`` and ``<img>`` resolve.
+
+    A user tool that CONVERTS a file (pull the audio out of a video, resize a picture) has to
+    find the file the note refers to, and a note stores only the bare name. Handing the folder
+    over is what makes the reference resolvable without every tool re-deriving it from the
+    profile path — which is per-platform and would be guessed wrong on the first machine that
+    is not the author's.
+    """
+    if col is None:
+        col = main_window().col
+    return str(col.media.dir())
+
+
 def update_note(note: Any, col: Optional[Any] = None) -> None:
     """Persist edits to ``note`` (must run on the main thread)."""
     if col is None:

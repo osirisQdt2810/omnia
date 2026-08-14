@@ -27,6 +27,7 @@ import pytest
 from omnia.core.providers.errors import ProviderError
 from omnia.plugins.smart_notes.authoring import tool_author as tool_author_module
 from omnia.plugins.smart_notes.authoring.tool_author import (
+    CANNOT_MARKER,
     ToolAuthor,
     build_user_tool_message,
     parse_user_tool_reply,
@@ -55,6 +56,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     get_tool,
     is_user_tool,
     register_tool,
+    risky_operations,
     slugify,
     unregister_tool,
     user_tool_name,
@@ -273,9 +275,28 @@ class TestImportGuard:
             "from omnia.plugins.smart_notes.engine.tools import Tool, register_tool\n"
         )
 
-    def test_the_operating_system_is_not(self):
-        with pytest.raises(UserToolError, match="may not import 'os'"):
-            ImportGuard().check("import os\n")
+    def test_the_filesystem_and_processes_are_allowed_now(self):
+        """Opened deliberately (see ImportGuard's docstring).
+
+        A transform that CONVERTS rather than rewrites — pull the audio out of a video, resize
+        a picture — cannot be written without touching a file. Refusing these made the tool
+        author produce code that renamed a string and looked like it worked, which is worse
+        than either allowing it or refusing the request outright.
+
+        The guard is a speed bump, not a sandbox; an Anki add-on already has unrestricted
+        Python and this dialog always said so. What still holds the line is the mandatory
+        read-and-run review, now told what the tool reaches for (see risky_operations).
+        """
+        for module in (
+            "os",
+            "subprocess",
+            "pathlib",
+            "shutil",
+            "io",
+            "tempfile",
+            "wave",
+        ):
+            ImportGuard().check(f"import {module}\n")
 
     def test_a_network_module_is_not(self):
         with pytest.raises(UserToolError, match=r"urllib\.request"):
@@ -290,9 +311,18 @@ class TestImportGuard:
         with pytest.raises(UserToolError, match="relative import"):
             ImportGuard().check("from . import sibling\n")
 
-    def test_opening_a_file_is_flagged(self):
-        with pytest.raises(UserToolError, match=r"may not call open\(\)"):
-            ImportGuard().check("def run():\n    return open('/etc/passwd').read()\n")
+    def test_opening_a_file_is_allowed_now(self):
+        # A tool that converts a file has to open it. The reader is told, rather than the tool
+        # being stopped — see test_the_filesystem_and_processes_are_allowed_now.
+        ImportGuard().check("def run():\n    return open('clip.mp4', 'rb').read()\n")
+
+    def test_building_code_from_a_string_is_still_refused(self):
+        # These stay out for a DIFFERENT reason than the filesystem ever was: they defeat the
+        # one guarantee the guard still makes — that the source the user read is the source
+        # that runs. Widening the imports does not widen this.
+        for call in ("eval", "exec", "compile", "__import__"):
+            with pytest.raises(UserToolError):
+                ImportGuard().check(f"x = {call}('1')\n")
 
     def test_dunder_import_is_flagged(self):
         with pytest.raises(UserToolError, match="__import__"):
@@ -416,12 +446,15 @@ class TestUserToolLoader:
     def test_a_disallowed_import_is_refused_at_load_not_only_at_save(
         self, store, loader
     ):
-        store.write(UserToolSource(slug="sneaky", code="import os\n"))
+        # Still enforced at LOAD, not just at save: a file edited by hand after review must not
+        # gain a capability silently. `socket` stands in for the modules still outside the list
+        # now that the filesystem ones are in.
+        store.write(UserToolSource(slug="sneaky", code="import socket\n"))
 
         load = loader.load("sneaky")
 
         assert load.ok is False
-        assert "may not import 'os'" in load.error
+        assert "may not import 'socket'" in load.error
 
     def test_reloading_an_edited_file_rebinds_the_name(self, store, loader):
         store.write(UserToolSource(slug="ext", code=_good_source("ext")))
@@ -708,6 +741,59 @@ class TestTheWorkedExampleIsReal:
         assert result.produced.text == "mp3"
 
 
+class TestRiskyOperations:
+    """What the review screen is told a tool reaches for.
+
+    The import allowlist stopped being the safety boundary the moment it had to permit ``os``
+    and ``subprocess``; the mandatory read-and-run review is. A review is only worth something
+    if the reader knows what to look for, and "spot the subprocess import in forty lines of
+    generated Python" is not a fair ask when the Python was written by a model and is read
+    once.
+    """
+
+    def test_a_text_only_tool_reports_nothing(self):
+        assert risky_operations("import re\nfrom typing import ClassVar\n") == []
+
+    def test_files_and_processes_are_named_in_plain_language(self):
+        found = risky_operations("from pathlib import Path\nimport subprocess\n")
+
+        assert "reads and writes files" in found
+        assert "runs other programs on your computer" in found
+
+    def test_each_risk_is_named_once(self):
+        found = risky_operations("import os\nimport shutil\nfrom pathlib import Path\n")
+
+        assert len(found) == len(set(found))
+
+    def test_a_syntax_error_is_left_to_the_guard(self):
+        # ImportGuard reports it properly, with the line; this must not raise on the way.
+        assert risky_operations("def (") == []
+
+
+class TestMediaAccess:
+    """A tool can find the collection's media folder — the missing half of a conversion tool.
+
+    Output already worked (``GenerationResult(data=..., ext=...)`` is how ``cloze_audio``
+    writes a clip). What no tool could do was find the INPUT: a note stores only the bare
+    filename, and deriving the folder per-tool means guessing a per-platform profile path.
+    """
+
+    def test_the_default_is_empty_rather_than_an_exception(self):
+        # Tools call `ctx.media_dir()`; "" is a value they can test and decline on. Raising
+        # would take the field down in any headless build or test.
+        assert ToolContext(providers=None, detector=None, logger=None).media_dir() == ""
+
+    def test_the_folder_is_injected_as_a_callable(self):
+        # A callable, not a string: the context is built on the Qt main thread while a tool
+        # runs on a worker, so resolving the collection at build time would touch Anki early
+        # and break every headless test of the service.
+        ctx = ToolContext(
+            providers=None, detector=None, logger=None, media_dir=lambda: "/m"
+        )
+
+        assert ctx.media_dir() == "/m"
+
+
 class TestToolAuthor:
     """The ONE LLM call: it happens at authoring time, never at generation time."""
 
@@ -738,6 +824,27 @@ class TestToolAuthor:
     def test_a_reply_registering_the_wrong_name_is_rejected(self):
         with pytest.raises(ProviderError, match="user:ext"):
             parse_user_tool_reply('@register_tool("ai")\n', "ext")
+
+    def test_the_prompt_teaches_the_media_path_it_used_to_forbid(self):
+        """The refusal list has to shrink as the capability grows, or it lies.
+
+        The previous change taught the model to answer CANNOT for anything needing a file or a
+        transcode — correct while a tool could not import pathlib. Now it can, and a model
+        still refusing would be just as wrong as one inventing a renamer.
+        """
+        prompt = user_tool_system_prompt()
+
+        assert "ctx.media_dir()" in prompt
+        assert "encode(decode(" in prompt  # the mp4 -> mp3 recipe, spelled out
+        assert "Never shell out" in prompt  # ctx.audio, not a hand-rolled ffmpeg call
+        # …and the refusal is still reachable for what remains genuinely impossible.
+        assert CANNOT_MARKER in prompt
+        assert "NETWORK" in prompt
+
+    def test_the_prompt_no_longer_claims_files_are_forbidden(self):
+        prompt = user_tool_system_prompt()
+
+        assert "read or write files" not in prompt
 
     def test_a_refusal_is_surfaced_rather_than_treated_as_broken_code(self):
         """The model must be able to say no — and be believed.

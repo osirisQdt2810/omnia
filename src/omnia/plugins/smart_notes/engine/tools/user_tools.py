@@ -247,13 +247,30 @@ def _parse_header(text: str) -> str:
 
 
 class ImportGuard:
-    """Refuses a user-tool module that reaches outside a small allowlist of imports.
+    """Refuses a user-tool module that reaches outside an allowlist of imports.
 
-    A **speed bump, not a sandbox** (see the module docstring). It exists so the source the user
-    reads is the source that runs: a tool that quietly imported ``urllib.request`` would look
-    like a string transform in the dialog and behave like a network client at review time. The
-    allowlist is everything a note-field transform legitimately needs, plus the Omnia modules
-    the ``Tool`` contract itself requires.
+    A **speed bump, not a sandbox** — and since the allowlist now includes ``os``,
+    ``subprocess`` and the filesystem, it is worth being exact about what that means.
+
+    A user tool is arbitrary Python that runs in Anki's own process. Anki add-ons already have
+    unrestricted Python, and this dialog has always said so ("Everything here runs with the
+    same access as the add-on itself"), so the guard was never the thing standing between a
+    tool and the machine — the mandatory read-and-run review is. Keeping the list narrow while
+    the surrounding reality was wide bought no safety and cost the feature its point: a
+    transform that CONVERTS rather than rewrites cannot be written without touching a file, so
+    the model produced tools that renamed a string and looked like they worked.
+
+    What the guard still buys, and why it is kept:
+
+    * **the source you read is the source that runs.** An import outside the list is refused at
+      load, so a tool cannot quietly grow a capability between the review and the next run;
+    * **the review can be informed.** :func:`risky_operations` reads the same module and names
+      what it reaches for, so the dialog can show "this writes files and runs programs" above
+      the code instead of leaving the reader to spot it.
+
+    What it does NOT buy: containment. A tool that imports ``subprocess`` can do whatever the
+    user running Anki can do. That is the user's decision, taken deliberately, and the reason
+    nothing is saved until the code has been read and test-run.
     """
 
     #: Dotted prefixes a user tool may import. ``"urllib.parse"`` is listed in full: importing
@@ -278,6 +295,24 @@ class ImportGuard:
             "typing",
             "unicodedata",
             "urllib.parse",
+            # --- Files, processes and the media a tool may need to touch --------------------
+            # Opened deliberately (see the class docstring). A transform that CONVERTS rather
+            # than rewrites — pull the audio out of a video, resize a picture — has to reach
+            # the file the note refers to, and everything short of that produced tools that
+            # renamed a string and pretended.
+            "io",
+            "os",
+            "pathlib",
+            "shutil",
+            "subprocess",
+            "tempfile",
+            "wave",
+            "hashlib",
+            "mimetypes",
+            "uuid",
+            # The media folder's location and the audio runtime, so a tool does not have to
+            # guess either.
+            "omnia.core.audio",
             "pydantic",
             "omnia.core.config.base",
             "omnia.core.lang",
@@ -291,9 +326,11 @@ class ImportGuard:
         }
     )
 
-    #: Builtins whose mere presence means the module is doing something a field transform never
-    #: needs. Flagged by NAME only — trivially bypassed, and worth catching anyway because the
-    #: realistic failure here is a model that ignored its instructions, not an attacker.
+    #: Builtins that build and run code from a string. These stay REFUSED even now that the
+    #: filesystem is allowed, and for a different reason: they defeat the one guarantee the
+    #: guard still makes — that the source the user read is the source that runs. ``open`` is
+    #: deliberately not here any more; a tool that converts a file has to open it, and the
+    #: review is told so by :func:`risky_operations`.
     FLAGGED_CALLS: frozenset[str] = frozenset(
         {
             "__import__",
@@ -303,7 +340,6 @@ class ImportGuard:
             "exec",
             "globals",
             "input",
-            "open",
         }
     )
 
@@ -625,6 +661,59 @@ class UserToolLoader:
 def _reason(exc: Exception) -> str:
     """A one-line, user-facing reason for a failure (its message, else its type)."""
     return str(exc) or exc.__class__.__name__
+
+
+#: What a tool reaching for one of these modules is actually able to do, in the reader's terms.
+#: The point is not to scare — it is that "this tool writes files and runs programs" belongs
+#: ABOVE the code, not buried on line 40 of it, now that the import guard permits both.
+_RISK_BY_MODULE: dict[str, str] = {
+    "subprocess": "runs other programs on your computer",
+    "os": "reads and changes files and folders",
+    "shutil": "copies, moves and deletes files",
+    "pathlib": "reads and writes files",
+    "io": "reads and writes files",
+    "tempfile": "creates temporary files",
+    "wave": "reads and writes audio files",
+    "urllib.parse": "",  # parsing only — no network, nothing to warn about
+}
+
+
+def risky_operations(code: str) -> list[str]:
+    """Return plain-language descriptions of what ``code`` reaches for, for the review screen.
+
+    The import allowlist stopped being the safety boundary the moment it had to permit ``os``
+    and ``subprocess`` (see :class:`ImportGuard`); the mandatory read-and-run review is. A
+    review is only worth something if the reader knows what to look for, and "spot the
+    subprocess import in forty lines of generated Python" is not a fair ask — especially when
+    the Python was written by a model and is being read once.
+
+    Deliberately import-based rather than clever: a tool that hides its intent defeats a
+    heuristic anyway, and the case that matters here is the honest tool whose reach the reader
+    simply did not notice.
+
+    Args:
+        code: The module source.
+
+    Returns:
+        Unique descriptions in a stable order; empty when the tool only transforms text.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []  # the guard reports this properly; nothing to describe
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        for name in names:
+            risk = _RISK_BY_MODULE.get(name.split(".")[0] if name else "")
+            if risk and risk not in found:
+                found.append(risk)
+    return found
 
 
 class ReviewGate:
