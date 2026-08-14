@@ -35,7 +35,7 @@ from aqt.qt import (  # type: ignore[attr-defined]
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.gui.widgets import hint_label
+from omnia.gui.widgets import hint_with_details, rich_tooltip
 from omnia.plugins.word_lookup.config import WordLookupSettings
 
 logger = get_logger("word_lookup")
@@ -72,10 +72,13 @@ class WordLookupSettingsDialog(QDialog):
 
         root = QVBoxLayout(self)
         root.addWidget(
-            hint_label(
+            hint_with_details(
                 self,
-                "Tick the note types the desktop clipper's magnifier should search. "
-                "Select one to choose its fields.",
+                "What the desktop clipper's magnifier searches.",
+                "Double-clicking a word anywhere on your screen opens a lookup panel. This "
+                "decides which notes it searches and what it shows.\n\n"
+                "Tick the note types to include, then select one (click its name, not its "
+                "box) to choose which of its fields are searched and previewed.",
             )
         )
 
@@ -84,10 +87,14 @@ class WordLookupSettingsDialog(QDialog):
         columns.addWidget(
             self._field_column(
                 "Search in",
-                "The word must appear as a WHOLE WORD: 'port' finds 'port of call', "
-                "not 'important'.\n"
-                "Empty = search every field, substring allowed.\n"
-                "Case never matters (PORT = Port = port).",
+                (
+                    "Whole-word match; empty = every field.",
+                    "The word must appear as a WHOLE WORD: 'port' finds 'port of call', "
+                    "not 'important'.\n\n"
+                    "Leave every field unticked to search them all, where a substring is "
+                    "allowed too.\n\n"
+                    "Case never matters (PORT = Port = port).",
+                ),
                 on_auto=self._auto_search,
                 attr="_search_list",
             ),
@@ -96,8 +103,12 @@ class WordLookupSettingsDialog(QDialog):
         columns.addWidget(
             self._field_column(
                 "Preview",
-                "Shown in this order in the lookup panel. "
-                "Empty = automatic (the first N non-empty fields).",
+                (
+                    "Shown in this order; empty = automatic.",
+                    "These fields appear in the lookup panel, in the order ticked here.\n\n"
+                    "Leave them all unticked and the panel picks for you: the first N "
+                    "non-empty fields, where N is 'Auto-show fields' below.",
+                ),
                 on_auto=self._auto_display,
                 attr="_display_list",
             ),
@@ -105,12 +116,13 @@ class WordLookupSettingsDialog(QDialog):
         )
         root.addLayout(columns, 1)
 
-        self._word_forms = QCheckBox(
-            "Also match other forms (loved -> love, studies -> study)"
-        )
+        self._word_forms = QCheckBox("Also match other forms")
         self._word_forms.setChecked(bool(settings.match_word_forms))
         self._word_forms.setToolTip(
-            "Double-clicking an inflected word still finds the card filed under its base form."
+            rich_tooltip(
+                "Double-clicking an inflected word still finds the card filed under its "
+                "base form.\n\nloved → love, studies → study, ran → run."
+            )
         )
         root.addWidget(self._word_forms)
 
@@ -171,10 +183,21 @@ class WordLookupSettingsDialog(QDialog):
             self._note_types.addItem(item)
         self._note_types.currentItemChanged.connect(self._on_note_type_changed)
         layout.addWidget(self._note_types, 1)
-        layout.addWidget(hint_label(self, "None ticked = search the whole collection."))
+        layout.addWidget(
+            hint_with_details(
+                self,
+                "None ticked = whole collection.",
+                "Tick the note types the magnifier should look in. With none ticked it "
+                "searches every note in the collection.\n\n"
+                "Select a row (rather than ticking it) to choose which of that note type's "
+                "fields are searched and shown.",
+            )
+        )
         return holder
 
-    def _field_column(self, title: str, hint: str, on_auto: Any, attr: str) -> QWidget:
+    def _field_column(
+        self, title: str, hint: tuple[str, str], on_auto: Any, attr: str
+    ) -> QWidget:
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -188,7 +211,7 @@ class WordLookupSettingsDialog(QDialog):
         layout.addLayout(header)
         listing = QListWidget()
         layout.addWidget(listing, 1)
-        layout.addWidget(hint_label(self, hint))
+        layout.addWidget(hint_with_details(self, hint[0], hint[1]))
         setattr(
             self, attr, listing
         )  # explicit, so renaming a column can't rewire the lists
