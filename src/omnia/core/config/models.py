@@ -81,7 +81,7 @@ class GeminiLLMSettings(LLMModelSettings):
     """``gemini`` (AI Studio): a ``GOOGLE_API_KEY`` + model ids."""
 
     api_key: str = ""
-    text_model: str = "gemini-2.0-flash"
+    text_model: str = "gemini-3.6-flash"
 
 
 class OpenAICompatibleLLMSettings(LLMModelSettings):

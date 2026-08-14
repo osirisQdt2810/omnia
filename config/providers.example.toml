@@ -30,7 +30,14 @@ embedding_model = ""        # e.g. "gemini-embedding-001"
 # value in .secrets/llm.gemini.api_key (the .secrets/ dir is gitignored, under user_files/config).
 [llm.gemini]
 api_key = ""
-text_model = "gemini-2.0-flash"
+# Google retires model ids from under you: "gemini-2.0-flash" shipped here and now answers
+# 404 "no longer available to new users". If generation starts failing with Not Found, list what
+# your key can actually reach —
+#   curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$KEY"
+# — then CONFIRM the one you pick with a real call, because ListModels still lists retired ids:
+#   curl -s -X POST ".../v1beta/models/<id>:generateContent?key=$KEY" \
+#        -H 'Content-Type: application/json' -d '{"contents":[{"parts":[{"text":"hi"}]}]}'
+text_model = "gemini-3.6-flash"
 image_model = ""
 embedding_model = ""
 

@@ -21,16 +21,30 @@ from omnia.core.providers.llm.factory import (
 LLM_PROVIDERS: list[str] = ["gemini", "gemini_vertex", "openrouter"]
 
 # Text models per LLM provider (curated defaults; the GUI merges in the user's saved model).
-_GEMINI_TEXT_MODELS: list[str] = [
+#
+# The two Gemini endpoints get SEPARATE lists on purpose: they retire ids on different
+# schedules, so one shared constant meant delisting an id for AI Studio silently removed it
+# from Vertex too. Verified live 2026-08-14: AI Studio answers 404 "no longer available to new
+# users" for gemini-2.5-* (and 2.0/1.5), while Vertex still serves 2.5-flash and 2.5-pro — which
+# is also the shipped Vertex default and what the Vertex integration test pins.
+#
+# An id earns its place by ANSWERING, not by being listed: ListModels keeps returning retired
+# ids, so confirm a candidate with a real call before adding it —
+#   curl -sX POST ".../v1beta/models/<id>:generateContent?key=$KEY" \
+#        -H 'Content-Type: application/json' -d '{"contents":[{"parts":[{"text":"hi"}]}]}'
+_GEMINI_AI_STUDIO_TEXT_MODELS: list[str] = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-pro",
     "gemini-3.0-flash",
     "gemini-3.0-pro",
+]
+_GEMINI_VERTEX_TEXT_MODELS: list[str] = [
+    *_GEMINI_AI_STUDIO_TEXT_MODELS,
+    # Still served by Vertex after AI Studio retired them (checked live).
     "gemini-2.5-flash",
     "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
 ]
 _OPENROUTER_TEXT_MODELS: list[str] = [
     "openai/gpt-4o-mini",
@@ -41,8 +55,8 @@ _OPENROUTER_TEXT_MODELS: list[str] = [
     "deepseek/deepseek-chat",
 ]
 _TEXT_MODELS: dict[str, list[str]] = {
-    "gemini": list(_GEMINI_TEXT_MODELS),
-    "gemini_vertex": list(_GEMINI_TEXT_MODELS),
+    "gemini": list(_GEMINI_AI_STUDIO_TEXT_MODELS),
+    "gemini_vertex": list(_GEMINI_VERTEX_TEXT_MODELS),
     "openrouter": list(_OPENROUTER_TEXT_MODELS),
 }
 
