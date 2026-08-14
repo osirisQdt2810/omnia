@@ -18,6 +18,9 @@
 # Test runner
 pytest==8.3.4
 pytest-mock==3.14.0
+# Coverage: measured on one CI leg and published as the README badge. Not a gate —
+# a number that blocks a merge gets gamed with tests that assert nothing.
+pytest-cov==6.0.0
 
 # Formatters / linters / types — pinned to match .pre-commit-config.yaml.
 # ruff must be new enough for the UP045/UP046/UP047 selectors that pyproject's ignore list

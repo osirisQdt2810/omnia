@@ -1,10 +1,24 @@
-# Omnia — All-in-One Anki Toolkit
+<div align="center">
 
-Omnia is a single Anki add-on that hosts many independent **feature plugins** — auto-flip,
-typing-accuracy grading, AI note generation, and more. A clean settings UI lists every
-plugin with an enable toggle; tick one and that feature turns on. Adding a new feature is
-the same "pluginize" move every time: drop a `FeaturePlugin` subclass into `plugins/`,
-register it, and it appears in the UI.
+# Omnia
+
+**One Anki add-on, many independent feature plugins.**
+
+[![CI](https://github.com/osirisQdt2810/omnia/actions/workflows/pr-pipeline.yml/badge.svg?branch=main)](https://github.com/osirisQdt2810/omnia/actions/workflows/pr-pipeline.yml)
+[![coverage](https://codecov.io/gh/osirisQdt2810/omnia/branch/main/graph/badge.svg)](https://codecov.io/gh/osirisQdt2810/omnia)
+[![python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue)](https://github.com/osirisQdt2810/omnia/actions/workflows/pr-pipeline.yml)
+[![platforms](https://img.shields.io/badge/platforms-macOS%20|%20Windows%20|%20Linux-lightgrey)](#install-on-your-machine)
+[![Anki](https://img.shields.io/badge/Anki-25.09%2B-brightgreen)](https://apps.ankiweb.net/)
+
+</div>
+
+Tick a plugin on in the settings dialog and that feature turns on. Adding a new feature is the
+same "pluginize" move every time: drop a `FeaturePlugin` subclass into `plugins/`, register it,
+and it appears in the UI.
+
+Every PR runs the suite on **four Python versions across three operating systems**, gets an
+automated architecture review, and merges itself only when both pass — so `main` is always a
+build you can install.
 
 ## Why a plugin architecture
 Most Anki power-features touch the same few seams — they rewrite a card's grade, inject JS
@@ -21,11 +35,28 @@ in `core/` and keeps each feature thin and isolated:
 ## Bundled feature plugins
 | Plugin | What it does |
 |---|---|
-| `auto_flip` | Auto-advances question → answer → grade after a configurable delay. |
-| `typed_accuracy` | Grades a typed card again/hard/good/easy from typing accuracy. |
-| `display_interval` | Shows the predicted next interval on the answer side. |
-| `overdue_guard` | Forces very overdue cards to Hard/Again regardless of input. |
-| `smart_notes` | Generates note fields (text/image) and TTS audio via an LLM/TTS provider. |
+| `auto_flip` | Auto-advances question → answer → grade after a configurable delay, waiting for the card's audio to finish. |
+| `typed_accuracy` | Grades a typed card again/hard/good/easy from how accurately you typed it. |
+| `display_interval` | Shows the predicted next interval on the answer side, and exposes it to card templates. |
+| `overdue_guard` | Forces very overdue cards to Hard/Again regardless of what you press. |
+| `word_lookup` | Search a word across your collection from the reviewer or a clipper, with word-form matching. |
+| `note_maintenance` | Batch clean-up of notes you already have — deterministic, no AI. Preview the diff, then apply with full undo. |
+| `smart_notes` | Fills note fields (text, image, TTS audio) — see below. |
+
+### Generating fields without paying for it
+
+`smart_notes` does not have to mean "call an LLM". Each generated field runs an **ordered chain
+of tools**, and the model is only reached when the deterministic ones decline:
+
+| Tool | Cost | What it does |
+|---|---|---|
+| `cloze` | free | Wraps the note's word in its example sentence as `{{c1::…}}`, matching inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
+| `cloze_audio` | TTS only | Speaks the sentence with the answer replaced by silence or a beep — a listening cloze. It **never** speaks the answer: if it cannot mask, it fails rather than falling back to plain speech. |
+| `ai` | tokens | The LLM path. |
+| `user:<yours>` | free | A tool you describe once in your own words; the generated Python is shown to you, tested, and saved as a file that then runs offline forever. |
+
+A field configured `cloze → ai` costs nothing when the word really is in the sentence, and only
+reaches the provider when it is not.
 
 ---
 
