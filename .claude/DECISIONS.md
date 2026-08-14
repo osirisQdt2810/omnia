@@ -784,10 +784,9 @@ aloud (`strip_markup` unwraps `{{c1::survive}}` to `survive`). The two mechanism
 
 Both worked. Both were also invisible from the settings UI: the picker showed an ordered list
 that the runtime would sometimes decline to run, and sometimes stop halfway, for reasons
-belonging to one tool. The owner's ruling, on reviewing the picker:
-
-> "cứ chạy tools theo thứ tự đã define sẵn, khi 1 tool fail => next sang tool tiếp theo, không
-> có vấn đề gì cả"
+belonging to one tool. Reviewing the picker, the project owner ruled that a chain should
+simply run its tools in the configured order and move to the next one whenever a tool fails —
+and that this needs no exception.
 
 ### Decision
 A chain runs its tools in the configured order. Every failure — a decline, an empty result, a
@@ -825,7 +824,7 @@ the failure; its `description` and module docstring say to put no tts tool after
 the wrong field.
 
 ### Alternatives considered
-- **Keep ADR-011.** Rejected by the owner's ruling above.
+- **Keep ADR-011.** Rejected by the ruling above.
 - **Keep only `exclusive` (refuse the chain, drop the halt).** Still a special case in the
   shared picker and pipeline, and still a chain the UI offers but the runtime will not run.
 - **An advisory-only warning in the picker.** Not adopted here, but compatible with this ADR —

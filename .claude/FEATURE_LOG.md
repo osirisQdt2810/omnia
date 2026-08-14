@@ -76,9 +76,9 @@ guarded compile + register, `ImportGuard`, `ReviewGate`, `UserToolTester`),
 `gui/.../controllers/user_tools.py` + `web/10-usertools.js` + the tab pane, `unregister_tool` on
 the registry, and `SmartNotesSettings.fields_using_tool` so a delete can name the affected fields.
 
-**Why:** The user's own reasoning — "nếu có gì đó giúp cho tránh được AI - gọi LLM thì tốt hơn -
-vì gọi LLM tốn tokens". A transform a model does not need to think about should not pay a model
-every time. The step-DSL designed for this was rejected in favour of real Python (plan decision 3).
+**Why:** Anything that can be done without calling the LLM should be, because every LLM call
+costs tokens. A transform a model does not need to think about should not pay a model every
+time. The step-DSL designed for this was rejected in favour of real Python (plan decision 3).
 
 **Security — the design delta that makes real Python defensible (stated plainly, per the module
 docstring):** a user tool runs **in-process, at the add-on's full trust level** — collection,
@@ -415,8 +415,9 @@ and the template's own fallback (`{{info-Ivl:}}`, the current interval) applies.
 
 **Why:** the user's `AnkiVocabulary` Back picks which audio to chain (Definition vs Example) by
 interval; `{{info-Ivl:}}` only gives the CURRENT interval, but the semantically right signal is
-the predicted NEXT one ("đang quên → Definition, thuộc rồi → Example"). Their template rule now
-prefers `omniaIntervals.next_days` (threshold kept at their 4) with `{{info-Ivl:}}` fallback.
+the predicted NEXT one — the card should show the Definition while it is still being
+forgotten and the Example once it is known. The template rule now prefers
+`omniaIntervals.next_days` (threshold kept at 4) with an `{{info-Ivl:}}` fallback.
 
 **Files:** `src/omnia/plugins/display_interval/{__init__,config}.py`, `tests/plugins/
 test_display_interval.py` (+6), `tests/conftest.py` (card_will_show FakeHook). Template updates
@@ -441,7 +442,7 @@ still-draining av_player queue in both directions.
 
 **Why:** the `AnkiVocabulary` "Word -> Mean" Back rewrite moved audio from `[sound:]`-carrying
 fields to a JS-driven `dynPlayer` — the sounds hook reported `[]`, auto-flip armed immediately and
-graded mid-playback ("nó không biết time của sound").
+graded mid-playback, because nothing told it how long the audio actually was.
 
 **Files:** `src/omnia/gui/auto_flip/web/media_watch.js` (NEW), `src/omnia/plugins/auto_flip/
 media_watch.py` (NEW loader), `…/auto_flip/__init__.py` (busy/idle ops + arm gating + per-side
@@ -1084,8 +1085,9 @@ gate — that remains a separate, unbuilt feature). `set_active_tts` deliberatel
   cards. The dialog gets a **Decks picker** (toolbar button → popover: "All decks" master +
   per-deck checkboxes; baked `all_decks`), and `decks` rides the save/auto/improve payloads.
 
-**Why:** User wanted Smart Notes config to survive restart + sync ("lưu vào database của
-anki"), and to scope a note type's generation to specific decks (All or a ticked subset).
+**Why:** Smart Notes config had to survive a restart and travel with Anki's own sync, which
+means living in the collection database rather than a file; and a note type's generation had to
+be scopeable to specific decks (All, or a ticked subset).
 
 **Files:** `plugins/smart_notes/integration/{store.py,__init__.py,review.py,batch.py}`,
 `plugins/smart_notes/__init__.py`, `plugins/smart_notes/config.py`,

@@ -157,8 +157,9 @@ Page JS `node --check` OK.
    (`vi-VN-Neural2-A` → `vi-VN`); the voice wins over a mismatched configured/detected lang. File:
    `core/providers/tts/google_cloud.py` (`_language_code_from_voice` + `_resolve_lang(lang, voice)`).
    Offline regression: `tests/providers/test_tts.py::TestGoogleCloudLanguageCode`.
-4. **Test redesign** (user: "mỗi provider 1 class, mỗi tts 1 class … chạy thực tế vừa có llm vừa
-   không có llm"): real tests are now ONE class per provider — `Test<Provider>RealLLM` (5, all
+4. **Test redesign** (requested shape: one class per provider and one per TTS voice, exercising
+   both the with-LLM and without-LLM paths against the real services): real tests are now ONE
+   class per provider — `Test<Provider>RealLLM` (5, all
    `@llm`) and `Test<Provider>RealTTS` (7; keyless google_translate/edge_tts/piper UNMARKED so they
    run by default, keyed/cloud `@tts`). Each auto-skips with a clear reason when it can't run (no
    creds/package/runner) — never a fake pass. **Installed `edge-tts`** into `.venv` + added
