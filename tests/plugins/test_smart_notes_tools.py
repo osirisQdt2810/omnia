@@ -470,7 +470,9 @@ class TestTheCatalogDescribesEachToolForThePicker:
                 return frozenset()
 
         assert tool_required_params(_Exploding) == frozenset()  # the except branch
-        assert tool_required_params(_NotIterable) == frozenset()  # the isinstance branch
+        assert (
+            tool_required_params(_NotIterable) == frozenset()
+        )  # the isinstance branch
         assert tool_required_params(_ProduceTool) == frozenset()  # the ordinary default
 
 
