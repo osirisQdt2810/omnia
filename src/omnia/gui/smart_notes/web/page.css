@@ -402,7 +402,10 @@ select:disabled { opacity: 0.7; }
 /* The prompt cell holds its own lock in the top-right corner (the Lock COLUMN is gone: it
    spoke about one neighbouring cell and claimed table width to do it). The body is what
    blurs when locked; the badge must stay lit and clickable so it can be undone. */
-.sn-prompt-cell { position: relative; padding-right: 26px; }
+/* `td.` on purpose: the shorthand in `.sn-table td` is (0,1,1) and outranks a bare class,
+   so a plain `.sn-prompt-cell { padding-right }` lost and the badge's gutter was never
+   reserved — it overlapped the summary's last ~18px, which is exactly its ellipsis. */
+.sn-table td.sn-prompt-cell { position: relative; padding-right: 26px; }
 .sn-prompt-body { min-width: 0; }
 .sn-prompt-cell .sn-lock {
   position: absolute; top: 4px; right: 4px;

@@ -412,6 +412,26 @@ class TestToolsPickerPage:
         assert "<colgroup>" in css
         assert "th:nth-child" not in css
 
+    def test_the_lock_gutter_outranks_the_cell_padding_shorthand(self):
+        # `.sn-table td` is (0,1,1) and beats a bare `.sn-prompt-cell` (0,1,0), so the 26px
+        # reserved for the badge was never reserved: the glyph sat on the summary's last ~18px
+        # — precisely its ellipsis — and at FULL opacity on a locked row, where the text
+        # underneath is frozen.
+        css = _strip_css_comments(self._html())
+
+        assert "td.sn-prompt-cell { position: relative; padding-right: 26px; }" in css
+
+    def test_the_voice_col_is_hidden_with_its_cells(self):
+        # The <col> must carry the same class that hides the th and td. It did not, so with no
+        # sound field — the DEFAULT state — the row had 9 cells against 10 columns, every
+        # column from Voice on took its neighbour's width, and the last 5.5% became a dead
+        # cell-less gap. The budget still summed to 100%; it was just applied to the wrong
+        # columns, which is why the sum test alone could not catch it.
+        html = self._html()
+
+        assert '<col class="sn-col-voice sn-col-voicecol">' in html
+        assert ":not(.sn-has-sound) .sn-col-voice { display: none; }" in html
+
     def test_the_column_budget_sums_to_one_hundred_percent(self):
         # One unit, in one place. Mixing % with px let the two halves over-allocate against
         # each other — 54% + 426px at the 1040px dialog left Prompt about 37px — and the
