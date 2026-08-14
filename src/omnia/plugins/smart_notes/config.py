@@ -178,8 +178,40 @@ class SmartNotesFieldConfig(PersistedModel):
     depends_on: list[FieldDep] = Field(default_factory=list)
     # Ordered tool chain for this field, tried until one produces a result. EMPTY (the
     # default, and what every blob written before tool chains existed carries) means the
-    # legacy single-``ai`` chain — see :func:`default_tool_chain`.
+    # legacy single-``ai`` chain — see :func:`default_tool_chain`. Never SERIALIZED while it is
+    # empty — see :meth:`dict`.
     tools: list[FieldToolConfig] = Field(default_factory=list)
+
+    def dict(self, **kwargs: Any) -> dict[str, Any]:
+        """Serialize the row, OMITTING ``tools`` while the chain is empty.
+
+        An empty chain carries no information — it IS the legacy default — so writing the key
+        would only announce this release's schema to the synced collection. That matters
+        because the blob syncs to devices on OTHER releases: one on a build from before
+        :class:`~omnia.core.config.base.PersistedModel` (ADR-010) still validates with
+        ``extra = "forbid"`` and has no ``try`` around
+        :meth:`~omnia.plugins.smart_notes.integration.store.SmartNotesStore.load`, so a single
+        unknown key there is not a lost setting but a crash on every note-add hook. Omitting it
+        keeps the persisted blob byte-identical to a pre-tools one for every legacy config,
+        and a field the user actually configures a chain on is the first thing that ever
+        writes the key.
+
+        Pruning lives HERE rather than in the store because the model owns the meaning of "no
+        chain": the store persists ``settings.dict()`` wholesale and would have to walk the
+        note-type tree looking for a key two levels down, and every other caller that
+        serializes a settings tree would still leak it. Pydantic v1 serializes a NESTED model
+        through that model's own ``dict()``, so this one override covers the whole tree.
+
+        Args:
+            **kwargs: Passed through to :meth:`pydantic.BaseModel.dict` unchanged.
+
+        Returns:
+            The row's serialized form, without a ``tools`` key when the chain is empty.
+        """
+        data: dict[str, Any] = super().dict(**kwargs)
+        if not data.get("tools"):
+            data.pop("tools", None)
+        return data
 
     def supports_generation(self) -> bool:
         """Whether THIS version implements the row's ``type`` (and may therefore generate it).

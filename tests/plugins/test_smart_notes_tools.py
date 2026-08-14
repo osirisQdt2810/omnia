@@ -494,7 +494,7 @@ class TestToolCompilation:
             {"field": "Def", "enabled": True, "type": "text", "prompt": "d {{Word}}"}
         )
         assert config.tools == []
-        assert "tools" in config.dict()
+        assert "tools" not in config.dict()
 
 
 class TestToolPrerequisites:
