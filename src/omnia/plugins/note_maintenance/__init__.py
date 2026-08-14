@@ -137,10 +137,7 @@ class NoteMaintenancePlugin(FeaturePlugin):
             return
         planner = self.build_planner()
         if not planner.has_runnable_note_type:
-            tooltip(
-                "Omnia: no note type has a maintenance task switched on "
-                "(configure Note Maintenance)."
-            )
+            tooltip(self._nothing_configured_message())
             return
         anki_compat.run_in_background(
             lambda: planner.plan(_note_views(note_ids)),
@@ -166,6 +163,22 @@ class NoteMaintenancePlugin(FeaturePlugin):
         from omnia.gui.note_maintenance.preview_dialog import MaintenancePreviewDialog
 
         MaintenancePreviewDialog(plan, parent).exec()
+
+    def _nothing_configured_message(self) -> str:
+        """What to say when no note type is set up — which differs for an UPGRADING user.
+
+        Task settings used to be one global map. A user who had that map working reads "no note
+        type has a maintenance task switched on" as "my settings are gone", and it is the first
+        thing they see after updating. Their settings are in fact untouched and are offered as
+        the starting point for the first note type they configure, so this says so.
+        """
+        base = "Omnia: no note type has a maintenance task switched on"
+        if self._settings().tasks:
+            return (
+                f"{base}. Your existing task settings are kept — open Note Maintenance and "
+                "tick a note type to apply them to it."
+            )
+        return f"{base} (configure Note Maintenance)."
 
     def build_planner(self) -> NoteTypePlanner:
         """Return a planner over this plugin's per-note-type settings.

@@ -250,6 +250,35 @@ class TestMaintainNotes:
         assert previewed == []
         assert tooltips and "note type" in tooltips[0].lower()
 
+    def test_an_upgrading_user_is_told_their_settings_are_kept(
+        self, gui_hooks, tooltips
+    ):
+        # The FIRST thing a user with the old global map sees after updating. "No note type has
+        # a maintenance task switched on" is true but reads as "my settings are gone" — and
+        # they are not: the map is kept verbatim and seeds the first note type configured.
+        plugin = _plugin(
+            NoteMaintenanceSettings(
+                tasks={"strip_ipa": {"enable": True, "fields": {"Synonyms": ""}}}
+            )
+        )
+        plugin._preview = lambda plan, parent: None
+
+        plugin.maintain_notes(_FakeBrowser([5]))
+
+        assert tooltips
+        assert "kept" in tooltips[0]
+        assert "tick a note type" in tooltips[0]
+
+    def test_a_fresh_install_is_not_told_about_settings_it_never_had(
+        self, gui_hooks, tooltips
+    ):
+        plugin = _plugin(NoteMaintenanceSettings())
+        plugin._preview = lambda plan, parent: None
+
+        plugin.maintain_notes(_FakeBrowser([5]))
+
+        assert tooltips and "kept" not in tooltips[0]
+
     def test_a_plan_with_nothing_to_change_opens_no_dialog(self, gui_hooks, tooltips):
         from omnia.plugins.note_maintenance.runner import ChangePlan
 
