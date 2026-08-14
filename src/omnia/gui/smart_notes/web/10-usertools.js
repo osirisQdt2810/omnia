@@ -22,6 +22,7 @@
   const utWarnNo = document.getElementById("sn-ut-warn-no");
   const utBuiltins = document.getElementById("sn-ut-builtins");
   const utDirEl = document.getElementById("sn-ut-dir");
+  const utOpenEl = document.getElementById("sn-ut-open");
   const utEditor = document.getElementById("sn-ut-editor");
   const utNewBtn = document.getElementById("sn-ut-new");
   const utLabelEl = document.getElementById("sn-ut-label");
@@ -48,13 +49,28 @@
     send("user_tools", {}, renderUserTools);
   }
 
+  // Opening the folder is the point: a path the user has to retype into Finder/Explorer is
+  // homework, not a location. Qt does the platform difference on the Python side.
+  utOpenEl.addEventListener("click", function () {
+    send("user_tool_open_dir", {}, function (res) {
+      if (res && res.error) {
+        setMsg(res.error, true);
+      }
+    });
+  });
+
   /**
    * Render the user's tools + the built-in cards.
    * @param {?Object} res {tools: [...], builtins: [...], directory: string}.
    */
   function renderUserTools(res) {
     const data = res || {};
-    utDirEl.textContent = data.directory || "user_files/tools";
+    // The SHORT label, with the absolute path on hover. Both come from the backend: the path
+    // is derived from the installed package's own location, so it is already right on every
+    // platform — but inlining it in this sentence made a runtime value read as a hardcoded
+    // macOS literal, and the folder is somewhere different on each OS anyway.
+    utDirEl.textContent = data.directory_label || data.directory || "user_files/tools";
+    utDirEl.title = data.directory || "";
     utList.innerHTML = "";
     const tools = data.tools || [];
     if (!tools.length) {

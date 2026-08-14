@@ -392,6 +392,19 @@ def open_external_url(url: str) -> None:
     openLink(url)
 
 
+def open_local_path(path: Any) -> None:
+    """Reveal a local file or folder in the OS file manager.
+
+    Qt's ``QDesktopServices`` handles the platform difference (Finder, Explorer, the desktop's
+    default handler), so no caller has to branch on ``sys.platform`` — which is exactly the
+    kind of branch that ships working on the machine it was written on and broken elsewhere.
+    Anki already depends on Qt, so this adds nothing to vendor.
+    """
+    from aqt.qt import QDesktopServices, QUrl
+
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+
 def play_audio(data: bytes, ext: str) -> str:
     """Play raw audio ``data`` through Anki's av player (writes a temp clip first).
 
