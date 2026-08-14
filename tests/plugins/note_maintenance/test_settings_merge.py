@@ -103,11 +103,20 @@ class TestTaskOptions:
 
     def test_the_rows_keep_the_models_order(self):
         assert self._names(self._split()) == [
-            "order",
             "threshold",
             "source_field",
             "fields",
         ]
+
+    def test_the_list_owned_options_are_not_rendered(self):
+        # `enable` is the task list's tick and `order` is its ▲/▼ position. Both are still
+        # PERSISTED — the runner sorts on order, and an older Omnia reads it — but neither is
+        # a box in the options form any more: a typed run position asked the user to hold the
+        # whole sequence in their head and guess a gap between two tasks.
+        names = self._names(self._split())
+
+        assert "enable" not in names
+        assert "order" not in names
 
 
 class TestTaskSectionMerge:
@@ -116,25 +125,25 @@ class TestTaskSectionMerge:
     def test_an_edited_task_gets_its_switch_and_options(self):
         merge = TaskSectionMerge({})
 
-        merge.apply("demo", enable=True, options={"order": 5})
+        merge.apply("demo", enable=True, order=20, options={})
 
-        assert merge.result() == {"demo": {"enable": True, "order": 5}}
+        assert merge.result() == {"demo": {"enable": True, "order": 20}}
 
     def test_a_stored_option_the_form_never_reported_survives(self):
         merge = TaskSectionMerge({"demo": {"order": 5, "a_future_option": ["kept"]}})
 
-        merge.apply("demo", enable=False, options={"order": 7})
+        merge.apply("demo", enable=False, order=70, options={})
 
         assert merge.result()["demo"] == {
             "enable": False,
-            "order": 7,
+            "order": 70,
             "a_future_option": ["kept"],
         }
 
     def test_a_task_section_this_build_does_not_register_survives(self):
         merge = TaskSectionMerge({"a_future_task": {"enable": True, "mode": "beta"}})
 
-        merge.apply("demo", enable=True, options={})
+        merge.apply("demo", enable=True, order=10, options={})
 
         assert merge.result()["a_future_task"] == {"enable": True, "mode": "beta"}
 
@@ -143,29 +152,47 @@ class TestTaskSectionMerge:
         # is still the user's data, and this build must not be the one that deletes it.
         merge = TaskSectionMerge({"weird": "a string"})
 
-        merge.apply("demo", enable=True, options={})
+        merge.apply("demo", enable=True, order=10, options={})
 
         assert merge.result()["weird"] == "a string"
 
     def test_editing_a_task_whose_entry_is_not_a_table_replaces_it(self):
         merge = TaskSectionMerge({"demo": "a string"})
 
-        merge.apply("demo", enable=True, options={"order": 5})
+        merge.apply("demo", enable=True, order=10, options={})
 
-        assert merge.result()["demo"] == {"enable": True, "order": 5}
+        assert merge.result()["demo"] == {"enable": True, "order": 10}
 
     def test_the_stored_map_is_not_mutated(self):
         stored: dict[str, Any] = {"demo": {"order": 5}}
         merge = TaskSectionMerge(stored)
 
-        merge.apply("demo", enable=False, options={"order": 9})
+        merge.apply("demo", enable=False, order=90, options={})
 
         assert stored == {"demo": {"order": 5}}
+
+    def test_the_position_wins_over_a_stored_order(self):
+        # `order` is no longer typed into the options form — it IS the task list's ▲/▼
+        # position, so what the list reports must overwrite whatever was stored.
+        merge = TaskSectionMerge({"demo": {"order": 999}})
+
+        merge.apply("demo", enable=True, order=30, options={})
+
+        assert merge.result()["demo"]["order"] == 30
+
+    def test_an_options_map_cannot_smuggle_an_order_back_in(self):
+        # Defensive: the form no longer reports `order` (TaskOptions drops it), but if it ever
+        # did, the list's position is the truth — a stale number must not win.
+        merge = TaskSectionMerge({})
+
+        merge.apply("demo", enable=True, order=30, options={"order": 999})
+
+        assert merge.result()["demo"]["order"] == 30
 
     def test_the_tick_wins_over_a_stored_enable(self):
         merge = TaskSectionMerge({"demo": {"enable": True}})
 
-        merge.apply("demo", enable=False, options={})
+        merge.apply("demo", enable=False, order=10, options={})
 
         assert merge.result()["demo"]["enable"] is False
 

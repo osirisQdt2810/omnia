@@ -30,6 +30,11 @@ from omnia.core.config.schema import schema_from_model
 from omnia.core.plugin import ConfigField
 from omnia.plugins.note_maintenance.base import OptionKind, TaskConfigBase
 
+#: Options the task LIST edits, so no per-task form ever renders them: ``enable`` is its tick
+#: and ``order`` is its ▲/▼ position. Both are still PERSISTED — the runner sorts on ``order``,
+#: and an older Omnia reads it — they are simply not typed in by hand any more.
+_LIST_OWNED = frozenset({"enable", "order"})
+
 
 @dataclass(frozen=True)
 class OptionRow:
@@ -58,8 +63,12 @@ class TaskOptions:
     untouched — a settings dialog that writes back only what it could draw deletes the settings
     it did not understand.
 
-    ``enable`` is dropped from both halves: the task list's tick owns it and the dialog writes
-    it back itself (see :meth:`TaskSectionMerge.apply`).
+    ``enable`` and ``order`` are dropped from both halves: the task LIST owns them — the tick
+    and the ▲/▼ buttons — and the dialog writes both back itself (see
+    :meth:`TaskSectionMerge.apply`). ``order`` used to be a number the user typed into this
+    form, which asked them to hold the whole run sequence in their head and to guess a gap
+    ("does 40 come before 100?"). Dragging a task up one row cannot express that question at
+    all, so the number stopped being an option and became a consequence of position.
 
     Attributes:
         model: The task's settings model (for a complex row's title/help).
@@ -79,7 +88,7 @@ class TaskOptions:
         self.rows: list[OptionRow] = []
         self.passthrough: dict[str, Any] = {}
         for name, value in config.dict().items():
-            if name == "enable":
+            if name in _LIST_OWNED:
                 continue
             kind = self.model.option_kind(name)
             if name in scalars:
@@ -152,17 +161,25 @@ class SectionMerge:
 class TaskSectionMerge(SectionMerge):
     """The ``tasks`` map of ONE note type: what was stored, updated with what was edited."""
 
-    def apply(self, task_id: str, *, enable: bool, options: Mapping[str, Any]) -> None:
-        """Layer one task's edited switch and options over what was stored for it.
+    def apply(
+        self, task_id: str, *, enable: bool, order: int, options: Mapping[str, Any]
+    ) -> None:
+        """Layer one task's edited switch, position and options over what was stored for it.
 
         Args:
             task_id: The task whose section this is.
             enable: Whether the task takes part in a run (the task list's tick owns it, so it
                 is written here rather than coming through ``options``).
+            order: Its run position, taken from the list's ▲/▼ order rather than typed. Still
+                written to storage: the runner sorts on it and an older Omnia reads it, so the
+                number has to be there — it is just no longer the user's to invent.
             options: What the task's form reports — its rendered rows plus whatever it could
                 not draw, unchanged.
         """
-        self._merge(task_id, {"enable": bool(enable), **options})
+        # The list-owned keys go LAST, so they win: `options` should never carry them (see
+        # ``_LIST_OWNED``), but if a stale or hand-built map ever did, the tick and the
+        # position the user can actually see must not be overwritten by a number they cannot.
+        self._merge(task_id, {**options, "enable": bool(enable), "order": int(order)})
 
 
 class NoteTypeSectionMerge(SectionMerge):

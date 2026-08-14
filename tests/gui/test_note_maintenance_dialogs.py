@@ -87,7 +87,9 @@ import aqt  # noqa: E402  (the conftest stub package)
 aqt.theme = _theme
 
 from omnia.gui.note_maintenance.panel import (  # noqa: E402
+    _ORDER_STEP,
     NoteMaintenanceSettingsDialog,
+    _NoteTypeTasksEditor,
 )
 from omnia.gui.note_maintenance.preview_dialog import (  # noqa: E402
     _DIFF_COLUMN,
@@ -284,12 +286,15 @@ def _untouched_editor(stored_tasks: dict[str, Any]) -> _FakeNoteTypeEditor:
     trip exercises the live save path without a Qt widget.
     """
     merge = TaskSectionMerge(stored_tasks)
-    for task in build_tasks(stored_tasks):
+    # `build_tasks` returns them in run order, which IS the list's order — so the position a
+    # save writes is the row index, exactly as `_NoteTypeTasksEditor.values()` computes it.
+    for row, task in enumerate(build_tasks(stored_tasks)):
         options = TaskOptions(task.config)
-        rendered = {row.name: row.value for row in options.rows}
+        rendered = {row_.name: row_.value for row_ in options.rows}
         merge.apply(
             task.task_id,
             enable=task.is_enabled,
+            order=(row + 1) * _ORDER_STEP,
             options={**options.passthrough, **rendered},
         )
     return _FakeNoteTypeEditor(merge.result(), seed=merge.result())
@@ -442,6 +447,79 @@ class TestFieldDropdowns:
         assert saved["field"] == "Synonyms"
 
 
+class _FakeTaskList:
+    """A QListWidget reduced to what `_move` does to it: take a row, insert it, select it."""
+
+    def __init__(self, labels: list[str]) -> None:
+        self.rows = list(labels)
+        self._current = 0
+
+    def currentRow(self) -> int:
+        return self._current
+
+    def setCurrentRow(self, row: int) -> None:
+        self._current = row
+
+    def takeItem(self, row: int) -> str:
+        return self.rows.pop(row)
+
+    def insertItem(self, row: int, item: str) -> None:
+        self.rows.insert(row, item)
+
+
+class TestTaskReordering:
+    """The run order IS the task list's order, changed with ▲/▼ rather than typed."""
+
+    @staticmethod
+    def _editor() -> Any:
+        """A `_NoteTypeTasksEditor` with only the two things `_move` touches filled in."""
+        editor = _NoteTypeTasksEditor.__new__(_NoteTypeTasksEditor)
+        editor._tasks = build_tasks({})
+        editor._task_list = _FakeTaskList([t.task_id for t in editor._tasks])
+        editor._move_up = types.SimpleNamespace(setEnabled=lambda _v: None)
+        editor._move_down = types.SimpleNamespace(setEnabled=lambda _v: None)
+        return editor
+
+    def test_moving_a_task_up_moves_it_in_the_list_and_in_the_run(self):
+        editor = self._editor()
+        before = [task.task_id for task in editor._tasks]
+        editor._task_list.setCurrentRow(2)
+
+        editor._move(-1)
+
+        expected = [*before[:1], before[2], before[1], *before[3:]]
+        assert [task.task_id for task in editor._tasks] == expected
+        # The list and the task sequence must move TOGETHER: `values()` pairs them by index,
+        # so letting the two drift would save one task's tick against another's options.
+        assert editor._task_list.rows == expected
+        assert editor._task_list.currentRow() == 1  # the moved task stays highlighted
+
+    def test_moving_down_is_the_mirror(self):
+        editor = self._editor()
+        before = [task.task_id for task in editor._tasks]
+        editor._task_list.setCurrentRow(0)
+
+        editor._move(1)
+
+        assert [task.task_id for task in editor._tasks] == [
+            before[1],
+            before[0],
+            *before[2:],
+        ]
+        assert editor._task_list.currentRow() == 1
+
+    def test_moving_off_either_end_does_nothing(self):
+        editor = self._editor()
+        before = list(editor._task_list.rows)
+
+        editor._task_list.setCurrentRow(0)
+        editor._move(-1)
+        editor._task_list.setCurrentRow(len(before) - 1)
+        editor._move(1)
+
+        assert editor._task_list.rows == before
+
+
 class TestMultipleNoteTypes:
     """Several note types are configured and maintained together, each keeping its own."""
 
@@ -459,8 +537,30 @@ class TestMultipleNoteTypes:
         saved = _saved(config_repo)
         assert set(saved) == {"Vocab", "Kanji"}
         assert saved["Vocab"]["enable"] is True and saved["Kanji"]["enable"] is True
-        assert saved["Vocab"]["tasks"]["strip_ipa"]["order"] == 20
         assert dialog.accepted == [True]
+
+    def test_the_saved_order_is_the_list_position_not_a_typed_number(
+        self, config_repo, collection, warnings
+    ):
+        # `order` is no longer an option anyone types: it IS the task list's ▲/▼ order, so a
+        # save stamps consecutive positions down the list. It stays PERSISTED because the
+        # runner sorts on it and an older Omnia reads it.
+        collection({"Vocab": ["Word", "Synonyms"]})
+        dialog = _dialog(config_repo)
+        _tick(dialog, "Vocab", True)
+        _open(dialog, "Vocab")
+
+        dialog._save()
+
+        # Keyed by task, not by dict iteration order — storage does not promise to keep the
+        # map's insertion order, and the run order lives in the numbers, not in the keys.
+        saved = _saved(config_repo)["Vocab"]["tasks"]
+        expected = {
+            task.task_id: (row + 1) * _ORDER_STEP
+            for row, task in enumerate(build_tasks({}))
+        }
+
+        assert {name: section["order"] for name, section in saved.items()} == expected
 
     def test_a_note_type_the_user_never_touched_gets_no_entry(
         self, config_repo, collection, warnings

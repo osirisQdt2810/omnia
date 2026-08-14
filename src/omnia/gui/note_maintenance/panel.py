@@ -34,6 +34,7 @@ from aqt.qt import (  # type: ignore[attr-defined]
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QStackedWidget,
     Qt,
     QVBoxLayout,
@@ -58,6 +59,11 @@ from omnia.plugins.note_maintenance.settings_merge import (
 )
 
 logger = get_logger("note_maintenance")
+
+#: Gap between consecutive tasks' stored ``order``. Spaced rather than 0,1,2… so a task section
+#: this build does not register (synced from a newer Omnia, keeping its own stored order) lands
+#: between neighbours instead of tying with one of them.
+_ORDER_STEP = 10
 
 _PLUGIN_ID = "note_maintenance"
 #: Marks a configured note type this collection does not have (renamed, deleted, or another
@@ -186,13 +192,20 @@ class _NoteTypeTasksEditor(QWidget):
             self._task_list.setCurrentRow(0)
 
     def values(self) -> dict[str, Any]:
-        """Return the ``tasks`` map to persist: what was stored, updated with what was edited."""
+        """Return the ``tasks`` map to persist: what was stored, updated with what was edited.
+
+        ``order`` comes from the list POSITION, not from a number anyone typed: row 0 is 10,
+        row 1 is 20, and so on. The gaps are deliberate — a task section synced from a device
+        whose build has a task this one does not register keeps its own stored ``order``, and a
+        spaced scale leaves it somewhere sensible between its neighbours instead of colliding.
+        """
         merge = TaskSectionMerge(self._stored_tasks)
         for row, task in enumerate(self._tasks):
             item = self._task_list.item(row)
             merge.apply(
                 task.task_id,
                 enable=item.checkState() == Qt.CheckState.Checked,
+                order=(row + 1) * _ORDER_STEP,
                 options=self._editors[task.task_id].values(),
             )
         return merge.result()
@@ -221,18 +234,55 @@ class _NoteTypeTasksEditor(QWidget):
             QAbstractItemView.SelectionMode.SingleSelection
         )
         for task in self._tasks:
-            item = QListWidgetItem(task.name or task.task_id)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if task.is_enabled else Qt.CheckState.Unchecked
+            self._task_list.addItem(
+                _task_item(task.name or task.task_id, task.is_enabled)
             )
-            self._task_list.addItem(item)
         self._task_list.currentRowChanged.connect(self._on_task_changed)
         layout.addWidget(self._task_list, 1)
+
+        # The run order IS this list's order, so it is changed the way an order is changed:
+        # by moving a row. Same control as the smart-notes tools picker, for the same reason —
+        # both are "these run top-down until they are done", and a typed number asked the user
+        # to hold the whole sequence in their head and guess a gap between two of them.
+        moves = QHBoxLayout()
+        self._move_up = _move_button("▲", "Run earlier", lambda: self._move(-1))
+        self._move_down = _move_button("▼", "Run later", lambda: self._move(1))
+        moves.addWidget(self._move_up)
+        moves.addWidget(self._move_down)
+        moves.addStretch(1)
+        layout.addLayout(moves)
+
         layout.addWidget(
-            hint_label(self, "Unticked tasks are skipped for this note type.")
+            hint_label(
+                self,
+                "Tasks run top-down; two touching the same field layer in this order. "
+                "Unticked tasks are skipped for this note type.",
+            )
         )
         return holder
+
+    def _move(self, delta: int) -> None:
+        """Move the highlighted task ``delta`` rows and keep it highlighted.
+
+        Moves the row in the LIST and the task in ``self._tasks`` together — ``values()`` pairs
+        them by index, so letting the two drift would save one task's tick against another's
+        options.
+        """
+        row = self._task_list.currentRow()
+        target = row + delta
+        if not (0 <= row < len(self._tasks) and 0 <= target < len(self._tasks)):
+            return
+        self._tasks[row], self._tasks[target] = self._tasks[target], self._tasks[row]
+        moved = self._task_list.takeItem(row)
+        self._task_list.insertItem(target, moved)
+        self._task_list.setCurrentRow(target)
+
+    def _on_task_changed(self, row: int) -> None:
+        """Show the highlighted task's options and re-gate the move buttons."""
+        self._move_up.setEnabled(row > 0)
+        self._move_down.setEnabled(0 <= row < len(self._tasks) - 1)
+        if 0 <= row < len(self._tasks):
+            self._options.setCurrentWidget(self._editors[self._tasks[row].task_id])
 
     def _options_column(self, fields: Sequence[str]) -> QWidget:
         self._options = QStackedWidget()
@@ -241,11 +291,6 @@ class _NoteTypeTasksEditor(QWidget):
             self._editors[task.task_id] = editor
             self._options.addWidget(editor)
         return self._options
-
-    def _on_task_changed(self, row: int) -> None:
-        """Show the highlighted task's options (each editor keeps its own edits)."""
-        if 0 <= row < self._options.count():
-            self._options.setCurrentIndex(row)
 
 
 class NoteMaintenanceSettingsDialog(QDialog):
@@ -458,6 +503,26 @@ class NoteMaintenanceSettingsDialog(QDialog):
                 tasks=editor.values() if editor is not None else None,
             )
         return merge.result()
+
+
+def _task_item(label: str, enabled: bool) -> QListWidgetItem:
+    """One task row: its name, and the tick that decides whether it runs."""
+    item = QListWidgetItem(label)
+    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+    item.setCheckState(Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+    return item
+
+
+def _move_button(glyph: str, tooltip: str, on_click: Callable[[], None]) -> QPushButton:
+    """One ▲/▼ reorder button, sized so the pair reads as a control rather than two buttons."""
+    button = QPushButton(glyph)
+    button.setToolTip(tooltip)
+    button.setFixedWidth(32)
+    button.setEnabled(
+        False
+    )  # nothing is selected until the list emits its first row change
+    button.clicked.connect(on_click)
+    return button
 
 
 def _table(value: Any) -> dict[str, Any]:

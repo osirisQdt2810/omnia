@@ -104,7 +104,10 @@ class TaskConfigBase(PersistedModel):
         title="Run order",
         description=(
             "Run position — lower runs first; ties keep registration order. A task that "
-            "declares no order of its own runs last."
+            "declares no order of its own runs last. This is the DEFAULT position, not a "
+            "box anyone fills in: the settings panel owns the order through its ▲/▼ "
+            "buttons and stamps this from the list. It stays persisted because the runner "
+            "sorts on it and an older Omnia reads it."
         ),
     )
 
