@@ -471,3 +471,59 @@ class TestClozeThenAiChain:
 
         assert hit.produced.tool == "cloze"
         assert miss.produced.tool == "ai"
+
+
+class TestTheChainIsNotStoppedByABadRewrite:
+    """Three ways the tool used to Produce wrong output — which stops the chain.
+
+    A wrong `Produced` is worse than a miss: the chain ends, `ai` never gets to correct it, and
+    the bad text is written to the note. All three of these now decline (or simply do not match)
+    so the fallback still runs.
+    """
+
+    def test_a_speculative_stem_of_the_word_is_not_clozed(self):
+        # word_variants("toes") offers the stem "to" — fine for widening an Anki search, ruinous
+        # compiled into a rewrite. Same shape for bees->be, ones->on, uses->us.
+        text = _clozed(
+            {"Word": "toes", "Sentence": "I stubbed my toes on the way to work."},
+            params={"sentence_field": "Sentence"},
+        )
+        assert text == "I stubbed my {{c1::toes}} on the way to work."
+
+    def test_a_headword_that_is_itself_a_function_word_still_clozes(self):
+        # The filter above must never silence the user's own word.
+        text = _clozed(
+            {"Word": "to", "Sentence": "I want to go."},
+            params={"sentence_field": "Sentence"},
+        )
+        assert text == "I want {{c1::to}} go."
+
+    def test_a_real_short_base_is_still_reachable_through_a_token(self):
+        # "goes" -> "go" is the same shape as "toes" -> "to"; only the word list separates them.
+        text = _clozed(
+            {"Word": "goes", "Sentence": "He goes and they go."},
+            params={"sentence_field": "Sentence"},
+        )
+        assert text == "He {{c1::goes}} and they {{c1::go}}."
+
+    def test_a_word_split_by_a_tag_is_not_clozed_as_a_fragment(self):
+        # finditer(value, start, end) treats end as a truncation, so \b matched at the span's
+        # edge and hid "run" out of "<b>run</b>ning", leaving a card whose answer is a fragment.
+        assert isinstance(
+            _run(
+                {"Word": "run", "Sentence": "She was <b>run</b>ning fast."},
+                params={"sentence_field": "Sentence"},
+            ),
+            NotApplicable,
+        )
+
+    def test_the_same_field_cannot_be_both_the_sentence_and_the_word(self):
+        # Both params default independently and can land on the same field; clozing a word
+        # inside itself yields "{{c1::word}}", which is not a card.
+        assert isinstance(
+            _run(
+                {"Word": "cat"},
+                params={"sentence_field": "Word", "word_field": "Word"},
+            ),
+            NotApplicable,
+        )

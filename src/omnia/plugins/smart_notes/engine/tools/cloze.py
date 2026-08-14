@@ -72,6 +72,87 @@ _OPAQUE_RE = re.compile(
 # Word-ish runs used to harvest the sentence's own tokens for the inverse de-inflection.
 _TOKEN_RE = re.compile(r"\w+")
 
+# Function words that must never be clozed just because they happen to be a SPECULATIVE stem of
+# the headword. Stripping "es" turns "toes" into "to" and "ones" into "on" — legitimate guesses
+# for widening an Anki search, ruinous when compiled into a rewrite: the tool would hide every
+# "to" in the sentence and stop the chain, so `ai` never gets to correct it.
+#
+# Length alone cannot separate these ("goes" -> "go" is the same shape as "toes" -> "to"), so
+# the distinction has to be lexical. The list is deliberately tiny — only words no vocabulary
+# deck studies on their own — and it never filters the headword itself: if the user's word field
+# really is "to", "to" is still clozed.
+_FUNCTION_WORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "if",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "with",
+        "from",
+        "as",
+        "is",
+        "am",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "he",
+        "she",
+        "we",
+        "they",
+        "you",
+        "i",
+        "me",
+        "my",
+        "his",
+        "her",
+        "our",
+        "your",
+        "their",
+        "them",
+        "us",
+        "him",
+        "do",
+        "does",
+        "did",
+        "so",
+        "no",
+        "not",
+        "up",
+        "out",
+        "off",
+        "over",
+        "under",
+        "then",
+        "than",
+        "there",
+        "here",
+        "when",
+        "where",
+        "who",
+        "whom",
+        "which",
+    ]
+)
+
 
 def _plain_spans(value: str) -> list[tuple[int, int]]:
     """Return the ``(start, end)`` offsets of ``value``'s plain-text runs, in order.
@@ -189,18 +270,62 @@ class ClozeRewriter:
         pieces: list[str] = []
         cursor = 0
         hits = 0
-        for start, end in spans:
-            # Searching WITHIN the span (rather than on a slice) keeps every offset in the
-            # original string, and makes the span's edges count as word boundaries.
-            for match in pattern.finditer(value, start, end):
-                hits += 1
-                pieces.append(value[cursor : match.start()])
-                pieces.append(self._wrap(match.group(0), hits))
-                cursor = match.end()
+        for match_start, match_end, surface in self._matches(value, pattern):
+            hits += 1
+            pieces.append(value[cursor:match_start])
+            pieces.append(self._wrap(surface, hits))
+            cursor = match_end
         if not hits:
             return None
         pieces.append(value[cursor:])
         return "".join(pieces)
+
+    def _matches(
+        self, value: str, pattern: re.Pattern[str]
+    ) -> list[tuple[int, int, str]]:
+        """Return each whole-word hit as ``(start, end, surface)`` offsets into ``value``.
+
+        Matching happens on a PROJECTION of the value rather than on its raw spans, because
+        ``finditer(value, start, end)`` treats ``end`` as a truncation — re behaves "as if the
+        string is end characters long" — so ``\\b`` matches at a span's right edge even when a
+        word character sits just past it behind a tag. ``She was <b>run</b>ning fast.`` would
+        then cloze the fragment ``run``.
+
+        In the projection an HTML tag is TRANSPARENT (it contributes nothing and joins what is
+        on either side of it, so ``<b>run</b>ning`` reads as the single word ``running`` and no
+        longer matches ``run``), while an entity, a media reference and an existing cloze become
+        one separator character, so a match can never read through them.
+
+        A hit is then rejected if its original range is not contiguous — i.e. the match reads
+        across a tag. That keeps ``sur<b>vived</b>`` declining, as its own test requires, while
+        the rewrite still edits the ORIGINAL markup.
+        """
+        plain_chars: list[str] = []
+        offsets: list[int] = []
+        cursor = 0
+        for opaque in _OPAQUE_RE.finditer(value):
+            for index in range(cursor, opaque.start()):
+                plain_chars.append(value[index])
+                offsets.append(index)
+            if not opaque.group(0).startswith("<"):
+                # Not a tag: a real barrier, so nothing may match across it.
+                plain_chars.append("\x00")
+                offsets.append(opaque.start())
+            cursor = opaque.end()
+        for index in range(cursor, len(value)):
+            plain_chars.append(value[index])
+            offsets.append(index)
+
+        hits: list[tuple[int, int, str]] = []
+        plain = "".join(plain_chars)
+        for match in pattern.finditer(plain):
+            start, end = match.start(), match.end()
+            first, last = offsets[start], offsets[end - 1]
+            # Contiguous in the original == the match did not read through a tag.
+            if last - first != end - start - 1:
+                continue
+            hits.append((first, last + 1, value[first : last + 1]))
+        return hits
 
     def _pattern(
         self, value: str, spans: list[tuple[int, int]]
@@ -222,19 +347,33 @@ class ClozeRewriter:
 
         Longest-first ordering keeps the alternation from settling for a shorter form when a
         longer one starts at the same place.
+
+        The word's own variants are used ONLY as a probe, never as match terms. ``word_variants``
+        is deliberately generous because a spurious candidate costs nothing in an Anki search —
+        but here a candidate is compiled straight into the cloze regex, where a stem that happens
+        to be a real word rewrites the note. ``toes`` yields the stem ``to``, which would hide
+        every "to" in the sentence; ``bees``/``ones``/``uses`` do the same with ``be``/``on``/
+        ``us``. The token loop below already covers the direction those stems were meant to
+        serve: a sentence token counts when ITS variants meet the word's.
         """
         primary = self._word.lower()
         if not self._match_word_forms:
             return [primary] if primary else []
         targets = set(word_variants(self._word))
-        terms = set(targets)
-        terms.add(primary)
+        terms = {primary}
         for start, end in spans:
             for token in _TOKEN_RE.findall(value[start:end]):
                 lowered = token.lower()
                 if lowered in terms:
                     continue
-                if targets.intersection(word_variants(token)):
+                # The two must meet on a base that carries meaning. Without this the probe's
+                # own speculative stems come back in through the token: "toes" offers the stem
+                # "to", the sentence's "to" shares it, and every "to" gets clozed. The headword
+                # itself is always a valid meeting point, however common it is.
+                shared = targets.intersection(word_variants(token))
+                if any(
+                    base == primary or base not in _FUNCTION_WORDS for base in shared
+                ):
                     terms.add(lowered)
         return sorted((term for term in terms if term), key=lambda t: (-len(t), t))
 
@@ -313,6 +452,14 @@ class ClozeTool(Tool):
         if not word:
             return NotApplicable(
                 f"nothing to cloze — {word_field or 'the word field'} is empty"
+            )
+        if sentence_field.strip().lower() == word_field.strip().lower():
+            # Both default independently — sentence_field to the rule's first prompt ref and
+            # word_field to the note type's base field — so a rule whose only ref IS the base
+            # field lands on the same field twice. Clozing a word inside itself just yields
+            # "{{c1::word}}", which is not a card; decline so the chain can fall through.
+            return NotApplicable(
+                f"the sentence and the word would both come from {sentence_field!r}"
             )
         clozed = ClozeRewriter(
             word,
