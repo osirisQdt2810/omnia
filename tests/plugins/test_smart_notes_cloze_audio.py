@@ -449,7 +449,7 @@ class TestNeverSpeaksTheAnswer:
         with pytest.raises(ToolError, match="Auto-detect voice"):
             ClozeAudioTool().run(request, ctx)
 
-    def test_an_unexpected_bug_is_terminal_too(self, monkeypatch):
+    def test_an_unexpected_bug_still_raises_rather_than_declines(self, monkeypatch):
         # Even a plain programming error must not become "let the next tool speak it".
         import omnia.plugins.smart_notes.engine.tools.cloze_audio as module
 
@@ -457,7 +457,7 @@ class TestNeverSpeaksTheAnswer:
             raise RuntimeError("unexpected")
 
         monkeypatch.setattr(module.ResolvedVoice, "for_rule", _boom)
-        with pytest.raises(ToolError, match="Refusing to fall through"):
+        with pytest.raises(ToolError, match="could not mask the answer"):
             _run(
                 {"Word": "sat", "Sentence": "The cat {{c1::sat}} down."},
                 params={"source_field": "Sentence"},

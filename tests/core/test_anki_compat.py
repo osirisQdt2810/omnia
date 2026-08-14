@@ -5,9 +5,25 @@ from __future__ import annotations
 from omnia.core.anki_compat import (
     _guard,
     escape_search_term,
+    random_note_of_type,
     subscribe_hook,
     unsubscribe_hook,
 )
+
+
+class _FakeCollection:
+    """A collection reduced to the two calls ``random_note_of_type`` makes."""
+
+    def __init__(self, note_ids: list[int]) -> None:
+        self._note_ids = list(note_ids)
+        self.queries: list[str] = []
+
+    def find_notes(self, query: str) -> list[int]:
+        self.queries.append(query)
+        return list(self._note_ids)
+
+    def get_note(self, note_id: int) -> str:
+        return f"note-{note_id}"
 
 
 class TestEscapeSearchTerm:
@@ -72,3 +88,44 @@ class TestHookGuard:
 
     def test_guard_passes_through_return_value_on_success(self):
         assert _guard("some_hook", lambda a: a + 1)(41) == 42
+
+
+class TestRandomNoteOfType:
+    """The preview must sample the collection, not keep showing the same card.
+
+    ``note_ids[0]`` made every preview of a note type return one identical note, so a prompt
+    that happened to suit it looked correct and a rule that only broke on other notes looked
+    fine — the exact failure a preview exists to prevent.
+    """
+
+    def test_it_picks_from_the_whole_result_set(self, monkeypatch):
+        seen = {}
+
+        def fake_choice(population):
+            seen["population"] = list(population)
+            return population[-1]
+
+        monkeypatch.setattr("omnia.core.anki_compat.random.choice", fake_choice)
+        col = _FakeCollection([11, 22, 33])
+
+        note = random_note_of_type("Basic", col=col)
+
+        # EVERY id is offered — not a slice, and not the first one taken directly.
+        assert seen["population"] == [11, 22, 33]
+        assert note == "note-33"
+
+    def test_no_notes_gives_none_rather_than_an_empty_choice(self, monkeypatch):
+        # `random.choice([])` raises IndexError; a note type with no notes is ordinary.
+        def explode(_population):
+            raise AssertionError("random.choice must not be called for an empty result")
+
+        monkeypatch.setattr("omnia.core.anki_compat.random.choice", explode)
+
+        assert random_note_of_type("Basic", col=_FakeCollection([])) is None
+
+    def test_the_note_type_is_escaped_into_the_query(self):
+        col = _FakeCollection([1])
+
+        random_note_of_type('Basic "Q"', col=col)
+
+        assert col.queries == ['note:"Basic \\"Q\\""']

@@ -77,6 +77,12 @@
   function writeTools(tr, chain) {
     tr.dataset.tools = JSON.stringify(chain || []);
     updateToolsSummary(tr);
+    // Editing the chain is exactly what changes whether the row reaches a provider, and it was
+    // the one event that never re-ran the check — so a row set to `cloze` alone kept its faded
+    // Provider/Model after `ai` was appended, and `.sn-na` is `pointer-events: none`, making
+    // those cells unclickable for a chain that would use them until the table was rebuilt.
+    const typeSel = tr.querySelector(".sn-type");
+    applyKindState(tr, (typeSel && typeSel.value) || "text");
   }
 
   /**
@@ -85,14 +91,15 @@
    * @return {!HTMLTableCellElement}
    */
   function makeToolsCell(tr) {
-    const td = cell("sn-tools-cell sn-lockable");
+    // NOT `sn-lockable`: that class carries `pointer-events: none` + a blur, which is what
+    // actually froze this cell. The lock means "auto-smart must not overwrite my prompt" and
+    // that generator writes only `type` and `prompt` — the tool chain is the user's own knob.
+    const td = cell("sn-tools-cell");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "sn-btn sn-tools-btn";
     btn.addEventListener("click", function () {
-      if (!tr.classList.contains("sn-row-locked")) {
-        openToolsPicker(tr);
-      }
+      openToolsPicker(tr);
     });
     td.appendChild(btn);
     return td;
@@ -510,13 +517,24 @@
     return row;
   }
 
-  /** Every field name on this note type (base first), for the `*_field` param pickers. */
+  /**
+   * Every field a tool on the OPEN row may read (base first), for the `*_field` param pickers.
+   *
+   * The row's own field is left out: a tool reading the field it generates is a self-edge in
+   * the dependency graph, and it cannot ever be what the user meant — `cloze` would be asked to
+   * find its word in the very field it is about to overwrite. Harmless while these params were
+   * optional and rarely set; one click away now that they are required and the dropdown holds
+   * nothing but real field names.
+   */
   function fieldNames() {
+    const own = ((toolsRow && toolsRow.dataset.field) || "").toLowerCase();
     const names = [baseSel.value];
     Array.prototype.forEach.call(tbody.querySelectorAll("tr"), function (tr) {
       names.push(tr.dataset.field);
     });
-    return names.filter(Boolean);
+    return names.filter(function (name) {
+      return name && name.toLowerCase() !== own;
+    });
   }
 
   toolsClose.addEventListener("click", closeToolsPicker);

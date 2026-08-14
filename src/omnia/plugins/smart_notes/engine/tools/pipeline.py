@@ -19,9 +19,10 @@ attempt status   meaning
 ``unknown_tool`` and ``wrong_kind`` degrade GRACEFULLY on purpose: a stale name in a synced
 config must not fail the field when a later tool can still fill it.
 
-The ONE exception to falling through is
-
-A chain can also be refused BEFORE any tool runs. A tool that declares itself
+There is NO exception to falling through: whatever a tool does — decline, come up empty, or
+raise — the chain moves to the next one, and nothing is refused before it runs. A tool whose
+failure would make a LATER tool harmful cannot stop that here; ordering the chain is the
+user's decision (see ``cloze_audio``, which documents the one case where it matters).
 
 The guard covers the WHOLE attempt — resolving the tool and reading its class attributes as
 much as running it — so a tool whose constructor raises, or whose class omits ``kinds``, is

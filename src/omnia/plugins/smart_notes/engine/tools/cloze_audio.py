@@ -287,7 +287,7 @@ class SpeechCodec(ABC):
         """Return ``data`` as a 16-bit PCM clip.
 
         Raises:
-            ToolError: If the bytes cannot be turned into PCM. Terminal because the
+            ToolError: If the bytes cannot be turned into PCM. It raises rather than declines because the
                 alternative is a later tool speaking the answer.
         """
 
@@ -350,7 +350,7 @@ class SidecarCodec(SpeechCodec):
 
     @staticmethod
     def _run(call: Callable[[], bytes], what: str) -> bytes:
-        """Run one sidecar call, turning any provider-level failure into a terminal one."""
+        """Run one sidecar call, turning any provider-level failure into a ``ToolError``."""
         try:
             return call()
         except ProviderError as exc:
@@ -426,7 +426,7 @@ class MaskedAudioBuilder:
         try:
             data = self._voice.synthesize(text)
         except ProviderError as exc:
-            # Terminal, not a fall-through: the next tool would speak the whole sentence.
+            # Raised, never a silent decline: this tool does not hand a cloze field on quietly.
             raise ToolError(f"cloze_audio could not synthesize a part: {exc}") from exc
         return self._codec.decode(data)
 
@@ -529,7 +529,7 @@ class ClozeAudioTool(Tool):
 
     @classmethod
     def parse_params(cls, params: Mapping[str, object]) -> dict[str, object]:
-        """Validate the stored params, treating a rejection as terminal rather than as an error.
+        """Validate the stored params, raising rather than letting the default swallow it.
 
         The pipeline calls this INSIDE the attempt guard but BEFORE :meth:`run`, so the base
         implementation's "an unparsable params dict is one failed attempt, carry on" would walk
@@ -546,8 +546,8 @@ class ClozeAudioTool(Tool):
         except ValidationError as exc:
             raise ToolError(
                 f"cloze_audio cannot read its own settings ({exc}), so it cannot know how to "
-                "hide the answer. Refusing to fall through to a tool that would speak it — "
-                "fix the tool's options on this field."
+                "hide the answer, so it produced nothing. Fix the tool's options on this field — and "
+                "note that any tts tool AFTER it in the chain will now speak this field."
             ) from exc
 
     def run(self, request: ToolRequest, ctx: ToolContext) -> ToolOutcome:
@@ -556,8 +556,11 @@ class ClozeAudioTool(Tool):
         It never declines. EVERY failure — a source with nothing speakable in it, no cloze span
         and no word match, an unconfigured voice, audio that cannot be cut, the missing codec
         runtime — raises
-        :class:`~omnia.plugins.smart_notes.engine.tools.base.ToolError`, so the chain
-        stops instead of handing the field to a tool that would read the answer aloud.
+        :class:`~omnia.plugins.smart_notes.engine.tools.base.ToolError` rather than declining,
+        so the trace always names what went wrong. It does NOT stop the chain: by project rule
+        a failure falls through to the next tool, so a tts tool ordered after this one will
+        speak the field, answer included. This tool's guarantee is narrower and absolute —
+        *it* never speaks the answer.
 
         Raises:
             ToolError: When the answer cannot be masked.
@@ -578,8 +581,9 @@ class ClozeAudioTool(Tool):
             # unspeakable HERE and a leak THERE.
             raise ToolError(
                 "cloze_audio has nothing to speak in "
-                f"{source_field or 'the source field'}. Refusing to fall through to a tool "
-                "that would speak this field's other sources, answers included."
+                f"{source_field or 'the source field'}, so it produced nothing. It never speaks a "
+                "field it cannot mask; a tts tool after it in the chain would speak this "
+                "field's other sources, answers included."
             )
         word = strip_markup(
             field_value(request.fields, word_field), keep_line_breaks=False
@@ -589,9 +593,10 @@ class ClozeAudioTool(Tool):
             raise ToolError(
                 f"cloze_audio found nothing to hide in {source_field!r}: it carries no "
                 f"{{{{c1::…}}}} marker and {word or 'the word field'} does not occur in it. "
-                "Refusing to speak the sentence, which would give the answer away."
+                "It produced nothing rather than speak the sentence with the answer in it; a tts "
+                "tool after it in the chain would speak it."
             )
-        # PAST THIS LINE THERE IS AN ANSWER TO PROTECT, so every remaining failure is terminal —
+        # PAST THIS LINE THERE IS AN ANSWER TO PROTECT, so every remaining failure RAISES —
         # including ones raised by code this tool merely calls (an unconfigured Auto-detect
         # voice, say, which is an ordinary ProviderError and would otherwise fall through to a
         # tool that speaks the sentence). Guarding the phase rather than each call is what makes
@@ -602,8 +607,8 @@ class ClozeAudioTool(Tool):
             raise
         except Exception as exc:
             raise ToolError(
-                f"cloze_audio could not mask the answer in {source_field!r} ({exc}). "
-                "Refusing to fall through to a tool that would speak it."
+                f"cloze_audio could not mask the answer in {source_field!r} ({exc}), so it produced "
+                "nothing. A tts tool after it in the chain would speak this field."
             ) from exc
 
     def _produce(
