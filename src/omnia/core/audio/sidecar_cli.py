@@ -87,11 +87,15 @@ def _encode(source: Path, target: Path) -> None:
         rate = int(stream.rate or 44100)
         rate = rate if rate in _MP3_RATES else 44100
         channels = 1 if (stream.channels or 1) <= 1 else 2
+        layout = _mono_or_stereo(channels)
         with av.open(str(target), "w", format="mp3") as output:
-            out_stream = output.add_stream("mp3", rate=rate)
+            # The layout must be declared on the STREAM, not only on the resampler: without it
+            # libmp3lame defaults to stereo and duplicates a mono voice into two channels,
+            # doubling the size of every clip this re-encode exists to keep small.
+            out_stream = output.add_stream("mp3", rate=rate, layout=layout)
             resampler = av.AudioResampler(
                 format=out_stream.format.name,
-                layout=_mono_or_stereo(channels),
+                layout=layout,
                 rate=rate,
             )
             for frame in container.decode(stream):

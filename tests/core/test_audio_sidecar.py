@@ -1,11 +1,16 @@
-"""Tests for the ``audio`` native runtime wrapper (``core/audio/sidecar.py``).
+"""Tests for the ``audio`` native runtime: the wrapper (``sidecar.py``) and the transcoder it
+runs (``sidecar_cli.py``).
 
-The runtime itself (PyAV + FFmpeg) is a compiled wheel that only ever exists inside the
-managed venv, so nothing here runs a real transcode: the
-:class:`~omnia.core.providers.native_runtime.NativeRuntimeManager` is faked, and what is
-actually asserted is the CONTRACT around it — the spec the Advanced tab renders, the file-based
-argv (never stdin/stdout, which Windows would corrupt), and the actionable error a caller gets
-when the runtime is missing.
+The wrapper's tests fake the :class:`~omnia.core.providers.native_runtime.NativeRuntimeManager`
+and assert the CONTRACT around it — the spec the Advanced tab renders, the file-based argv
+(never stdin/stdout, which Windows would corrupt), and the actionable error a caller gets when
+the runtime is missing.
+
+:class:`TestRealTranscode` then runs the transcoder for real. PyAV is a compiled wheel that only
+ever exists inside the managed venv, so it is marked ``integration`` and SKIPS wherever ``av``
+is absent (CI, and any dev box that has not installed it) — but it is the only coverage the
+codec boundary can have, and without it a codec bug is invisible until a user hears it. Install
+it with ``pip install av`` and run ``pytest -m integration tests/core/test_audio_sidecar.py``.
 """
 
 from __future__ import annotations
@@ -14,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
+from omnia.core.audio import sidecar_cli
 from omnia.core.audio.sidecar import SPEC, AudioSidecar
+from omnia.core.audio.wav import SAMPLE_WIDTH, WavClip
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.native_runtime import (
     NATIVE_RUNTIMES,
@@ -114,6 +121,102 @@ class TestTranscode:
         manager = _FakeManager()
         AudioSidecar(manager).decode(b"x")
         assert not Path(manager.calls[0][1]).exists()
+
+
+class TestCommandLine:
+    """The argv boundary — the parent process only ever sees an exit code."""
+
+    def test_a_bad_command_is_refused_without_touching_a_codec(self):
+        assert sidecar_cli.main(["transmogrify", "in", "out"]) == 2
+
+    def test_a_missing_argument_is_refused(self):
+        assert sidecar_cli.main(["decode", "in"]) == 2
+
+    def test_anything_that_goes_wrong_exits_one_instead_of_raising(self, tmp_path):
+        # A missing input (or, on a machine without the runtime, the import of `av` itself):
+        # the parent reads the exit code, so the boundary must swallow and report, never crash.
+        assert sidecar_cli.main(["decode", str(tmp_path / "nope"), "out"]) == 1
+
+
+@pytest.mark.integration
+class TestRealTranscode:
+    """The codec boundary, run for real against PyAV (skipped when it isn't installed)."""
+
+    @pytest.fixture(autouse=True)
+    def av(self):
+        """Skip the whole class without PyAV, and hand it to the tests that inspect a stream."""
+        return pytest.importorskip(
+            "av", reason="PyAV lives in the managed venv; `pip install av` to run these"
+        )
+
+    def _wav(self, path: Path, *, channels: int = 1, rate: int = 22050) -> WavClip:
+        """Write a one-second tone at ``path`` and return the clip that was written."""
+        base = WavClip(channels, SAMPLE_WIDTH, rate, b"\x00\x00" * channels)
+        clip = WavClip.sine_beep(1000.0, 440.0, like=base)
+        path.write_bytes(clip.to_bytes())
+        return clip
+
+    def _layout(self, av, path: Path) -> str:
+        with av.open(str(path)) as container:
+            return str(container.streams.audio[0].layout.name)
+
+    def test_a_mono_voice_is_not_upmixed_to_stereo(self, av, tmp_path):
+        # libmp3lame defaults to stereo, so an encoder configured only with a rate duplicates a
+        # mono voice into two channels — doubling every clip the re-encode exists to keep small.
+        source = tmp_path / "mono.wav"
+        clip = self._wav(source, channels=1)
+        target = tmp_path / "mono.mp3"
+
+        sidecar_cli._encode(source, target)
+
+        assert self._layout(av, target) == "mono"
+        assert target.stat().st_size < len(clip.to_bytes()) / 2
+
+    def test_a_stereo_voice_stays_stereo(self, av, tmp_path):
+        source = tmp_path / "stereo.wav"
+        self._wav(source, channels=2)
+        target = tmp_path / "stereo.mp3"
+
+        sidecar_cli._encode(source, target)
+
+        assert self._layout(av, target) == "stereo"
+
+    def test_the_round_trip_comes_back_as_a_spliceable_clip(self, tmp_path):
+        # What cloze_audio actually does with an MP3 voice: decode to PCM, splice, re-encode.
+        source = tmp_path / "voice.wav"
+        clip = self._wav(source, channels=1)
+        encoded = tmp_path / "voice.mp3"
+        decoded = tmp_path / "voice-back.wav"
+
+        sidecar_cli._encode(source, encoded)
+        sidecar_cli._decode(encoded, decoded)
+
+        back = WavClip.from_bytes(decoded.read_bytes())
+        assert (
+            back.params == clip.params
+        )  # same channels, width and rate: it can be spliced
+        # MP3 pads the stream with encoder delay, so the length is close, not equal.
+        assert abs(back.duration_ms - clip.duration_ms) < 100
+
+    def test_a_rate_libmp3lame_rejects_is_resampled_instead_of_failing(
+        self, av, tmp_path
+    ):
+        source = tmp_path / "odd.wav"
+        self._wav(source, rate=20000)  # not one of libmp3lame's supported rates
+        target = tmp_path / "odd.mp3"
+
+        sidecar_cli._encode(source, target)
+
+        with av.open(str(target)) as container:
+            assert container.streams.audio[0].rate == 44100
+
+    def test_the_cli_entry_point_transcodes_and_reports_success(self, tmp_path):
+        source = tmp_path / "cli.wav"
+        self._wav(source)
+        target = tmp_path / "cli.mp3"
+
+        assert sidecar_cli.main(["encode", str(source), str(target)]) == 0
+        assert target.stat().st_size > 0
 
 
 class TestInstallState:
