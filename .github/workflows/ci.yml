@@ -80,13 +80,34 @@ jobs:
       - name: Publish to the badges branch
         # An ORPHAN branch, so a badge refresh on every push to main never touches main's
         # history — and a force-push there can lose nothing but the previous badge.
+        #
+        # `git add -A`, NOT `commit -a`: -a stages only files git already TRACKS, and a fresh
+        # `git init` tracks nothing — so the first version pushed an empty commit and the badge
+        # 404'd while this step reported success. `--allow-empty` was what hid it, the same way
+        # `fail_ci_if_error: false` hid codecov's refusal. Both are gone.
         run: |
           cd badge
+          test -s coverage.json  # fail here rather than publish a branch with no badge in it
           git init -q
           git checkout -qb badges
+          git add -A
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -qam "coverage badge for ${GITHUB_SHA::7}" --allow-empty
+              commit -qm "coverage badge for ${GITHUB_SHA::7}"
           git push -q --force \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" \
             badges
+      - name: Confirm the badge is actually readable
+        # The payload is useless unless raw.githubusercontent can serve it; checking here means
+        # a broken badge fails the run instead of sitting on the README saying "unknown".
+        run: |
+          for attempt in 1 2 3 4 5; do
+            sleep 5
+            body=$(curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/badges/coverage.json" || true)
+            case "$body" in
+              *schemaVersion*) echo "badge live: $body"; exit 0 ;;
+            esac
+            echo "attempt $attempt: not served yet"
+          done
+          echo "coverage.json is not readable on the badges branch"
+          exit 1
