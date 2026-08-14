@@ -40,7 +40,7 @@ in `core/` and keeps each feature thin and isolated:
 | `display_interval` | Shows the predicted next interval on the answer side, and exposes it to card templates. |
 | `overdue_guard` | Forces very overdue cards to Hard/Again regardless of what you press. |
 | `word_lookup` | Search a word across your collection from the reviewer or a clipper, with word-form matching. |
-| `note_maintenance` | Batch clean-up of notes you already have — deterministic, no AI. Preview the diff, then apply with full undo. |
+| `note_maintenance` | Batch clean-up of notes you already have — deterministic, no AI. Configured per note type (fields picked from dropdowns, several note types in one run); preview the diff, then apply with full undo. |
 | `smart_notes` | Fills note fields (text, image, TTS audio) — see below. |
 
 ### Generating fields without paying for it

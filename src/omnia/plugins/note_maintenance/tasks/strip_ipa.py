@@ -16,6 +16,7 @@ from pydantic import Field
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,
+    OptionKind,
     TaskConfigBase,
 )
 from omnia.plugins.note_maintenance.registry import register_task
@@ -42,6 +43,7 @@ class StripIpaConfig(TaskConfigBase):
             "``{source field: target field}``. The stripped list is written to the target "
             "field; an EMPTY target strips the source field in place."
         ),
+        renders_as=OptionKind.FIELD_MAP,
     )
 
 

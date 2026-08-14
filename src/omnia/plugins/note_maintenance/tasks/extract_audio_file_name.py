@@ -24,6 +24,7 @@ from omnia.core.text import as_field_html
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,
+    OptionKind,
     TaskConfigBase,
 )
 from omnia.plugins.note_maintenance.registry import register_task
@@ -50,6 +51,7 @@ class ExtractAudioFileNameConfig(TaskConfigBase):
             "``{audio field: filename field}``. The filename is written to the target field; "
             "an EMPTY target replaces the sound tag in the source field itself."
         ),
+        renders_as=OptionKind.FIELD_MAP,
     )
 
 

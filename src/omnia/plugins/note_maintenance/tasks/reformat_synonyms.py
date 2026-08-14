@@ -23,6 +23,7 @@ from pydantic import Field
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,
+    OptionKind,
     TaskConfigBase,
 )
 from omnia.plugins.note_maintenance.registry import register_task
@@ -46,6 +47,7 @@ class ReformatSynonymsConfig(TaskConfigBase):
         "Synonyms",
         title="Field",
         description="The field holding the synonym list (rewritten in place).",
+        renders_as=OptionKind.NOTE_FIELD,
     )
     strict_count_match: bool = Field(
         True,

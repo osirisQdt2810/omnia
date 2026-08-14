@@ -2,9 +2,9 @@
 
 The plugin's only hook is the Browser context menu, and enabling the feature must never edit a
 note by itself — so what is pinned here is: the hook goes on at enable and comes off at disable,
-a run reads the SELECTED notes into ``NoteView``s, and the resulting plan reaches the preview
-(the dialog itself is Qt and is stubbed out). ``run_in_background`` is conftest's synchronous
-QueryOp stub, so the scan runs inline.
+a run reads the SELECTED notes into ``NoteView``s, each note is planned with ITS note type's
+settings, and the resulting plan reaches the preview (the dialog itself is Qt and is stubbed
+out). ``run_in_background`` is conftest's synchronous QueryOp stub, so the scan runs inline.
 """
 
 from __future__ import annotations
@@ -62,17 +62,22 @@ def tooltips(monkeypatch):
 
 
 def _plugin(settings: NoteMaintenanceSettings | None = None) -> NoteMaintenancePlugin:
-    """An enabled plugin over ``settings`` (its defaults when none is given)."""
+    """An enabled plugin over ``settings`` (Vocab set up with its default tasks otherwise)."""
     plugin = NoteMaintenancePlugin()
-    plugin.on_enable(
-        types.SimpleNamespace(settings=settings or NoteMaintenanceSettings())
-    )
+    plugin.on_enable(types.SimpleNamespace(settings=settings or _configured("Vocab")))
     return plugin
 
 
-def _all_tasks_off() -> NoteMaintenanceSettings:
+def _configured(note_type: str, **tasks) -> NoteMaintenanceSettings:
+    """Settings with ``note_type`` switched on (its default tasks unless told otherwise)."""
     return NoteMaintenanceSettings(
-        tasks={task_id: {"enable": False} for task_id in registered_tasks()}
+        note_types={note_type: {"enable": True, "tasks": dict(tasks)}}
+    )
+
+
+def _all_tasks_off() -> NoteMaintenanceSettings:
+    return _configured(
+        "Vocab", **{task_id: {"enable": False} for task_id in registered_tasks()}
     )
 
 
@@ -83,7 +88,7 @@ def _updates(change) -> dict[str, str]:
 
 class TestHookLifecycle:
     def test_enable_subscribes_the_browser_hook_disable_removes_it(self, gui_hooks):
-        ctx = types.SimpleNamespace(settings=NoteMaintenanceSettings())
+        ctx = types.SimpleNamespace(settings=_configured("Vocab"))
         plugin = NoteMaintenancePlugin()
 
         plugin.on_enable(ctx)
@@ -93,7 +98,7 @@ class TestHookLifecycle:
         assert getattr(gui_hooks, _BROWSER_HOOK).count() == 0
 
     def test_a_disabled_plugin_leaves_no_hook_behind_after_a_re_enable(self, gui_hooks):
-        ctx = types.SimpleNamespace(settings=NoteMaintenanceSettings())
+        ctx = types.SimpleNamespace(settings=_configured("Vocab"))
         plugin = NoteMaintenancePlugin()
 
         plugin.on_enable(ctx)
@@ -111,7 +116,7 @@ class TestHookLifecycle:
             lambda *_a, **_k: pytest.fail("enable must not start a run"),
         )
         NoteMaintenancePlugin().on_enable(
-            types.SimpleNamespace(settings=NoteMaintenanceSettings())
+            types.SimpleNamespace(settings=_configured("Vocab"))
         )
 
 
@@ -179,15 +184,39 @@ class TestMaintainNotes:
         monkeypatch.setattr(
             anki_compat, "get_note_or_none", lambda nid, col=None: notes.get(nid)
         )
-        plugin = _plugin(
-            NoteMaintenanceSettings(tasks={"strip_ipa": {"order": "whenever"}})
-        )
+        plugin = _plugin(_configured("Vocab", strip_ipa={"order": "whenever"}))
         previewed: list = []
         plugin._preview = lambda plan, parent: previewed.append(plan)
 
         plugin.maintain_notes(_FakeBrowser([5]))
 
         assert [note.note_id for note in previewed[0]] == [5]
+
+    def test_each_note_is_planned_with_its_own_note_types_settings(
+        self, gui_hooks, monkeypatch, tooltips
+    ):
+        # The Browser selection routinely spans note types; the one with no settings must be
+        # reported rather than quietly contributing nothing.
+        notes = {
+            5: _FakeNote(
+                {"Synonyms": "modest (ˈmɒdɪst)", "SynonymsNoIPA": ""}, "Vocab"
+            ),
+            6: _FakeNote({"Synonyms": "meek (miːk)", "SynonymsNoIPA": ""}, "Basic"),
+        }
+        monkeypatch.setattr(
+            anki_compat, "get_note_or_none", lambda nid, col=None: notes.get(nid)
+        )
+        plugin = _plugin()
+        previewed: list = []
+        plugin._preview = lambda plan, parent: previewed.append(plan)
+
+        plugin.maintain_notes(_FakeBrowser([5, 6]))
+
+        plan = previewed[0]
+        assert [note.note_id for note in plan] == [5]
+        assert [(entry.note_type, entry.note_count) for entry in plan.skipped] == [
+            ("Basic", 1)
+        ]
 
     def test_an_empty_selection_reports_and_scans_nothing(self, gui_hooks, tooltips):
         plugin = _plugin()
@@ -209,6 +238,47 @@ class TestMaintainNotes:
         assert previewed == []
         assert tooltips and "task" in tooltips[0].lower()
 
+    def test_reports_when_no_note_type_is_set_up_and_scans_nothing(
+        self, gui_hooks, tooltips
+    ):
+        plugin = _plugin(NoteMaintenanceSettings())
+        previewed: list = []
+        plugin._preview = lambda plan, parent: previewed.append(plan)
+
+        plugin.maintain_notes(_FakeBrowser([5]))
+
+        assert previewed == []
+        assert tooltips and "note type" in tooltips[0].lower()
+
+    def test_an_upgrading_user_is_told_their_settings_are_kept(
+        self, gui_hooks, tooltips
+    ):
+        # The FIRST thing a user with the old global map sees after updating. "No note type has
+        # a maintenance task switched on" is true but reads as "my settings are gone" — and
+        # they are not: the map is kept verbatim and seeds the first note type configured.
+        plugin = _plugin(
+            NoteMaintenanceSettings(
+                tasks={"strip_ipa": {"enable": True, "fields": {"Synonyms": ""}}}
+            )
+        )
+        plugin._preview = lambda plan, parent: None
+
+        plugin.maintain_notes(_FakeBrowser([5]))
+
+        assert tooltips
+        assert "kept" in tooltips[0]
+        assert "tick a note type" in tooltips[0]
+
+    def test_a_fresh_install_is_not_told_about_settings_it_never_had(
+        self, gui_hooks, tooltips
+    ):
+        plugin = _plugin(NoteMaintenanceSettings())
+        plugin._preview = lambda plan, parent: None
+
+        plugin.maintain_notes(_FakeBrowser([5]))
+
+        assert tooltips and "kept" not in tooltips[0]
+
     def test_a_plan_with_nothing_to_change_opens_no_dialog(self, gui_hooks, tooltips):
         from omnia.plugins.note_maintenance.runner import ChangePlan
 
@@ -217,3 +287,22 @@ class TestMaintainNotes:
         _plugin()._preview(ChangePlan(), parent=None)
 
         assert tooltips and "no maintenance" in tooltips[0].lower()
+
+    def test_an_empty_plan_says_which_note_types_it_passed_over(
+        self, gui_hooks, tooltips
+    ):
+        # "Nothing happened" and "nothing happened because this note type is not set up" look
+        # identical to the user, and the second one is why the feature seemed broken.
+        from omnia.plugins.note_maintenance.runner import (
+            ChangePlan,
+            SkippedNotes,
+            SkipReason,
+        )
+
+        plan = ChangePlan(
+            (), (SkippedNotes("Basic", SkipReason.UNCONFIGURED, note_count=3),)
+        )
+
+        _plugin()._preview(plan, parent=None)
+
+        assert tooltips and "Basic" in tooltips[0] and "3 note(s)" in tooltips[0]
