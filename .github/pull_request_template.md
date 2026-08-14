@@ -9,9 +9,9 @@
 
 ## Content / Changes
 <!-- What exactly changed in this PR -->
-- 
-- 
-- 
+-
+-
+-
 
 <!-- Optional: call out non-obvious changes -->
 - Refactors:
@@ -25,11 +25,11 @@
 
 ### Test Details
 <!-- Commands, configs, or steps used to test -->
-- 
+-
 
 ### Test Output / Feature Demonstration
 <!-- Paste test output, logs, screenshots, benchmarks, or example requests/responses -->
-- 
+-
 
 ---
 
