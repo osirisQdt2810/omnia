@@ -240,7 +240,8 @@ def compile_field_rule(
     excludes it.
 
     The row's ``tools`` chain is compiled here too (see :func:`_compile_tools`), so an empty
-    chain becomes the legacy single-``ai`` chain.
+    chain becomes the legacy single-``ai`` chain, and ``base_field`` is threaded onto the rule
+    so a tool whose params default to "the note type's base field" can resolve them.
 
     Args:
         field_config: The persisted per-field config row.
@@ -253,6 +254,7 @@ def compile_field_rule(
 
     has_prompt = bool(field_config.prompt)
     return SmartNotesFieldRule(
+        base_field=base_field,
         source_field="" if has_prompt else base_field,
         source_is_base_fallback=not has_prompt,
         target_field=field_config.field,

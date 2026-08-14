@@ -44,6 +44,9 @@ def _row(field: str, **kw) -> dict:
         "language": "",
         "overwrite": False,
         "depends_on": [],
+        # The page posts the row's tool chain on every row (empty = the legacy AI default), so
+        # the canonical row payload carries it too — see TestToolChainPayloadRoundTrip.
+        "tools": [],
     }
     base.update(kw)
     return base

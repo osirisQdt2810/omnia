@@ -312,6 +312,10 @@
       model: sound ? "" : tr.dataset.model || "",
       voice: sound ? tr.dataset.voice || "" : "",
       language: sound ? tr.dataset.language || "" : "",
+      // The row's tool chain, so a preview runs the SAME tools generation will: without it a
+      // row configured "cloze → ai" would always preview the AI path and cost a call the real
+      // run never makes.
+      tools: readTools(tr),
       decks: selectedDeckIds()
     };
   }

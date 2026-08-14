@@ -110,7 +110,10 @@ class CustomPromptDialog(QDialog):
     def _on_generate(self) -> None:
         from aqt.utils import showWarning
 
-        from omnia.plugins.smart_notes.config import SmartNotesFieldRule
+        from omnia.plugins.smart_notes.config import (
+            SmartNotesFieldRule,
+            default_tool_chain,
+        )
         from omnia.plugins.smart_notes.engine import GenerationService
 
         prompt = self._prompt_edit.toPlainText().strip()
@@ -123,6 +126,10 @@ class CustomPromptDialog(QDialog):
             target_field=self._target_field,
             source_field=source,
             prompt="" if self._kind == "tts" else prompt,
+            # Explicitly the AI chain: this palette is a one-off prompt against the provider and
+            # has no field row to inherit a tool chain from. Stated rather than left to the
+            # default so a future change to that default can't silently retarget the palette.
+            tools=default_tool_chain(),
         )
         note = anki_compat.random_note_of_type(self._note_type or None)
         fields = (
