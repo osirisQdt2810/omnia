@@ -338,13 +338,20 @@ class TestTheTestRunIsRepresentative:
 
         assert resolve_media_dir() == "/collection/media"
 
-    def test_both_context_builders_use_the_same_resolver(self):
-        # One resolver, so neither site can drift from the other again.
-        import omnia.gui.smart_notes.dialogs.controllers.user_tools as gui
+    def test_the_two_contexts_differ_on_purpose(self):
+        """Generation sees the real collection; a TEST sees only the stage.
+
+        They used to be required to match, and that was right while both were the same kind of
+        run. They are not: a test executes code the user has not finished reviewing, so its
+        media folder is a temp copy and the user's own files are out of reach. Generation runs
+        code already read and saved, against the real collection, which is the point.
+
+        The shared resolver still exists and is still the ONE way the real folder is found — it
+        is simply not what the test path uses.
+        """
         import omnia.plugins.smart_notes.engine.service as service
         from omnia.plugins.smart_notes.engine.tools import resolve_media_dir
 
-        assert gui.resolve_media_dir is resolve_media_dir
         assert service.resolve_media_dir is resolve_media_dir
 
 
