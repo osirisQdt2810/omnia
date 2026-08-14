@@ -63,6 +63,34 @@ def _style_as_hint(widget: QWidget, label: QLabel) -> None:
     )
 
 
+def rich_tooltip(text: str, width_px: int = 340) -> str:
+    """Return ``text`` as a width-limited HTML tooltip that KEEPS its line breaks.
+
+    Two separate Qt behaviours have to be handled together, and handling only one is worse than
+    handling neither:
+
+    * a tooltip Qt reads as rich text is laid out with ``white-space: normal``, so every run of
+      whitespace — a blank line between paragraphs included — collapses to a single space. The
+      breaks have to become ``<br>`` explicitly. (This bit the first version of
+      :func:`hint_with_details`: it escaped the text, which made Qt treat it as rich text, and
+      the authored paragraphs shipped as one run-on block.)
+    * an unbounded tooltip is laid out to its LONGEST line, so a paragraph renders as one strip
+      running off the edge of the screen. Hence the width cap.
+
+    Promoted here from ``config_form`` because a third copy of this pairing is a third chance to
+    get one half of it right and the other wrong.
+
+    Args:
+        text: Plain text, with ``\n`` where a break is intended.
+        width_px: Maximum rendered width.
+
+    Returns:
+        HTML safe to hand to ``setToolTip``.
+    """
+    body = html.escape(text).replace("\n", "<br>")
+    return f'<div style="max-width:{width_px}px">{body}</div>'
+
+
 def hint_with_details(widget: QWidget, summary: str, details: str) -> QLabel:
     """Return a ONE-LINE hint whose full explanation lives in its tooltip.
 
@@ -88,8 +116,6 @@ def hint_with_details(widget: QWidget, summary: str, details: str) -> QLabel:
         return hint_label(widget, summary)
     label = QLabel(summary + _MORE)
     label.setWordWrap(True)
-    # Rich text so Qt wraps it; width-limited because Qt will otherwise honour the longest
-    # line and run a paragraph off the edge of the screen.
-    label.setToolTip(f'<div style="max-width:340px">{html.escape(details)}</div>')
+    label.setToolTip(rich_tooltip(details))
     _style_as_hint(widget, label)
     return label

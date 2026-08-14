@@ -35,7 +35,7 @@ from aqt.qt import (  # type: ignore[attr-defined]
 
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.gui.widgets import hint_with_details
+from omnia.gui.widgets import hint_with_details, rich_tooltip
 from omnia.plugins.word_lookup.config import WordLookupSettings
 
 logger = get_logger("word_lookup")
@@ -119,9 +119,10 @@ class WordLookupSettingsDialog(QDialog):
         self._word_forms = QCheckBox("Also match other forms")
         self._word_forms.setChecked(bool(settings.match_word_forms))
         self._word_forms.setToolTip(
-            '<div style="max-width:340px">Double-clicking an inflected word still finds the '
-            "card filed under its base form — <b>loved</b> finds <i>love</i>, "
-            "<b>studies</b> finds <i>study</i>, <b>ran</b> finds <i>run</i>.</div>"
+            rich_tooltip(
+                "Double-clicking an inflected word still finds the card filed under its "
+                "base form.\n\nloved → love, studies → study, ran → run."
+            )
         )
         root.addWidget(self._word_forms)
 
@@ -210,7 +211,7 @@ class WordLookupSettingsDialog(QDialog):
         layout.addLayout(header)
         listing = QListWidget()
         layout.addWidget(listing, 1)
-        layout.addWidget(hint_with_details(self, *hint))
+        layout.addWidget(hint_with_details(self, hint[0], hint[1]))
         setattr(
             self, attr, listing
         )  # explicit, so renaming a column can't rewire the lists

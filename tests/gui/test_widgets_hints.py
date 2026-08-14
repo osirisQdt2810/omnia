@@ -92,8 +92,7 @@ def widgets(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(_qt, "QWidget", _FakeWidget, raising=False)
-    for name in [n for n in list(sys.modules) if n == "omnia.gui.widgets"]:
-        del sys.modules[name]
+    sys.modules.pop("omnia.gui.widgets", None)
     import omnia.gui.widgets as module
 
     return module
@@ -138,6 +137,30 @@ class TestHintWithDetails:
 
         assert label.text != "Short."
         assert label.text.startswith("Short.")
+
+    def test_the_authored_line_breaks_survive(self, widgets):
+        """The whole point of moving text into the tooltip.
+
+        Escaping alone made Qt treat the string as rich text, and rich text lays out with
+        `white-space: normal` — so every blank line between paragraphs collapsed to a single
+        space and the wall of text was RELOCATED rather than removed. `\n` has to become
+        `<br>` explicitly.
+        """
+        label = widgets.hint_with_details(
+            _FakeWidget(), "Short.", "One.\n\nTwo.\n\nThree."
+        )
+
+        assert "<br><br>" in label.tooltip
+        assert "\n" not in label.tooltip  # nothing left for Qt to collapse
+
+    def test_rich_tooltip_escapes_and_breaks_together(self, widgets):
+        # Doing one half without the other is the bug this helper exists to prevent: escaping
+        # alone silently eats the breaks, breaks alone let markup through.
+        out = widgets.rich_tooltip("a < b\nnext")
+
+        assert "&lt;" in out
+        assert "<br>" in out
+        assert "max-width" in out
 
     def test_the_tooltip_is_width_limited(self, widgets):
         # Qt honours the longest line, so an unbounded tooltip runs a paragraph off-screen.
