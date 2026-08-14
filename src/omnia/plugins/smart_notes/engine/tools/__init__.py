@@ -58,6 +58,7 @@ from omnia.plugins.smart_notes.engine.tools.registry import (
     unregister_tool,
 )
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
+    GENERATION_KINDS,
     USER_TOOL_PREFIX,
     ImportGuard,
     ReviewGate,
@@ -76,6 +77,7 @@ from omnia.plugins.smart_notes.engine.tools.user_tools import (
 )
 
 __all__ = [
+    "GENERATION_KINDS",
     "TOOL_REGISTRY",
     "USER_TOOL_PREFIX",
     "AiTool",

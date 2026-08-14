@@ -206,7 +206,10 @@
     utSourceEl.value = data.source || "";
     utSampleEl.value = "";
     utOutEl.hidden = true;
-    showToolRisks([]);  // stale banner must not outlive its code
+    // The tool's OWN reach, not a blank. Opening an existing tool ends in Run, which executes
+    // it — so an empty banner over `import subprocess` would tell the reader the opposite of
+    // the truth at the one moment it matters.
+    showToolRisks(data.risks || []);
     utSampleFileEl.hidden = true;
     utOutEl.textContent = "";
     utGenMsg.textContent = "";
@@ -276,6 +279,21 @@
    * @param {string} slug The tool the reply is for.
    * @param {!Object} res {source} or {error}.
    */
+  /** Ask the backend what the CURRENT editor contents reach for (debounced). */
+  let utRiskTimer = null;
+  function refreshRisksFromEditor() {
+    if (utRiskTimer) {
+      clearTimeout(utRiskTimer);
+    }
+    // Debounced: this is a round-trip per keystroke otherwise, and the answer only has to be
+    // right by the time the reader looks up — well before Run.
+    utRiskTimer = setTimeout(function () {
+      send("user_tool_risks", {source: utSourceEl.value}, function (res) {
+        showToolRisks((res && res.risks) || []);
+      });
+    }, 300);
+  }
+
   window.__snUserToolSource = function (slug, res) {
     utGenBtn.disabled = false;
     if (res && res.error) {
@@ -487,7 +505,12 @@
   });
   utLabelEl.addEventListener("input", refreshUserToolSlug);
   utGenBtn.addEventListener("click", generateUserTool);
-  utSourceEl.addEventListener("input", refreshSaveState);
+  utSourceEl.addEventListener("input", function () {
+    refreshSaveState();
+    // Pasting a different tool over this one changes what will run; the banner has to follow
+    // the text in the box rather than whatever arrived with it.
+    refreshRisksFromEditor();
+  });
   utRunBtn.addEventListener("click", runUserToolTest);
   utSaveBtn.addEventListener("click", saveUserTool);
   utCancelBtn.addEventListener("click", function () {

@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING
 
 from omnia import envs
 from omnia.core.providers.errors import ProviderError
+from omnia.plugins.smart_notes.engine.tools import GENERATION_KINDS
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
-    _GENERATION_KINDS,
     ImportGuard,
     user_tool_name,
 )
@@ -130,7 +130,7 @@ def user_tool_system_prompt() -> str:
     allowed = ", ".join(sorted(ImportGuard.ALLOWED_MODULES))
     # Rendered from the engine's own tuple, like `allowed` is from the guard's set, so the
     # prompt cannot drift from the tokens GenerationResult actually accepts.
-    kind_tokens = ", ".join(repr(kind) for kind in _GENERATION_KINDS)
+    kind_tokens = ", ".join(repr(kind) for kind in GENERATION_KINDS)
     return (
         "You are a senior Python engineer writing ONE plugin file for the Anki add-on Omnia. "
         "The file defines a deterministic 'tool' that fills a single note field by "

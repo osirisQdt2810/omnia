@@ -68,15 +68,23 @@ class MediaSampleStage:
 
         Args:
             root: Where staged files live. Defaults to a fresh temp directory, created lazily
-                so a session that never picks a file creates nothing.
+                so a session that never picks a file creates nothing. A root passed in is
+                treated as BORROWED: it is used as-is and never deleted, because deleting a
+                directory this object did not create is not its call to make.
         """
         self._root = root
+        self._owns_root = root is None
         self._current: Optional[Path] = None
 
     @property
     def directory(self) -> str:
-        """The folder a test's ``media_dir()`` should report ("" until something is staged)."""
-        return str(self._root) if self._root is not None else ""
+        """The folder a test's ``media_dir()`` should report, or "" when nothing is staged.
+
+        Keyed on the staged FILE rather than on the folder existing: an injected root exists
+        from construction, and reporting it before anything is in it would tell a tool "here is
+        the media folder" when the reference it is about to resolve is certainly not there.
+        """
+        return str(self._root) if self._current is not None else ""
 
     def stage(self, source: Path) -> str:
         """Copy ``source`` into the stage, replacing whatever was there, and return its name.
@@ -107,8 +115,13 @@ class MediaSampleStage:
             self._current = None
 
     def dispose(self) -> None:
-        """Drop the whole staging folder — called when the dialog closes."""
+        """Drop everything this object created — called when the dialog closes.
+
+        Only removes the FOLDER when this object made it. A borrowed root belongs to whoever
+        passed it in, and quietly rmtree-ing someone else's directory is the kind of thing this
+        class exists to avoid doing to a collection.
+        """
         self.clear()
-        if self._root is not None:
+        if self._root is not None and self._owns_root:
             shutil.rmtree(self._root, ignore_errors=True)
             self._root = None

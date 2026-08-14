@@ -106,7 +106,7 @@ _HEADER_PREFIX = "# omnia-user-tool: "
 #: model's annotations through ``sys.modules[cls.__module__].__dict__`` at class-creation time.
 _MODULE_PREFIX = "omnia_user_tool_"
 
-_GENERATION_KINDS = ("text", "image", "tts")
+GENERATION_KINDS = ("text", "image", "tts")
 
 logger = get_logger("smart_notes")
 
@@ -668,7 +668,11 @@ def _reason(exc: Exception) -> str:
 #: ABOVE the code, not buried on line 40 of it, now that the import guard permits both.
 _RISK_BY_MODULE: dict[str, str] = {
     "subprocess": "runs other programs on your computer",
-    "os": "reads and changes files and folders",
+    # `os.system` and `os.popen` run programs, so this must say so — the model is told
+    # "pathlib, subprocess and the rest are available", which makes os.system(f"ffmpeg …") a
+    # likely generation, and a reviewer who has learned that "runs other programs" is how that
+    # reads would otherwise conclude this tool does not.
+    "os": "reads and changes files and folders, and can run other programs",
     "shutil": "copies, moves and deletes files",
     "pathlib": "reads and writes files",
     "io": "reads and writes files",
@@ -697,6 +701,11 @@ def risky_operations(code: str) -> list[str]:
     Deliberately import-based rather than clever: a tool that hides its intent defeats a
     heuristic anyway, and the case that matters here is the honest tool whose reach the reader
     simply did not notice.
+
+    Known limit worth stating: a tool using ``ctx.audio`` — which the authoring prompt actively
+    recommends — needs no import, so nothing is reported for it. That is the intended reading
+    (the audio runtime is Omnia's own managed process, not the tool reaching out), but it does
+    mean the ``omnia.core.audio`` entry only fires on a direct import of the module.
 
     Args:
         code: The module source.
@@ -839,11 +848,11 @@ class UserToolTester:
                 the rule could not be built at all, so the tool could never run.
         """
         kinds = sorted(getattr(cls, "kinds", frozenset()))
-        kind = next((k for k in kinds if k in _GENERATION_KINDS), "")
+        kind = next((k for k in kinds if k in GENERATION_KINDS), "")
         if not kind:
             raise UserToolError(
                 "the tool declares no generation kind it can serve — `kinds` must contain "
-                + ", ".join(_GENERATION_KINDS)
+                + ", ".join(GENERATION_KINDS)
             )
         return SmartNotesFieldRule(
             kind=kind,

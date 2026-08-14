@@ -94,7 +94,17 @@ class UserToolsController:
             "user_tool_delete": self.on_delete,
             "user_tool_open_dir": self.on_open_dir,
             "user_tool_pick_sample": self.on_pick_sample,
+            "user_tool_risks": self.on_risks,
         }
+
+    def on_risks(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Return what the CURRENT editor contents reach for.
+
+        The source box is editable and paste-able, so the summary shipped with a tool goes
+        stale the moment it is changed. Cheap enough to recompute on a debounce: it is one AST
+        parse of a file a human is expected to read.
+        """
+        return {"risks": risky_operations(str(data.get("source", "")))}
 
     def dispose(self) -> None:
         """Drop anything this controller staged. Called when the dialog closes.
@@ -205,6 +215,12 @@ class UserToolsController:
                     "name": source.name,
                     "prompt": source.prompt,
                     "source": source.code,
+                    # Shipped with the source so opening an EXISTING tool for review shows its
+                    # reach immediately. Without it the banner was empty over `import
+                    # subprocess` — and an empty banner affirmatively means "only reshapes
+                    # text", which is the opposite of true. The edit path ends in Run, which
+                    # EXECUTES, so this is the same before-the-code-runs rule as generate.
+                    "risks": risky_operations(source.code),
                     "error": "" if load is None else load.error,
                     **self._described(source.name),
                 }

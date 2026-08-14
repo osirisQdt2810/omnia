@@ -786,7 +786,7 @@ class TestRiskyOperations:
         # `from omnia.core.audio.sidecar import ...` must find `omnia.core.audio` rather than
         # filing every omnia import under a bare first segment.
         assert risky_operations("import os.path\n") == [
-            "reads and changes files and folders"
+            "reads and changes files and folders, and can run other programs"
         ]
         assert (
             "audio"
