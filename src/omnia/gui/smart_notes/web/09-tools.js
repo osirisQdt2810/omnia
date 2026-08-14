@@ -236,9 +236,14 @@
    */
   function missingRequired() {
     const problems = [];
+    const kind = toolsRowKind();
     toolsDraft.forEach(function (entry) {
       const spec = toolSpec(entry.tool);
-      if (!spec) {
+      // Skip a tool this build lacks (no schema to judge it by) and one that cannot serve this
+      // row's kind — the pipeline discards the latter as `wrong_kind`, so refusing Done over
+      // its params gates on a tool that will never run. Reachable from a chain synced from a
+      // device whose row had a different Type.
+      if (!spec || (spec.kinds || []).indexOf(kind) < 0) {
         return;
       }
       const props = (spec.params_schema && spec.params_schema.properties) || {};

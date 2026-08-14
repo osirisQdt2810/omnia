@@ -488,12 +488,19 @@ class ClozeAudioTool(Tool):
     # ...but it DOES synthesize, with the row's voice — it speaks the sentence and the word it
     # masks. Deterministic and provider-using at once, which is why they are two flags.
     uses_provider: ClassVar[bool] = True
-    # Both fields decide WHAT gets hidden, so guessing either one wrong is how the answer gets
-    # spoken. The runtime fallbacks stay (a chain synced from an older Omnia has neither set),
-    # but the picker will not let a NEW chain leave them blank.
-    required_params: ClassVar[frozenset[str]] = frozenset(
-        {"source_field", "word_field"}
-    )
+    # `source_field` only, deliberately — NOT `word_field`, which `cloze` does require.
+    #
+    # A required param becomes a HARD prerequisite (`tool_referenced_fields` →
+    # `rule_prerequisites`), and a blank hard prerequisite BLOCKS the field. `word_field` is
+    # read only when the source carries no ``{{cN::…}}`` marker, so requiring it would block
+    # generation on every note where it happens to be empty — including the natural chain,
+    # where the source already has markers and the param is never looked at.
+    #
+    # Nothing is risked by leaving it optional: a blank or wrong `word_field` cannot make this
+    # tool speak the answer. With no marker and no match, `plan` returns None and `run` raises
+    # — a failed field, not a spoken one. `source_field` is different: it decides what is read
+    # at all, so a wrong guess there is worth refusing in the picker.
+    required_params: ClassVar[frozenset[str]] = frozenset({"source_field"})
     params_model: ClassVar[Optional[type[BaseModel]]] = ClozeAudioParams
 
     @classmethod

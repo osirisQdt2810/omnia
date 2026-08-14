@@ -192,6 +192,18 @@ class TestChainPayloadParsing:
         assert rebuilt[0].tools == []
 
 
+def _strip_comments(source: str) -> str:
+    """Return ``source`` with ``//`` line comments removed.
+
+    These tests assert on the built page's JS as text, and this file is heavily commented —
+    including comments that NAME the very class or keyword an assertion checks is absent. Two
+    of them passed or failed on prose rather than code before this.
+    """
+    return "\n".join(
+        line.split("//")[0] if "//" in line else line for line in source.splitlines()
+    )
+
+
 class TestToolsPickerPage:
     """The column, the modal, the baked catalog, and the behaviours only the page owns."""
 
@@ -275,9 +287,9 @@ class TestToolsPickerPage:
         html = self._html()
         missing = _js(html, "function missingRequired(", 900)
         assert "spec.required_params" in _js(html, "function requiredParams(", 400)
-        assert (
-            "if (!spec) {" in missing
-        )  # a tool this build lacks has no schema to judge
+        # A tool this build lacks has no schema to judge; a tool that cannot serve this row's
+        # kind never runs. Neither may gate Done.
+        assert "!spec ||" in missing
         done = _js(html, 'toolsDone.addEventListener("click"', 600)
         assert "if (missingRequired().length) {" in done
         assert "return;" in done  # neither written nor closed
@@ -323,6 +335,71 @@ class TestToolsPickerPage:
             '"sn-overwrite"',
         ):
             assert owned_by_the_user not in lock_state
+
+    def test_the_lock_does_not_freeze_the_tools_cell_by_css_either(self):
+        # The mechanism that ACTUALLY froze the cell, and which a grep of `applyLockState`
+        # cannot see: the lock works through the `sn-lockable` class (`pointer-events: none`
+        # plus a blur in page.css) and a `sn-row-locked` guard on the click. Dropping the name
+        # from `applyLockState` while the cell was still BUILT as `sn-lockable` left the
+        # behaviour untouched.
+        html = self._html()
+        # Comments are stripped first: this file explains WHY the cell is not `sn-lockable`,
+        # and an assertion that greps the prose instead of the code fails on its own comment.
+        cell = _strip_comments(_js(html, "function makeToolsCell(", 800))
+
+        assert 'cell("sn-tools-cell")' in cell
+        assert "sn-lockable" not in cell
+        assert "sn-row-locked" not in cell
+        # …while the lock still covers what the auto-smart generator writes.
+        assert ".sn-row-locked .sn-lockable" in html
+        assert 'cell("sn-prompt-cell sn-lockable")' in html
+
+    def test_editing_the_chain_refreshes_the_rows_applicability(self):
+        # `applyKindState` ran at row build and on a Type change only — never when the CHAIN
+        # changed, which is the one event that decides whether the row reaches a provider. A
+        # `cloze`-only row kept its faded Provider/Model after `ai` was appended, and `.sn-na`
+        # carries `pointer-events: none`, so those cells could not even be clicked.
+        write = _js(self._html(), "function writeTools(", 900)
+
+        assert "applyKindState(tr," in write
+
+    def test_the_fade_asks_the_catalog_not_a_hardcoded_tool_name(self):
+        uses_ai = _js(self._html(), "function chainUsesAi(", 900)
+
+        assert "uses_provider" in uses_ai
+        assert "deterministic" not in uses_ai  # NOT the inverse — see the Tool contract
+        assert "!spec" in uses_ai  # a tool this build lacks cannot be judged away
+
+    def test_a_row_cannot_read_the_field_it_generates(self):
+        # A self-edge in the dependency graph, and never what the user meant: `cloze` would be
+        # asked to find its word in the very field it is about to overwrite. One click away now
+        # that the field params are required and the dropdown holds only real field names.
+        names = _js(self._html(), "function fieldNames(", 800)
+
+        assert "toolsRow && toolsRow.dataset.field" in names
+        assert "name.toLowerCase() !== own" in names
+
+    def test_deleting_a_tool_edge_repaints_the_graph(self):
+        # `from_tool` was tested on the Python side (the payload field) but not in the JS that
+        # consumes it. The branch MUTATES the row — clicking a tool edge toggles hard/soft,
+        # which writes a real depends_on entry, and Delete drops it — so returning without a
+        # repaint left the canvas drawing the old kind while Save persisted the new one.
+        remove = _strip_comments(_js(self._html(), "function removeEdge(", 1800))
+        branch = remove[remove.index("sel.fromTool") :]
+
+        assert "updateRowDep(sel.dst, sel.src, null)" in branch
+        # The repaint must come BEFORE the branch's own `return;` — matching the bare word
+        # would hit "returning" in the comment, which is why comments are stripped above.
+        assert "recomputeGraph();" in branch
+        assert branch.index("recomputeGraph();") < branch.index("return;")
+
+    def test_done_ignores_a_tool_that_cannot_serve_the_row(self):
+        # A chain synced from a device whose row had a different Type can hold, say, a tts tool
+        # on a text row. The pipeline discards it as `wrong_kind`, so refusing Done over its
+        # required params would gate on a tool that can never run.
+        missing = _js(self._html(), "function missingRequired(", 1000)
+
+        assert "(spec.kinds || []).indexOf(kind) < 0" in missing
 
     def test_params_are_merged_not_rebuilt(self):
         # A param this build cannot render (a newer release's) must survive Done: the picker

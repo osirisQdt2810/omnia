@@ -1157,18 +1157,22 @@
       return;
     }
     if (sel.fromTool) {
-      // Drop any explicit entry FIRST. Clicking a tool edge toggles hard/soft, which writes a
-      // real depends_on entry; returning before this left that entry with no way to remove it
-      // from the graph, since the edge re-derives from the tool either way.
+      // A tool param on the dependent field names this prerequisite, so the edge itself cannot
+      // be removed here — it re-derives from the tool. What CAN be here is an explicit
+      // depends_on entry: clicking the edge toggles hard/soft, and that writes one. Drop it,
+      // say where the edge actually lives, and then REPAINT.
+      //
+      // The repaint is not optional. Mutating the row and returning early left the canvas
+      // drawing the old kind while the config held the new one — press Delete on an edge
+      // toggled to soft and the screen still said soft while Save persisted hard. That is
+      // worse than the no-op this branch was added to replace, which at least stayed truthful.
       updateRowDep(sel.dst, sel.src, null);
-      // This edge exists because a TOOL param on the dependent field names the prerequisite —
-      // there is no explicit entry to drop and no {{ref}} to rewrite, so every step below would
-      // be a no-op and recomputeGraph would put the edge straight back. Say where it lives
-      // instead of silently doing nothing.
       graphToastMsg(
         "“" + sel.dst + "” reads “" + sel.src + "” in its Tools settings — " +
           "change it there to remove this dependency."
       );
+      selectedEdge = null;
+      recomputeGraph();
       return;
     }
     // Deleting any edge just hides it; the prompt is reconciled later, at Save.

@@ -250,14 +250,28 @@ class TestToolContract:
         entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
         assert entry["uses_provider"] is True
 
-    def test_it_requires_both_of_its_field_params(self):
-        # Those two decide WHAT gets hidden, so a blank one is how the answer gets spoken.
-        # Declared on the TOOL, so the picker refuses Done without knowing this tool exists.
-        assert ClozeAudioTool.required_params == frozenset(
-            {"source_field", "word_field"}
-        )
+    def test_it_requires_its_source_field_but_not_its_word_field(self):
+        # A required param becomes a HARD prerequisite, and a blank hard prerequisite BLOCKS
+        # the field. `source_field` decides what is read at all, so refusing a blank one in the
+        # picker is right. `word_field` is read ONLY when the source carries no {{cN::…}}
+        # marker — requiring it would block generation on every note where it happens to be
+        # empty, including the natural chain where the source already has markers and the param
+        # is never looked at.
+        #
+        # Leaving it optional risks nothing: a blank or wrong word_field cannot make this tool
+        # speak the answer (see the test below) — it makes the tool RAISE.
+        assert ClozeAudioTool.required_params == frozenset({"source_field"})
         entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
-        assert entry["required_params"] == ["source_field", "word_field"]
+        assert entry["required_params"] == ["source_field"]
+
+    def test_a_blank_word_field_fails_the_tool_rather_than_speaking_the_answer(self):
+        # The reason word_field can safely stay optional. No marker in the source and no word
+        # to find => `plan` returns None and `run` raises; nothing is synthesized.
+        with pytest.raises(ToolError, match="found nothing to hide"):
+            _run(
+                {"Word": "", "Sentence": "The cat sat down."},
+                params={"source_field": "Sentence", "word_field": "Word"},
+            )
 
     def test_is_in_the_catalog_with_its_params(self):
         entry = {item["name"]: item for item in tools_catalog(_ctx())}["cloze_audio"]
