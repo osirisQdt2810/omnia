@@ -103,10 +103,12 @@ class Empty:
 
     Kept distinct from :class:`NotApplicable` — "I ran and found nothing" is a different thing
     to tell the user than "I never applied here", and the two already read differently in the
-    chain summary that reaches the batch tooltip
-    (:func:`~omnia.plugins.smart_notes.engine.tools.pipeline.summarize_attempts`). At the NOTE
-    level both are the same verdict (a ``FailedField`` of kind ``"unproductive"``): nothing is
-    wrong, there was just nothing to make.
+    chain summary
+    (:func:`~omnia.plugins.smart_notes.engine.tools.pipeline.summarize_attempts`), which the
+    user sees when an exhausted chain surfaces as a ``ToolChainError`` in the preview, the
+    prompt palette or the account dialog. At the NOTE level both are the same verdict (a
+    ``FailedField`` of kind ``"unproductive"``): nothing is wrong, there was just nothing to
+    make — the batch summary renders only a count, not this text.
     """
 
     reason: str = ""

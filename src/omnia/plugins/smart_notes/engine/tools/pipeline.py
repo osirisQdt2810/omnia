@@ -30,6 +30,7 @@ Pure logic — no ``aqt``/``anki`` imports.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Literal, Optional
 
 from omnia.core.providers.errors import ProviderError
@@ -53,8 +54,10 @@ AttemptStatus = Literal[
 ]
 
 # What a status MEANS, for the times an attempt carries no detail of its own. These strings
-# reach the user (the batch tooltip renders a failed field's summary), so the raw status token
-# — a config-level enum value — must never be shown on its own.
+# reach the USER: an exhausted chain becomes a ToolChainError, which SmartNotesContext.friendly()
+# prints verbatim in the preview, the prompt palette and the account dialog. So the raw status
+# token — a config-level enum value — must never be shown on its own. (The batch summary renders
+# only a COUNT of failed fields; it is not this string's consumer.)
 _STATUS_SENTENCES: dict[str, str] = {
     "not_applicable": "the tool did not apply to this field",
     "empty": "the tool ran but produced nothing",
@@ -71,6 +74,14 @@ class ToolAttempt:
     tool: str
     status: AttemptStatus
     detail: str = ""
+    # The exception that ended this attempt, kept so an exhausted chain can re-raise WITH its
+    # cause. Without it a legacy one-`ai` chain silently upgraded a non-ProviderError (say a
+    # KeyError from a bad template) into a ProviderError, which the UI prints verbatim — the
+    # user went from "Preview failed — see logs." to a raw "'Word'". Excluded from equality so
+    # attempt traces stay comparable in tests.
+    error: Optional[Exception] = dataclass_field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def text(self) -> str:
@@ -132,6 +143,18 @@ class ToolChainError(ProviderError):
         super().__init__(summarize_attempts(attempts))
         self.attempts = attempts
 
+    @property
+    def cause(self) -> Optional[Exception]:
+        """The last attempt's own exception, if one ended the chain.
+
+        Lets a caller re-raise ``from`` it (and read a provider's ``status_code``) instead of
+        seeing only this class's flattened message.
+        """
+        for attempt in reversed(self.attempts):
+            if attempt.error is not None:
+                return attempt.error
+        return None
+
 
 class GenerationPipeline:
     """Runs a rule's ordered tool chain against the shared :class:`ToolContext`."""
@@ -162,7 +185,10 @@ class GenerationPipeline:
                     spec.name,
                     rule.target_field,
                 )
-                attempt, result = ToolAttempt(spec.name, "error", str(exc)), None
+                attempt, result = (
+                    ToolAttempt(spec.name, "error", str(exc), error=exc),
+                    None,
+                )
             attempts.append(attempt)
             if attempt.status == "produced":
                 return PipelineResult(result, tuple(attempts))

@@ -141,7 +141,10 @@ class GenerationService:
         """
         outcome = self._pipeline.run(rule, fields)
         if outcome.produced is None:
-            raise ToolChainError(outcome.attempts)
+            chain_error = ToolChainError(outcome.attempts)
+            # `from` the tool's own exception: a caller that inspects the cause still sees
+            # a provider's status_code, and the traceback keeps the real origin.
+            raise chain_error from chain_error.cause
         return outcome.produced
 
     def generate_note(

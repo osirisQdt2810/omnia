@@ -45,8 +45,10 @@ from omnia.plugins.smart_notes.engine.tools import (
     register_tool,
     registered_tools,
     resolve_tool,
+    tool_referenced_fields,
     tools_catalog,
 )
+from omnia.plugins.smart_notes.engine.tools.pipeline import ToolAttempt
 
 # Every fake tool appends its name here when it runs, so a test can prove a later tool was
 # never reached (or that a declining tool really did execute).
@@ -600,3 +602,63 @@ class TestServiceOnChains:
         results, _blocked, failed = service.generate_note(config, {"Word": "cat"})
         assert [rule.target_field for rule, _ in results] == ["Def"]
         assert failed == []
+
+
+class TestABrokenToolCostsOnlyItself:
+    """The registry's read paths are as guarded as the pipeline's run path.
+
+    ``tool_referenced_fields`` runs while COMPILING a note's rules and ``tools_catalog`` runs
+    while opening the dialog, so an exception there would abort the whole note (or the whole
+    picker) — the same failure the pipeline guard eliminates. Phase 1 registers only ``ai``,
+    but Phase 4 loads user-authored classes off disk, where this is a real risk.
+    """
+
+    def test_a_tool_that_cannot_report_its_fields_is_skipped(self, fake_tools):
+        class _BoomRefs(_ProduceTool):
+            name = "boom_refs"
+
+            @classmethod
+            def referenced_fields(cls, params):
+                raise RuntimeError("cannot introspect")
+
+        register_tool("boom_refs")(_BoomRefs)
+
+        assert tool_referenced_fields((CompiledToolSpec(name="boom_refs"),)) == []
+
+    def test_a_tool_that_cannot_describe_itself_leaves_the_catalog_usable(
+        self, fake_tools
+    ):
+        class _BoomDesc(_ProduceTool):
+            name = "boom_desc"
+
+            @classmethod
+            def availability(cls, ctx):
+                raise RuntimeError("cannot describe")
+
+        register_tool("boom_desc")(_BoomDesc)
+
+        names = [entry["name"] for entry in tools_catalog(_ctx())]
+
+        assert "boom_desc" not in names
+        assert names, "the other tools still describe themselves"
+
+
+class TestAnExhaustedChainKeepsItsCause:
+    """``ToolChainError`` must not erase the exception that actually ended the chain.
+
+    Without this a legacy one-``ai`` chain silently promoted a non-provider bug (a KeyError from
+    a bad template, say) into a ``ProviderError``, which the UI prints verbatim — turning
+    "Preview failed - see logs." into a raw "'Word'". It also dropped a provider's status_code,
+    so 429/5xx handling upstream stopped seeing the code.
+    """
+
+    def test_the_cause_is_the_tools_own_exception(self):
+        original = KeyError("Word")
+        error = ToolChainError((ToolAttempt("ai", "error", "'Word'", error=original),))
+
+        assert error.cause is original
+
+    def test_a_chain_that_only_declined_has_no_cause(self):
+        error = ToolChainError((ToolAttempt("cloze", "not_applicable", "no match"),))
+
+        assert error.cause is None

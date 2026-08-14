@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine.tools.base import Tool
+
+logger = get_logger("smart_notes")
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -97,8 +100,17 @@ def tool_referenced_fields(specs: Iterable[CompiledToolSpec]) -> list[str]:
     referenced: list[str] = []
     for spec in specs:
         cls = get_tool(spec.name)
-        if cls is not None:
+        if cls is None:
+            continue
+        # Guarded for the same reason the pipeline guards `run`: this is called while compiling
+        # a note's rules, so a tool that raises here would abort the WHOLE note. From Phase 4 the
+        # registry can hold user-authored classes loaded off disk, where that is a real risk.
+        try:
             referenced.extend(cls.referenced_fields(spec.params))
+        except Exception:
+            logger.exception(
+                "smart_notes: tool %r failed to report its referenced fields", spec.name
+            )
     return referenced
 
 
@@ -119,17 +131,22 @@ def tools_catalog(ctx: ToolContext) -> list[dict[str, Any]]:
     catalog: list[dict[str, Any]] = []
     for name in registered_tools():
         cls = TOOL_REGISTRY[name]
-        catalog.append(
-            {
-                "name": name,
-                "label": cls.label,
-                "description": cls.description,
-                "kinds": sorted(cls.kinds),
-                "deterministic": cls.deterministic,
-                "params_schema": (
-                    None if cls.params_model is None else cls.params_model.schema()
-                ),
-                "unavailable_reason": cls.availability(ctx),
-            }
-        )
+        # One broken tool must cost only its own row, not the whole picker (and not the dialog,
+        # which bakes this payload at open time). Phase 4 loads user-authored classes off disk.
+        try:
+            catalog.append(
+                {
+                    "name": name,
+                    "label": cls.label,
+                    "description": cls.description,
+                    "kinds": sorted(cls.kinds),
+                    "deterministic": cls.deterministic,
+                    "params_schema": (
+                        None if cls.params_model is None else cls.params_model.schema()
+                    ),
+                    "unavailable_reason": cls.availability(ctx),
+                }
+            )
+        except Exception:
+            logger.exception("smart_notes: tool %r could not describe itself", name)
     return catalog
