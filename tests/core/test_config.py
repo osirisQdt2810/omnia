@@ -34,6 +34,10 @@ class TestConfigRepository:
         assert cfg.llm.gemini_vertex.location == "global"
         assert cfg.llm.gemini_vertex.text_model == "gemini-2.5-flash"
         assert cfg.llm.active() is cfg.llm.gemini_vertex
+        # The AI Studio subsection too: its id drifted to a retired one once (Google 404s
+        # "no longer available to new users"), and only a live-credentialed run caught it.
+        # Pin BOTH halves — the template and the model default, which are separate sources.
+        assert cfg.llm.gemini.text_model == "gemini-3.7-flash"
         # TTS uses the same per-provider shape.
         assert cfg.tts.google_translate.lang == "en"
         assert cfg.tts.active() is cfg.tts.google_translate
@@ -471,3 +475,39 @@ def _tmp_config(tmp_path):
     for template in src.glob("*.example.toml"):
         shutil.copy(template, tmp_path / template.name)
     return tmp_path
+
+
+class TestNoRetiredModelIdsAreOffered:
+    """Every id the add-on can hand to a provider must be one that still answers.
+
+    Google retires ids while `ListModels` keeps listing them, so a dead id survives in code
+    until someone with credentials runs generation and gets a 404. These pins are the cheap
+    half of that check: the DEFAULTS and the picker must never carry an id we know is gone.
+    """
+
+    RETIRED = ("gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro")
+
+    def test_the_model_defaults_are_not_retired_ids(self):
+        from omnia.core.config.models import GeminiLLMSettings, GeminiVertexLLMSettings
+
+        assert GeminiLLMSettings().text_model not in self.RETIRED
+        assert GeminiVertexLLMSettings().text_model not in self.RETIRED
+
+    def test_the_factory_fallback_is_not_a_retired_id(self):
+        # The factory's own `config.get("model", <default>)` is a third source of truth,
+        # reachable whenever a caller builds a provider from a dict without a model.
+        import inspect
+
+        from omnia.core.providers.llm import factory
+
+        source = inspect.getsource(factory)
+        for dead in self.RETIRED:
+            assert dead not in source
+
+    def test_the_picker_offers_no_retired_id(self):
+        from omnia.core.providers import catalog
+
+        for provider in ("gemini", "gemini_vertex"):
+            offered = catalog.text_models(provider)
+            assert offered, f"{provider} offers no text model at all"
+            assert not set(offered) & set(self.RETIRED)

@@ -21,16 +21,19 @@ from omnia.core.providers.llm.factory import (
 LLM_PROVIDERS: list[str] = ["gemini", "gemini_vertex", "openrouter"]
 
 # Text models per LLM provider (curated defaults; the GUI merges in the user's saved model).
+# Google retires ids from under this list: 2.0 and 1.5 now answer
+# "This model is no longer available to new users" (404) on the AI Studio endpoint, so offering
+# them in the picker just advertises a guaranteed failure. Same rule as the image list below —
+# an id earns its place by working, not by existing. To re-check what a key can reach:
+#   curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$KEY"
+# (ListModels still lists retired ids, so confirm with a real :generateContent call.)
 _GEMINI_TEXT_MODELS: list[str] = [
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-pro",
     "gemini-3.0-flash",
     "gemini-3.0-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
 ]
 _OPENROUTER_TEXT_MODELS: list[str] = [
     "openai/gpt-4o-mini",

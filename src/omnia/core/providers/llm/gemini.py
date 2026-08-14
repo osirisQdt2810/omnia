@@ -45,7 +45,7 @@ class GeminiProvider(LLMProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.0-flash",
+        model: str = "gemini-3.7-flash",
         image_model: str = "",
         temperature: float = 0.7,
         http: Optional[HttpClient] = None,
