@@ -69,8 +69,8 @@ from omnia.core.text import CLOZE_RE, strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult, ResolvedVoice
 from omnia.plugins.smart_notes.engine.tools.base import (
     Produced,
-    ToolError,
     Tool,
+    ToolError,
     ToolOutcome,
 )
 from omnia.plugins.smart_notes.engine.tools.cloze import (

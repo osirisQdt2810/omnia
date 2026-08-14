@@ -36,7 +36,6 @@ from omnia.plugins.smart_notes.config import (
 from omnia.plugins.smart_notes.engine import compile_field_rule
 from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
 from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
-from omnia.plugins.smart_notes.engine.tools.pipeline import ToolAttempt
 from omnia.plugins.smart_notes.engine.tools import (
     ClozeAudioTool,
     ClozeMaskPlanner,
@@ -51,6 +50,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     WavCodec,
     tools_catalog,
 )
+from omnia.plugins.smart_notes.engine.tools.pipeline import ToolAttempt
 
 _RATE = 22050
 _CHANNELS = 1
