@@ -99,7 +99,15 @@ class NotApplicable:
 
 @dataclass(frozen=True)
 class Empty:
-    """The tool ran its transform and got nothing meaningful back (dictionary miss, no match)."""
+    """The tool ran its transform and got nothing meaningful back (dictionary miss, no match).
+
+    Kept distinct from :class:`NotApplicable` — "I ran and found nothing" is a different thing
+    to tell the user than "I never applied here", and the two already read differently in the
+    chain summary that reaches the batch tooltip
+    (:func:`~omnia.plugins.smart_notes.engine.tools.pipeline.summarize_attempts`). At the NOTE
+    level both are the same verdict (a ``FailedField`` of kind ``"unproductive"``): nothing is
+    wrong, there was just nothing to make.
+    """
 
     reason: str = ""
 

@@ -139,6 +139,31 @@ class _UnavailableTool(_ProduceTool):
         return "needs a WAV TTS provider"
 
 
+class _ExplodingInitTool(_ProduceTool):
+    """A tool that breaks before it can even run — its CONSTRUCTOR raises."""
+
+    name: ClassVar[str] = "t_bad_init"
+    label: ClassVar[str] = "Bad init"
+
+    def __init__(self) -> None:
+        raise ToolError("cannot start")
+
+
+class _NoKindsTool(Tool):
+    """A malformed tool class: it never declares the ``kinds`` ClassVar the gate reads."""
+
+    name: ClassVar[str] = "t_no_kinds"
+    label: ClassVar[str] = "No kinds"
+    description: ClassVar[str] = "Malformed on purpose."
+    deterministic: ClassVar[bool] = True
+
+    def run(self, request, ctx):  # pragma: no cover - the kind gate breaks first
+        raise AssertionError("a tool with no kinds must never be run")
+
+
+# The two malformed tools above are deliberately NOT registered by the fixture: they would
+# break every consumer that walks the whole registry (the catalog reads ``kinds``). The tests
+# that need them register them individually, and the fixture's teardown still restores.
 _FAKE_TOOLS: tuple[type[Tool], ...] = (
     _ProduceTool,
     _DeclineTool,
@@ -321,6 +346,85 @@ class TestPipelineMatrix:
         # The legacy one-tool chain must surface the provider's own message verbatim.
         result = GenerationPipeline(_ctx()).run(_rule("t_boom"), {})
         assert result.summary == "kaput"
+
+    def test_a_detailless_attempt_summarises_as_a_sentence_not_a_status_token(
+        self, fake_tools
+    ):
+        # The summary reaches the user (the batch tooltip), so a chain whose only attempt
+        # declined without a reason must not surface the raw "not_applicable" enum value.
+        class _SilentDecline(_ProduceTool):
+            name: ClassVar[str] = "t_silent"
+
+            def run(self, request, ctx):
+                return NotApplicable()
+
+        register_tool(_SilentDecline.name)(_SilentDecline)
+        result = GenerationPipeline(_ctx()).run(_rule("t_silent"), {})
+        assert result.summary == "the tool did not apply to this field"
+
+    def test_an_unknown_tool_alone_summarises_as_a_sentence(self, fake_tools):
+        result = GenerationPipeline(_ctx()).run(_rule("t_missing"), {})
+        assert result.summary == "no tool named 't_missing'"
+
+
+class TestPipelineIsolatesABrokenTool:
+    """A tool that breaks BEFORE it runs must still only cost its own attempt.
+
+    Resolution and the kind gate live inside the pipeline's guard for exactly this reason:
+    escaping ``run()`` would abort the whole note in ``generate_note`` and discard the sibling
+    fields that already generated.
+    """
+
+    def test_a_tool_whose_constructor_raises_becomes_an_error_attempt(self, fake_tools):
+        register_tool(_ExplodingInitTool.name)(_ExplodingInitTool)
+
+        result = GenerationPipeline(_ctx()).run(_rule("t_bad_init", "t_produce"), {})
+
+        assert result.produced is not None
+        assert result.produced.text == "made"
+        assert _trace(result) == [("t_bad_init", "error"), ("t_produce", "produced")]
+        assert result.attempts[0].detail == "cannot start"
+
+    def test_a_tool_class_missing_kinds_becomes_an_error_attempt(self, fake_tools):
+        register_tool(_NoKindsTool.name)(_NoKindsTool)
+
+        result = GenerationPipeline(_ctx()).run(_rule("t_no_kinds", "t_produce"), {})
+
+        assert result.produced is not None
+        assert _trace(result) == [("t_no_kinds", "error"), ("t_produce", "produced")]
+        assert "kinds" in result.attempts[0].detail
+
+    def test_a_note_keeps_its_other_fields_when_one_tool_cannot_be_built(
+        self, fake_tools
+    ):
+        register_tool(_ExplodingInitTool.name)(_ExplodingInitTool)
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Def",
+                    enabled=True,
+                    type="text",
+                    prompt="d {{Word}}",
+                    tools=[FieldToolConfig(tool="t_bad_init")],
+                ),
+                SmartNotesFieldConfig(
+                    field="Example",
+                    enabled=True,
+                    type="text",
+                    prompt="e {{Word}}",
+                    tools=[FieldToolConfig(tool="t_produce")],
+                ),
+            ],
+        )
+
+        results, _blocked, failed = GenerationService(_StubHub()).generate_note(
+            config, {"Word": "cat"}
+        )
+
+        assert [rule.target_field for rule, _ in results] == ["Example"]
+        assert [(item.field, item.kind) for item in failed] == [("Def", "error")]
 
 
 class TestPipelineParams:
