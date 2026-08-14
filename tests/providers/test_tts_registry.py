@@ -1,7 +1,10 @@
-"""Tests for the self-registration TTS registry (``core.providers.tts.registry``).
+"""Tests for the TTS binding of the provider registry (``core.providers.tts.registry``).
 
-Covers the decorator's duplicate/no-op rules and that ``create_tts_provider`` resolves the
-registered classes (including the openai-family multi-name share) with the right config.
+Covers what is TTS-specific: ``tts_providers_with_ext`` (the audio-format query, which has no
+LLM analogue) and that ``create_tts_provider`` resolves the registered classes — including the
+openai-family multi-name share — with the right config. The registration/duplicate/no-op rules
+themselves are generic and live in ``test_provider_registry.py``, which asserts them for BOTH
+kinds against the shared mechanism.
 """
 
 from __future__ import annotations
@@ -9,54 +12,12 @@ from __future__ import annotations
 import pytest
 
 from omnia.core.providers import ProviderError, create_tts_provider
-from omnia.core.providers.tts.base import TTSProvider
 from omnia.core.providers.tts.edge_tts import EdgeTTS
 from omnia.core.providers.tts.openai_compatible import OpenAICompatibleTTS
 from omnia.core.providers.tts.registry import (
-    TTS_REGISTRY,
-    get_tts,
-    register_tts,
     registered_tts_providers,
     tts_providers_with_ext,
 )
-
-
-class _DummyTTS(TTSProvider):
-    name = "dummy"
-
-    def synthesize(self, text, *, lang=None, voice=None):  # pragma: no cover - unused
-        return b""
-
-
-class TestRegisterTTS:
-    def test_empty_name_raises(self):
-        with pytest.raises(ValueError):
-            register_tts("")(_DummyTTS)
-
-    def test_no_names_raises(self):
-        with pytest.raises(ValueError):
-            register_tts()
-
-    def test_duplicate_name_different_class_raises(self):
-        class _OtherTTS(_DummyTTS):
-            pass
-
-        # "edge_tts" is already bound to EdgeTTS; binding a different class must fail.
-        with pytest.raises(ValueError):
-            register_tts("edge_tts")(_OtherTTS)
-
-    def test_same_class_reregister_is_noop(self):
-        before = dict(TTS_REGISTRY)
-        # Re-applying the existing binding for EdgeTTS must not raise or change anything.
-        register_tts("edge_tts")(EdgeTTS)
-        assert before == TTS_REGISTRY
-
-    def test_registered_names_sorted(self):
-        names = registered_tts_providers()
-        assert names == sorted(names)
-
-    def test_get_tts_unknown_returns_none(self):
-        assert get_tts("does-not-exist") is None
 
 
 class TestProvidersByFormat:

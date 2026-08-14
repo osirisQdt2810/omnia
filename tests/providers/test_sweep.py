@@ -21,7 +21,7 @@ from omnia.core.providers import (
     create_llm_provider,
     create_tts_provider,
 )
-from omnia.core.providers.llm.factory import _BUILDERS as LLM_BUILDERS
+from omnia.core.providers.llm.registry import LLM_REGISTRY
 from omnia.core.providers.tts.edge_tts import EdgeTTS
 from omnia.core.providers.tts.piper import PiperTTS
 from omnia.core.providers.tts.registry import TTS_REGISTRY
@@ -64,7 +64,7 @@ _LLM_CONFIGS = {
 
 class TestLLMSweep:
     def test_every_llm_provider_is_swept(self):
-        assert set(_LLM_CONFIGS) == set(LLM_BUILDERS) == set(available_llm_providers())
+        assert set(_LLM_CONFIGS) == set(LLM_REGISTRY) == set(available_llm_providers())
 
     @pytest.mark.parametrize("name", sorted(_LLM_CONFIGS))
     def test_llm_provider_builds_and_generates(self, name, routed_http):

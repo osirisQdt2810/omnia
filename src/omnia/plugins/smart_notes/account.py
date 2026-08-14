@@ -39,9 +39,9 @@ def _canonical_llm_provider(provider: str) -> str:
     what lets :func:`merge_usage`'s left-join actually attach the recorded counts. An unknown
     id passes through unchanged.
     """
-    from omnia.core.providers.llm.factory import _PROVIDER_CLASSES
+    from omnia.core.providers.llm.registry import get_llm
 
-    cls = _PROVIDER_CLASSES.get(provider)
+    cls = get_llm(provider)
     return cls.name if cls is not None else provider
 
 

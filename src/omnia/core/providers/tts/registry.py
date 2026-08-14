@@ -1,11 +1,13 @@
-"""TTS provider self-registration registry.
+"""The TTS binding of the generic provider registry.
 
-Mirrors the add-on's feature-plugin registry (:mod:`omnia.core.registry`): each provider
-registers itself with the :func:`register_tts` decorator at import time, and the public
-factory functions (:func:`create_tts_provider`, the ``available_*`` queries) read
-:data:`TTS_REGISTRY` instead of a hand-maintained builder table. Pure module — imports only
-:class:`TTSProvider` from ``.base`` plus stdlib, so concrete providers depend on it without a
-cycle (``registry`` ← ``base``; providers ← ``registry``; ``__init__`` ← providers).
+Holds the one :class:`~omnia.core.providers.registry.ProviderRegistry` instance for TTS and
+the thin public functions over it: each provider registers itself with :func:`register_tts` at
+import time, and :func:`create_tts_provider` / the ``available_*`` queries read the registry
+instead of a hand-maintained builder table. The registration *mechanism* lives in
+``core/providers/registry.py`` (shared with LLM); what stays here is what only TTS has —
+:func:`tts_providers_with_ext`, which reads each class's ``audio_ext``. Pure module — imports
+:class:`TTSProvider` from ``.base`` plus the generic registry, so concrete providers depend on
+it without a cycle (``registry`` ← ``base``; providers ← ``registry``; ``__init__`` ← providers).
 """
 
 from __future__ import annotations
@@ -13,26 +15,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
-from omnia.core.providers.errors import ProviderError
+from omnia.core.providers.registry import ProviderRegistry
 from omnia.core.providers.tts.base import TTSProvider
 
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient
 
 # name -> provider class. One class may be bound under several names (the openai family
-# shares OpenAICompatibleTTS), so this is NOT a 1:1 map.
-TTS_REGISTRY: dict[str, type[TTSProvider]] = {}
+# shares OpenAICompatibleTTS), so this is NOT a 1:1 map. Reads like a read-only dict.
+TTS_REGISTRY: ProviderRegistry[TTSProvider] = ProviderRegistry(
+    "TTS", default="google_translate"
+)
 
 
 def register_tts(
     *names: str,
 ) -> Callable[[type[TTSProvider]], type[TTSProvider]]:
     """Register a :class:`TTSProvider` subclass under one or more config names.
-
-    Accepts multiple names so a single class can serve several config keys (the openai family
-    binds ``"openai"``/``"openrouter"``/``"openai_compatible"`` to one class). Does NOT stamp a
-    ``name`` attribute onto the class — a multi-name class keeps its own declared ``name`` (e.g.
-    ``OpenAICompatibleTTS.name`` stays ``"openai_compatible"``).
 
     Args:
         *names: One or more unique, stable config keys for the provider.
@@ -44,23 +43,7 @@ def register_tts(
         ValueError: If ``names`` is empty, any name is empty, or a name is already bound to a
             DIFFERENT class. Re-registering the SAME class under a name is a no-op.
     """
-    if not names:
-        raise ValueError("register_tts requires at least one name")
-    if any(not name for name in names):
-        raise ValueError("TTS provider name must be a non-empty string")
-
-    def decorator(cls: type[TTSProvider]) -> type[TTSProvider]:
-        for name in names:
-            existing = TTS_REGISTRY.get(name)
-            if existing is not None and existing is not cls:
-                raise ValueError(
-                    f"TTS provider name {name!r} already registered to "
-                    f"{existing.__name__}"
-                )
-            TTS_REGISTRY[name] = cls
-        return cls
-
-    return decorator
+    return TTS_REGISTRY.register(*names)
 
 
 def get_tts(name: str) -> type[TTSProvider] | None:
@@ -70,7 +53,7 @@ def get_tts(name: str) -> type[TTSProvider] | None:
 
 def registered_tts_providers() -> list[str]:
     """Return the registered TTS provider names, sorted."""
-    return sorted(TTS_REGISTRY)
+    return TTS_REGISTRY.names()
 
 
 def tts_providers_with_ext(ext: str) -> list[str]:
@@ -109,13 +92,7 @@ def create_tts_provider(
     Raises:
         ProviderError: If the provider name is unknown.
     """
-    provider = config.get("provider", "google_translate")
-    cls = get_tts(provider)
-    if cls is None:
-        raise ProviderError(
-            f"Unknown TTS provider {provider!r}; known: {registered_tts_providers()}"
-        )
-    return cls.from_config(config, http)
+    return TTS_REGISTRY.create(config, http)
 
 
 def available_tts_providers() -> list[str]:
@@ -125,9 +102,9 @@ def available_tts_providers() -> list[str]:
 
 def available_tts_providers_requiring_api() -> list[str]:
     """TTS providers that need an API key / cloud credentials (skippable in real tests)."""
-    return sorted(n for n, c in TTS_REGISTRY.items() if c.requires_api)
+    return TTS_REGISTRY.requiring_api()
 
 
 def available_keyless_tts_providers() -> list[str]:
     """TTS providers callable WITHOUT a key (google_translate, edge_tts, piper — must run)."""
-    return sorted(n for n, c in TTS_REGISTRY.items() if not c.requires_api)
+    return TTS_REGISTRY.keyless()

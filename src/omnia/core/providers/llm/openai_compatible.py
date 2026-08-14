@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import base64
-from typing import Optional
+from typing import Any, Optional
 
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm.base import LLMProvider
+from omnia.core.providers.llm.registry import register_llm
+
+# Default base URL per config name — the openai family is ONE class under three names that
+# differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
+_OPENAI_DEFAULTS = {
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "openai_compatible": "https://api.openai.com/v1",
+}
 
 
 def _usage_from_openai(resp: object) -> Optional[dict[str, int]]:
@@ -22,6 +31,7 @@ def _usage_from_openai(resp: object) -> Optional[dict[str, int]]:
     }
 
 
+@register_llm("openai", "openrouter", "openai_compatible")
 class OpenAICompatibleProvider(LLMProvider):
     """Talks to any ``/chat/completions`` + ``/images/generations`` compatible API."""
 
@@ -44,6 +54,34 @@ class OpenAICompatibleProvider(LLMProvider):
         self._image_model = image_model or "gpt-image-1"
         self._temperature = temperature
         self._http = http or DEFAULT_HTTP_CLIENT
+
+    @classmethod
+    def from_config(
+        cls, config: dict[str, Any], http: Optional[HttpClient] = None
+    ) -> OpenAICompatibleProvider:
+        """Build the provider for whichever openai-family name ``config`` selects.
+
+        Args:
+            config: The provider's config subsection (``provider`` picks the default base URL).
+            http: Optional HTTP client to inject.
+
+        Returns:
+            The configured provider.
+        """
+        # The openai family shares this class under three names; the default base URL depends
+        # on which name was selected (config['provider']).
+        provider = config.get("provider", "openai_compatible")
+        base_url = config.get("base_url") or _OPENAI_DEFAULTS.get(
+            provider, _OPENAI_DEFAULTS["openai"]
+        )
+        return cls(
+            api_key=config.get("api_key", ""),
+            base_url=base_url,
+            model=config.get("model", "gpt-4o-mini"),
+            image_model=config.get("image_model"),
+            temperature=float(config.get("temperature", 0.7)),
+            http=http,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
