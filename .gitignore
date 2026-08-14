@@ -51,3 +51,6 @@ references/
 # Wheels a `pip download` leaves in the repo root (vendoring goes to vendor/ via
 # scripts/vendor_deps.py, never here).
 *.whl
+
+# pytest-cov data file (coverage.xml is the artifact CI publishes)
+.coverage
