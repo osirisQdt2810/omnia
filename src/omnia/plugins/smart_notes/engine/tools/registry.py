@@ -61,6 +61,25 @@ def register_tool(name: str) -> Callable[[type[Tool]], type[Tool]]:
     return decorator
 
 
+def unregister_tool(name: str) -> bool:
+    """Remove ``name`` from the registry, returning whether it was registered.
+
+    The counterpart :func:`register_tool` deliberately lacks: rebinding a name to a DIFFERENT
+    class raises, which is right for builtins (a duplicate name is a bug) and wrong for the
+    ``user:`` namespace, where re-loading an edited file is the normal case. The user-tool
+    loader owns that namespace on disk — it drops a name before rebinding it, and drops one for
+    good when the user deletes the file, so the picker stops offering a tool that no longer
+    exists without restarting Anki.
+
+    Args:
+        name: The registered tool name.
+
+    Returns:
+        True when a registration was removed.
+    """
+    return TOOL_REGISTRY.pop(name, None) is not None
+
+
 def get_tool(name: str) -> type[Tool] | None:
     """Return the tool CLASS registered under ``name`` (or None when unknown)."""
     return TOOL_REGISTRY.get(name)

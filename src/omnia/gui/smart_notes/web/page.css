@@ -847,3 +847,58 @@ select:disabled { opacity: 0.7; }
 .sn-tool-param-label { color: var(--muted); flex: 1; }
 .sn-tool-param-input { max-width: 55%; }
 input.sn-tool-param-input[type="checkbox"] { max-width: none; }
+
+/* --- Options → Tools tab: the user's own, LLM-authored tools ------------------------- */
+/* Everything here is one flow (list → describe → read the code → run it → save), so it is
+   laid out as stacked sections inside the tab pane rather than as another modal. */
+.sn-ut-note {
+  font-size: 12px; color: var(--muted); line-height: 1.5; margin: 2px 0 12px;
+  background: var(--row-alt); border: 1px solid var(--card-border);
+  border-radius: 8px; padding: 8px 10px;
+}
+.sn-ut-dir { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+.sn-ut-section { margin: 14px 0; display: flex; flex-direction: column; gap: 8px; }
+.sn-ut-list { display: flex; flex-direction: column; gap: 8px; }
+.sn-ut-card {
+  border: 1px solid var(--card-border); border-radius: 10px; padding: 8px 10px;
+  background: var(--row-alt); display: flex; flex-direction: column; gap: 4px;
+}
+.sn-ut-card-broken { border-color: var(--fail); }
+.sn-ut-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sn-ut-id {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px; color: var(--muted);
+}
+.sn-ut-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.sn-ut-actions { display: flex; gap: 6px; margin-top: 4px; }
+.sn-ut-btn { font-size: 12px; padding: 3px 8px; }
+.sn-ut-editor {
+  border: 1px solid var(--card-border); border-radius: 10px; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sn-ut-editor[hidden] { display: none; }
+.sn-ut-row { display: flex; align-items: center; gap: 10px; }
+.sn-ut-foot { margin-top: 4px; }
+.sn-ut-name { flex: 1; }
+.sn-ut-input { width: 100%; }
+.sn-ut-slug {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px; color: var(--accent);
+}
+.sn-ut-textarea { width: 100%; resize: vertical; line-height: 1.5; }
+/* The generated source is shown in FULL — no collapsing, no summary: reading it is the gate. */
+.sn-ut-source {
+  width: 100%; resize: vertical; line-height: 1.45;
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  white-space: pre; overflow-wrap: normal; overflow-x: auto;
+}
+.sn-ut-test {
+  border-top: 1px solid var(--card-border); padding-top: 10px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.sn-ut-out {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  background: var(--row-alt); border: 1px solid var(--card-border);
+  border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+}
+.sn-ut-out[hidden] { display: none; }

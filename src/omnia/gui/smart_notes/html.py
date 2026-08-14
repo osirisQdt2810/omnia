@@ -44,6 +44,15 @@ Python through the WebDialog bridge with these ops:
 * ``browse_file`` ``{provider, field}`` → ``{path}`` (native picker; persists the chosen path)
 * ``open_url`` ``{url}`` (open a provider console/billing link in the browser)
 * ``account_keys_credit`` → OpenRouter balance pushed via ``window.__snKeysCreditResult``
+* ``user_tools`` → ``{tools, builtins, directory}`` for the global Tools tab (the user's own
+  Python tools in ``user_files/tools`` + the read-only builtin cards)
+* ``user_tool_generate`` ``{slug, label, prompt, all_fields}`` → the LLM writes a complete
+  ``Tool`` subclass off-thread; pushed via ``window.__snUserToolSource``
+* ``user_tool_test`` ``{slug, source, sample, params}`` → compiles and runs that exact source
+  once, off-thread; pushed via ``window.__snUserToolTested`` (and only this arms Save)
+* ``user_tool_save`` ``{slug, label, prompt, source}`` → ``{ok, name}``; REFUSED unless the
+  posted source has been through ``user_tool_test`` in this session
+* ``user_tool_delete`` ``{slug, confirm}`` → ``{usages}`` first, then ``{ok}`` once confirmed
 * ``save`` ``{note_type, base_field, rows, decks, options}`` → ``{ok: true}`` once persisted
 
 The Provider/Model/Voice dropdowns are driven by a catalog baked into ``window.__SN_CATALOG``
@@ -105,6 +114,7 @@ _PAGE_JS_PARTS = [
     "06-graph.js",
     "08-genpreview.js",
     "09-tools.js",
+    "10-usertools.js",
     "07-init.js",
 ]
 

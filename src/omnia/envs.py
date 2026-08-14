@@ -73,6 +73,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "OMNIA_SMART_NOTES_REWRITE_EDGE_TEMPERATURE": lambda: _float(
         "OMNIA_SMART_NOTES_REWRITE_EDGE_TEMPERATURE", 0.3
     ),
+    #   smart_notes · tool-author: compile a description into a user tool's Python → the
+    #   user reads and runs the result, so favour the conventional answer over a creative one.
+    "OMNIA_SMART_NOTES_TOOL_AUTHOR_TEMPERATURE": lambda: _float(
+        "OMNIA_SMART_NOTES_TOOL_AUTHOR_TEMPERATURE", 0.1
+    ),
     # ── HTTP ── default request timeout (seconds) for the stdlib HTTP client.
     "OMNIA_HTTP_TIMEOUT": lambda: _float("OMNIA_HTTP_TIMEOUT", 30.0),
     # ── storage dispatch (ADR-006) ── one knob per persistence concern, selecting its backend.
