@@ -161,6 +161,14 @@ gh pr create --base main --title "…" --body-file /tmp/pr-body.md
 ```
 
 Rules for filling it:
+- **Never quote the requester verbatim in Context — paraphrase.** Whatever language a request
+  arrives in (and it is often Vietnamese), the PR states the *problem* in the author's own
+  English words: what was wrong, for whom, and why it mattered. Do not paste the original
+  message into `Context`, not even as a blockquote or an "original request" aside. A PR is a
+  permanent public artefact read by people who were not in the conversation; a pasted chat
+  message is context they cannot use, and it drags the conversation's register into the
+  repository's. The same applies to ADRs, FEATURE_LOG entries and commit messages — see
+  **Documentation Language** above, which this is a specific case of.
 - **Never delete a heading.** A section that truly does not apply gets `N/A — <reason>`, not a
   silent removal; the CI `pr-body` check fails a PR missing any required heading.
 - **Test Output is evidence, not a claim.** Paste the actual `pytest` tail, the lint result,
