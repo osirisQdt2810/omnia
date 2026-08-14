@@ -325,9 +325,14 @@
    * @param {!HTMLTableRowElement} tr The row to preview.
    */
   function previewRow(tr) {
-    if (tr.classList.contains("sn-row-locked")) {
-      return;
-    }
+    // NO lock check. Preview only READS the row and generates a throwaway sample — it writes
+    // nothing to the note and nothing to the row — so the lock, which exists to stop the
+    // auto-smart generator overwriting a hand-written prompt, has no business blocking it.
+    //
+    // It used to return here, and that was survivable only while the cell was also blurred by
+    // `sn-lockable`: the button plainly looked frozen. Freeing the cell (the lock now covers
+    // just Type and Prompt) turned the same early return into a DEAD BUTTON — fully lit,
+    // clicking it did nothing at all, not even an error.
     setMsg('<span class="sn-spin"></span>Previewing ' + esc(tr.dataset.field) + "…", false);
     send("preview", previewPayload(tr, null), null);
   }
