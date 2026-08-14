@@ -326,7 +326,7 @@ class TestTheReviewIsToldWhatTheToolReaches:
     """
 
     def test_a_file_touching_tool_says_so_in_the_payload(self, controller):
-        ctrl, _ctx, pushed = controller
+        _ctrl, _ctx, pushed = controller
         source = _TOOL_SOURCE.replace(
             "from typing import ClassVar",
             "import subprocess\nfrom pathlib import Path\nfrom typing import ClassVar",
@@ -343,7 +343,7 @@ class TestTheReviewIsToldWhatTheToolReaches:
 
     def test_a_text_only_tool_reports_no_risks(self, controller):
         # The banner appearing IS the signal, so a plain transform must not raise one.
-        ctrl, _ctx, pushed = controller
+        _ctrl, _ctx, pushed = controller
 
         _test_run(controller)
 
