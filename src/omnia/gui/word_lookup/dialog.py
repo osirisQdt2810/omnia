@@ -119,7 +119,7 @@ class WordLookupSettingsDialog(QDialog):
         self._word_forms = QCheckBox("Also match other forms")
         self._word_forms.setChecked(bool(settings.match_word_forms))
         self._word_forms.setToolTip(
-            "<div style=\"max-width:340px\">Double-clicking an inflected word still finds the "
+            '<div style="max-width:340px">Double-clicking an inflected word still finds the '
             "card filed under its base form — <b>loved</b> finds <i>love</i>, "
             "<b>studies</b> finds <i>study</i>, <b>ran</b> finds <i>run</i>.</div>"
         )

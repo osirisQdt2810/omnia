@@ -122,7 +122,9 @@ class TestHintLabel:
 class TestHintWithDetails:
     def test_only_the_summary_is_shown_and_the_rest_is_a_tooltip(self, widgets):
         label = widgets.hint_with_details(
-            _FakeWidget(), "Whole-word match.", "The long explanation.\n\nSecond paragraph."
+            _FakeWidget(),
+            "Whole-word match.",
+            "The long explanation.\n\nSecond paragraph.",
         )
 
         assert label.text.startswith("Whole-word match.")
@@ -152,5 +154,7 @@ class TestHintWithDetails:
     def test_no_details_falls_back_to_a_plain_hint(self, widgets):
         label = widgets.hint_with_details(_FakeWidget(), "Just this.", "   ")
 
-        assert label.text == "Just this."  # no marker promising a tooltip that isn't there
+        assert (
+            label.text == "Just this."
+        )  # no marker promising a tooltip that isn't there
         assert label.tooltip == ""
