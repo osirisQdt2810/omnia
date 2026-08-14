@@ -15,7 +15,7 @@ from omnia.core.providers import ProviderError, create_tts_provider
 from omnia.core.providers.tts.edge_tts import EdgeTTS
 from omnia.core.providers.tts.openai_compatible import OpenAICompatibleTTS
 from omnia.core.providers.tts.registry import (
-    registered_tts_providers,
+    available_tts_providers,
     tts_providers_with_ext,
 )
 
@@ -32,7 +32,7 @@ class TestProvidersByFormat:
     def test_every_registered_provider_lands_in_exactly_one_format(self):
         wav = tts_providers_with_ext("wav")
         mp3 = tts_providers_with_ext("mp3")
-        assert set(wav) | set(mp3) == set(registered_tts_providers())
+        assert set(wav) | set(mp3) == set(available_tts_providers())
         assert not set(wav) & set(mp3)
 
     def test_the_offline_engines_are_the_wav_ones(self):

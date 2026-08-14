@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 P = TypeVar("P", bound=ProviderBase)
 
 
-class ProviderRegistry(Mapping[str, "type[P]"]):
+class ProviderRegistry(Mapping[str, type[P]]):
     """Name -> provider class for ONE provider kind, plus the queries every kind needs.
 
     A read-only :class:`~collections.abc.Mapping` (so callers keep doing ``registry[name]``,

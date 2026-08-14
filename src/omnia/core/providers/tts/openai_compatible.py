@@ -6,16 +6,12 @@ from typing import Any, ClassVar, Optional
 
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
+from omnia.core.providers.openai_family import openai_family_base_url
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
 from omnia.core.providers.tts.registry import register_tts
 
 # Default base URL per config name — the openai family is ONE class under three names that
 # differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
-_OPENAI_DEFAULTS = {
-    "openai": "https://api.openai.com/v1",
-    "openrouter": "https://openrouter.ai/api/v1",
-    "openai_compatible": "https://api.openai.com/v1",
-}
 
 
 @register_tts("openai", "openrouter", "openai_compatible")
@@ -66,15 +62,12 @@ class OpenAICompatibleTTS(TTSProvider):
     def from_config(
         cls, config: dict[str, Any], http: Optional[HttpClient] = None
     ) -> OpenAICompatibleTTS:
-        # The openai family shares this class under three names; the default base URL depends
-        # on which name was selected (config['provider']).
-        provider = config.get("provider", "openai_compatible")
-        base_url = config.get("base_url") or _OPENAI_DEFAULTS.get(
-            provider, _OPENAI_DEFAULTS["openai"]
-        )
+        # This class serves three config names, so the whole config goes to the resolver: the
+        # name inside it is the only thing that distinguishes an openrouter build from an
+        # openai one.
         return cls(
             api_key=config.get("api_key", ""),
-            base_url=base_url,
+            base_url=openai_family_base_url(config),
             model=config.get("model") or "gpt-4o-mini-tts",
             voice=config.get("voice") or "alloy",
             http=http,

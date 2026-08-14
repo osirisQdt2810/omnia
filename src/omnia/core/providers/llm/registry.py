@@ -5,9 +5,8 @@ thin public functions over it: each provider registers itself with :func:`regist
 import time (so ``llm/__init__.py`` must import every provider module for the decorators to
 run), and :func:`create_llm_provider` / the ``available_*`` queries read the registry.
 
-Deliberately asymmetric with the TTS binding: that one also exposes ``registered_tts_providers``
-next to ``available_tts_providers`` because both names are already imported elsewhere. There is
-no ``registered_llm_providers`` twin here — nothing would call it.
+Symmetric with the TTS binding, deliberately: both expose the same surface over the same
+mechanism, so a reader who has seen one has seen both.
 """
 
 from __future__ import annotations

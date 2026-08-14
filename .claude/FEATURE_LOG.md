@@ -49,10 +49,21 @@ in the tree. A third provider kind would have arrived to two patterns and no rea
 `tests/providers/{test_provider_metadata,test_sweep,test_tts_registry}.py`,
 `tests/core/test_config.py`, `.claude/CLAUDE.md`, `.claude/DECISIONS.md` (ADR-014).
 
-**How to verify:** `pytest tests/ -q` (1904 passed, 68 skipped, 15 xfailed — unchanged; the six
-deleted TTS-only/vacuous tests are replaced by 22 in `test_provider_registry.py`).
-`mypy src/omnia/core/providers` reports the same 107 pre-existing errors as before, none in the
-new modules. The names are a persisted contract, so check them without a harness:
+A review pass then found the one thing the split had missed: `_OPENAI_DEFAULTS`, the base-URL
+table for the openai family, existed byte for byte in BOTH `llm/openai_compatible.py` and
+`tts/openai_compatible.py`. It describes vendor HTTP endpoints — not text, not audio — so it is
+the most kind-agnostic data in the layer and belongs at the root. Added
+`core/providers/openai_family.py` (`OPENAI_FAMILY_BASE_URLS` + `openai_family_base_url`) with
+`tests/providers/test_openai_family.py` asserting BOTH kinds resolve through it, plus the LLM
+default provider, which had been pinned on the TTS side only. Same pass removed `get_tts()`
+(zero callers) and the `registered_tts_providers()` synonym.
+
+**How to verify:** `pytest tests/ -q` → `1945 passed, 68 skipped, 15 xfailed in 112.57s` (1904
+before this branch; the six deleted TTS-only/vacuous tests are replaced by the new
+`test_provider_registry.py` and `test_openai_family.py`, and the branch also carries the
+`tests/scripts/` suite). `mypy src/omnia/core/providers` → `Found 107 errors in 42 files
+(checked 24 source files)`, the same pre-existing count as before, none in the new modules. The
+names are a persisted contract, so check them without a harness:
 
 ```bash
 .venv/bin/python -S -c "import sys;sys.path[:] = [p for p in sys.path if 'site-packages' not in p and '.venv' not in p];sys.path.insert(0,'src');sys.path.append('vendor/universal');from omnia.core.providers import available_llm_providers as a, available_tts_providers as b;print(a());print(b())"

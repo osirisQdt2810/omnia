@@ -1,4 +1,4 @@
-"""TTS provider package — interface, factory, and the aggregated voice catalog.
+"""TTS provider package — interface, registry, and the aggregated voice catalog.
 
 This package is the SINGLE source of TTS voice data: each provider declares its own curated
 voices on its class (:attr:`TTSProvider.CURATED_VOICES`) and exposes them polymorphically via

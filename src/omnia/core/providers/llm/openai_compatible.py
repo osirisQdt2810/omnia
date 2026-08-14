@@ -9,14 +9,10 @@ from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm.base import LLMProvider
 from omnia.core.providers.llm.registry import register_llm
+from omnia.core.providers.openai_family import openai_family_base_url
 
 # Default base URL per config name — the openai family is ONE class under three names that
 # differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
-_OPENAI_DEFAULTS = {
-    "openai": "https://api.openai.com/v1",
-    "openrouter": "https://openrouter.ai/api/v1",
-    "openai_compatible": "https://api.openai.com/v1",
-}
 
 
 def _usage_from_openai(resp: object) -> Optional[dict[str, int]]:
@@ -68,15 +64,12 @@ class OpenAICompatibleProvider(LLMProvider):
         Returns:
             The configured provider.
         """
-        # The openai family shares this class under three names; the default base URL depends
-        # on which name was selected (config['provider']).
-        provider = config.get("provider", "openai_compatible")
-        base_url = config.get("base_url") or _OPENAI_DEFAULTS.get(
-            provider, _OPENAI_DEFAULTS["openai"]
-        )
+        # This class serves three config names, so the whole config goes to the resolver: the
+        # name inside it is the only thing that distinguishes an openrouter build from an
+        # openai one.
         return cls(
             api_key=config.get("api_key", ""),
-            base_url=base_url,
+            base_url=openai_family_base_url(config),
             model=config.get("model", "gpt-4o-mini"),
             image_model=config.get("image_model"),
             temperature=float(config.get("temperature", 0.7)),

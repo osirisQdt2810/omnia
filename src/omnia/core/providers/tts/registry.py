@@ -46,16 +46,6 @@ def register_tts(
     return TTS_REGISTRY.register(*names)
 
 
-def get_tts(name: str) -> type[TTSProvider] | None:
-    """Return the provider class registered under ``name`` (or None if unknown)."""
-    return TTS_REGISTRY.get(name)
-
-
-def registered_tts_providers() -> list[str]:
-    """Return the registered TTS provider names, sorted."""
-    return TTS_REGISTRY.names()
-
-
 def tts_providers_with_ext(ext: str) -> list[str]:
     """Return the registered provider names whose audio is in ``ext`` format, sorted.
 
@@ -97,7 +87,7 @@ def create_tts_provider(
 
 def available_tts_providers() -> list[str]:
     """Return the registered TTS provider names (for the settings GUI)."""
-    return registered_tts_providers()
+    return TTS_REGISTRY.names()
 
 
 def available_tts_providers_requiring_api() -> list[str]:
