@@ -17,6 +17,7 @@ from omnia.core.providers.tts.registry import (
     get_tts,
     register_tts,
     registered_tts_providers,
+    tts_providers_with_ext,
 )
 
 
@@ -56,6 +57,34 @@ class TestRegisterTTS:
 
     def test_get_tts_unknown_returns_none(self):
         assert get_tts("does-not-exist") is None
+
+
+class TestProvidersByFormat:
+    """``tts_providers_with_ext`` is the one place that knows which voices return what.
+
+    Audio surgery (smart_notes' ``cloze_audio``) can only splice PCM, so it has to TELL the
+    user which voices work without a codec runtime. That list is derived here rather than
+    written out anywhere, because a hand-kept copy goes stale the moment a provider is added
+    or renamed — and then it lies in the UI.
+    """
+
+    def test_every_registered_provider_lands_in_exactly_one_format(self):
+        wav = tts_providers_with_ext("wav")
+        mp3 = tts_providers_with_ext("mp3")
+        assert set(wav) | set(mp3) == set(registered_tts_providers())
+        assert not set(wav) & set(mp3)
+
+    def test_the_offline_engines_are_the_wav_ones(self):
+        assert tts_providers_with_ext("wav") == ["piper", "viettts"]
+
+    def test_names_are_sorted_and_include_every_alias_of_a_shared_class(self):
+        mp3 = tts_providers_with_ext("mp3")
+        assert mp3 == sorted(mp3)
+        # The openai family is one class under three config names; a user configures a NAME.
+        assert {"openai", "openai_compatible", "openrouter"} <= set(mp3)
+
+    def test_an_unknown_format_matches_nothing(self):
+        assert tts_providers_with_ext("flac") == []
 
 
 class TestCreateTTSProvider:
