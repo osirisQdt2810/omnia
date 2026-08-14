@@ -1157,6 +1157,10 @@
       return;
     }
     if (sel.fromTool) {
+      // Drop any explicit entry FIRST. Clicking a tool edge toggles hard/soft, which writes a
+      // real depends_on entry; returning before this left that entry with no way to remove it
+      // from the graph, since the edge re-derives from the tool either way.
+      updateRowDep(sel.dst, sel.src, null);
       // This edge exists because a TOOL param on the dependent field names the prerequisite —
       // there is no explicit entry to drop and no {{ref}} to rewrite, so every step below would
       // be a no-op and recomputeGraph would put the edge straight back. Say where it lives

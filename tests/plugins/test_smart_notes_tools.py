@@ -450,17 +450,28 @@ class TestTheCatalogDescribesEachToolForThePicker:
     def test_a_tool_with_a_malformed_required_params_costs_only_its_own_validation(
         self, fake_tools
     ):
-        # Same defensiveness as `kinds`: a user tool writing `required_params` as a raising
-        # property must not take the whole picker down with it.
-        class _Broken(_ProduceTool):
-            name: ClassVar[str] = "t_broken_required"
+        # Same defensiveness as `kinds`, and BOTH guards are exercised. A plain `@property`
+        # only reaches the isinstance branch — read off the CLASS it returns the property
+        # object rather than raising — so the raising case needs a descriptor with a
+        # `__get__` that fires on class access too.
+        class _Raises:
+            def __get__(self, instance, owner=None):
+                raise RuntimeError("boom")
+
+        class _Exploding(_ProduceTool):
+            name: ClassVar[str] = "t_raises_required"
+            required_params = _Raises()  # type: ignore[assignment]
+
+        class _NotIterable(_ProduceTool):
+            name: ClassVar[str] = "t_bad_required"
 
             @property  # type: ignore[misc]
             def required_params(self):
-                raise RuntimeError("boom")
+                return frozenset()
 
-        assert tool_required_params(_Broken) == frozenset()
-        assert tool_required_params(_ProduceTool) == frozenset()
+        assert tool_required_params(_Exploding) == frozenset()  # the except branch
+        assert tool_required_params(_NotIterable) == frozenset()  # the isinstance branch
+        assert tool_required_params(_ProduceTool) == frozenset()  # the ordinary default
 
 
 class TestPipelineIsolatesABrokenTool:

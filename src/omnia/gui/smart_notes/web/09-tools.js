@@ -501,6 +501,12 @@
       }
       input.addEventListener("change", function () {
         entry.params[key] = input.value;
+        if (required && toolsShowErrors) {
+          // Re-render so the banner and the red labels track what is still missing. Without
+          // this the comment above was a promise nothing kept: filling Source Field left both
+          // labels red and the message naming both params until Done was pressed again.
+          renderToolsPicker();
+        }
       });
     } else {
       input = document.createElement("input");

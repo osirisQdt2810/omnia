@@ -21,6 +21,47 @@ Format for each entry:
 
 ---
 
+## 2026-08-14 — smart_notes tools: one chain rule, honest dependency edges, a picker that refuses guesswork
+
+**What:** Three shared seams changed at once. (1) **The chain has exactly one rule** — run the
+tools in the configured order, fall through on every failure. `TerminalToolError` (a tool
+halting the chain) and `Tool.exclusive` + `registry.chain_conflict` (a tool refusing to share
+one) are removed; see **ADR-012**, which supersedes ADR-011. (2) **Tool-param dependency edges
+are labelled honestly**: a param naming a field was always a prerequisite, but the graph marked
+those edges `derived=False` — "the user drew this" — so they rendered solid and Delete silently
+no-op'd on them. They are now `derived` plus a new `from_tool` flag, and Delete names the Tools
+picker instead of doing nothing. (3) **`Tool.required_params`** — a blank field param resolves
+to a fallback the UI cannot show, so Done now refuses while one is blank, naming the tool and
+the param. Plus `Tool.uses_provider` (deliberately NOT the inverse of `deterministic` —
+`cloze_audio` is both), a lock narrowed to Type + Prompt, a randomised preview note, and
+`match_word_forms` removed (inflections always match).
+
+**Why:** The picker showed an ordered list the runtime would sometimes decline to run and
+sometimes stop halfway, for reasons belonging to one tool; the settings row lied about which
+cells applied and about what the lock froze; and a `cloze` row's dependency on the two fields
+it reads was invisible in the graph.
+
+**Files:** `plugins/smart_notes/engine/tools/{base,pipeline,registry,cloze,cloze_audio}.py`,
+`plugins/smart_notes/engine/graph.py`, `gui/smart_notes/html.py`,
+`gui/smart_notes/web/{03-render,06-graph,09-tools}.js`, `gui/smart_notes/web/page.css`,
+`core/anki_compat.py`, `.claude/DECISIONS.md` (ADR-011 superseded, ADR-012 added).
+
+**How to verify:** `pytest tests/ -q` (1713 passed). For the UI half, render the page with a
+live tool catalog and drive it over CDP: a `cloze`-only row fades Provider/Model while a
+`cloze_audio` row keeps Provider/Voice; locking a row disables only the Type select; Done is
+refused while a required field param is blank and the message narrows as they are filled;
+pressing Delete on a tool edge in the Dependencies view answers *"'Cloze' reads 'Sentence' in
+its Tools settings"*.
+
+**Notes / rollback:** The accepted cost of the ordering rule is in ADR-012 and pinned by
+`test_a_tts_tool_after_it_speaks_the_answer_and_that_is_the_configured_rule`: a field
+configured `[cloze_audio, <any tts tool>]` whose `cloze_audio` fails will have the next tool
+speak the answer. `cloze_audio`'s own guarantee is unchanged — it masks or it raises, and never
+declines. To reverse, restore the three symbols named in ADR-011 and write an ADR superseding
+ADR-012.
+
+---
+
 ## 2026-08-14 — smart_notes user-authored tools: describe a transform once, run it forever for free (Phase 4)
 
 **What:** A global **Tools tab** where the user describes a transform in plain English ("from
@@ -87,6 +128,10 @@ requires a default for every option, so defaults always run).
 ---
 
 ## 2026-08-14 — smart_notes `cloze_audio`: listening-cloze audio that never speaks the answer (Phase 3)
+
+> **Partly superseded the same day.** The `TerminalToolError` / `Tool.exclusive` mechanisms
+> described below were removed — see the "one chain rule" entry above and **ADR-012**. What
+> still holds is the tool's own guarantee: it masks or it raises, and never declines.
 
 **What:** `engine/tools/cloze_audio.py` registers `cloze_audio` (`kinds={"tts"}`,
 `deterministic=True` — it calls TTS, never an LLM). It splits the source field at the spans that
