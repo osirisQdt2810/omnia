@@ -703,10 +703,16 @@ class TestBuildSmartNotesHtml:
         # Auto-smart's off-thread result is pushed via this global hook.
         assert "window.__snAutoResult" in build_smart_notes_html(dark=False)
 
-    def test_generate_lock_and_preview_columns_present(self):
+    def test_the_expected_columns_are_present(self):
+        # ">Lock<" is deliberately absent: the lock affects only the prompt, so it moved into
+        # the prompt cell's corner rather than holding a column of the (already overflowing)
+        # table. Its toggle-all lives on the Prompt header now.
         html = build_smart_notes_html(dark=False)
-        for col in (">Generate<", ">Lock<", ">Preview<", ">Model<"):
-            assert col in html
+
+        for col in (">Generate<", ">Tools</th>", ">Preview<", ">Model<"):
+            assert col in html, col
+        assert ">Lock</th>" not in html
+        assert 'data-toggle="lock"' in html
 
     def test_catalog_is_baked_with_providers(self):
         html = build_smart_notes_html(dark=False)

@@ -210,14 +210,16 @@ class TestToolsPickerPage:
     def _html(self, tools=None) -> str:
         return build_smart_notes_html(dark=False, tools=tools)
 
-    def test_the_tools_column_sits_between_prompt_and_provider(self):
+    def test_the_tools_column_sits_beside_generate(self):
+        # Moved (was: between Prompt and Provider). Tools decides HOW a field is produced —
+        # including whether the prompt is read at all — so it belongs next to the switch that
+        # decides WHETHER it is produced, not buried among the provider settings. It took the
+        # slot the removed Lock column left.
         html = self._html()
+
         assert ">Tools</th>" in html
-        assert (
-            html.index(">Prompt</th>")
-            < html.index(">Tools</th>")
-            < html.index(">Provider</th>")
-        )
+        assert html.index(">Generate</th>") < html.index(">Tools</th>")
+        assert html.index(">Tools</th>") < html.index(">Type</th>")
 
     def test_the_picker_modal_is_present(self):
         html = self._html()
@@ -336,6 +338,53 @@ class TestToolsPickerPage:
         ):
             assert owned_by_the_user not in lock_state
 
+    def test_the_lock_has_no_column_but_lock_all_survives(self):
+        # The lock affects ONLY the prompt, so a whole column claimed table width to say
+        # something about one neighbouring cell — with ten columns already overflowing the
+        # card. It moved into the prompt cell's corner; the toggle-all it used to carry moved
+        # into the Prompt header so the capability is not silently lost with the column.
+        html = self._html()
+
+        assert ">Lock</th>" not in html
+        assert 'data-toggle="lock"' in html  # still reachable
+        assert "sn-prompt-cell" in _js(html, "function makePromptCell(", 900)
+
+    def test_the_lock_tooltip_says_prompt_not_settings(self):
+        # It said "freeze its settings" — true when the lock froze the whole row, and a plain
+        # lie once it was narrowed to Type and Prompt.
+        button = _strip_comments(_js(self._html(), "function makeLockButton(", 900))
+
+        assert "Freeze this prompt" in button
+        assert "settings" not in button
+
+    def test_the_prompt_fades_when_the_chain_never_reaches_a_provider(self):
+        # The prompt is the instruction handed to a provider. A chain of purely deterministic
+        # tools never reads it, so offering it invites a prompt that changes nothing.
+        state = _js(self._html(), "function applyKindState(", 1200)
+
+        assert '.sn-prompt-cell").classList.toggle("sn-na", !usesAi)' in state
+
+    def test_each_tool_gets_its_own_chip(self):
+        # "Cloze audio → AI" as one run-on string could not show which step costs money. Each
+        # tool now wears a chip carrying a per-tool class, so the chain reads as a sequence.
+        html = self._html()
+        summary = _js(html, "function updateToolsSummary(", 1400)
+
+        assert 'sn-chip sn-chip-" +' in summary
+        assert "sn-chip-arrow" in summary
+        # The sanitiser maps `cloze_audio` -> `cloze-audio`; the CSS must target THAT, or the
+        # chip renders unstyled (it did).
+        assert ".sn-chip-cloze-audio" in html
+        assert ".sn-chip-cloze_audio" not in html
+
+    def test_the_table_scrolls_rather_than_clipping_its_last_columns(self):
+        # Reported from a screenshot: the card's right edge cut through Voice and put Preview
+        # and Overwrite outside the modal, with no way to reach them.
+        html = self._html()
+
+        assert "overflow-x: auto;" in html
+        assert ".sn-table { min-width: 100%;" in html  # fills, but is not crushed
+
     def test_preview_is_not_blocked_by_the_lock(self):
         """A dead button is worse than a disabled one.
 
@@ -369,7 +418,9 @@ class TestToolsPickerPage:
         assert "sn-row-locked" not in cell
         # …while the lock still covers what the auto-smart generator writes.
         assert ".sn-row-locked .sn-lockable" in html
-        assert 'cell("sn-prompt-cell sn-lockable")' in html
+        # The prompt's BODY still blurs; the lock badge sits outside it so it stays clickable
+        # (a lock you cannot see to undo is a trap).
+        assert 'body.className = "sn-prompt-body sn-lockable"' in html
 
     def test_editing_the_chain_refreshes_the_rows_applicability(self):
         # `applyKindState` ran at row build and on a Type change only — never when the CHAIN

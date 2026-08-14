@@ -12,6 +12,7 @@ body.omnia-light {
   --row: rgba(255,255,255,0.7); --row-alt: rgba(240,243,250,0.7);
   --input-bg: #ffffff; --input-border: rgba(20,30,60,0.18);
   --shadow: rgba(20,30,60,0.12); --head: rgba(91,110,245,0.10); --fail: #c0392b;
+  --ok: #1f8a55;
   --head-bg: #e7eaf6; --overlay: rgba(20,30,60,0.34);
 }
 body.omnia-dark {
@@ -21,6 +22,7 @@ body.omnia-dark {
   --row: rgba(46,51,66,0.45); --row-alt: rgba(36,40,52,0.45);
   --input-bg: rgba(20,22,30,0.7); --input-border: rgba(255,255,255,0.16);
   --shadow: rgba(0,0,0,0.45); --head: rgba(124,140,255,0.16); --fail: #ff6b6b;
+  --ok: #3ecf8e;
   --head-bg: #2a2f40; --overlay: rgba(0,0,0,0.55);
 }
 body {
@@ -332,8 +334,15 @@ select:disabled { opacity: 0.7; }
   border-radius: 12px;
   border: 1px solid var(--card-border); box-shadow: 0 1px 3px var(--shadow);
   background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  /* Ten columns do not always fit the card, and when they did not the overflow was SILENT:
+     the card's right edge cut through Voice and put Preview + Overwrite off-screen with no
+     way to reach them. Scroll horizontally instead of hiding controls. `auto` keeps the bar
+     absent whenever the table does fit. */
+  overflow-x: auto;
 }
-.sn-table { width: 100%; border-collapse: collapse; }
+/* min-width, not width: the table fills the card when there is room and scrolls rather than
+   crushing its columns when there is not. */
+.sn-table { min-width: 100%; border-collapse: collapse; }
 .sn-table thead th {
   position: sticky; top: 0; z-index: 2; text-align: center;
   font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -376,6 +385,17 @@ select:disabled { opacity: 0.7; }
 .sn-prompt-cell:hover .sn-prompt-summary { border-color: var(--accent); background: var(--head); }
 .sn-prompt-summary.sn-prompt-empty { color: var(--muted); font-style: italic; }
 
+/* The prompt cell holds its own lock in the top-right corner (the Lock COLUMN is gone: it
+   spoke about one neighbouring cell and claimed table width to do it). The body is what
+   blurs when locked; the badge must stay lit and clickable so it can be undone. */
+.sn-prompt-cell { position: relative; padding-right: 26px; }
+.sn-prompt-body { min-width: 0; }
+.sn-prompt-cell .sn-lock {
+  position: absolute; top: 4px; right: 4px;
+  padding: 0 3px; font-size: 11px; line-height: 1.2; opacity: 0.45;
+}
+.sn-prompt-cell:hover .sn-lock, .sn-prompt-cell .sn-lock.sn-locked { opacity: 1; }
+
 .sn-lock {
   cursor: pointer; border: 1px solid var(--input-border); border-radius: 8px;
   background: var(--input-bg); font-size: 14px; padding: 5px 8px; line-height: 1;
@@ -395,6 +415,9 @@ select:disabled { opacity: 0.7; }
 .sn-iconbtn:disabled { opacity: 0.5; cursor: default; }
 
 .sn-provider, .sn-model, .sn-voice { min-width: 120px; max-width: 180px; }
+/* "English (US) · Neural2-C" and friends are long enough to stretch the whole table, so the
+   select is capped and ellipsised — the full name stays available in the dropdown itself. */
+.sn-voice { text-overflow: ellipsis; }
 /* The Voice column only appears once at least one row is a sound field. */
 .sn-table:not(.sn-has-sound) .sn-col-voice { display: none; }
 .sn-check { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
@@ -803,8 +826,35 @@ select:disabled { opacity: 0.7; }
    The table cell is a compact chain summary ("cloze → AI"); the modal lists every tool that
    can serve the row's kind, in run order, with ▲/▼ and a params mini-form. */
 .sn-tools-cell { white-space: nowrap; }
-.sn-tools-btn { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
-.sn-tools-btn.sn-tools-default { color: var(--muted); font-style: italic; }
+.sn-tools-btn {
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 3px; flex-wrap: nowrap;
+}
+/* Each tool wears its own chip, so a chain reads as a sequence of named steps rather than one
+   run-on string. The base chip is the fallback for a user-authored tool this build does not
+   know — it stays legible instead of rendering unstyled. */
+.sn-chip {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--card-border); background: var(--row-alt); color: var(--fg);
+}
+.sn-chip-arrow { font-size: 9px; color: var(--muted); }
+/* `ai` costs tokens — the accent marks the one step in a chain that is not free. */
+.sn-chip-ai {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* The deterministic builtins: green, because they are the free path. */
+.sn-chip-cloze, .sn-chip-cloze-audio {
+  border-color: var(--ok, #30a46c); color: var(--ok, #30a46c);
+  background: color-mix(in srgb, var(--ok, #30a46c) 12%, transparent);
+}
+/* A user-authored tool (`user:<slug>` → `user-<slug>`), distinct from both. */
+[class*="sn-chip-user-"] {
+  border-color: var(--accent-2, #8b7cf6); color: var(--accent-2, #8b7cf6);
+  background: color-mix(in srgb, var(--accent-2, #8b7cf6) 12%, transparent);
+}
+.sn-tools-btn.sn-tools-default .sn-chip { opacity: 0.75; }
 .sn-tools-card { max-width: 620px; }
 .sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .sn-tools-empty { color: var(--muted); font-size: 12px; }
