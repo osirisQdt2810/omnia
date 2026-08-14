@@ -15,18 +15,18 @@ from typing import Any
 
 import pytest
 
-from omnia.core.providers import native_runtime
-from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.native_runtime import (
+from omnia.core import native_runtime
+from omnia.core.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
     available_native_runtimes,
 )
-from omnia.core.providers.native_runtime import native_runtime as lookup_native_runtime
-from omnia.core.providers.native_runtime import (
+from omnia.core.native_runtime import native_runtime as lookup_native_runtime
+from omnia.core.native_runtime import (
     native_runtimes_by_section,
     register_native_runtime,
 )
+from omnia.core.providers.errors import ProviderError
 
 
 class _FakeProc:

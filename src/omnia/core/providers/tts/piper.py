@@ -25,13 +25,13 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
-from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.native_runtime import (
+from omnia.core.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
     default_manager,
     register_native_runtime,
 )
+from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
 from omnia.core.providers.tts.registry import register_tts
 

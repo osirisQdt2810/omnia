@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from omnia.core.providers.voice_cache import VoiceCache
+    from omnia.core.providers.tts.voice_cache import VoiceCache
 
 # Resolve the DIRECTORY, not the file: with the per-item-symlink deploy, ``__init__.py`` is a
 # symlink back into the repo's ``src/omnia``. Resolving the file would follow it there (where
@@ -95,7 +95,7 @@ def active_voice_cache() -> VoiceCache:
     """
     if _voice_cache is not None:
         return _voice_cache
-    from omnia.core.providers.voice_cache import CollectionVoiceCache
+    from omnia.core.providers.tts.voice_cache import CollectionVoiceCache
 
     return CollectionVoiceCache()
 

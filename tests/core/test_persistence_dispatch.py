@@ -19,13 +19,13 @@ import pytest
 from omnia.core.config.dispatch import PersistenceDispatcher
 from omnia.core.config.loader import CollectionConfigLoader, TomlConfigLoader
 from omnia.core.providers.tts.base import TTSVoice
+from omnia.core.providers.tts.voice_cache import CollectionVoiceCache, JsonVoiceCache
 from omnia.core.providers.usage import (
     BufferedUsageRecorder,
     CollectionUsageStore,
     JsonUsageRecorder,
     JsonUsageStore,
 )
-from omnia.core.providers.voice_cache import CollectionVoiceCache, JsonVoiceCache
 
 
 class _FakeCol:
