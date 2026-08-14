@@ -106,7 +106,7 @@ _HEADER_PREFIX = "# omnia-user-tool: "
 #: model's annotations through ``sys.modules[cls.__module__].__dict__`` at class-creation time.
 _MODULE_PREFIX = "omnia_user_tool_"
 
-_GENERATION_KINDS = ("text", "image", "tts")
+GENERATION_KINDS = ("text", "image", "tts")
 
 logger = get_logger("smart_notes")
 
@@ -247,13 +247,30 @@ def _parse_header(text: str) -> str:
 
 
 class ImportGuard:
-    """Refuses a user-tool module that reaches outside a small allowlist of imports.
+    """Refuses a user-tool module that reaches outside an allowlist of imports.
 
-    A **speed bump, not a sandbox** (see the module docstring). It exists so the source the user
-    reads is the source that runs: a tool that quietly imported ``urllib.request`` would look
-    like a string transform in the dialog and behave like a network client at review time. The
-    allowlist is everything a note-field transform legitimately needs, plus the Omnia modules
-    the ``Tool`` contract itself requires.
+    A **speed bump, not a sandbox** — and since the allowlist now includes ``os``,
+    ``subprocess`` and the filesystem, it is worth being exact about what that means.
+
+    A user tool is arbitrary Python that runs in Anki's own process. Anki add-ons already have
+    unrestricted Python, and this dialog has always said so ("Everything here runs with the
+    same access as the add-on itself"), so the guard was never the thing standing between a
+    tool and the machine — the mandatory read-and-run review is. Keeping the list narrow while
+    the surrounding reality was wide bought no safety and cost the feature its point: a
+    transform that CONVERTS rather than rewrites cannot be written without touching a file, so
+    the model produced tools that renamed a string and looked like they worked.
+
+    What the guard still buys, and why it is kept:
+
+    * **the source you read is the source that runs.** An import outside the list is refused at
+      load, so a tool cannot quietly grow a capability between the review and the next run;
+    * **the review can be informed.** :func:`risky_operations` reads the same module and names
+      what it reaches for, so the dialog can show "this writes files and runs programs" above
+      the code instead of leaving the reader to spot it.
+
+    What it does NOT buy: containment. A tool that imports ``subprocess`` can do whatever the
+    user running Anki can do. That is the user's decision, taken deliberately, and the reason
+    nothing is saved until the code has been read and test-run.
     """
 
     #: Dotted prefixes a user tool may import. ``"urllib.parse"`` is listed in full: importing
@@ -278,6 +295,24 @@ class ImportGuard:
             "typing",
             "unicodedata",
             "urllib.parse",
+            # --- Files, processes and the media a tool may need to touch --------------------
+            # Opened deliberately (see the class docstring). A transform that CONVERTS rather
+            # than rewrites — pull the audio out of a video, resize a picture — has to reach
+            # the file the note refers to, and everything short of that produced tools that
+            # renamed a string and pretended.
+            "io",
+            "os",
+            "pathlib",
+            "shutil",
+            "subprocess",
+            "tempfile",
+            "wave",
+            "hashlib",
+            "mimetypes",
+            "uuid",
+            # The media folder's location and the audio runtime, so a tool does not have to
+            # guess either.
+            "omnia.core.audio",
             "pydantic",
             "omnia.core.config.base",
             "omnia.core.lang",
@@ -291,9 +326,11 @@ class ImportGuard:
         }
     )
 
-    #: Builtins whose mere presence means the module is doing something a field transform never
-    #: needs. Flagged by NAME only — trivially bypassed, and worth catching anyway because the
-    #: realistic failure here is a model that ignored its instructions, not an attacker.
+    #: Builtins that build and run code from a string. These stay REFUSED even now that the
+    #: filesystem is allowed, and for a different reason: they defeat the one guarantee the
+    #: guard still makes — that the source the user read is the source that runs. ``open`` is
+    #: deliberately not here any more; a tool that converts a file has to open it, and the
+    #: review is told so by :func:`risky_operations`.
     FLAGGED_CALLS: frozenset[str] = frozenset(
         {
             "__import__",
@@ -303,7 +340,6 @@ class ImportGuard:
             "exec",
             "globals",
             "input",
-            "open",
         }
     )
 
@@ -627,6 +663,98 @@ def _reason(exc: Exception) -> str:
     return str(exc) or exc.__class__.__name__
 
 
+#: What a tool reaching for one of these modules is actually able to do, in the reader's terms.
+#: The point is not to scare — it is that "this tool writes files and runs programs" belongs
+#: ABOVE the code, not buried on line 40 of it, now that the import guard permits both.
+_RISK_BY_MODULE: dict[str, str] = {
+    "subprocess": "runs other programs on your computer",
+    # `os.system` and `os.popen` run programs, so this must say so — the model is told
+    # "pathlib, subprocess and the rest are available", which makes os.system(f"ffmpeg …") a
+    # likely generation, and a reviewer who has learned that "runs other programs" is how that
+    # reads would otherwise conclude this tool does not.
+    "os": "reads and changes files and folders, and can run other programs",
+    "shutil": "copies, moves and deletes files",
+    "pathlib": "reads and writes files",
+    "io": "reads and writes files",
+    "tempfile": "creates temporary files",
+    "wave": "reads and writes audio files",
+    "omnia.core.audio": "decodes and re-encodes audio (runs the audio runtime)",
+}
+
+#: What a bare ``open()`` means, kept beside the module map because it is the SAME sentence.
+#: ``open`` is a builtin — no import to walk — and it is precisely the call this guard stopped
+#: refusing, on the grounds that the review would be told instead. A walk that looked only at
+#: imports missed it, so a tool doing `open(dir + "/" + name, "wb")` with no imports at all
+#: raised no banner, and an absent banner affirmatively says "this only reshapes text".
+_OPEN_RISK = "reads and writes files"
+
+
+def risky_operations(code: str) -> list[str]:
+    """Return plain-language descriptions of what ``code`` reaches for, for the review screen.
+
+    The import allowlist stopped being the safety boundary the moment it had to permit ``os``
+    and ``subprocess`` (see :class:`ImportGuard`); the mandatory read-and-run review is. A
+    review is only worth something if the reader knows what to look for, and "spot the
+    subprocess import in forty lines of generated Python" is not a fair ask — especially when
+    the Python was written by a model and is being read once.
+
+    Deliberately import-based rather than clever: a tool that hides its intent defeats a
+    heuristic anyway, and the case that matters here is the honest tool whose reach the reader
+    simply did not notice.
+
+    Known limit worth stating: a tool using ``ctx.audio`` — which the authoring prompt actively
+    recommends — needs no import, so nothing is reported for it. That is the intended reading
+    (the audio runtime is Omnia's own managed process, not the tool reaching out), but it does
+    mean the ``omnia.core.audio`` entry only fires on a direct import of the module.
+
+    Args:
+        code: The module source.
+
+    Returns:
+        Unique descriptions in a stable order; empty when the tool only transforms text.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []  # the guard reports this properly; nothing to describe
+    found: list[str] = []
+
+    def note(risk: str) -> None:
+        if risk and risk not in found:
+            found.append(risk)
+
+    def note_module(name: str) -> None:
+        """Match a dotted import against the map by longest prefix.
+
+        Both directions matter: ``import os`` is the bare key, while
+        ``from omnia.core.audio.sidecar import ...`` has to find the ``omnia.core.audio``
+        entry. Keying only on the first segment would file every ``omnia.*`` import under
+        ``omnia``; keying only on the full name misses the submodule.
+        """
+        parts = (name or "").split(".")
+        for size in range(len(parts), 0, -1):
+            risk = _RISK_BY_MODULE.get(".".join(parts[:size]))
+            if risk:
+                note(risk)
+                return
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                note_module(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            note_module(node.module or "")
+        # The builtin needs no import, so the import walk above cannot see it — and it is the
+        # one call this guard stopped refusing.
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "open"
+        ):
+            note(_OPEN_RISK)
+    return found
+
+
 class ReviewGate:
     """Remembers which exact sources the user has actually TEST-RUN, so Save can require one.
 
@@ -720,11 +848,11 @@ class UserToolTester:
                 the rule could not be built at all, so the tool could never run.
         """
         kinds = sorted(getattr(cls, "kinds", frozenset()))
-        kind = next((k for k in kinds if k in _GENERATION_KINDS), "")
+        kind = next((k for k in kinds if k in GENERATION_KINDS), "")
         if not kind:
             raise UserToolError(
                 "the tool declares no generation kind it can serve — `kinds` must contain "
-                + ", ".join(_GENERATION_KINDS)
+                + ", ".join(GENERATION_KINDS)
             )
         return SmartNotesFieldRule(
             kind=kind,

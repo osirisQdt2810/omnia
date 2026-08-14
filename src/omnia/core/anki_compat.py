@@ -217,6 +217,20 @@ def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str
     return str(col.media.write_data(filename, data))
 
 
+def media_dir(col: Optional[Any] = None) -> str:
+    """Return the collection's media folder — where ``[sound:x.mp3]`` and ``<img>`` resolve.
+
+    A user tool that CONVERTS a file (pull the audio out of a video, resize a picture) has to
+    find the file the note refers to, and a note stores only the bare name. Handing the folder
+    over is what makes the reference resolvable without every tool re-deriving it from the
+    profile path — which is per-platform and would be guessed wrong on the first machine that
+    is not the author's.
+    """
+    if col is None:
+        col = main_window().col
+    return str(col.media.dir())
+
+
 def update_note(note: Any, col: Optional[Any] = None) -> None:
     """Persist edits to ``note`` (must run on the main thread)."""
     if col is None:
@@ -371,16 +385,24 @@ def pick_file(
     title: str = "Select a file",
     file_filter: str = "All files (*)",
     parent: Optional[Any] = None,
+    start_dir: str = "",
 ) -> str:
     """Open a native file picker and return the chosen path ("" if cancelled).
 
-    Main-thread only (called from a pycmd handler). Used by the Keys subtab to browse for a
-    service-account JSON key.
+    Main-thread only (called from a pycmd handler).
+
+    Args:
+        title: The dialog title.
+        file_filter: Qt filter string.
+        parent: Parent widget.
+        start_dir: Where the picker opens. Defaulting this to the collection's media folder is
+            what makes "test my tool against a file already in my collection" one click instead
+            of a hunt through a per-platform profile path the user has never had to know.
     """
     from aqt.qt import QFileDialog
 
     path, _ = QFileDialog.getOpenFileName(
-        parent or main_window(), title, "", file_filter
+        parent or main_window(), title, start_dir, file_filter
     )
     return str(path or "")
 

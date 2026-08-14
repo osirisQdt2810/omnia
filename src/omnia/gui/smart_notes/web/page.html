@@ -285,12 +285,21 @@
         <textarea id="sn-ut-source" class="sn-ut-source" rows="16" spellcheck="false" placeholder="The generated Python appears here in full. You can edit it; testing it again re-arms Save."></textarea>
         <div class="sn-ut-test">
           <div class="sn-native-title">Try it</div>
-          <div class="sn-modal-fields">The sample stands in for the field the tool reads (it is called “Sample”).</div>
-          <textarea id="sn-ut-sample" class="sn-ut-textarea" rows="2" placeholder="[sound:omnia-1234-Audio.mp3]"></textarea>
+          <div class="sn-modal-fields">The sample stands in for the field the tool reads (it is called “Sample”). Type text, or choose a file if the tool reads one.</div>
+          <textarea id="sn-ut-sample" class="sn-ut-textarea" rows="2" placeholder="Some text — or use “Choose file…” for a tool that reads media"></textarea>
           <div class="sn-ut-row">
             <button id="sn-ut-run" class="sn-btn" type="button">▶ Run test</button>
+            <!-- For a tool that reads a FILE, typing a reference by hand only works if that
+                 file is already in the collection — which is exactly what someone testing a
+                 new conversion does not have. This picks any file and makes the reference
+                 resolve for the test. -->
+            <button id="sn-ut-pick" class="sn-btn" type="button" title="Pick a file to test against — it is staged outside your collection, so nothing is added to it or synced">📎 Choose file…</button>
             <span id="sn-ut-testmsg" class="sn-msg"></span>
           </div>
+          <div id="sn-ut-sample-file" class="sn-ut-samplefile" hidden></div>
+          <!-- What the tool reaches for, ABOVE its output and before Save is allowed. Hidden
+               for a tool that only reshapes text, so the banner appearing IS the signal. -->
+          <div id="sn-ut-risks" class="sn-ut-risks" hidden></div>
           <div id="sn-ut-out" class="sn-ut-out" hidden></div>
         </div>
         <div class="sn-ut-row sn-ut-foot">

@@ -25,6 +25,7 @@ Pure logic — no ``aqt``/``anki`` imports, so tools unit-test headless.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
@@ -53,6 +54,39 @@ class ToolError(ProviderError):
     """
 
 
+def resolve_media_dir() -> str:
+    """The collection's media folder, for a :class:`ToolContext` that should have the real one.
+
+    Lives here rather than in ``engine/service.py`` because it is not service-specific: it is
+    how ANY tool context resolves media, and there are two constructors. Having it next to the
+    default it replaces is what stops one of them being wired and the other forgotten — which
+    is exactly what happened, leaving the dialog's Test run with no media folder while
+    generation had one.
+
+    ``anki_compat`` is imported INSIDE the call, so this module stays headless and the
+    collection is touched only when a tool actually asks — on the worker thread, after Anki
+    exists.
+    """
+    from omnia.core import anki_compat
+
+    try:
+        return anki_compat.media_dir()
+    # Broad on purpose: a tool asking where the media lives must get "" and decline cleanly,
+    # not take the field down because the collection was closed mid-run.
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+def _no_media_dir() -> str:
+    """The default :attr:`ToolContext.media_dir`: no collection is reachable.
+
+    Returns "" rather than raising, because the caller a tool makes is
+    ``ctx.media_dir()`` and an empty string is a value it can test — a tool that needs media
+    can decline cleanly instead of dying with an Anki traceback in a headless build or a test.
+    """
+    return ""
+
+
 @dataclass(frozen=True)
 class ToolContext:
     """Everything a tool may touch. Built once per :class:`GenerationService`.
@@ -71,6 +105,12 @@ class ToolContext:
     detector: LanguageDetector
     logger: logging.Logger
     audio: AudioSidecar = field(default_factory=AudioSidecar)
+    #: The collection's media folder, or "" when there is no collection (tests, a headless
+    #: build). A tool that converts a file needs it because a note stores only the bare
+    #: filename; deriving it per-tool would mean guessing a per-platform profile path.
+    #: Callable, not a string, so building a context never touches Anki — the folder is
+    #: resolved on first use, inside the tool, on the worker thread.
+    media_dir: Callable[[], str] = _no_media_dir
 
 
 @dataclass(frozen=True)

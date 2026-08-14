@@ -829,3 +829,91 @@ the wrong field.
   shared picker and pipeline, and still a chain the UI offers but the runtime will not run.
 - **An advisory-only warning in the picker.** Not adopted here, but compatible with this ADR —
   advice in the UI is not a special case in the chain. Worth revisiting.
+
+
+## ADR-013: The import allowlist is not the boundary — the informed review is
+
+**Date**: 2026-08-15
+**Status**: Accepted
+
+### Context
+A user-authored tool is Python the user describes in plain English, an LLM writes, and the user
+reads and test-runs before it is saved to `user_files/tools/`. `ImportGuard` restricted it to a
+small allowlist — no `os`, no `subprocess`, no `pathlib`, and `open` was a flagged call.
+
+That list was presented as a safety boundary, and it was not one. An Anki add-on runs
+unrestricted Python in Anki's own process; Omnia itself can do anything the user can. The Tools
+tab has always said so on screen: *"Everything here runs with the same access as the add-on
+itself, which is why nothing is saved until you have read the code and run it."* The narrow
+list bought no containment while the surrounding reality was wide open.
+
+What it did cost was the feature's point. A transform that CONVERTS rather than rewrites — pull
+the audio out of a video, resize a picture, read a sidecar file — cannot be written without
+touching a file. Asked for one, the model could not comply and could not refuse (the output
+rules demanded a module), so it produced the nearest plausible thing: a tool that renamed
+`".mp4"` to `".mp3"` in a string, created no file, saved cleanly, and wrote a reference to
+something that did not exist.
+
+### Decision
+The allowlist admits the filesystem and process modules (`os`, `subprocess`, `pathlib`,
+`shutil`, `io`, `tempfile`, `wave`, …), and `open` stops being a flagged call.
+
+The guard is kept, with a smaller and honest job:
+
+* **the source you read is the source that runs.** An import outside the list is refused at
+  LOAD, not only at save, so a file edited after review cannot silently gain a capability; and
+  `eval`/`exec`/`compile`/`__import__` stay refused — not for containment, but because building
+  code from a string defeats exactly that guarantee.
+
+The control that replaces it is the **informed review**, which was always the real gate:
+
+* `risky_operations()` reads the module and states what it reaches for in the reader's words —
+  "reads and writes files", "runs other programs on your computer" — rendered above the code.
+* It must arrive **before the code runs**, not after. The review gate requires pressing Run, and
+  Run executes; a summary computed from the test RESULT describes damage already done. So it
+  ships with the source on every path that ends in Run: generate, edit an existing tool, and
+  paste into the editor.
+* A tool that only reshapes text raises nothing, so the banner appearing is itself the signal —
+  which makes an empty banner a positive claim, and any path that leaves it empty over risky
+  code a bug rather than an omission.
+
+A **test run** is treated as more dangerous than a real one, because it executes code the user
+has not finished reviewing. Its `media_dir()` resolves only to a temp stage of copies, never to
+the collection. Testing against a file that IS in the collection stays one click — the picker
+opens there and returns a copy — so a tool that writes over its own input during a test damages
+a copy instead of the user's media.
+
+### Rationale
+A boundary nobody can rely on is worse than no boundary, because it is budgeted for. The
+allowlist looked like containment, so the review looked optional; in fact the review was
+load-bearing and uninformed. Widening the imports and informing the review moves the honesty
+and the protection to the same place.
+
+The alternative shapes were considered and are worse for this codebase: a curated media API
+(`ctx.media.read`/`write`) constrains what the next transform can be, and this is a feature
+whose whole premise is that the next request is unpredictable; a path-confined filesystem is
+real containment but does not survive `subprocess`, which the conversions people ask for
+require.
+
+### Consequences
+**Positive**: the feature can express what users ask it for. The reviewer is told what to look
+for instead of being expected to spot an import on line 3 of forty. A test cannot damage the
+collection.
+
+**Negative, stated plainly**: an approved user tool can do anything the user running Anki can
+do. It can read `~/.ssh`, delete documents, or corrupt the collection — and a corrupted
+collection SYNCS. The mitigations are the mandatory read-and-run review, the pre-run summary,
+and that tools are files on disk in `user_files/` rather than synced config, so approving one
+never executes code on another device.
+
+### Alternatives considered
+- **Keep the allowlist narrow.** Rejected: it contained nothing and blocked the feature.
+- **A curated media API on `ctx`.** Rejected as the primary mechanism: it presumes the shape of
+  transforms nobody has asked for yet. `ctx.audio` remains for the audio runtime specifically,
+  because that is Omnia's own managed process rather than a tool reaching out.
+- **A path-confined filesystem (media folder only, no delete, no overwrite).** Genuinely safer
+  and genuinely flexible, and the right answer if `subprocess` were off the table. It is not:
+  conversion means running a codec.
+- **Refuse the request instead.** What the previous release did, and correct while the
+  capability was absent. Once it exists, refusing is as wrong as inventing.
+

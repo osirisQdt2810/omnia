@@ -29,6 +29,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     GenerationPipeline,
     ToolChainError,
     ToolContext,
+    resolve_media_dir,
 )
 
 if TYPE_CHECKING:
@@ -115,6 +116,10 @@ class GenerationService:
             providers=providers,
             detector=LanguageDetector(enabled=detect_tts_language),
             logger=logger,
+            # Passed as the FUNCTION, not its result: this constructor runs on the Qt main
+            # thread while a tool runs on a worker, and resolving the collection here would
+            # both touch Anki at build time and break every headless test of this service.
+            media_dir=resolve_media_dir,
         )
         self._pipeline = GenerationPipeline(self._ctx)
 

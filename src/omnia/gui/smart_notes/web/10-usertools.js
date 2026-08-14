@@ -35,6 +35,9 @@
   const utRunBtn = document.getElementById("sn-ut-run");
   const utTestMsg = document.getElementById("sn-ut-testmsg");
   const utOutEl = document.getElementById("sn-ut-out");
+  const utRisksEl = document.getElementById("sn-ut-risks");
+  const utPickEl = document.getElementById("sn-ut-pick");
+  const utSampleFileEl = document.getElementById("sn-ut-sample-file");
   const utSaveBtn = document.getElementById("sn-ut-save");
   const utCancelBtn = document.getElementById("sn-ut-cancel");
   const utSaveMsg = document.getElementById("sn-ut-savemsg");
@@ -51,6 +54,13 @@
 
   // Opening the folder is the point: a path the user has to retype into Finder/Explorer is
   // homework, not a location. Qt does the platform difference on the Python side.
+  utPickEl.addEventListener("click", pickSampleFile);
+  // Typing over the reference means the staged file is no longer what is being tested; the
+  // note stops claiming otherwise. The stage itself is cleared by the next pick or on close.
+  utSampleEl.addEventListener("input", function () {
+    utSampleFileEl.hidden = true;
+  });
+
   utOpenEl.addEventListener("click", function () {
     send("user_tool_open_dir", {}, function (res) {
       if (res && res.error) {
@@ -196,6 +206,11 @@
     utSourceEl.value = data.source || "";
     utSampleEl.value = "";
     utOutEl.hidden = true;
+    // The tool's OWN reach, not a blank. Opening an existing tool ends in Run, which executes
+    // it — so an empty banner over `import subprocess` would tell the reader the opposite of
+    // the truth at the one moment it matters.
+    showToolRisks(data.risks || []);
+    utSampleFileEl.hidden = true;
     utOutEl.textContent = "";
     utGenMsg.textContent = "";
     utTestMsg.textContent = "";
@@ -264,6 +279,21 @@
    * @param {string} slug The tool the reply is for.
    * @param {!Object} res {source} or {error}.
    */
+  /** Ask the backend what the CURRENT editor contents reach for (debounced). */
+  let utRiskTimer = null;
+  function refreshRisksFromEditor() {
+    if (utRiskTimer) {
+      clearTimeout(utRiskTimer);
+    }
+    // Debounced: this is a round-trip per keystroke otherwise, and the answer only has to be
+    // right by the time the reader looks up — well before Run.
+    utRiskTimer = setTimeout(function () {
+      send("user_tool_risks", {source: utSourceEl.value}, function (res) {
+        showToolRisks((res && res.risks) || []);
+      });
+    }, 300);
+  }
+
   window.__snUserToolSource = function (slug, res) {
     utGenBtn.disabled = false;
     if (res && res.error) {
@@ -272,6 +302,9 @@
     }
     utGenMsg.textContent = "Written — read it, then run it on a sample.";
     utSourceEl.value = (res && res.source) || "";
+    // Before Run, not after it: pressing Run EXECUTES this code, and the review gate requires
+    // pressing it, so a banner that only appears in the result describes damage already done.
+    showToolRisks((res && res.risks) || []);
     if (!utSlug) {
       utSlug = slug;  // the name is fixed once code has been written for it
       utLabelEl.disabled = true;
@@ -290,6 +323,8 @@
     utRunBtn.disabled = true;
     utTestMsg.textContent = "Running…";
     utOutEl.hidden = true;
+    // The banner is NOT cleared here. It describes the code about to run, and clearing it at
+    // the moment of execution is exactly backwards.
     send(
       "user_tool_test",
       {
@@ -319,18 +354,73 @@
     if (result.error) {
       utTestMsg.textContent = result.error;
       utOutEl.hidden = true;
+      // The banner describes code that did not run; leaving it up attributes the previous
+      // tool's reach to this one.
+      showToolRisks([]);
       return;
     }
     // The tool RAN: the user has now seen what it does, which is what Save waits for — even
     // when what it does is decline or fail.
     utTestedSource = utSourceEl.value;
+    // A tool that reads media declines until a file is staged, and its own message will say
+    // something like "no collection" — true from inside the tool, and unhelpful here, where
+    // the actual fix is one button away. Point at it rather than leaving the user to guess.
+    const needsFile = !result.ok && utSampleFileEl.hidden;
     utTestMsg.textContent = result.ok
       ? "It produced a result."
-      : "It ran, but produced nothing (" + (result.status || "") + ").";
+      : "It ran, but produced nothing (" + (result.status || "") + ")." +
+        (needsFile ? " If it reads a file, pick one with “Choose file…”." : "");
     utOutEl.textContent = result.ok ? result.output : result.detail || "(no detail)";
     utOutEl.hidden = false;
+    showToolRisks(result.risks || []);
     refreshSaveState();
   };
+
+  /**
+   * Choose a file for the sample, and put its Anki reference in the box.
+   *
+   * The chosen file is staged OUTSIDE the collection and the test's media folder points at the
+   * stage, so testing never adds to synced media (see MediaSampleStage). Picking again
+   * replaces the previous file rather than accumulating copies of everything browsed through.
+   */
+  function pickSampleFile() {
+    utTestMsg.textContent = "";
+    send("user_tool_pick_sample", {}, function (res) {
+      const result = res || {};
+      if (result.error) {
+        utTestMsg.textContent = result.error;
+        return;
+      }
+      if (!result.reference) {
+        return;  // cancelled — leave whatever was typed alone
+      }
+      utSampleEl.value = result.reference;
+      utSampleFileEl.textContent =
+        "Testing against " + result.name + " — staged outside your collection.";
+      utSampleFileEl.hidden = false;
+    });
+  }
+
+  /**
+   * Say what this tool reaches for, ABOVE the code, before it is approved.
+   *
+   * A user tool may import `os`, `subprocess` and the filesystem, so the import allowlist is
+   * not the boundary — this review is. That only means something if the reader knows what to
+   * look for, and finding a `subprocess` import on line 3 of forty lines of generated Python,
+   * read once, is not a fair ask. A tool that only reshapes text says nothing at all, so the
+   * banner appearing IS the signal.
+   * @param {!Array<string>} risks Plain-language descriptions from the backend.
+   */
+  function showToolRisks(risks) {
+    if (!risks.length) {
+      utRisksEl.hidden = true;
+      utRisksEl.textContent = "";
+      return;
+    }
+    utRisksEl.textContent =
+      "This tool " + risks.join(", ") + ". Read it before you save it.";
+    utRisksEl.hidden = false;
+  }
 
   /** Persist the reviewed + tested source as a file on this computer. */
   function saveUserTool() {
@@ -415,7 +505,12 @@
   });
   utLabelEl.addEventListener("input", refreshUserToolSlug);
   utGenBtn.addEventListener("click", generateUserTool);
-  utSourceEl.addEventListener("input", refreshSaveState);
+  utSourceEl.addEventListener("input", function () {
+    refreshSaveState();
+    // Pasting a different tool over this one changes what will run; the banner has to follow
+    // the text in the box rather than whatever arrived with it.
+    refreshRisksFromEditor();
+  });
   utRunBtn.addEventListener("click", runUserToolTest);
   utSaveBtn.addEventListener("click", saveUserTool);
   utCancelBtn.addEventListener("click", function () {

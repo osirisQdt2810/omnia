@@ -21,6 +21,7 @@ from omnia.plugins.smart_notes.engine.tools.base import (
     ToolError,
     ToolOutcome,
     ToolRequest,
+    resolve_media_dir,
 )
 from omnia.plugins.smart_notes.engine.tools.cloze import (
     ClozeParams,
@@ -57,6 +58,7 @@ from omnia.plugins.smart_notes.engine.tools.registry import (
     unregister_tool,
 )
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
+    GENERATION_KINDS,
     USER_TOOL_PREFIX,
     ImportGuard,
     ReviewGate,
@@ -68,12 +70,14 @@ from omnia.plugins.smart_notes.engine.tools.user_tools import (
     UserToolStore,
     UserToolTester,
     is_user_tool,
+    risky_operations,
     slugify,
     user_tool_name,
     validate_slug,
 )
 
 __all__ = [
+    "GENERATION_KINDS",
     "TOOL_REGISTRY",
     "USER_TOOL_PREFIX",
     "AiTool",
@@ -117,7 +121,9 @@ __all__ = [
     "is_user_tool",
     "register_tool",
     "registered_tools",
+    "resolve_media_dir",
     "resolve_tool",
+    "risky_operations",
     "slugify",
     "summarize_attempts",
     "tool_referenced_fields",

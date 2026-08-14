@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from omnia import addon_user_files_dir
@@ -40,9 +41,14 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolTester,
     is_user_tool,
     registered_tools,
+    risky_operations,
     slugify,
     user_tool_name,
     validate_slug,
+)
+from omnia.plugins.smart_notes.engine.tools.media_sample import (
+    MediaSampleStage,
+    media_reference,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +79,9 @@ class UserToolsController:
             else UserToolLoader(UserToolStore(addon_user_files_dir() / "tools"))
         )
         self._gate = ReviewGate()
+        # Session-scoped, like the gate: closing the dialog disposes it, so a browsed file
+        # never outlives the dialog that staged it.
+        self._sample_stage = MediaSampleStage()
         self._tester = UserToolTester()
 
     def ops(self) -> dict[str, Callable[..., Any]]:
@@ -84,7 +93,66 @@ class UserToolsController:
             "user_tool_save": self.on_save,
             "user_tool_delete": self.on_delete,
             "user_tool_open_dir": self.on_open_dir,
+            "user_tool_pick_sample": self.on_pick_sample,
+            "user_tool_risks": self.on_risks,
         }
+
+    def on_risks(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Return what the CURRENT editor contents reach for.
+
+        The source box is editable and paste-able, so the summary shipped with a tool goes
+        stale the moment it is changed. Cheap enough to recompute on a debounce: it is one AST
+        parse of a file a human is expected to read.
+        """
+        return {"risks": risky_operations(str(data.get("source", "")))}
+
+    def dispose(self) -> None:
+        """Drop anything this controller staged. Called when the dialog closes.
+
+        Must not raise: it runs from ``closeEvent``, where an exception would stop the dialog
+        closing over a temp file nobody can see.
+        """
+        try:
+            self._sample_stage.dispose()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("smart_notes: could not clean up the sample stage")
+
+    def on_pick_sample(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Let the user choose a FILE as the test sample, and return the reference to paste.
+
+        A tool that reads media needs a sample that resolves like a real note's does: the field
+        holds a reference, and the file sits where ``ctx.media_dir()`` points. Typing
+        ``[sound:x.mp3]`` by hand only works if x.mp3 is already in the collection, which is
+        exactly the case a user testing a NEW conversion does not have.
+
+        The picker opens in the collection's media folder — where the interesting files already
+        are — but accepts a file from anywhere. Whatever is chosen is staged OUTSIDE the
+        collection (see :class:`~omnia.plugins.smart_notes.engine.tools.media_sample.MediaSampleStage`
+        for why a test must not add to synced media), and the test context is pointed at the
+        stage.
+
+        Returns:
+            ``{"reference": "<what to put in the sample box>", "name": "<file name>"}``, or
+            ``{}`` when the user cancelled, or ``{"error": …}`` when the file cannot be staged.
+        """
+        start = ""
+        try:
+            start = anki_compat.media_dir()
+        except Exception:  # pragma: no cover - no collection is not an error here
+            logger.debug("smart_notes: no media folder to start the picker in")
+        path = anki_compat.pick_file(
+            title="Choose a file for the test sample", start_dir=start
+        )
+        if not path:
+            return {}
+        try:
+            name = self._sample_stage.stage(Path(path))
+        # Broad at the UI boundary: an unreadable file, a full disk and a permissions problem
+        # all mean the same thing to the user, and none may take the tab down.
+        except Exception as exc:
+            logger.exception("smart_notes: could not stage the sample file %r", path)
+            return {"error": f"Could not use that file ({exc})."}
+        return {"reference": media_reference(name), "name": name}
 
     def on_open_dir(self, _data: dict[str, Any]) -> dict[str, Any]:
         """Open the tools folder in the OS file manager.
@@ -147,6 +215,12 @@ class UserToolsController:
                     "name": source.name,
                     "prompt": source.prompt,
                     "source": source.code,
+                    # Shipped with the source so opening an EXISTING tool for review shows its
+                    # reach immediately. Without it the banner was empty over `import
+                    # subprocess` — and an empty banner affirmatively means "only reshapes
+                    # text", which is the opposite of true. The edit path ends in Run, which
+                    # EXECUTES, so this is the same before-the-code-runs rule as generate.
+                    "risks": risky_operations(source.code),
                     "error": "" if load is None else load.error,
                     **self._described(source.name),
                 }
@@ -324,7 +398,31 @@ class UserToolsController:
             providers=self._ctx.build_hub(),
             detector=LanguageDetector(enabled=False),
             logger=logger,
+            # The SAME resolver generation uses. Without it a tool that reads media declined
+            # on every Test — on a machine with the collection wide open — and the gate still
+            # marked it tested, so Save unlocked for a tool the user never saw do its job.
+            # The STAGE when the user picked a file, the real collection otherwise. This is
+            # what lets a tool resolve `[sound:x]` for a file that is not in the collection —
+            # without a test writing anything into synced media.
+            media_dir=self._sample_media_dir,
         )
+
+    def _sample_media_dir(self) -> str:
+        """Where a TEST run resolves media — the stage, and never the live collection.
+
+        A test executes arbitrary code that may now open files for writing, so pointing it at
+        the real media folder makes Run itself destructive: a tool that writes its output back
+        over its input truncates the user's own file, and the review gate REQUIRES pressing
+        Run. The blast radius of a mistake has to be a temp copy.
+
+        Testing against a file that IS in the collection still works, and is one click: the
+        picker opens in the media folder, and what it returns is a COPY in the stage. Nothing
+        the tool does can reach the original.
+
+        Returns "" until something is staged, which a tool reading media treats as "no
+        collection" and declines on — the same contract as a headless build.
+        """
+        return self._sample_stage.directory
 
     @staticmethod
     def _described(name: str) -> dict[str, Any]:
@@ -358,7 +456,15 @@ class UserToolsController:
 
     def _push_source(self, slug: str, *, source: str = "", error: str = "") -> None:
         """Send a generated tool source to ``window.__snUserToolSource`` (main thread)."""
-        result: dict[str, Any] = {"error": error} if error else {"source": source}
+        # The risks travel WITH the source. Computing them only after a test run put the
+        # warning after the moment of risk: the user must press Run to satisfy the review gate,
+        # so "this runs other programs on your computer" arriving in the Run RESULT is a
+        # warning about something that already happened.
+        result: dict[str, Any] = (
+            {"error": error}
+            if error
+            else {"source": source, "risks": risky_operations(source)}
+        )
         self._ctx.eval_js(
             f"window.__snUserToolSource({json.dumps(slug)}, {json.dumps(result)});"
         )
@@ -386,6 +492,11 @@ class UserToolsController:
                 "status": result.status,
                 "output": result.output,
                 "detail": result.detail,
+                # What this tool reaches for, in the reader's words. The import allowlist is no
+                # longer the boundary — this review is — and a review is only worth something
+                # if the reader is told what to look for. Spotting a subprocess import on line
+                # 3 of forty lines of generated Python, read once, is not a fair ask.
+                "risks": risky_operations(code),
             }
         self._ctx.eval_js(
             f"window.__snUserToolTested({json.dumps(slug)}, {json.dumps(payload)});"
