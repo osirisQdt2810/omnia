@@ -37,6 +37,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from common import enable_utf8_output
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ADDON_DIR = REPO_ROOT / "src" / "omnia"
 ADDON_FOLDER_NAME = "omnia"  # dev folder name inside addons21/
@@ -172,6 +174,7 @@ def install(copy: bool = False, target: Path | None = None) -> Path:
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--copy",

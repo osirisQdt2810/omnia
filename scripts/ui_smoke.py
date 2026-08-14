@@ -17,6 +17,11 @@ import traceback
 from pathlib import Path
 from types import SimpleNamespace
 
+from common import enable_utf8_output
+
+# A top-level script with no __main__ guard, so arm the console before the first print.
+enable_utf8_output()
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 

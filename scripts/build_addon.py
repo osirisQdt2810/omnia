@@ -23,6 +23,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+from common import enable_utf8_output
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ADDON_DIR = REPO_ROOT / "src" / "omnia"
 VENDOR_DIR = REPO_ROOT / "vendor"
@@ -111,4 +113,5 @@ def build() -> Path:
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     build()

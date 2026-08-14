@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from common import enable_utf8_output
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VENDOR_DIR = REPO_ROOT / "vendor"
 UNIVERSAL_DIR = VENDOR_DIR / "universal"
@@ -82,4 +84,5 @@ def vendor() -> None:
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     vendor()
