@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from omnia.core.lang.word_forms import (
     DEFAULT_DEINFLECTOR,
     Deinflector,
@@ -48,10 +50,17 @@ class TestWordVariants:
         assert "quick" in word_variants("quickly")
         assert "go" in word_variants("goes")
 
-    def test_short_words_are_left_alone(self):
-        # Stripping "as" -> "a" would match half the collection.
+    def test_short_words_are_left_alone_by_the_suffix_rules(self):
+        # The length guard exists because stripping "as" -> "a" would match half the
+        # collection. It still does that job — but it only ever protected against GUESSING.
         assert word_variants("as") == ("as",)
-        assert word_variants("is") == ("is",)
+        assert word_variants("us") == ("us",)
+
+    def test_a_short_word_the_table_actually_knows_is_still_resolved(self):
+        # Changed deliberately (was: `word_variants("is") == ("is",)`). "is" -> "be" is not a
+        # guess, it is an entry in the irregular table, so the length guard has nothing to
+        # protect against; and a learner's "be" card SHOULD match the "is" in its example.
+        assert word_variants("is") == ("is", "be")
 
     def test_uninflected_word_yields_just_itself(self):
         assert word_variants("level") == ("level",)
@@ -150,3 +159,64 @@ class TestWordsBoundaryPattern:
         pattern = re.compile(words_boundary_pattern(word_variants("running")))
         assert pattern.search("He was running late")
         assert pattern.search("I run every day")
+
+
+class TestIrregularForms:
+    """The closed set of English forms no suffix rule can reach.
+
+    "ran" shares no ending with "run", so before this table a vocabulary deck's example
+    sentence — which is exactly where the inflected form lives — never matched its headword.
+    """
+
+    @pytest.mark.parametrize(
+        ("inflected", "base"),
+        [
+            ("ran", "run"),
+            ("ate", "eat"),
+            ("went", "go"),
+            ("bought", "buy"),
+            ("children", "child"),
+            ("mice", "mouse"),
+            ("better", "good"),
+            ("worst", "bad"),
+            ("was", "be"),
+            ("criteria", "criterion"),
+        ],
+    )
+    def test_an_irregular_form_offers_its_base(self, inflected, base):
+        assert base in word_variants(inflected)
+
+    def test_short_irregulars_survive_the_length_guard(self):
+        # min_inflected exists to stop the SUFFIX rules mangling short words; an exact table
+        # needs no such protection, and English's shortest words are its most irregular.
+        for short in ("ran", "ate", "saw", "men", "was", "did"):
+            assert len(short) < 4
+            assert len(word_variants(short)) > 1, short
+
+    def test_an_ambiguous_form_keeps_itself_and_widens(self):
+        # "saw" is the past of "see" AND a tool; "left" is the past of "leave" AND a direction.
+        # The word itself always stays first, so the table widens a search, never redirects it.
+        assert word_variants("saw")[0] == "saw"
+        assert "see" in word_variants("saw")
+        assert word_variants("left")[0] == "left"
+        assert "leave" in word_variants("left")
+
+    def test_a_form_that_is_both_irregular_and_regular_offers_both(self):
+        # "leaves" is the plural of "leaf" and the third person of "leave".
+        variants = word_variants("leaves")
+        assert "leaf" in variants and "leave" in variants
+
+    def test_the_table_is_read_only(self):
+        from omnia.core.lang.word_forms import DEFAULT_DEINFLECTOR
+
+        with pytest.raises(TypeError):
+            DEFAULT_DEINFLECTOR.irregular["ran"] = ("walk",)  # type: ignore[index]
+
+    def test_every_entry_maps_to_a_plausible_base(self):
+        from omnia.core.lang.word_forms import _IRREGULAR
+
+        for inflected, bases in _IRREGULAR.items():
+            assert inflected == inflected.lower().strip(), inflected
+            assert bases, inflected
+            for base in bases:
+                assert base and base == base.lower().strip(), (inflected, base)
