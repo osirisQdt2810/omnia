@@ -35,6 +35,7 @@
   const utRunBtn = document.getElementById("sn-ut-run");
   const utTestMsg = document.getElementById("sn-ut-testmsg");
   const utOutEl = document.getElementById("sn-ut-out");
+  const utRisksEl = document.getElementById("sn-ut-risks");
   const utSaveBtn = document.getElementById("sn-ut-save");
   const utCancelBtn = document.getElementById("sn-ut-cancel");
   const utSaveMsg = document.getElementById("sn-ut-savemsg");
@@ -329,8 +330,30 @@
       : "It ran, but produced nothing (" + (result.status || "") + ").";
     utOutEl.textContent = result.ok ? result.output : result.detail || "(no detail)";
     utOutEl.hidden = false;
+    showToolRisks(result.risks || []);
     refreshSaveState();
   };
+
+  /**
+   * Say what this tool reaches for, ABOVE the code, before it is approved.
+   *
+   * A user tool may import `os`, `subprocess` and the filesystem, so the import allowlist is
+   * not the boundary — this review is. That only means something if the reader knows what to
+   * look for, and finding a `subprocess` import on line 3 of forty lines of generated Python,
+   * read once, is not a fair ask. A tool that only reshapes text says nothing at all, so the
+   * banner appearing IS the signal.
+   * @param {!Array<string>} risks Plain-language descriptions from the backend.
+   */
+  function showToolRisks(risks) {
+    if (!risks.length) {
+      utRisksEl.hidden = true;
+      utRisksEl.textContent = "";
+      return;
+    }
+    utRisksEl.textContent =
+      "This tool " + risks.join(", ") + ". Read it before you save it.";
+    utRisksEl.hidden = false;
+  }
 
   /** Persist the reviewed + tested source as a file on this computer. */
   function saveUserTool() {

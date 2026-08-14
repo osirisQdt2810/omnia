@@ -21,6 +21,7 @@ from omnia.plugins.smart_notes.engine.tools.base import (
     ToolError,
     ToolOutcome,
     ToolRequest,
+    resolve_media_dir,
 )
 from omnia.plugins.smart_notes.engine.tools.cloze import (
     ClozeParams,
@@ -118,6 +119,7 @@ __all__ = [
     "is_user_tool",
     "register_tool",
     "registered_tools",
+    "resolve_media_dir",
     "resolve_tool",
     "risky_operations",
     "slugify",

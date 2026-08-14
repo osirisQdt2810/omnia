@@ -288,6 +288,71 @@ class TestPersistence:
         assert result.get("ok") is None
 
 
+class TestTheTestRunIsRepresentative:
+    """The dialog's Test must give a tool the same context generation will.
+
+    Two constructors build a ToolContext. Wiring one and forgetting the other meant a tool that
+    reads media declined on every Test — on a machine with the collection wide open — and the
+    gate marks a decline as "seen", so Save unlocked for a tool the user had never watched do
+    its job. The end-to-end check that missed this drove UserToolLoader directly; this drives
+    the dialog.
+    """
+
+    def test_the_test_context_resolves_the_media_folder(self, controller, monkeypatch):
+        ctrl, _ctx, _pushed = controller
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.media_dir", lambda col=None: "/collection/media"
+        )
+
+        assert ctrl._tool_context().media_dir() == "/collection/media"
+
+    def test_both_context_builders_use_the_same_resolver(self):
+        # One resolver, so neither site can drift from the other again.
+        import omnia.gui.smart_notes.dialogs.controllers.user_tools as gui
+        import omnia.plugins.smart_notes.engine.service as service
+        from omnia.plugins.smart_notes.engine.tools import resolve_media_dir
+
+        assert gui.resolve_media_dir is resolve_media_dir
+        assert service.resolve_media_dir is resolve_media_dir
+
+
+class TestTheReviewIsToldWhatTheToolReaches:
+    """The control that JUSTIFIES widening the allowlist has to actually ship.
+
+    `risky_operations` was written as the compensating control for permitting os/subprocess —
+    and for dropping `open` from the flagged calls — but nothing called it. The guard was
+    loosened and the mitigation was not delivered: the review screen rendered exactly what it
+    rendered before.
+    """
+
+    def test_a_file_touching_tool_says_so_in_the_payload(self, controller):
+        ctrl, _ctx, pushed = controller
+        source = _TOOL_SOURCE.replace(
+            "from typing import ClassVar",
+            "import subprocess\nfrom pathlib import Path\nfrom typing import ClassVar",
+        )
+        assert "import subprocess" in source  # the substitution really happened
+
+        _test_run(controller, source)
+
+        payload = json.loads(
+            pushed[-1].split("(", 1)[1].rsplit(");", 1)[0].split(", ", 1)[1]
+        )
+        assert "reads and writes files" in payload["risks"]
+        assert "runs other programs on your computer" in payload["risks"]
+
+    def test_a_text_only_tool_reports_no_risks(self, controller):
+        # The banner appearing IS the signal, so a plain transform must not raise one.
+        ctrl, _ctx, pushed = controller
+
+        _test_run(controller)
+
+        payload = json.loads(
+            pushed[-1].split("(", 1)[1].rsplit(");", 1)[0].split(", ", 1)[1]
+        )
+        assert payload["risks"] == []
+
+
 class TestTheToolsFolderIsNeverHardcoded:
     """Where the tools live is derived, never written down — and shown as such.
 

@@ -54,6 +54,29 @@ class ToolError(ProviderError):
     """
 
 
+def resolve_media_dir() -> str:
+    """The collection's media folder, for a :class:`ToolContext` that should have the real one.
+
+    Lives here rather than in ``engine/service.py`` because it is not service-specific: it is
+    how ANY tool context resolves media, and there are two constructors. Having it next to the
+    default it replaces is what stops one of them being wired and the other forgotten — which
+    is exactly what happened, leaving the dialog's Test run with no media folder while
+    generation had one.
+
+    ``anki_compat`` is imported INSIDE the call, so this module stays headless and the
+    collection is touched only when a tool actually asks — on the worker thread, after Anki
+    exists.
+    """
+    from omnia.core import anki_compat
+
+    try:
+        return anki_compat.media_dir()
+    # Broad on purpose: a tool asking where the media lives must get "" and decline cleanly,
+    # not take the field down because the collection was closed mid-run.
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
 def _no_media_dir() -> str:
     """The default :attr:`ToolContext.media_dir`: no collection is reachable.
 

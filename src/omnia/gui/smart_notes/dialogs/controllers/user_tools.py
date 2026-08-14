@@ -40,6 +40,8 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolTester,
     is_user_tool,
     registered_tools,
+    resolve_media_dir,
+    risky_operations,
     slugify,
     user_tool_name,
     validate_slug,
@@ -324,6 +326,10 @@ class UserToolsController:
             providers=self._ctx.build_hub(),
             detector=LanguageDetector(enabled=False),
             logger=logger,
+            # The SAME resolver generation uses. Without it a tool that reads media declined
+            # on every Test — on a machine with the collection wide open — and the gate still
+            # marked it tested, so Save unlocked for a tool the user never saw do its job.
+            media_dir=resolve_media_dir,
         )
 
     @staticmethod
@@ -386,6 +392,11 @@ class UserToolsController:
                 "status": result.status,
                 "output": result.output,
                 "detail": result.detail,
+                # What this tool reaches for, in the reader's words. The import allowlist is no
+                # longer the boundary — this review is — and a review is only worth something
+                # if the reader is told what to look for. Spotting a subprocess import on line
+                # 3 of forty lines of generated Python, read once, is not a fair ask.
+                "risks": risky_operations(code),
             }
         self._ctx.eval_js(
             f"window.__snUserToolTested({json.dumps(slug)}, {json.dumps(payload)});"
