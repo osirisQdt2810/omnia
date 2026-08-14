@@ -48,7 +48,9 @@ Python through the WebDialog bridge with these ops:
 
 The Provider/Model/Voice dropdowns are driven by a catalog baked into ``window.__SN_CATALOG``
 (see :func:`~omnia.core.providers.catalog.catalog_payload`); the ``load`` response's
-``providers`` list is kept for back-compat but the page no longer needs it.
+``providers`` list is kept for back-compat but the page no longer needs it. The per-row Tools
+picker is baked the same way, into ``window.__SN_TOOLS`` (see
+:func:`~omnia.plugins.smart_notes.engine.tools.registry.tools_catalog`).
 
 This module imports only pure data (the config models + the provider catalog); nothing from
 ``aqt``/``anki``.
@@ -64,6 +66,7 @@ from omnia.core.providers.catalog import catalog_payload
 from omnia.gui.assets import read_asset, read_assets
 from omnia.plugins.smart_notes.config import (
     FieldDep,
+    FieldToolConfig,
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
@@ -101,6 +104,7 @@ _PAGE_JS_PARTS = [
     "05-handlers.js",
     "06-graph.js",
     "08-genpreview.js",
+    "09-tools.js",
     "07-init.js",
 ]
 
@@ -264,15 +268,15 @@ def field_configs_from_payload(
 
     Each dict carries the row's editable state (``field``, ``enabled``, ``type``, ``prompt``,
     ``prompt_locked``, ``provider``, ``model``, ``voice``, ``language``, ``overwrite``,
-    ``depends_on``). A row with no ``field`` name is skipped; an invalid ``type`` falls back to
-    ``"text"`` so a malformed payload can't raise during validation.
+    ``depends_on``, ``tools``). A row with no ``field`` name is skipped; an invalid ``type``
+    falls back to ``"text"`` so a malformed payload can't raise during validation.
 
-    ``stored`` is the note type's CURRENTLY PERSISTED rows. The payload can only carry what the
-    table renders, so rebuilding a row from it alone would delete the state it cannot render —
-    today the ``tools`` chain (no tools column exists yet), which a newer release or another
-    device may already have configured. Passing the stored rows carries that state across a
-    save; omitting them (the graph/preview callers, which never persist) simply yields the
-    default empty chain.
+    ``stored`` is the note type's CURRENTLY PERSISTED rows, and it stays load-bearing even now
+    that the table renders a tools column: the payload wins ONLY when it actually carries a
+    ``tools`` key. A caller that posts rows without one (an older page, a partial payload) must
+    keep the stored chain rather than clear it — otherwise "clear this row's chain" and "never
+    rendered a chain" would be the same message. Omitting ``stored`` (the graph/preview
+    callers, which never persist) simply yields the default empty chain.
 
     Args:
         rows: The row dicts posted from the page.
@@ -304,14 +308,67 @@ def field_configs_from_payload(
                 language=str(row.get("language", "")),
                 overwrite=bool(row.get("overwrite", False)),
                 depends_on=_deps_from_payload(row.get("depends_on", [])),
-                # The page has no tools column yet, so the payload never carries a chain: keep
-                # the stored one rather than silently dropping it. When the picker lands, this
-                # is the sync point that parses the posted chain (tolerantly, as
-                # ``_deps_from_payload`` does) and falls back to this same stored value.
-                tools=list(previous.tools) if previous is not None else [],
+                tools=_tools_for_row(row, previous),
             )
         )
     return configs
+
+
+def _tools_for_row(
+    row: dict[str, object], previous: SmartNotesFieldConfig | None
+) -> list[FieldToolConfig]:
+    """Resolve one row's tool chain: the POSTED one when the payload carries it, else the stored.
+
+    The distinction matters both ways round. A page that renders the picker posts ``tools`` on
+    every row, so an empty list there is a real "this row has no chain" and must be persisted.
+    A payload with no ``tools`` key at all never rendered one, so the stored chain — possibly
+    written by a newer release, or on another device — is carried forward untouched.
+
+    Args:
+        row: The posted row dict.
+        previous: The row's persisted counterpart, or None when it has none.
+
+    Returns:
+        The chain to persist for this row.
+    """
+    posted = row.get("tools")
+    if posted is None:
+        return list(previous.tools) if previous is not None else []
+    return _tools_from_payload(posted)
+
+
+def _tools_from_payload(tools: object) -> list[FieldToolConfig]:
+    """Build a row's ordered tool chain from its posted ``tools`` list.
+
+    Tolerant in the same way as :func:`_deps_from_payload`: each entry is ``{tool, params}``;
+    an entry that is not a dict, or that names no tool, is dropped, and non-dict ``params``
+    degrade to ``{}`` — a malformed payload must never raise during validation. A tool NAME
+    this build does not know is deliberately kept verbatim (it may be a user tool authored on
+    another device); the pipeline degrades an unresolvable name to ``unknown_tool`` and tries
+    the next tool, so preserving it is what lets the chain survive the round trip home.
+
+    Args:
+        tools: The ``tools`` value posted from the page (expected: a list of dicts).
+
+    Returns:
+        The chain entries, in posted order.
+    """
+    result: list[FieldToolConfig] = []
+    if not isinstance(tools, list):
+        return result
+    for entry in tools:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("tool", "")).strip()
+        if not name:
+            continue
+        params = entry.get("params")
+        result.append(
+            FieldToolConfig(
+                tool=name, params=dict(params) if isinstance(params, dict) else {}
+            )
+        )
+    return result
 
 
 def _deps_from_payload(deps: object) -> list[FieldDep]:
@@ -407,6 +464,11 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
         "depends_on": [
             {"field": dep.field, "kind": dep.kind, "auto": dep.auto}
             for dep in row.depends_on
+        ],
+        # The ordered tool chain the Tools picker edits. Params are copied so the page can
+        # never alias (and mutate) the loaded config.
+        "tools": [
+            {"tool": entry.tool, "params": dict(entry.params)} for entry in row.tools
         ],
     }
 
@@ -574,6 +636,7 @@ def build_smart_notes_html(
     dark: bool,
     init: dict[str, object] | None = None,
     catalog: dict[str, object] | None = None,
+    tools: list[dict[str, object]] | None = None,
 ) -> str:
     """Build the full Smart Notes config page HTML, with the initial data baked in.
 
@@ -591,6 +654,12 @@ def build_smart_notes_html(
             initially-selected note type. None/empty falls back to a JS ``list_note_types``.
         catalog: The provider/model/voice catalog (``window.__SN_CATALOG``). Defaults to the
             real :func:`~omnia.core.providers.catalog.catalog_payload`.
+        tools: The generation-tools catalog (``window.__SN_TOOLS``), from
+            :func:`~omnia.plugins.smart_notes.engine.tools.registry.tools_catalog`, so the row
+            Tools picker paints without a ``pycmd`` round-trip. Unlike ``catalog`` it has no
+            default: building it needs a live ``ToolContext`` (a provider hub + the language
+            detector), which a pure HTML builder must not construct — the dialog passes it in.
+            Absent, the picker renders its "no tools available" state.
 
     Returns:
         A complete, self-contained HTML document string.
@@ -603,6 +672,7 @@ def build_smart_notes_html(
         catalog_json=_script_safe(
             json.dumps(catalog if catalog is not None else catalog_payload())
         ),
+        tools_json=_script_safe(json.dumps(tools or [])),
         js=read_assets(__file__, "web", names=_PAGE_JS_PARTS),
     )
 

@@ -223,26 +223,30 @@ class AuthoringController:
 
         Lets the user test a prompt before saving; the result returns through
         ``window.__snPreviewResult``.
+
+        The rule is built by the SAME compiler the engine uses
+        (:func:`~omnia.plugins.smart_notes.engine.rules.compile_field_rule`, via
+        :func:`~omnia.gui.smart_notes.html.field_configs_from_payload`) rather than field-by-field
+        here. That is what keeps the preview honest as the row grows state: it inherits the
+        posted TOOL CHAIN (a row configured "cloze → ai" previews cloze first, and costs nothing
+        when cloze produces), the base field, and the empty-prompt→base-field source fallback,
+        with no second place for those rules to drift.
         """
-        from omnia.plugins.smart_notes.config import SmartNotesFieldRule
-        from omnia.plugins.smart_notes.engine import GenerationService
+        from omnia.gui.smart_notes.html import field_configs_from_payload
+        from omnia.plugins.smart_notes.engine import (
+            GenerationService,
+            compile_field_rule,
+        )
 
         note_type = str(data.get("note_type", ""))
         base_field = str(data.get("base_field", ""))
         field = str(data.get("field", ""))
-        kind = str(data.get("type", "text"))
-        prompt = str(data.get("prompt", ""))
-        rule = SmartNotesFieldRule(
-            note_type=note_type,
-            # Mirror compile_note_type_rules: with no prompt the base field is the source.
-            source_field="" if prompt else base_field,
-            target_field=field,
-            kind=kind,
-            prompt=prompt,
-            provider=str(data.get("provider", "")),
-            model=str(data.get("model", "")),
-            voice=str(data.get("voice", "")),
-            language=str(data.get("language", "")),
+        rows = field_configs_from_payload([data])
+        if not rows:
+            self._push_preview(field, error="Pick a field to preview first.")
+            return
+        rule = compile_field_rule(rows[0], base_field).copy(
+            update={"note_type": note_type}
         )
         fields = self._preview_fields(note_type, base_field)
         # The input fields (+ sample values) this preview reads, so the result shows WHAT it ran
@@ -272,17 +276,24 @@ class AuthoringController:
         when there is no prompt), paired with their sample values from :meth:`_preview_fields`.
 
         Reuses :func:`rule_source_fields` (the same "what does this field read" util the graph and
-        ordering use) so the shown inputs exactly match the real dependency set. Values are looked
-        up case-insensitively (Anki field names are) and truncated.
+        ordering use) so the shown inputs exactly match the real dependency set. A promptless
+        field is the one case where the two differ: its base-field source is deliberately NOT a
+        dependency (the base is always present), but generation does read it — so it is added back
+        here, or the preview would claim to have run on nothing. Values are looked up
+        case-insensitively (Anki field names are) and truncated.
         """
         from omnia.plugins.smart_notes.engine.rules import rule_source_fields
 
         lower = {name.strip().lower(): value for name, value in fields.items()}
         out: list[dict[str, str]] = []
         seen: set[str] = set()
-        for name in rule_source_fields(rule):
+        sources = rule_source_fields(rule) or (
+            [rule.source_field] if rule.source_field else []
+        )
+        for name in sources:
             key = name.strip().lower()
-            if key in seen:  # a prompt may reference the same field twice — show it once
+            # A prompt may reference the same field twice — show it once.
+            if key in seen:
                 continue
             seen.add(key)
             value = fields.get(name)

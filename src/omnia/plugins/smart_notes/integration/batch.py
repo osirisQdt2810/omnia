@@ -74,6 +74,14 @@ class BatchSummary:
     # Per-field generation errors across all notes (a single field raising), distinct from
     # ``failed`` (a whole note that could not be processed/written at all).
     field_failures: int = 0
+    # Fields whose tool chain ran to the end and produced nothing WITHOUT anything breaking —
+    # every tool simply declined. Counted apart from ``field_failures`` because nothing is
+    # wrong: there was just nothing to make (a cloze whose word isn't in the sentence).
+    unfilled: int = 0
+    # Fields a NON-FIRST tool produced, i.e. the chain fell back. A deterministic first tool
+    # that quietly stops matching would otherwise push every field to the (paid) LLM with no
+    # sign of it anywhere but the log.
+    tool_fallbacks: int = 0
     cancelled: bool = False
 
     def message(self) -> str:
@@ -92,6 +100,10 @@ class BatchSummary:
             parts.append(f"{self.blocked} blocked — missing prerequisites{suffix}")
         if self.field_failures:
             parts.append(f"{self.field_failures} field error(s)")
+        if self.unfilled:
+            parts.append(f"{self.unfilled} field(s) had no applicable tool")
+        if self.tool_fallbacks:
+            parts.append(f"{self.tool_fallbacks} field(s) fell back to a later tool")
         prefix = "Cancelled — " if self.cancelled else ""
         return prefix + ", ".join(parts) + "."
 
@@ -108,6 +120,10 @@ class _NoteOutcome:
     blocked_examples: list[str] = field(default_factory=list)
     # Count of this note's fields whose generation raised and was isolated (siblings still ran).
     field_failures: int = 0
+    # Count of this note's fields whose chain declined all the way through (nothing broke).
+    unfilled: int = 0
+    # Count of this note's fields a non-first tool in the chain produced.
+    tool_fallbacks: int = 0
     failed: bool = False
 
 
@@ -253,7 +269,13 @@ class BatchGenerator:
                     f"{item.target_field} needs {', '.join(item.missing)}"
                     for item in blocked[:_MAX_BLOCKED_EXAMPLES]
                 ],
-                field_failures=len(failed),
+                # A chain that ended empty-handed is only an ERROR when a tool actually broke;
+                # "every tool declined" is its own, blameless outcome.
+                field_failures=sum(1 for item in failed if item.kind == "error"),
+                unfilled=sum(1 for item in failed if item.kind != "error"),
+                tool_fallbacks=sum(
+                    1 for rule, result in results if _fell_back(rule, result)
+                ),
             )
         except Exception:  # one bad note must not abort the rest of the batch
             logger.exception("smart_notes: failed to generate note %s", plan.nid)
@@ -274,10 +296,16 @@ class BatchGenerator:
                 ):
                     summary.blocked_examples.append(example)
             summary.field_failures += outcome.field_failures
+            summary.unfilled += outcome.unfilled
+            summary.tool_fallbacks += outcome.tool_fallbacks
             if not outcome.results:
-                # A note with only blocked/errored fields counts as blocked/field-error, not
-                # skipped (skipped means there was genuinely nothing to generate).
-                if not outcome.blocked and not outcome.field_failures:
+                # A note with only blocked/errored/unfilled fields counts as such, not skipped
+                # (skipped means there was genuinely nothing to generate).
+                if (
+                    not outcome.blocked
+                    and not outcome.field_failures
+                    and not outcome.unfilled
+                ):
                     summary.skipped += 1
                 summary.empty_note_ids.append(outcome.nid)
                 continue
@@ -302,6 +330,17 @@ class BatchGenerator:
         except Exception:
             logger.exception("smart_notes: failed to write note %s", outcome.nid)
             return False
+
+
+def _fell_back(rule: SmartNotesFieldRule, result: GenerationResult) -> bool:
+    """Whether a NON-FIRST tool of ``rule``'s chain produced ``result``.
+
+    Reads the provenance the pipeline stamps on the result (``GenerationResult.tool``) against
+    the chain's first entry. An unstamped result (a rule generated outside the pipeline in a
+    test) counts as no fallback.
+    """
+    first = rule.tools[0].name if rule.tools else ""
+    return bool(result.tool) and result.tool != first
 
 
 def materialize(nid: int, rule: Any, result: GenerationResult) -> str:

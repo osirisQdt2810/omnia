@@ -107,6 +107,10 @@ class SmartNotesFieldRule(StrictModel):
     """
 
     note_type: str = ""
+    # The note type's base (input) field, threaded on by the compiler. A tool whose params
+    # default to "the base field" (``cloze``'s ``word_field``) needs it, and the rule is the
+    # only thing a tool is handed. Empty for a rule built without a note-type config.
+    base_field: str = ""
     source_field: str = ""
     # True when ``source_field`` is purely the empty-prompt → base-field fallback (used so a
     # promptless field can still read the base at generation time). Such a fallback source is

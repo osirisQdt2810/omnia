@@ -5,8 +5,9 @@ scrolling per-field table, light/dark) that edits ONE note type's
 :class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` at a time: pick the note type,
 designate its base (input) field + the decks it applies to, then for every other field set
 whether to Generate it, whether to Lock it (blurs + protects from Auto-smart/Improve), its type
-(text/image/sound), a prompt (edited in a popup, not inline), a kind-aware provider + model,
-voice + language for sound fields, and an overwrite flag. Clicking the Generate / Lock /
+(text/image/sound), a prompt (edited in a popup, not inline), the ordered tool chain that
+generates it (edited in the Tools picker; empty = the AI default), a kind-aware provider +
+model, voice + language for sound fields, and an overwrite flag. Clicking the Generate / Lock /
 Overwrite column header toggles that column for ALL rows. A ⚙ Options modal edits the global
 flags (generate-at-review, regenerate-when-batching, allow-empty-sources).
 
@@ -39,6 +40,8 @@ from omnia.gui.smart_notes.dialogs.controllers import (
 )
 from omnia.gui.smart_notes.html import build_smart_notes_html
 from omnia.gui.web_dialog import WebDialog
+from omnia.plugins.smart_notes.engine import LanguageDetector
+from omnia.plugins.smart_notes.engine.tools import ToolContext, tools_catalog
 from omnia.plugins.smart_notes.integration import SmartNotesStore
 
 if TYPE_CHECKING:
@@ -86,10 +89,34 @@ class SmartNotesDialog(WebDialog):
                 dark=theme_manager.night_mode,
                 init=self._initial_state(),
                 catalog=catalog_payload(self._ctx.cached_fetched_voices()),
+                tools=self._tools_payload(),
             ),
             handlers=handlers,
             width=1040,
             height=640,
+        )
+
+    def _tools_payload(self) -> list[dict[str, Any]]:
+        """The generation-tools catalog baked into the page for the per-row Tools picker.
+
+        Baked (not fetched) for the same reason as the provider catalog: the first paint must
+        not depend on a ``pycmd`` round-trip. Each tool reports its own availability against the
+        LIVE context, so the picker can grey a tool out with a real reason — which is why this
+        needs the provider hub. With a broken provider config there is no hub to ask, and the
+        picker degrades to its "no tools available" state (as every other provider-backed
+        surface in this dialog does); ``build_hub`` has already logged why.
+        """
+        hub = self._ctx.build_hub()
+        if hub is None:
+            return []
+        return tools_catalog(
+            ToolContext(
+                providers=hub,
+                # Catalog-only context: nothing here synthesizes speech, so the detector is off
+                # (its LLM round-trip would be pure cost on the dialog's open path).
+                detector=LanguageDetector(enabled=False),
+                logger=logger,
+            )
         )
 
     def _initial_state(self) -> dict[str, Any]:

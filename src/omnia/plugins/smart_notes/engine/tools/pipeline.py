@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, Optional
 
 from omnia.core.providers.errors import ProviderError
@@ -237,7 +238,11 @@ class GenerationPipeline:
         outcome = tool.run(request, self._ctx)
         match outcome:
             case Produced(result=result):
-                return ToolAttempt(spec.name, "produced"), result
+                # Stamp WHICH tool made it: the result is the only thing that travels back out
+                # of the chain, so it carries the provenance the batch summary counts.
+                return ToolAttempt(spec.name, "produced"), replace(
+                    result, tool=spec.name
+                )
             case NotApplicable(reason=reason):
                 return ToolAttempt(spec.name, "not_applicable", reason), None
             case Empty(reason=reason):

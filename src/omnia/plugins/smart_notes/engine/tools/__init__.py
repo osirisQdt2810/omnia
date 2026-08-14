@@ -10,7 +10,7 @@ from __future__ import annotations
 
 # Import every builtin tool module for its registration side effect (must come first: the
 # registry is populated by these imports).
-from omnia.plugins.smart_notes.engine.tools import ai
+from omnia.plugins.smart_notes.engine.tools import ai, cloze
 from omnia.plugins.smart_notes.engine.tools.ai import AiTool
 from omnia.plugins.smart_notes.engine.tools.base import (
     Empty,
@@ -21,6 +21,11 @@ from omnia.plugins.smart_notes.engine.tools.base import (
     ToolError,
     ToolOutcome,
     ToolRequest,
+)
+from omnia.plugins.smart_notes.engine.tools.cloze import (
+    ClozeParams,
+    ClozeRewriter,
+    ClozeTool,
 )
 from omnia.plugins.smart_notes.engine.tools.pipeline import (
     AttemptStatus,
@@ -44,6 +49,9 @@ __all__ = [
     "TOOL_REGISTRY",
     "AiTool",
     "AttemptStatus",
+    "ClozeParams",
+    "ClozeRewriter",
+    "ClozeTool",
     "Empty",
     "GenerationPipeline",
     "NotApplicable",
@@ -57,6 +65,7 @@ __all__ = [
     "ToolOutcome",
     "ToolRequest",
     "ai",
+    "cloze",
     "get_tool",
     "register_tool",
     "registered_tools",

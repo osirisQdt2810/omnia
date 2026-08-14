@@ -29,6 +29,11 @@ class GenerationResult:
     text: Optional[str] = None
     data: Optional[bytes] = None
     ext: str = ""
+    # Which tool produced this, stamped by the pipeline on the winning attempt (a generator
+    # itself never sets it). Provenance only — nothing about the CONTENT depends on it — but it
+    # is what lets the batch summary count the fields a chain had to fall back on, so a
+    # deterministic first tool that quietly stops matching is visible instead of just expensive.
+    tool: str = ""
 
 
 class Generator(ABC):

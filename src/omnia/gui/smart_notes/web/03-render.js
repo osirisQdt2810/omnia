@@ -3,7 +3,8 @@
    * Smart Notes config page — part 3 of 6 of the page IIFE.
    * Row rendering + collection. Each non-base field is one row: a Generate toggle, a Lock
    * toggle (freeze + blur), a Type select (text / image / sound), a clickable Prompt summary
-   * (opens the editor), and kind-aware Provider / Model / Voice pickers — Model applies to
+   * (opens the editor), a Tools button summarising the row's tool chain (the picker lives in
+   * 09-tools.js), and kind-aware Provider / Model / Voice pickers — Model applies to
    * text & image, Voice to sound. The Voice COLUMN only shows when at least one row is a sound
    * field; within a row the not-applicable cells are faded. The editable prompt/model/voice
    * live on the row's data-* attributes so collectRows reads a single source of truth. There is
@@ -27,6 +28,10 @@
     // JSON on the row so collectRows reads them as the single source of truth alongside the
     // other editable state.
     tr.dataset.dependsOn = JSON.stringify(row.depends_on || []);
+    // The ordered tool chain ([{tool, params}]) edited in the Tools picker; stored as JSON on
+    // the row for the same reason as depends_on — collectRows reads one source of truth. An
+    // empty chain IS the legacy "generate with AI" default (see 09-tools.js).
+    tr.dataset.tools = JSON.stringify(row.tools || []);
 
     const tdName = cell("sn-fieldname");
     tdName.textContent = row.field;
@@ -47,6 +52,8 @@
     tr.appendChild(tdType);
 
     tr.appendChild(makePromptCell(tr));
+
+    tr.appendChild(makeToolsCell(tr));
 
     tr.appendChild(cell("sn-lockable sn-provider-cell"));
     tr.appendChild(cell("sn-lockable sn-model-cell"));
@@ -73,6 +80,7 @@
     rebuildProvider(tr, kind, row.provider || "");
     applyKindState(tr, kind);
     updatePromptSummary(tr);
+    updateToolsSummary(tr);
     applyLockState(tr);
     return tr;
   }
@@ -285,6 +293,10 @@
     // row would preview/generate with an incompatible model. Provider already resets (preset "").
     tr.dataset.model = "";
     tr.dataset.voice = "";
+    // Same reasoning for the tool chain: a tool serves specific KINDS (cloze is text-only), so a
+    // chain configured for the old kind can't run under the new one — reset it to the AI default
+    // rather than leave the row pointing at tools the pipeline would skip as wrong_kind.
+    writeTools(tr, []);
     rebuildProvider(tr, kind, "");
     applyKindState(tr, kind);
     updateSoundColumns();
@@ -300,6 +312,7 @@
     tr.classList.toggle("sn-row-locked", locked);
     [
       "sn-type",
+      "sn-tools-btn",
       "sn-provider",
       "sn-model",
       "sn-voice",
@@ -615,7 +628,11 @@
         voice: sound ? tr.dataset.voice || "" : "",
         language: sound ? tr.dataset.language || "" : "",
         overwrite: tr.querySelector(".sn-overwrite").checked,
-        depends_on: readDependsOn(tr)
+        depends_on: readDependsOn(tr),
+        // Always posted, even when empty: field_configs_from_payload treats a MISSING key as
+        // "this page cannot render chains, keep the stored one" — so a row whose chain the user
+        // cleared must post [] to actually clear it.
+        tools: readTools(tr)
       });
     });
     return rows;

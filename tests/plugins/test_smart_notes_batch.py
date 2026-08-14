@@ -303,7 +303,8 @@ class TestBlockedSummaryDetail:
 
     def test_names_the_blocked_field_and_its_missing_prerequisite(self):
         summary = BatchSummary(
-            processed=0, blocked=1,
+            processed=0,
+            blocked=1,
             blocked_examples=["Word (audio filename) needs Word (audio)"],
         )
         assert summary.message() == (
@@ -312,7 +313,9 @@ class TestBlockedSummaryDetail:
         )
 
     def test_caps_the_named_examples(self):
-        summary = BatchSummary(blocked=9, blocked_examples=["a needs b", "c needs d", "e needs f"])
+        summary = BatchSummary(
+            blocked=9, blocked_examples=["a needs b", "c needs d", "e needs f"]
+        )
         message = summary.message()
         assert "a needs b; c needs d" in message
         assert "e needs f" not in message  # bounded so the tooltip stays readable
@@ -353,3 +356,110 @@ class TestEmptyNoteTracking:
     def test_several_empties_are_all_recorded(self):
         summary = self._apply([self._outcome(1), self._outcome(2, blocked=1)])
         assert summary.empty_note_ids == [1, 2]
+
+
+class TestToolChainCounters:
+    """The two counters a tool chain adds to the summary (plan 4.3 + graft #5).
+
+    ``unfilled`` separates "every tool declined" from a real ``field_failures`` error, and
+    ``tool_fallbacks`` makes a deterministic first tool that quietly stopped matching — and is
+    therefore paying the LLM on every note — visible outside the log.
+    """
+
+    def _apply(self, outcomes):
+        gen = BatchGenerator.__new__(BatchGenerator)
+        return gen._apply(outcomes)
+
+    def _outcome(self, nid, **kw):
+        from omnia.plugins.smart_notes.integration.batch import _NoteOutcome
+
+        return _NoteOutcome(nid, **kw)
+
+    def _rule(self, *tools: str):
+        from omnia.plugins.smart_notes.config import (
+            CompiledToolSpec,
+            SmartNotesFieldRule,
+        )
+
+        return SmartNotesFieldRule(
+            target_field="Def",
+            tools=tuple(CompiledToolSpec(name=name) for name in tools),
+        )
+
+    def _result(self, tool: str):
+        from omnia.plugins.smart_notes.engine import GenerationResult
+
+        return GenerationResult("text", text="x", tool=tool)
+
+    def _generate_one(self, results, failed):
+        """Run ``_generate_one`` against a service stub returning the given per-field outcome."""
+        from omnia.plugins.smart_notes.integration.batch import _NotePlan
+
+        class _Service:
+            def generate_note(self, config, fields, **kwargs):
+                return results, [], failed
+
+        gen = BatchGenerator(_Service(), SmartNotesSettings())
+        return gen._generate_one(
+            _NotePlan(1, _note_type_config(), {}), force_overwrite=False
+        )
+
+    def test_a_declined_chain_counts_as_unfilled_not_as_an_error(self):
+        from omnia.plugins.smart_notes.engine import FailedField
+
+        outcome = self._generate_one(
+            [], [FailedField("Def", "cloze: no match", "unproductive")]
+        )
+
+        assert (outcome.field_failures, outcome.unfilled) == (0, 1)
+        assert self._apply([outcome]).message() == (
+            "Processed 0 note(s), 1 field(s) had no applicable tool."
+        )
+
+    def test_a_broken_chain_still_counts_as_a_field_error(self):
+        from omnia.plugins.smart_notes.engine import FailedField
+
+        outcome = self._generate_one([], [FailedField("Def", "ai: HTTP 401", "error")])
+
+        assert (outcome.field_failures, outcome.unfilled) == (1, 0)
+        assert "1 field error(s)" in self._apply([outcome]).message()
+
+    def test_a_note_whose_fields_all_declined_is_not_counted_as_skipped(self):
+        from omnia.plugins.smart_notes.engine import FailedField
+
+        summary = self._apply(
+            [self._generate_one([], [FailedField("Def", "no match", "unproductive")])]
+        )
+
+        assert summary.skipped == 0
+        assert summary.empty_note_ids == [1]
+
+    def test_a_later_tool_producing_counts_as_a_fallback(self, monkeypatch):
+        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+
+        outcome = self._generate_one(
+            [(self._rule("cloze", "ai"), self._result("ai"))], []
+        )
+
+        assert outcome.tool_fallbacks == 1
+        assert (
+            "1 field(s) fell back to a later tool" in self._apply([outcome]).message()
+        )
+
+    def test_the_first_tool_producing_is_not_a_fallback(self, monkeypatch):
+        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+
+        outcome = self._generate_one(
+            [(self._rule("cloze", "ai"), self._result("cloze"))], []
+        )
+
+        assert outcome.tool_fallbacks == 0
+        assert self._apply([outcome]).message() == "Processed 1 note(s)."
+
+    def test_an_unstamped_result_never_counts(self, monkeypatch):
+        # Nothing in the legacy path stamps a tool; the counter must stay silent, not guess.
+        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+
+        outcome = self._generate_one([(self._rule("ai"), self._result(""))], [])
+
+        assert outcome.tool_fallbacks == 0

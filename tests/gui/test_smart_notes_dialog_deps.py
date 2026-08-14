@@ -472,8 +472,9 @@ class TestSaveCycleGuard:
         assert result == {"ok": True}
 
     def test_a_stored_tool_chain_survives_a_save_from_this_page(self):
-        # The page has no tools column, so its payload never mentions a chain — saving must
-        # NOT be how a chain configured elsewhere gets deleted.
+        # A payload that carries NO ``tools`` key never rendered a chain (an older page, a
+        # partial payload) — saving from it must NOT be how a chain configured elsewhere gets
+        # deleted. (A page that DOES render the picker posts the key, so clearing still works.)
         stored = SmartNotesSettings(
             note_types=[
                 SmartNotesNoteTypeConfig(
@@ -546,3 +547,98 @@ class TestClassifyDepsThreadRouting:
         # The success callback (main thread) is the only place that pushes.
         captured["on_success"](result)
         assert any("__snDepsResult" in js for js in evals)
+
+
+class TestPreviewRunsTheRowsToolChain:
+    """Sync point 5: ▶ Preview must run the row's OWN chain, not always the AI path.
+
+    The preview builds its rule straight from the posted row, so before the picker landed it
+    inherited the default ``("ai",)`` chain. A row configured "cloze → ai" would then preview an
+    LLM call the real run never makes — wrong output AND a bill for it.
+    """
+
+    class _CountingLLM:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        def generate_text(
+            self, prompt, *, system=None, temperature=0.7, max_tokens=None
+        ):
+            self.prompts.append(prompt)
+            return f"llm:{prompt}"
+
+    class _Note:
+        def __init__(self, fields: dict[str, str]) -> None:
+            self._fields = fields
+
+        def keys(self):
+            return list(self._fields)
+
+        def __getitem__(self, key: str) -> str:
+            return self._fields[key]
+
+    def _preview(self, monkeypatch, row: dict) -> tuple[list[str], list[str]]:
+        """Run ``on_preview`` inline and return (pushed js, LLM prompts)."""
+        from omnia.core import anki_compat
+
+        llm = self._CountingLLM()
+        monkeypatch.setattr(
+            anki_compat,
+            "random_note_of_type",
+            lambda nt: self._Note(
+                {"Word": "survive", "Sentence": "They survived.", "Cloze": ""}
+            ),
+        )
+        captured: dict[str, Any] = {}
+
+        def fake_run(op, *, on_success, on_failure=None, parent=None, label=None):
+            captured["result"] = op()
+            on_success(captured["result"])
+
+        monkeypatch.setattr(anki_compat, "run_in_background", fake_run)
+        evals: list[str] = []
+        ctx = _fake_ctx(
+            eval_js=lambda js: evals.append(js),
+            build_hub=lambda: types.SimpleNamespace(
+                llm=lambda **kwargs: llm, tts=lambda **kwargs: None
+            ),
+            result_payload=lambda result: {"kind": result.kind, "text": result.text},
+        )
+        AuthoringController(ctx, GraphController(ctx)).on_preview(row)
+        return evals, llm.prompts
+
+    def _row(self, **kw) -> dict:
+        row = {
+            "note_type": "Vocab",
+            "base_field": "Word",
+            "field": "Cloze",
+            "type": "text",
+            "prompt": "Cloze {{Word}} in {{Sentence}}",
+            "provider": "",
+            "model": "",
+            "voice": "",
+            "language": "",
+            "tools": [],
+        }
+        row.update(kw)
+        return row
+
+    def test_a_cloze_row_previews_the_cloze_never_the_llm(self, monkeypatch):
+        evals, prompts = self._preview(
+            monkeypatch,
+            self._row(
+                tools=[
+                    {"tool": "cloze", "params": {"sentence_field": "Sentence"}},
+                    {"tool": "ai", "params": {}},
+                ]
+            ),
+        )
+
+        assert prompts == []  # the LLM was never asked
+        assert "They {{c1::survived}}." in evals[0]
+
+    def test_a_row_with_no_chain_still_previews_through_the_llm(self, monkeypatch):
+        evals, prompts = self._preview(monkeypatch, self._row())
+
+        assert prompts == ["Cloze survive in They survived."]
+        assert "llm:" in evals[0]

@@ -798,3 +798,40 @@ select:disabled { opacity: 0.7; }
 .sn-diff-err[hidden] { display: none; }
 .sn-diff-foot { display: flex; align-items: center; gap: 8px; }
 .sn-diff-spacer { flex: 1; }
+
+/* --- Per-row Tools picker (09-tools.js) ---------------------------------------------------
+   The table cell is a compact chain summary ("cloze → AI"); the modal lists every tool that
+   can serve the row's kind, in run order, with ▲/▼ and a params mini-form. */
+.sn-tools-cell { white-space: nowrap; }
+.sn-tools-btn { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+.sn-tools-btn.sn-tools-default { color: var(--muted); font-style: italic; }
+.sn-tools-card { max-width: 620px; }
+.sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+.sn-tools-empty { color: var(--muted); font-size: 12px; }
+.sn-tools-empty:empty { display: none; }
+.sn-tool-row {
+  border: 1px solid var(--card-border); border-radius: 10px; padding: 8px 10px;
+  background: var(--row-alt); display: flex; flex-direction: column; gap: 4px;
+}
+.sn-tool-row.sn-tool-unavailable { opacity: 0.55; }
+.sn-tool-head { display: flex; align-items: center; gap: 8px; }
+.sn-tool-label { display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; }
+.sn-tool-name { font-weight: 700; font-size: 13px; }
+.sn-tool-chip {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
+  color: var(--accent); border: 1px solid var(--accent); border-radius: 999px;
+  padding: 1px 6px; line-height: 1.4;
+}
+.sn-tool-order {
+  font-size: 11px; font-weight: 700; color: var(--muted); min-width: 14px; text-align: right;
+}
+.sn-tool-move { font-size: 11px; padding: 3px 6px; }
+.sn-tool-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.sn-tool-why { font-size: 12px; color: var(--fail); line-height: 1.4; }
+.sn-tool-params {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 2px;
+}
+.sn-tool-param { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.sn-tool-param-label { color: var(--muted); flex: 1; }
+.sn-tool-param-input { max-width: 55%; }
+input.sn-tool-param-input[type="checkbox"] { max-width: none; }
