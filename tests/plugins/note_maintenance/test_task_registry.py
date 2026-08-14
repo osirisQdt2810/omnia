@@ -58,6 +58,22 @@ def _context(settings: NoteMaintenanceSettings) -> PluginContext:
     )
 
 
+def _note_type_settings(tasks: dict[str, Any]) -> NoteMaintenanceSettings:
+    """Settings with the "Vocab" note type switched on, carrying ``tasks``."""
+    return NoteMaintenanceSettings(
+        note_types={"Vocab": {"enable": True, "tasks": tasks}}
+    )
+
+
+def _ipa_note() -> NoteView:
+    """A Vocab note only ``strip_ipa`` acts on (the paired list is already well formed)."""
+    return NoteView(
+        note_id=1,
+        note_type="Vocab",
+        fields={"Synonyms": "modest (ˈmɒdɪst)", "SynonymsNoIPA": ""},
+    )
+
+
 def _bundled_task_configs() -> dict[str, Any]:
     """The ``tasks`` namespace exactly as the shipped ``features.example.toml`` declares it."""
     with (_CONFIG_DIR / "features.example.toml").open("rb") as handle:
@@ -269,28 +285,39 @@ class TestNoteMaintenancePlugin:
             "replace_text_all_fields",
         }
 
-    def test_build_runner_uses_the_configured_tasks(self):
+    def test_build_planner_runs_a_configured_note_types_default_tasks(self):
         plugin = NoteMaintenancePlugin()
-        runner = plugin.build_runner()
-        # No settings (plugin not enabled) -> every task at its MODEL defaults: in the shipped
-        # order, and without replace_text_all_fields, which ships off.
-        assert [task.task_id for task in runner.active_tasks] == [
-            "reformat_synonyms",
-            "strip_ipa",
-            "extract_audio_file_name",
-            "fill_first_example",
-        ]
+        plugin.on_enable(_context(_note_type_settings({})))
+
+        # A ticked note type with no task map of its own runs every task at its MODEL default.
+        plan = plugin.build_planner().plan([_ipa_note()])
+
+        assert plan.note_count == 1
+        assert plan.skipped == ()
+
+    def test_a_note_type_that_is_not_set_up_is_skipped(self):
+        plugin = NoteMaintenancePlugin()
+        plugin.on_enable(_context(_note_type_settings({})))
+
+        plan = plugin.build_planner().plan(
+            [NoteView(note_id=2, note_type="Basic", fields={"Front": "x"})]
+        )
+
+        assert plan.is_empty and plan.skipped[0].note_type == "Basic"
 
     def test_enable_applies_the_settings_and_disable_restores_the_defaults(self):
         plugin = NoteMaintenancePlugin()
-        ctx = _context(NoteMaintenanceSettings(tasks={"strip_ipa": {"enable": False}}))
-        default_active = len(plugin.build_runner().active_tasks)
+        ctx = _context(_note_type_settings({"strip_ipa": {"enable": False}}))
+
+        # Not enabled: no note type is set up at all, so nothing would run.
+        assert not plugin.build_planner().has_runnable_note_type
 
         plugin.on_enable(ctx)
-        assert len(plugin.build_runner().active_tasks) == default_active - 1
+        # strip_ipa is the only shipped task that would touch this note, and it is off.
+        assert plugin.build_planner().plan([_ipa_note()]).is_empty
 
         plugin.on_disable(ctx)
-        assert len(plugin.build_runner().active_tasks) == default_active
+        assert not plugin.build_planner().has_runnable_note_type
 
 
 class TestBundledDefaults:

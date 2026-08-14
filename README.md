@@ -4,9 +4,9 @@
 
 **One Anki add-on, many independent feature plugins.**
 
-[![CI](https://github.com/osirisQdt2810/omnia/actions/workflows/pr-pipeline.yml/badge.svg?branch=main)](https://github.com/osirisQdt2810/omnia/actions/workflows/pr-pipeline.yml)
-[![coverage](https://codecov.io/gh/osirisQdt2810/omnia/branch/main/graph/badge.svg)](https://codecov.io/gh/osirisQdt2810/omnia)
-[![python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue)](https://github.com/osirisQdt2810/omnia/actions/workflows/pr-pipeline.yml)
+[![CI](https://github.com/osirisQdt2810/omnia/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/osirisQdt2810/omnia/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FosirisQdt2810%2Fomnia%2Fbadges%2Fcoverage.json)](https://github.com/osirisQdt2810/omnia/actions/workflows/ci.yml)
+[![python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue)](https://github.com/osirisQdt2810/omnia/actions/workflows/ci.yml)
 [![platforms](https://img.shields.io/badge/platforms-macOS%20|%20Windows%20|%20Linux-lightgrey)](#install-on-your-machine)
 [![Anki](https://img.shields.io/badge/Anki-25.09%2B-brightgreen)](https://apps.ankiweb.net/)
 
@@ -40,7 +40,7 @@ in `core/` and keeps each feature thin and isolated:
 | `display_interval` | Shows the predicted next interval on the answer side, and exposes it to card templates. |
 | `overdue_guard` | Forces very overdue cards to Hard/Again regardless of what you press. |
 | `word_lookup` | Search a word across your collection from the reviewer or a clipper, with word-form matching. |
-| `note_maintenance` | Batch clean-up of notes you already have — deterministic, no AI. Preview the diff, then apply with full undo. |
+| `note_maintenance` | Batch clean-up of notes you already have — deterministic, no AI. Configured per note type (fields picked from dropdowns, several note types in one run); preview the diff, then apply with full undo. |
 | `smart_notes` | Fills note fields (text, image, TTS audio) — see below. |
 
 ### Generating fields without paying for it

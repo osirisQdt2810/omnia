@@ -29,6 +29,7 @@ from omnia.core.text import as_field_html, strip_markup
 from omnia.plugins.note_maintenance.base import (
     MaintenanceTask,
     NoteView,
+    OptionKind,
     TaskConfigBase,
 )
 from omnia.plugins.note_maintenance.registry import register_task
@@ -48,6 +49,7 @@ class FillFirstExampleConfig(TaskConfigBase):
         "Clozed First Example",
         title="Source field",
         description="The field that is kept up to date (usually the clozed sentence).",
+        renders_as=OptionKind.NOTE_FIELD,
     )
     target_field: str = Field(
         "First Example",
@@ -57,6 +59,7 @@ class FillFirstExampleConfig(TaskConfigBase):
             "PLAIN text — markup stripped and cloze deletions unwrapped to their answer, with "
             "the author's line breaks kept as <br>."
         ),
+        renders_as=OptionKind.NOTE_FIELD,
     )
     threshold: float = Field(
         0.75,

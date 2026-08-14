@@ -1,19 +1,29 @@
-"""Bespoke settings dialog for Note Maintenance: which tasks run, in what order, and how.
+"""Bespoke settings dialog for Note Maintenance: which note types, which tasks, and how.
 
-The generic settings form renders a plugin's FLAT options, but this plugin's settings are a
-map of maps — ``{task id: {enable, order, …that task's own options}}`` — and two of the bundled
-tasks are configured by a ``{source field: target field}`` mapping the flat form cannot express
-at all. So the plugin declares this dialog instead (the same reason Word Lookup has one).
+The generic settings form renders a plugin's FLAT options, but this plugin's settings are a map
+of maps of maps — ``{note type: {tasks: {task id: {enable, order, …that task's options}}}}`` —
+and the options that matter name FIELDS, which only exist inside one note type. So the plugin
+declares this dialog instead (the same reason Word Lookup has one).
 
-Shape: the tasks down the left (ticked = takes part in a run), and for whichever one is
-highlighted, its options on the right — derived from that task's own Pydantic model, so a new
-task shows up here with its options and help text without this dialog being edited.
+Shape: note types down the left (ticked = maintained; tick as many as you like), and for
+whichever one is highlighted, its tasks and the highlighted task's options — with every field
+option a dropdown of THAT note type's real fields, so a field name is picked, never typed.
+
+Two things this dialog must never do, both of which it has done before (CONVENTIONS Part 2):
+
+* rebuild a stored map from what this build knows. It reads the RAW section and merges onto it
+  (:mod:`~omnia.plugins.note_maintenance.settings_merge`), so a note type this collection does
+  not have, a task a newer Omnia added, an option no renderer knows and an entry that is not a
+  table all survive a save;
+* drop a field value the note type no longer has. It is kept and shown as a stale entry
+  (:class:`~omnia.plugins.note_maintenance.field_choices.FieldChoices`) — a renamed field must
+  not silently rewrite the user's setting to whatever lands at the top of a dropdown.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any, Optional
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, Optional, cast
 
 from aqt.qt import (  # type: ignore[attr-defined]
     QAbstractItemView,
@@ -21,117 +31,71 @@ from aqt.qt import (  # type: ignore[attr-defined]
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QStackedWidget,
     Qt,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
-from pydantic import BaseModel
 
+from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.plugin import ConfigField
 from omnia.gui.config_form import ConfigFieldEditor
+from omnia.gui.note_maintenance.field_editors import FieldMapEditor, NoteFieldCombo
 from omnia.gui.widgets import hint_label
-from omnia.plugins.note_maintenance.base import MaintenanceTask
+from omnia.plugins.note_maintenance.base import MaintenanceTask, OptionKind
+from omnia.plugins.note_maintenance.field_choices import FieldChoices
+from omnia.plugins.note_maintenance.note_types import NoteTypeScope
 from omnia.plugins.note_maintenance.registry import build_tasks
-from omnia.plugins.note_maintenance.settings_merge import TaskOptions, TaskSectionMerge
+from omnia.plugins.note_maintenance.runner import in_run_order
+from omnia.plugins.note_maintenance.settings_merge import (
+    NoteTypeSectionMerge,
+    OptionRow,
+    TaskOptions,
+    TaskSectionMerge,
+)
 
 logger = get_logger("note_maintenance")
 
+#: Gap between consecutive tasks' stored ``order``. Spaced rather than 0,1,2… so a task section
+#: this build does not register (synced from a newer Omnia, keeping its own stored order) lands
+#: between neighbours instead of tying with one of them.
+_ORDER_STEP = 10
+
 _PLUGIN_ID = "note_maintenance"
-
-
-class _FieldMapEditor(QWidget):
-    """Edits a ``{source field: target field}`` option as a two-column table.
-
-    This is the option the generic form cannot render, and the reason the tasks that own one
-    (strip IPA, extract audio file name) need a bespoke panel: each row says "read THIS field,
-    write the result to THAT one", and an empty target means "rewrite the source in place".
-    """
-
-    def __init__(
-        self, values: Mapping[str, str], parent: Optional[QWidget] = None
-    ) -> None:
-        """Build the table.
-
-        Args:
-            values: The current ``{source: target}`` mapping.
-            parent: Parent widget.
-        """
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self._table = QTableWidget(0, 2)
-        self._table.setHorizontalHeaderLabels(
-            ["Read field", "Write to (empty = in place)"]
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self._table.verticalHeader().setVisible(False)
-        layout.addWidget(self._table)
-        for source, target in values.items():
-            self._add_row(source, target)
-
-        buttons = QHBoxLayout()
-        add = QPushButton("Add field")
-        add.clicked.connect(lambda: self._add_row("", ""))
-        remove = QPushButton("Remove")
-        remove.clicked.connect(self._remove_selected)
-        buttons.addWidget(add)
-        buttons.addWidget(remove)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
-
-    def values(self) -> dict[str, str]:
-        """Return the edited mapping (rows with no source field are dropped)."""
-        mapping: dict[str, str] = {}
-        for row in range(self._table.rowCount()):
-            source = self._cell(row, 0)
-            if source:
-                mapping[source] = self._cell(row, 1)
-        return mapping
-
-    def _add_row(self, source: str, target: str) -> None:
-        row = self._table.rowCount()
-        self._table.insertRow(row)
-        self._table.setItem(row, 0, QTableWidgetItem(source))
-        self._table.setItem(row, 1, QTableWidgetItem(target))
-
-    def _remove_selected(self) -> None:
-        row = self._table.currentRow()
-        if row >= 0:
-            self._table.removeRow(row)
-
-    def _cell(self, row: int, column: int) -> str:
-        item = self._table.item(row, column)
-        return item.text().strip() if item is not None else ""
+#: Marks a configured note type this collection does not have (renamed, deleted, or another
+#: device's). Listed rather than dropped: its settings are the user's, not this build's to bin.
+_MISSING_SUFFIX = " — not in this collection"
 
 
 class _TaskOptionsEditor(QWidget):
-    """The options form for ONE task, built from that task's own settings model.
+    """The options form for ONE task of ONE note type, built from that task's settings model.
 
     ``enable`` is left out — the task list's tick owns it — and every other option is rendered
-    by kind: scalars through the SAME :class:`~omnia.gui.config_form.ConfigFieldEditor` the
-    generic per-feature form uses (so a kind renders identically wherever it appears), and the
-    field mappings that deriver skips as a :class:`_FieldMapEditor`. What no renderer knows is
-    kept by :class:`~omnia.plugins.note_maintenance.settings_merge.TaskOptions` and written
-    back unchanged.
+    by what it HOLDS (:class:`~omnia.plugins.note_maintenance.base.OptionKind`): a plain value
+    through the SAME :class:`~omnia.gui.config_form.ConfigFieldEditor` the generic per-feature
+    form uses (so a kind renders identically wherever it appears), a field name as a dropdown
+    of this note type's fields, and a ``{source: target}`` map as two columns of them. What no
+    renderer knows is kept by
+    :class:`~omnia.plugins.note_maintenance.settings_merge.TaskOptions` and written back
+    unchanged.
     """
 
-    def __init__(self, task: MaintenanceTask, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        task: MaintenanceTask,
+        fields: Sequence[str],
+        parent: Optional[QWidget] = None,
+    ) -> None:
         """Build the form for ``task``'s current configuration.
 
         Args:
             task: The configured task instance (its ``config`` supplies the current values).
+            fields: The field names of the note type being configured.
             parent: Parent widget.
         """
         super().__init__(parent)
@@ -146,18 +110,10 @@ class _TaskOptionsEditor(QWidget):
 
         form = QFormLayout()
         form.setSpacing(10)
-        for name, value, field in self._options.rows:
-            if field is None:
-                mapping = _FieldMapEditor(value)
-                self._readers[name] = mapping.values
-                form.addRow(_field_label(self._options.model, name), mapping)
-                continue
-            editor = ConfigFieldEditor(field, value)
-            # The generic form puts the help behind an (i) button it lays out itself; this one
-            # is a two-column panel, so the help rides on the control as a tooltip instead.
-            editor.widget.setToolTip(field.help)
-            self._readers[field.key] = editor.value
-            form.addRow(_labelled(field), editor.widget)
+        for row in self._options.rows:
+            control, read = self._control_for(row, fields)
+            self._readers[row.name] = read
+            form.addRow(self._label_for(row), control)
         layout.addLayout(form)
         layout.addStretch(1)
 
@@ -170,9 +126,191 @@ class _TaskOptionsEditor(QWidget):
         edited = {name: read() for name, read in self._readers.items()}
         return {**self._options.passthrough, **edited}
 
+    @staticmethod
+    def _control_for(
+        row: OptionRow, fields: Sequence[str]
+    ) -> tuple[QWidget, Callable[[], Any]]:
+        """Return the control for one option, and the callable that reads its value back."""
+        if row.kind is OptionKind.FIELD_MAP:
+            mapping = FieldMapEditor(
+                fields, row.value if isinstance(row.value, dict) else {}
+            )
+            return mapping, mapping.values
+        if row.kind is OptionKind.NOTE_FIELD:
+            combo = NoteFieldCombo(FieldChoices(fields), str(row.value or ""))
+            return combo, combo.value
+        # Only a field map has no descriptor, and it returned above.
+        field = cast(ConfigField, row.field)
+        editor = ConfigFieldEditor(field, row.value)
+        # The generic form puts the help behind an (i) button it lays out itself; this one is a
+        # multi-column panel, so the help rides on the control as a tooltip instead.
+        editor.widget.setToolTip(field.help)
+        return editor.widget, editor.value
+
+    def _label_for(self, row: OptionRow) -> QLabel:
+        """The row label: the scalar descriptor's, or the model's own for a field map."""
+        if row.field is not None:
+            label = QLabel(row.field.label)
+            label.setToolTip(row.field.help)
+            return label
+        info = self._options.model.__fields__[row.name].field_info
+        label = QLabel(info.title or row.name.replace("_", " ").capitalize())
+        label.setToolTip(info.description or "")
+        return label
+
+
+class _NoteTypeTasksEditor(QWidget):
+    """One note type's whole task set: the task list, and the highlighted task's options.
+
+    Owns the merge for its own ``tasks`` map, so the dialog above only has to ask each note
+    type it opened what to save.
+    """
+
+    def __init__(
+        self,
+        stored_tasks: Mapping[str, Any],
+        fields: Sequence[str],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        """Build the editor.
+
+        Args:
+            stored_tasks: The note type's RAW ``{task id: options}`` map (what a save merges
+                onto, so an entry this build cannot read survives).
+            fields: The note type's field names, for the field dropdowns.
+            parent: Parent widget.
+        """
+        super().__init__(parent)
+        self._stored_tasks = dict(stored_tasks)
+        # In RUN order, not registration order: this list IS the run order — it is what the
+        # ▲/▼ buttons edit and what a save stamps back from the row index. Built unsorted, the
+        # panel displayed one sequence while the runner used another, and the next save
+        # rewrote the stored positions to the displayed ones — silently reordering a user's
+        # tasks (and the shipped defaults on a fresh install) without them touching anything.
+        self._tasks = in_run_order(build_tasks(self._stored_tasks))
+        self._editors: dict[str, _TaskOptionsEditor] = {}
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._task_column(), 1)
+        layout.addWidget(self._options_column(fields), 2)
+        if self._task_list.count():
+            self._task_list.setCurrentRow(0)
+        # What this editor would save the instant it was shown, captured once construction is
+        # complete — the baseline :attr:`is_untouched` compares against. It is NOT
+        # ``stored_tasks``: ``values()`` merges a section for every REGISTERED task, so on a
+        # note type with nothing stored the two can never be equal and the guard would never
+        # fire (which is exactly how it shipped broken the first time).
+        self._opened_with = self.values()
+
+    def values(self) -> dict[str, Any]:
+        """Return the ``tasks`` map to persist: what was stored, updated with what was edited.
+
+        ``order`` comes from the list POSITION, not from a number anyone typed: row 0 is 10,
+        row 1 is 20, and so on. The gaps are deliberate — a task section synced from a device
+        whose build has a task this one does not register keeps its own stored ``order``, and a
+        spaced scale leaves it somewhere sensible between its neighbours instead of colliding.
+        """
+        merge = TaskSectionMerge(self._stored_tasks)
+        for row, task in enumerate(self._tasks):
+            item = self._task_list.item(row)
+            merge.apply(
+                task.task_id,
+                enable=item.checkState() == Qt.CheckState.Checked,
+                order=(row + 1) * _ORDER_STEP,
+                options=self._editors[task.task_id].values(),
+            )
+        return merge.result()
+
+    @property
+    def is_untouched(self) -> bool:
+        """Whether this editor still holds exactly what it was opened with.
+
+        The dialog auto-selects the first note type so the right-hand pane is not blank on
+        open, which BUILDS that note type's editor without the user having chosen anything.
+        Without this, saving an untouched dialog wrote an entry for whichever note type
+        happened to sort first — seeded from the legacy global task map, so ticking it later
+        would silently inherit field names written for a different note type. Merely being
+        looked at is not configuring.
+
+        Compared against :attr:`_opened_with` — what this editor would have saved when it was
+        first shown — so it answers "did the user change anything?" for a note type whose
+        stored map is empty, is the legacy seed, or is already in merged form alike.
+        """
+        return self.values() == self._opened_with
+
+    def _task_column(self) -> QWidget:
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QLabel("<b>Tasks</b>"))
+
+        self._task_list = QListWidget()
+        self._task_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        for task in self._tasks:
+            self._task_list.addItem(
+                _task_item(task.name or task.task_id, task.is_enabled)
+            )
+        self._task_list.currentRowChanged.connect(self._on_task_changed)
+        layout.addWidget(self._task_list, 1)
+
+        # The run order IS this list's order, so it is changed the way an order is changed:
+        # by moving a row. Same control as the smart-notes tools picker, for the same reason —
+        # both are "these run top-down until they are done", and a typed number asked the user
+        # to hold the whole sequence in their head and guess a gap between two of them.
+        moves = QHBoxLayout()
+        self._move_up = _move_button("▲", "Run earlier", lambda: self._move(-1))
+        self._move_down = _move_button("▼", "Run later", lambda: self._move(1))
+        moves.addWidget(self._move_up)
+        moves.addWidget(self._move_down)
+        moves.addStretch(1)
+        layout.addLayout(moves)
+
+        layout.addWidget(
+            hint_label(
+                self,
+                "Tasks run top-down; two touching the same field layer in this order. "
+                "Unticked tasks are skipped for this note type.",
+            )
+        )
+        return holder
+
+    def _move(self, delta: int) -> None:
+        """Move the highlighted task ``delta`` rows and keep it highlighted.
+
+        Moves the row in the LIST and the task in ``self._tasks`` together — ``values()`` pairs
+        them by index, so letting the two drift would save one task's tick against another's
+        options.
+        """
+        row = self._task_list.currentRow()
+        target = row + delta
+        if not (0 <= row < len(self._tasks) and 0 <= target < len(self._tasks)):
+            return
+        self._tasks[row], self._tasks[target] = self._tasks[target], self._tasks[row]
+        moved = self._task_list.takeItem(row)
+        self._task_list.insertItem(target, moved)
+        self._task_list.setCurrentRow(target)
+
+    def _on_task_changed(self, row: int) -> None:
+        """Show the highlighted task's options and re-gate the move buttons."""
+        self._move_up.setEnabled(row > 0)
+        self._move_down.setEnabled(0 <= row < len(self._tasks) - 1)
+        if 0 <= row < len(self._tasks):
+            self._options.setCurrentWidget(self._editors[self._tasks[row].task_id])
+
+    def _options_column(self, fields: Sequence[str]) -> QWidget:
+        self._options = QStackedWidget()
+        for task in self._tasks:
+            editor = _TaskOptionsEditor(task, fields)
+            self._editors[task.task_id] = editor
+            self._options.addWidget(editor)
+        return self._options
+
 
 class NoteMaintenanceSettingsDialog(QDialog):
-    """Pick the tasks a maintenance run includes, their order, and each task's options."""
+    """Pick the note types a run maintains and, per note type, its tasks and their options."""
 
     def __init__(self, repo: Any, parent: Optional[QWidget] = None) -> None:
         """Build the dialog from the plugin's saved settings.
@@ -184,24 +322,25 @@ class NoteMaintenanceSettingsDialog(QDialog):
         super().__init__(parent)
         self._repo = repo
         self.setWindowTitle("Note Maintenance — settings")
-        self.resize(820, 560)
+        self.resize(980, 600)
 
-        self._stored_tasks = self._stored_task_sections()
-        self._tasks = build_tasks(self._stored_tasks)
-        self._editors: dict[str, _TaskOptionsEditor] = {}
+        self._load()
+        self._editors: dict[str, _NoteTypeTasksEditor] = {}
 
         root = QVBoxLayout(self)
         root.addWidget(
             hint_label(
                 self,
-                "Tick the tasks a maintenance run should include. Run order decides who goes "
-                "first — two tasks touching the same field layer in that order.",
+                "Tick every note type a maintenance run should cover — each keeps its own "
+                "tasks and its own fields, and one run maintains them all. Select a note type "
+                "to configure it.",
             )
         )
 
         columns = QHBoxLayout()
-        columns.addWidget(self._task_column(), 1)
-        columns.addWidget(self._options_column(), 2)
+        columns.addWidget(self._note_type_column(), 1)
+        self._note_type_editors = QStackedWidget()
+        columns.addWidget(self._note_type_editors, 3)
         root.addLayout(columns, 1)
 
         root.addWidget(
@@ -220,63 +359,106 @@ class NoteMaintenanceSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
 
-        if self._task_list.count():
-            self._task_list.setCurrentRow(0)
+        if self._note_type_list.count():
+            self._note_type_list.setCurrentRow(0)
 
     # -- construction helpers -------------------------------------------------------------
 
-    def _stored_task_sections(self) -> dict[str, Any]:
-        """The RAW ``[note_maintenance.tasks]`` map, exactly as it is stored.
+    def _load(self) -> None:
+        """Read the RAW ``[note_maintenance]`` section and index what the dialog edits.
 
         Read raw rather than through ``feature_settings`` because the typed read is
         all-or-nothing: ONE unreadable value anywhere in the section (a key a newer Omnia
-        added, a task entry that is not a table) makes it raise, and a save that had started
-        from an empty map would then write this build's own registry over everything the user
-        had. Both halves of the dialog work off this map — :func:`build_tasks` parses it task
-        by task and never raises, and :meth:`_tasks_to_save` merges the edits back onto it.
+        added, an entry that is not a table) makes it raise, and a save that had started from
+        an empty map would then write this build's own world over everything the user had.
         """
-        tasks = self._repo.raw_section(_PLUGIN_ID).get("tasks", {})
-        return dict(tasks) if isinstance(tasks, dict) else {}
+        section = self._repo.raw_section(_PLUGIN_ID)
+        self._stored_note_types = _table(section.get("note_types"))
+        # The pre-note-type global map. Never rewritten (an older Omnia still runs it) and
+        # never run here — only offered as the starting point for a note type that has no
+        # tasks of its own, so an upgrade does not throw away what the user had configured.
+        self._legacy_tasks = _table(section.get("tasks"))
+        self._scope = NoteTypeScope(self._stored_note_types)
+        collection_names = self._all_note_types()
+        known = {name.strip().lower() for name in collection_names}
+        self._missing = [
+            name for name in self._scope.names if name.strip().lower() not in known
+        ]
+        self._note_type_names = list(collection_names) + self._missing
 
-    def _task_column(self) -> QWidget:
+    def _note_type_column(self) -> QWidget:
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("<b>Tasks</b>"))
+        layout.addWidget(QLabel("<b>Note types</b>"))
 
-        self._task_list = QListWidget()
-        self._task_list.setSelectionMode(
+        self._note_type_list = QListWidget()
+        self._note_type_list.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
-        for task in self._tasks:
-            item = QListWidgetItem(task.name or task.task_id)
+        missing = set(self._missing)
+        for name in self._note_type_names:
+            item = QListWidgetItem(
+                f"{name}{_MISSING_SUFFIX}" if name in missing else name
+            )
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(
-                Qt.CheckState.Checked if task.is_enabled else Qt.CheckState.Unchecked
+                Qt.CheckState.Checked
+                if self._scope.is_enabled(name)
+                else Qt.CheckState.Unchecked
             )
-            self._task_list.addItem(item)
-        self._task_list.currentRowChanged.connect(self._on_task_changed)
-        layout.addWidget(self._task_list, 1)
-        layout.addWidget(hint_label(self, "Unticked tasks are skipped by every run."))
+            self._note_type_list.addItem(item)
+        self._note_type_list.currentRowChanged.connect(self._on_note_type_changed)
+        layout.addWidget(self._note_type_list, 1)
+        layout.addWidget(
+            hint_label(
+                self,
+                "Unticked note types are left alone — their settings are kept, not deleted.",
+            )
+        )
         return holder
 
-    def _options_column(self) -> QWidget:
-        self._options = QStackedWidget()
-        for task in self._tasks:
-            editor = _TaskOptionsEditor(task)
-            self._editors[task.task_id] = editor
-            self._options.addWidget(editor)
-        return self._options
+    def _on_note_type_changed(self, row: int) -> None:
+        """Show the highlighted note type's tasks, building its editor the first time."""
+        if not 0 <= row < len(self._note_type_names):
+            return
+        name = self._note_type_names[row]
+        editor = self._editors.get(name)
+        if editor is None:
+            editor = _NoteTypeTasksEditor(
+                self._task_sections_for(name), self._fields_of(name)
+            )
+            self._editors[name] = editor
+            self._note_type_editors.addWidget(editor)
+        self._note_type_editors.setCurrentWidget(editor)
 
-    def _on_task_changed(self, row: int) -> None:
-        """Show the highlighted task's options (each editor keeps its own edits)."""
-        if 0 <= row < self._options.count():
-            self._options.setCurrentIndex(row)
+    def _task_sections_for(self, note_type: str) -> dict[str, Any]:
+        """The task map to show for ``note_type``: its own, or the legacy global one as a seed."""
+        stored = self._scope.task_sections(note_type)
+        return stored if stored else dict(self._legacy_tasks)
+
+    @staticmethod
+    def _all_note_types() -> list[str]:
+        """Every note type name in the collection (empty on any failure — never crash setup)."""
+        try:
+            return list(anki_compat.note_type_names())
+        except Exception:
+            logger.exception("note_maintenance: could not read note type names")
+            return []
+
+    @staticmethod
+    def _fields_of(note_type: str) -> list[str]:
+        """``note_type``'s field names, from the collection (empty when it has none here)."""
+        try:
+            return list(anki_compat.note_type_field_names(note_type))
+        except Exception:
+            logger.exception("note_maintenance: could not read fields of %r", note_type)
+            return []
 
     # -- persistence ----------------------------------------------------------------------
 
     def _save(self) -> None:
-        """Write every task's switch, order and options back into the plugin's config section.
+        """Write the note-type map back into the plugin's config section.
 
         A write that fails leaves the dialog OPEN with a warning: closing it as if the settings
         had been saved loses the user's edits AND tells them a lie they only discover the next
@@ -285,7 +467,9 @@ class NoteMaintenanceSettingsDialog(QDialog):
         from aqt.utils import showWarning
 
         try:
-            self._repo.update_section(_PLUGIN_ID, {"tasks": self._tasks_to_save()})
+            self._repo.update_section(
+                _PLUGIN_ID, {"note_types": self._note_types_to_save()}
+            )
         # Broad by necessity, at the UI boundary: what a failed write raises depends on the
         # storage backend — an anki backend error from ``col.set_config`` (the default,
         # collection-backed one), OSError/TypeError from the TOML writer, or a ValidationError
@@ -299,35 +483,64 @@ class NoteMaintenanceSettingsDialog(QDialog):
             return
         self.accept()
 
-    def _tasks_to_save(self) -> dict[str, Any]:
-        """The whole ``tasks`` map to persist: what was stored, updated with what was edited.
+    def _note_types_to_save(self) -> dict[str, Any]:
+        """The whole ``note_types`` map to persist: what was stored, updated with what changed.
 
-        The merge policy itself is pure and lives with the plugin
-        (:class:`~omnia.plugins.note_maintenance.settings_merge.TaskSectionMerge`); this only
-        reads the widgets. The editor supplies ``order`` too (it is a scalar option of every
-        task model), plus whatever it could not render, unchanged.
+        Only note types the user actually touched are written: a ticked one, one whose tasks
+        they CHANGED, or one that already holds readable settings (whose tick may just have
+        been cleared). Everything else is left exactly as stored — so a never-configured note
+        type gets no entry at all, and an entry this build could not read as settings is not
+        overwritten by a tick the user never set.
+
+        "Changed", not "opened": the dialog builds the first note type's editor itself so the
+        pane is not blank on open (and builds one for every note type the user clicks through),
+        and none of that is a decision — see :attr:`_NoteTypeTasksEditor.is_untouched`.
+
+        A note type that IS ticked still saves its editor's whole map even when untouched, and
+        that is the point: for a note type with no settings of its own the editor was seeded
+        from the legacy global map, so ticking it is what carries an upgrade's existing
+        configuration over.
         """
-        merge = TaskSectionMerge(self._stored_tasks)
-        for row, task in enumerate(self._tasks):
-            item = self._task_list.item(row)
+        merge = NoteTypeSectionMerge(self._stored_note_types)
+        for row, name in enumerate(self._note_type_names):
+            ticked = (
+                self._note_type_list.item(row).checkState() == Qt.CheckState.Checked
+            )
+            editor = self._editors.get(name)
+            touched = editor is not None and not editor.is_untouched
+            if not ticked and not touched and not self._scope.is_configured(name):
+                continue
+            stored_name = self._scope.stored_name(name)
             merge.apply(
-                task.task_id,
-                enable=item.checkState() == Qt.CheckState.Checked,
-                options=self._editors[task.task_id].values(),
+                # Write under the STORED spelling where there is one, so ticking a note type
+                # cannot fork its settings into a second entry differing only in case.
+                stored_name or name,
+                enable=ticked,
+                tasks=editor.values() if editor is not None else None,
             )
         return merge.result()
 
 
-def _labelled(field: ConfigField) -> QLabel:
-    """The row label for a scalar option (its help is on the control as a tooltip)."""
-    label = QLabel(field.label)
-    label.setToolTip(field.help)
-    return label
+def _task_item(label: str, enabled: bool) -> QListWidgetItem:
+    """One task row: its name, and the tick that decides whether it runs."""
+    item = QListWidgetItem(label)
+    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+    item.setCheckState(Qt.CheckState.Checked if enabled else Qt.CheckState.Unchecked)
+    return item
 
 
-def _field_label(model: type[BaseModel], name: str) -> QLabel:
-    """The row label for a COMPLEX option, whose title/help the scalar deriver never sees."""
-    info = model.__fields__[name].field_info
-    label = QLabel(info.title or name.replace("_", " ").capitalize())
-    label.setToolTip(info.description or "")
-    return label
+def _move_button(glyph: str, tooltip: str, on_click: Callable[[], None]) -> QPushButton:
+    """One ▲/▼ reorder button, sized so the pair reads as a control rather than two buttons."""
+    button = QPushButton(glyph)
+    button.setToolTip(tooltip)
+    button.setFixedWidth(32)
+    button.setEnabled(
+        False
+    )  # nothing is selected until the list emits its first row change
+    button.clicked.connect(on_click)
+    return button
+
+
+def _table(value: Any) -> dict[str, Any]:
+    """Return ``value`` as a dict, or ``{}`` when it is absent or is not a table."""
+    return dict(value) if isinstance(value, dict) else {}

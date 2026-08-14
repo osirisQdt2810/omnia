@@ -14,6 +14,7 @@ Pure module: no ``aqt``/``anki`` imports.
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Optional
@@ -38,15 +39,84 @@ class NoteChange:
     fields: tuple[FieldChange, ...]
 
 
+def in_run_order(tasks: Iterable[MaintenanceTask]) -> list[MaintenanceTask]:
+    """Return ``tasks`` in the order a run applies them: by ``order``, ties keeping input order.
+
+    The single definition, because two of them is the bug it was written for. The settings
+    panel builds its task LIST from this too: the list's order IS the run order (it is what the
+    ▲/▼ buttons edit and what a save stamps back), so a panel that sorted differently from the
+    runner showed one sequence, ran another, and silently rewrote the stored positions to the
+    displayed ones on the next save.
+
+    Sorted, never re-registered: ``build_tasks`` yields registration order, which says nothing
+    about when a task runs.
+    """
+    return sorted(tasks, key=lambda task: task.order)
+
+
+class SkipReason(enum.Enum):
+    """Why a note's own note type contributed nothing to a run.
+
+    A selection spans whatever note types the user highlighted, and settings are per note type
+    — so passing a note over is NORMAL, not an error. It must still be said out loud: "nothing
+    happened" and "nothing happened because this note type is not set up" look identical to a
+    user, and the second one is the whole reason the feature seemed broken.
+    """
+
+    #: No settings exist for this note type (or the stored entry is not a table).
+    UNCONFIGURED = "unconfigured"
+    #: Settings exist, but the user unticked the note type.
+    DISABLED = "disabled"
+    #: The note type is ticked, but every task inside it is switched off.
+    NO_TASKS = "no_tasks"
+
+    @property
+    def explanation(self) -> str:
+        """A phrase completing "N note(s) of 'X' — …" for the user."""
+        return _SKIP_EXPLANATIONS[self]
+
+
+_SKIP_EXPLANATIONS = {
+    SkipReason.UNCONFIGURED: "no maintenance settings for this note type",
+    SkipReason.DISABLED: "this note type is switched off",
+    SkipReason.NO_TASKS: "every task is switched off for this note type",
+}
+
+
+@dataclass(frozen=True)
+class SkippedNotes:
+    """The notes of ONE note type a run passed over, and why."""
+
+    note_type: str
+    reason: SkipReason
+    note_count: int
+
+    @property
+    def label(self) -> str:
+        """The note type as the user should read it (a note with no resolvable type included)."""
+        return self.note_type or "(unknown note type)"
+
+    def describe(self) -> str:
+        """One phrase for the preview: how many notes, of what, and why they were passed over."""
+        return (
+            f"{self.note_count} note(s) of '{self.label}' — {self.reason.explanation}"
+        )
+
+
 @dataclass(frozen=True)
 class ChangePlan:
     """The full, reviewable result of a run: the notes that would change, and how.
 
     Empty by construction when nothing matched, so a caller can gate the preview dialog on
     :attr:`is_empty` instead of counting entries itself.
+
+    :attr:`skipped` carries the OTHER half of the answer — the selected notes the run could
+    not act on, grouped by note type. It defaults to empty, so a single-note-type run (or a
+    plan rebuilt from a preview selection) constructs exactly as before.
     """
 
     notes: tuple[NoteChange, ...] = ()
+    skipped: tuple[SkippedNotes, ...] = ()
 
     def __iter__(self) -> Iterator[NoteChange]:
         return iter(self.notes)
@@ -66,6 +136,18 @@ class ChangePlan:
         """How many fields would change across every note."""
         return sum(len(note.fields) for note in self.notes)
 
+    @property
+    def skipped_note_count(self) -> int:
+        """How many selected notes the run passed over."""
+        return sum(entry.note_count for entry in self.skipped)
+
+    @property
+    def skip_summary(self) -> str:
+        """What the run passed over, as one line ("" when it passed over nothing)."""
+        if not self.skipped:
+            return ""
+        return "Skipped " + "; ".join(entry.describe() for entry in self.skipped) + "."
+
 
 class MaintenanceRunner:
     """Applies an ordered set of tasks to notes and reports what would change."""
@@ -78,12 +160,16 @@ class MaintenanceRunner:
                 ``order``; the caller does not pre-filter or pre-sort.
         """
         self._tasks = tuple(tasks)
+        # Settled once: the task set is fixed at construction, and a mixed-note-type run asks
+        # for it per note (see NoteTypePlanner).
+        self._active = tuple(
+            in_run_order(task for task in self._tasks if task.is_enabled)
+        )
 
     @property
     def active_tasks(self) -> tuple[MaintenanceTask, ...]:
         """The enabled tasks in run order (ties keep the order they were given in)."""
-        enabled = [task for task in self._tasks if task.is_enabled]
-        return tuple(sorted(enabled, key=lambda task: task.order))
+        return self._active
 
     def plan(self, notes: Iterable[NoteView]) -> ChangePlan:
         """Return the :class:`ChangePlan` for ``notes`` without writing anything.
@@ -94,9 +180,17 @@ class MaintenanceRunner:
         Returns:
             A plan holding one :class:`NoteChange` per note that would actually change.
         """
-        tasks = self.active_tasks
-        changes = [self._plan_note(note, tasks) for note in notes]
+        changes = (self.plan_note(note) for note in notes)
         return ChangePlan(tuple(change for change in changes if change is not None))
+
+    def plan_note(self, note: NoteView) -> Optional[NoteChange]:
+        """Return what this runner's tasks would change on ONE note, or None if nothing.
+
+        The per-note entry point, so a run spanning several note types can plan each note with
+        its own note type's runner while keeping the selection's order (see
+        :class:`~omnia.plugins.note_maintenance.note_types.NoteTypePlanner`).
+        """
+        return self._plan_note(note, self._active)
 
     @staticmethod
     def _plan_note(

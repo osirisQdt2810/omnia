@@ -85,15 +85,10 @@ jobs:
           --from-ref ${{ github.event.pull_request.base.sha }}
           --to-ref HEAD
       - name: Run test suite
-        # Vendored deps come from the committed vendor/universal; keyed provider
-        # tests auto-skip without creds. The three deselected suites hit live
-        # third-party endpoints (Google Translate TTS / Edge TTS) that answer
-        # datacenter IPs with 403s — a flake source, not a signal, on CI.
-        run: >-
-          pytest tests/ -q
-          --deselect tests/providers/test_tts.py::TestGoogleTranslateRealTTS
-          --deselect tests/providers/test_tts.py::TestEdgeRealTTS
-          --deselect tests/providers/test_anki_runtime.py::test_edge_tts_synthesizes_hermetically
+        # Vendored deps come from the committed vendor/universal; keyed provider tests
+        # auto-skip without creds. The invocation itself lives in the script so this and
+        # ci.yml cannot drift apart.
+        run: bash scripts/run_tests.sh
 
   pr-body:
     name: PR description
@@ -156,17 +151,16 @@ jobs:
         # Its own job rather than a flag on the matrix: the six test legs exist to catch
         # version- and OS-specific breakage and should stay as fast as possible, and coverage
         # only needs measuring once. Deliberately NOT a merge gate — see requirements-dev.
-        run: >-
-          pytest tests/ -q --cov=src/omnia --cov-report=xml --cov-report=term:skip-covered
-          --deselect tests/providers/test_tts.py::TestGoogleTranslateRealTTS
-          --deselect tests/providers/test_tts.py::TestEdgeRealTTS
-          --deselect tests/providers/test_anki_runtime.py::test_edge_tts_synthesizes_hermetically
-      - name: Publish to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          files: ./coverage.xml
-          # Tokenless upload works for a public repo; never let a reporting service fail a PR.
-          fail_ci_if_error: false
+        run: bash scripts/run_tests.sh --cov=src/omnia --cov-report=xml --cov-report=term:skip-covered
+      - name: Report the coverage percentage
+        # The README badge is published from ci.yml (push to main); this only prints the number
+        # so a reviewer can see the effect of a PR without opening an external service.
+        #
+        # Codecov upload removed: it was refused with "Token required - not valid tokenless
+        # upload" on EVERY run, and `fail_ci_if_error: false` made that refusal look like
+        # success — the badge read "unknown" for weeks while the job was green. Restore it by
+        # adding a CODECOV_TOKEN secret and passing `token:`; do not restore it tokenless.
+        run: python scripts/coverage_badge.py coverage.xml /tmp/coverage-badge.json
 
   review:
     name: Claude review

@@ -19,9 +19,23 @@ force_again_after_days = 7     # if the Hard interval would exceed this, force A
 
 # display_interval has no options.
 
-# One table per maintenance task: `enable` (does it run) + `order` (lower runs first) + the
-# task's own options. A task with no table here runs with its model defaults. Nothing is ever
-# written without the user confirming the diff first.
+# Maintenance settings are PER NOTE TYPE — a task option that names a field can only mean
+# something inside one note type — and a run maintains every note type you switch on:
+#
+#   [note_maintenance.note_types."Vocabulary"]
+#   enable = true
+#   [note_maintenance.note_types."Vocabulary".tasks.strip_ipa]
+#   enable = true
+#   fields = { Synonyms = "SynonymsNoIPA" }
+#
+# The settings panel writes that map (every field picked from a dropdown of the note type's
+# real fields); a note whose type has no entry is reported in the preview, never guessed at.
+#
+# The `[note_maintenance.tasks]` tables below are the PRE-note-type global map. They are no
+# longer run — they are the starting point the panel offers for a note type you have not
+# configured yet, and an older Omnia still runs them, so they are never rewritten.
+# One table per task: `enable` (does it run) + `order` (lower runs first) + the task's own
+# options. Nothing is ever written without the user confirming the diff first.
 # These values MIRROR each task's config model, which is where the defaults actually live — a
 # collection-backed profile never reads this file. A test pins the two together.
 # `reformat_synonyms` runs BEFORE `strip_ipa`: strip_ipa only understands an already paired
