@@ -192,6 +192,15 @@ class TestChainPayloadParsing:
         assert rebuilt[0].tools == []
 
 
+def _strip_css_comments(source: str) -> str:
+    """Return ``source`` with ``/* … */`` blocks removed.
+
+    Same reason as :func:`_strip_comments` for JS: this stylesheet explains WHY a declaration
+    is absent, naming it, and an assertion that greps the prose fails on its own comment.
+    """
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
+
 def _strip_comments(source: str) -> str:
     """Return ``source`` with ``//`` line comments removed.
 
@@ -210,14 +219,16 @@ class TestToolsPickerPage:
     def _html(self, tools=None) -> str:
         return build_smart_notes_html(dark=False, tools=tools)
 
-    def test_the_tools_column_sits_between_prompt_and_provider(self):
+    def test_the_tools_column_sits_beside_generate(self):
+        # Moved (was: between Prompt and Provider). Tools decides HOW a field is produced —
+        # including whether the prompt is read at all — so it belongs next to the switch that
+        # decides WHETHER it is produced, not buried among the provider settings. It took the
+        # slot the removed Lock column left.
         html = self._html()
+
         assert ">Tools</th>" in html
-        assert (
-            html.index(">Prompt</th>")
-            < html.index(">Tools</th>")
-            < html.index(">Provider</th>")
-        )
+        assert html.index(">Generate</th>") < html.index(">Tools</th>")
+        assert html.index(">Tools</th>") < html.index(">Type</th>")
 
     def test_the_picker_modal_is_present(self):
         html = self._html()
@@ -336,6 +347,116 @@ class TestToolsPickerPage:
         ):
             assert owned_by_the_user not in lock_state
 
+    def test_the_lock_has_no_column_but_lock_all_survives(self):
+        # The lock affects ONLY the prompt, so a whole column claimed table width to say
+        # something about one neighbouring cell — with ten columns already overflowing the
+        # card. It moved into the prompt cell's corner; the toggle-all it used to carry moved
+        # into the Prompt header so the capability is not silently lost with the column.
+        html = self._html()
+
+        assert ">Lock</th>" not in html
+        assert 'data-toggle="lock"' in html  # still reachable
+        assert "sn-prompt-cell" in _js(html, "function makePromptCell(", 900)
+
+    def test_the_lock_tooltip_says_prompt_not_settings(self):
+        # It said "freeze its settings" — true when the lock froze the whole row, and a plain
+        # lie once it was narrowed to Type and Prompt.
+        button = _strip_comments(_js(self._html(), "function makeLockButton(", 900))
+
+        assert "Freeze this prompt" in button
+        assert "settings" not in button
+
+    def test_the_prompt_fades_when_the_chain_never_reaches_a_provider(self):
+        # The prompt is the instruction handed to a provider. A chain of purely deterministic
+        # tools never reads it, so offering it invites a prompt that changes nothing.
+        state = _js(self._html(), "function applyKindState(", 1400)
+
+        assert '.sn-prompt-body").classList.toggle("sn-na", !usesAi)' in state
+
+    def test_each_tool_gets_its_own_chip(self):
+        # "Cloze audio → AI" as one run-on string could not show which step costs money. Each
+        # tool now wears a chip carrying a per-tool class, so the chain reads as a sequence.
+        html = self._html()
+        summary = _js(html, "function updateToolsSummary(", 1400)
+
+        assert 'sn-chip sn-chip-" +' in summary
+        assert "sn-chip-arrow" in summary
+        # The sanitiser maps `cloze_audio` -> `cloze-audio`; the CSS must target THAT, or the
+        # chip renders unstyled (it did).
+        assert ".sn-chip-cloze-audio" in html
+        assert ".sn-chip-cloze_audio" not in html
+
+    def test_the_table_fits_instead_of_becoming_a_scroll_container(self):
+        """Reported from a screenshot: the card's right edge cut through Voice and put Preview
+        and Overwrite outside the modal, unreachable.
+
+        `overflow-x: auto` was the obvious fix and wrong twice. Per CSS Overflow 3 a
+        non-visible value on ONE axis computes the other to `auto`, so the wrap became a scroll
+        container in BOTH — re-parenting the sticky header to a scrollport that never scrolls
+        vertically. And this element is a flex item of `.sn-shell`, which is exactly the inner
+        auto-scroller the comment above it says blanks the whole page on QtWebEngine/macOS
+        Metal. The columns are sized to FIT instead.
+        """
+        css = _strip_css_comments(self._html())
+        # Scoped to the wrap's OWN rule: an unrelated `overflow-x: auto` elsewhere in the sheet
+        # (the user-tool source viewer needs one) must not make this pass or fail by accident.
+        wrap = css[css.index(".sn-table-wrap {") :].split("}")[0]
+
+        assert "overflow" not in wrap
+        assert "table-layout: fixed" in css
+        # Widths live on <col>, not on the <th>: `.sn-th-field` is `display: flex`, which
+        # overrides `display: table-cell`, so the browser wraps that header in an anonymous
+        # cell and fixed layout reads the width from THAT — a width set on the th never
+        # reaches the column (it collapsed the Field header to 16px, with the sort button
+        # sitting on top of the label).
+        assert "<colgroup>" in css
+        assert "th:nth-child" not in css
+
+    def test_the_lock_gutter_outranks_the_cell_padding_shorthand(self):
+        # `.sn-table td` is (0,1,1) and beats a bare `.sn-prompt-cell` (0,1,0), so the 26px
+        # reserved for the badge was never reserved: the glyph sat on the summary's last ~18px
+        # — precisely its ellipsis — and at FULL opacity on a locked row, where the text
+        # underneath is frozen.
+        css = _strip_css_comments(self._html())
+
+        assert "td.sn-prompt-cell { position: relative; padding-right: 26px; }" in css
+
+    def test_the_voice_col_is_hidden_with_its_cells(self):
+        # The <col> must carry the same class that hides the th and td. It did not, so with no
+        # sound field — the DEFAULT state — the row had 9 cells against 10 columns, every
+        # column from Voice on took its neighbour's width, and the last 5.5% became a dead
+        # cell-less gap. The budget still summed to 100%; it was just applied to the wrong
+        # columns, which is why the sum test alone could not catch it.
+        html = self._html()
+
+        assert '<col class="sn-col-voice sn-col-voicecol">' in html
+        assert ":not(.sn-has-sound) .sn-col-voice { display: none; }" in html
+
+    def test_the_column_budget_sums_to_one_hundred_percent(self):
+        # One unit, in one place. Mixing % with px let the two halves over-allocate against
+        # each other — 54% + 426px at the 1040px dialog left Prompt about 37px — and the
+        # shortfall is invisible until something is measured.
+        css = _strip_css_comments(self._html())
+        widths = [
+            float(w) for w in re.findall(r"\.sn-col-\w+\s*\{ width: ([\d.]+)%", css)
+        ]
+
+        assert len(widths) == 10, widths
+        assert sum(widths) == 100.0, sum(widths)
+
+    def test_the_lock_badge_survives_the_prompt_fade(self):
+        """`.sn-na` sets `pointer-events: none`, and that INHERITS.
+
+        Fading the prompt CELL took the lock badge inside it down with it: lock a prompt, then
+        set the row's chain to `cloze` alone, and the badge became unclickable while
+        `applyLockState` kept Type disabled — the row could not be unlocked from this tab at
+        all. The same 'a dead button is worse than a disabled one' as the preview fix.
+        """
+        state = _js(self._html(), "function applyKindState(", 1400)
+
+        assert '.sn-prompt-body").classList.toggle("sn-na"' in state
+        assert '.sn-prompt-cell").classList.toggle("sn-na"' not in state
+
     def test_preview_is_not_blocked_by_the_lock(self):
         """A dead button is worse than a disabled one.
 
@@ -369,7 +490,9 @@ class TestToolsPickerPage:
         assert "sn-row-locked" not in cell
         # …while the lock still covers what the auto-smart generator writes.
         assert ".sn-row-locked .sn-lockable" in html
-        assert 'cell("sn-prompt-cell sn-lockable")' in html
+        # The prompt's BODY still blurs; the lock badge sits outside it so it stays clickable
+        # (a lock you cannot see to undo is a trap).
+        assert 'body.className = "sn-prompt-body sn-lockable"' in html
 
     def test_editing_the_chain_refreshes_the_rows_applicability(self):
         # `applyKindState` ran at row build and on a Type change only — never when the CHAIN

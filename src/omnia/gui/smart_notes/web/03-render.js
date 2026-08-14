@@ -41,7 +41,7 @@
     tdOn.appendChild(makeToggle("sn-enabled", row.enabled));
     tr.appendChild(tdOn);
 
-    tr.appendChild(makeLockCell(tr, row.prompt_locked));
+    tr.appendChild(makeToolsCell(tr));
 
     const tdType = cell("sn-lockable");  // type: written by auto-smart, so the lock covers it
     const typeSel = makeTypeSelect(row.type || "text");
@@ -51,9 +51,7 @@
     tdType.appendChild(typeSel);
     tr.appendChild(tdType);
 
-    tr.appendChild(makePromptCell(tr));
-
-    tr.appendChild(makeToolsCell(tr));
+    tr.appendChild(makePromptCell(tr, row.prompt_locked));
 
     tr.appendChild(cell("sn-provider-cell"));
     tr.appendChild(cell("sn-model-cell"));
@@ -100,38 +98,47 @@
   }
 
   /**
-   * Build the Lock cell: a toggle that freezes + blurs the row's settings when on.
+   * Build the lock badge that sits in the prompt cell's corner.
    * @param {!HTMLTableRowElement} tr The owning row.
    * @param {boolean} locked Initial locked state.
-   * @return {!HTMLTableCellElement}
+   * @return {!HTMLButtonElement}
    */
-  function makeLockCell(tr, locked) {
-    const td = cell("sn-center");
+  function makeLockButton(tr, locked) {
     const lock = document.createElement("button");
     lock.type = "button";
     lock.className = "sn-lock" + (locked ? " sn-locked" : "");
     lock.textContent = locked ? "🔒" : "🔓";
-    lock.title = "Lock this field — freeze its settings; skipped by Auto-smart / Improve";
+    // Says PROMPT, because that is all it does. It used to say "settings" — true when the lock
+    // froze the whole row, and a plain lie once it was narrowed to Type and Prompt.
+    lock.title = "Freeze this prompt — Auto-smart and Improve will skip it";
     lock.addEventListener("click", function () {
       const isLocked = lock.classList.toggle("sn-locked");
       lock.textContent = isLocked ? "🔒" : "🔓";
       applyLockState(tr);
     });
-    td.appendChild(lock);
-    return td;
+    return lock;
   }
 
   /**
-   * Build the Prompt cell: a clickable summary that opens the popup editor when unlocked.
+   * Build the Prompt cell: a clickable summary that opens the popup editor when unlocked,
+   * plus the lock badge in its corner.
    * @param {!HTMLTableRowElement} tr The owning row.
+   * @param {boolean} locked Initial locked state of this row's prompt.
    * @return {!HTMLTableCellElement}
    */
-  function makePromptCell(tr) {
-    const td = cell("sn-prompt-cell sn-lockable");
+  function makePromptCell(tr, locked) {
+    // The lock rides in this cell's top-right corner rather than owning a whole column: it
+    // affects ONLY the prompt, so a column of its own claimed table width to say something
+    // about a single neighbouring cell.
+    const td = cell("sn-prompt-cell");
+    const body = document.createElement("div");
+    body.className = "sn-prompt-body sn-lockable";
     const summary = document.createElement("div");
     summary.className = "sn-prompt-summary";
-    td.appendChild(summary);
-    td.addEventListener("click", function () {
+    body.appendChild(summary);
+    td.appendChild(body);
+    td.appendChild(makeLockButton(tr, locked));
+    body.addEventListener("click", function () {
       if (!tr.classList.contains("sn-row-locked")) {
         openPromptEditor(tr);
       }
@@ -283,6 +290,13 @@
     tr.querySelector(".sn-provider-cell").classList.toggle("sn-na", !usesAi);
     tr.querySelector(".sn-model-cell").classList.toggle("sn-na", sound || !usesAi);
     tr.querySelector(".sn-voice-cell").classList.toggle("sn-na", !sound || !usesAi);
+    // The PROMPT too: it is the instruction handed to a provider, so a chain of purely
+    // deterministic tools (cloze alone, say) never reads it. Leaving it lit invites someone to
+    // write a prompt for a row that will not use one and wonder why nothing changed.
+    // The BODY, not the cell: `.sn-na` sets `pointer-events: none`, which inherits — fading
+    // the cell took the lock badge inside it down too, and a row whose prompt was locked and
+    // whose chain then became AI-free could not be unlocked from this tab at all.
+    tr.querySelector(".sn-prompt-body").classList.toggle("sn-na", !usesAi);
   }
 
   /**

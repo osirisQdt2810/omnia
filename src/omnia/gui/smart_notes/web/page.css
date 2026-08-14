@@ -12,6 +12,7 @@ body.omnia-light {
   --row: rgba(255,255,255,0.7); --row-alt: rgba(240,243,250,0.7);
   --input-bg: #ffffff; --input-border: rgba(20,30,60,0.18);
   --shadow: rgba(20,30,60,0.12); --head: rgba(91,110,245,0.10); --fail: #c0392b;
+  --ok: #1f8a55;
   --head-bg: #e7eaf6; --overlay: rgba(20,30,60,0.34);
 }
 body.omnia-dark {
@@ -21,6 +22,7 @@ body.omnia-dark {
   --row: rgba(46,51,66,0.45); --row-alt: rgba(36,40,52,0.45);
   --input-bg: rgba(20,22,30,0.7); --input-border: rgba(255,255,255,0.16);
   --shadow: rgba(0,0,0,0.45); --head: rgba(124,140,255,0.16); --fail: #ff6b6b;
+  --ok: #3ecf8e;
   --head-bg: #2a2f40; --overlay: rgba(0,0,0,0.55);
 }
 body {
@@ -81,7 +83,7 @@ select:disabled { opacity: 0.7; }
 .sn-decks-all { font-weight: 700; padding: 4px 6px; }
 .sn-decks-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
 
-/* Clickable column headers (Generate / Lock / Overwrite) toggle ALL rows for that column.
+/* Clickable column headers (Generate / Overwrite) toggle ALL rows for that column.
    (No glyph — keeps the header row visually balanced; the pointer + hover signal it.) */
 .sn-th-toggle { cursor: pointer; user-select: none; }
 .sn-th-toggle:hover { color: var(--accent); }
@@ -333,7 +335,28 @@ select:disabled { opacity: 0.7; }
   border: 1px solid var(--card-border); box-shadow: 0 1px 3px var(--shadow);
   background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
 }
-.sn-table { width: 100%; border-collapse: collapse; }
+/* Ten columns must FIT rather than scroll. `overflow-x: auto` here was the obvious fix and the
+   wrong one twice over: per CSS Overflow 3 a non-visible value on one axis computes the other
+   to `auto`, so the wrap became a scroll container in BOTH directions — which re-parents the
+   sticky header (above) to a scrollport that never scrolls vertically, silently un-pinning it;
+   and this element is a flex item of .sn-shell, exactly the inner auto-scroller the comment
+   above says blanks the whole page on QtWebEngine/macOS Metal.
+   So the widths below are capped instead. Dropping the Lock column bought most of the room. */
+.sn-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+/* The whole budget, in one place and in ONE unit. Mixing % with px let the fixed columns and
+   the percentages over-allocate between them — 54% + 426px at a 1040px dialog left Prompt
+   about 37px — and the shortfall is invisible until something is measured. Percentages must
+   total 100. */
+.sn-col-field     { width: 13%; }
+.sn-col-generate  { width: 6.5%; }
+.sn-col-tools     { width: 12%; }
+.sn-col-type      { width: 8.5%; }
+.sn-col-prompt    { width: 15%; }
+.sn-col-provider  { width: 11%; }
+.sn-col-model     { width: 11%; }
+.sn-col-voicecol  { width: 12%; }
+.sn-col-preview   { width: 5.5%; }
+.sn-col-overwrite { width: 5.5%; }
 .sn-table thead th {
   position: sticky; top: 0; z-index: 2; text-align: center;
   font-size: 11px; font-weight: 700; text-transform: uppercase;
@@ -366,7 +389,7 @@ select:disabled { opacity: 0.7; }
 }
 
 /* Prompt cell: a clickable summary that opens the popup editor (never edited inline). */
-.sn-prompt-cell { cursor: pointer; min-width: 220px; }
+.sn-prompt-cell { cursor: pointer; min-width: 0; }
 .sn-prompt-summary {
   border: 1px dashed var(--input-border); border-radius: 8px; padding: 6px 8px;
   min-height: 30px; line-height: 1.4; color: var(--fg);
@@ -375,6 +398,20 @@ select:disabled { opacity: 0.7; }
 }
 .sn-prompt-cell:hover .sn-prompt-summary { border-color: var(--accent); background: var(--head); }
 .sn-prompt-summary.sn-prompt-empty { color: var(--muted); font-style: italic; }
+
+/* The prompt cell holds its own lock in the top-right corner (the Lock COLUMN is gone: it
+   spoke about one neighbouring cell and claimed table width to do it). The body is what
+   blurs when locked; the badge must stay lit and clickable so it can be undone. */
+/* `td.` on purpose: the shorthand in `.sn-table td` is (0,1,1) and outranks a bare class,
+   so a plain `.sn-prompt-cell { padding-right }` lost and the badge's gutter was never
+   reserved — it overlapped the summary's last ~18px, which is exactly its ellipsis. */
+.sn-table td.sn-prompt-cell { position: relative; padding-right: 26px; }
+.sn-prompt-body { min-width: 0; }
+.sn-prompt-cell .sn-lock {
+  position: absolute; top: 4px; right: 4px;
+  padding: 0 3px; font-size: 11px; line-height: 1.2; opacity: 0.45;
+}
+.sn-prompt-cell:hover .sn-lock, .sn-prompt-cell .sn-lock.sn-locked { opacity: 1; }
 
 .sn-lock {
   cursor: pointer; border: 1px solid var(--input-border); border-radius: 8px;
@@ -394,7 +431,12 @@ select:disabled { opacity: 0.7; }
 .sn-iconbtn:active { transform: scale(0.94); }
 .sn-iconbtn:disabled { opacity: 0.5; cursor: default; }
 
-.sn-provider, .sn-model, .sn-voice { min-width: 120px; max-width: 180px; }
+/* width:100% inside a fixed-layout column: the SELECT follows its column rather than the
+   column following the longest option. "English (US) · Neural2-C" used to widen the table on
+   its own; the full name is still readable in the open dropdown. */
+.sn-provider, .sn-model, .sn-voice {
+  width: 100%; min-width: 0; max-width: 100%; text-overflow: ellipsis;
+}
 /* The Voice column only appears once at least one row is a sound field. */
 .sn-table:not(.sn-has-sound) .sn-col-voice { display: none; }
 .sn-check { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }
@@ -803,8 +845,37 @@ select:disabled { opacity: 0.7; }
    The table cell is a compact chain summary ("cloze → AI"); the modal lists every tool that
    can serve the row's kind, in run order, with ▲/▼ and a params mini-form. */
 .sn-tools-cell { white-space: nowrap; }
-.sn-tools-btn { max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
-.sn-tools-btn.sn-tools-default { color: var(--muted); font-style: italic; }
+.sn-tools-btn {
+  /* Wraps rather than clipping: `text-overflow` does nothing on a flex container, so a
+     three-tool chain was being cut mid-chip with no sign there was more. */
+  max-width: 100%; display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  justify-content: center; row-gap: 2px;
+}
+/* Each tool wears its own chip, so a chain reads as a sequence of named steps rather than one
+   run-on string. The base chip is the fallback for a user-authored tool this build does not
+   know — it stays legible instead of rendering unstyled. */
+.sn-chip {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--card-border); background: var(--row-alt); color: var(--fg);
+}
+.sn-chip-arrow { font-size: 9px; color: var(--muted); }
+/* `ai` costs tokens — the accent marks the one step in a chain that is not free. */
+.sn-chip-ai {
+  border-color: var(--accent); color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+/* The deterministic builtins: green, because they are the free path. */
+.sn-chip-cloze, .sn-chip-cloze-audio {
+  border-color: var(--ok, #30a46c); color: var(--ok, #30a46c);
+  background: color-mix(in srgb, var(--ok, #30a46c) 12%, transparent);
+}
+/* A user-authored tool (`user:<slug>` → `user-<slug>`), distinct from both. */
+.sn-tools-btn [class*="sn-chip-user-"] {
+  border-color: var(--accent-2, #8b7cf6); color: var(--accent-2, #8b7cf6);
+  background: color-mix(in srgb, var(--accent-2, #8b7cf6) 12%, transparent);
+}
+.sn-tools-btn.sn-tools-default .sn-chip { opacity: 0.75; }
 .sn-tools-card { max-width: 620px; }
 .sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .sn-tools-empty { color: var(--muted); font-size: 12px; }

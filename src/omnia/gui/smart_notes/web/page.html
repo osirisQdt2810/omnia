@@ -30,14 +30,34 @@
   </div>
   <div id="sn-fields-view" class="sn-table-wrap">
     <table class="sn-table">
+      <!-- Column widths live here, NOT on the <th>. `.sn-th-field` is `display: flex`, which
+           overrides `display: table-cell`, so the browser wraps that header in an anonymous
+           cell and `table-layout: fixed` reads the column width from THAT — a width set on the
+           <th> never reaches the column. <col> is honoured whatever the cell's display is.
+           Percentages sum to 100 so the budget cannot silently over-allocate. -->
+      <colgroup>
+        <col class="sn-col-field">     <!-- Field     -->
+        <col class="sn-col-generate">  <!-- Generate  -->
+        <col class="sn-col-tools">     <!-- Tools     -->
+        <col class="sn-col-type">      <!-- Type      -->
+        <col class="sn-col-prompt">    <!-- Prompt    -->
+        <col class="sn-col-provider">  <!-- Provider  -->
+        <col class="sn-col-model">     <!-- Model     -->
+        <!-- BOTH classes: `sn-col-voice` is what hides the whole column when no row is a
+             sound field, and it has to hit the <col> as well as the th/td. A <col> that
+             stayed visible while its cells vanished left 9 cells against 10 columns, and
+             every column from Voice on took its neighbour's width. -->
+        <col class="sn-col-voice sn-col-voicecol">  <!-- Voice -->
+        <col class="sn-col-preview">   <!-- Preview   -->
+        <col class="sn-col-overwrite"> <!-- Overwrite -->
+      </colgroup>
       <thead>
         <tr>
           <th class="sn-th-field"><span>Field</span><button id="sn-sort-field" class="sn-sort" type="button" title="Sort rows by field name">↕</button></th>
           <th class="sn-th-toggle" data-toggle="generate" title="Generate this field in batches / Auto-prompt / Editor ✨ — click to toggle ALL">Generate</th>
-          <th class="sn-th-toggle" data-toggle="lock" title="Lock a field (freeze its settings; skip Auto-prompt / Improve) — click to toggle ALL">Lock</th>
-          <th>Type</th>
-          <th>Prompt</th>
           <th title="How this field is generated: an ordered chain of tools, tried until one produces a result. Default: AI only.">Tools</th>
+          <th>Type</th>
+          <th>Prompt<button type="button" class="sn-sort sn-th-toggle" data-toggle="lock" title="Lock / unlock every prompt">🔒</button></th>
           <th title="Inherit the central provider when blank">Provider</th>
           <th title="Model for text/image fields">Model</th>
           <th class="sn-col-voice" title="Voice for a sound field (blank = the provider's default; the language is taken from the voice, or auto-detected when blank)">Voice</th>
