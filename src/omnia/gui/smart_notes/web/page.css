@@ -343,18 +343,20 @@ select:disabled { opacity: 0.7; }
    above says blanks the whole page on QtWebEngine/macOS Metal.
    So the widths below are capped instead. Dropping the Lock column bought most of the room. */
 .sn-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-/* Fixed layout needs the narrow columns pinned; Field and Prompt then share the remainder.
-   Percentages, so the table adapts to the dialog rather than to a guessed pixel width. */
-.sn-table th:nth-child(1)  { width: 15%; }   /* Field    */
-.sn-table th:nth-child(2)  { width: 68px; }  /* Generate */
-.sn-table th:nth-child(3)  { width: 128px; } /* Tools    */
-.sn-table th:nth-child(4)  { width: 92px; }  /* Type     */
-.sn-table th:nth-child(5)  { width: auto; }  /* Prompt — takes the slack */
-.sn-table th:nth-child(6)  { width: 13%; }   /* Provider */
-.sn-table th:nth-child(7)  { width: 13%; }   /* Model    */
-.sn-table th:nth-child(8)  { width: 13%; }   /* Voice    */
-.sn-table th:nth-child(9)  { width: 62px; }  /* Preview  */
-.sn-table th:nth-child(10) { width: 76px; }  /* Overwrite */
+/* The whole budget, in one place and in ONE unit. Mixing % with px let the fixed columns and
+   the percentages over-allocate between them — 54% + 426px at a 1040px dialog left Prompt
+   about 37px — and the shortfall is invisible until something is measured. Percentages must
+   total 100. */
+.sn-col-field     { width: 13%; }
+.sn-col-generate  { width: 6.5%; }
+.sn-col-tools     { width: 12%; }
+.sn-col-type      { width: 8.5%; }
+.sn-col-prompt    { width: 15%; }
+.sn-col-provider  { width: 11%; }
+.sn-col-model     { width: 11%; }
+.sn-col-voicecol  { width: 12%; }
+.sn-col-preview   { width: 5.5%; }
+.sn-col-overwrite { width: 5.5%; }
 .sn-table thead th {
   position: sticky; top: 0; z-index: 2; text-align: center;
   font-size: 11px; font-weight: 700; text-transform: uppercase;

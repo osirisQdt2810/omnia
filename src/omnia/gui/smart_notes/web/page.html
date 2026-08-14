@@ -30,6 +30,23 @@
   </div>
   <div id="sn-fields-view" class="sn-table-wrap">
     <table class="sn-table">
+      <!-- Column widths live here, NOT on the <th>. `.sn-th-field` is `display: flex`, which
+           overrides `display: table-cell`, so the browser wraps that header in an anonymous
+           cell and `table-layout: fixed` reads the column width from THAT — a width set on the
+           <th> never reaches the column. <col> is honoured whatever the cell's display is.
+           Percentages sum to 100 so the budget cannot silently over-allocate. -->
+      <colgroup>
+        <col class="sn-col-field">     <!-- Field     -->
+        <col class="sn-col-generate">  <!-- Generate  -->
+        <col class="sn-col-tools">     <!-- Tools     -->
+        <col class="sn-col-type">      <!-- Type      -->
+        <col class="sn-col-prompt">    <!-- Prompt    -->
+        <col class="sn-col-provider">  <!-- Provider  -->
+        <col class="sn-col-model">     <!-- Model     -->
+        <col class="sn-col-voicecol">  <!-- Voice     -->
+        <col class="sn-col-preview">   <!-- Preview   -->
+        <col class="sn-col-overwrite"> <!-- Overwrite -->
+      </colgroup>
       <thead>
         <tr>
           <th class="sn-th-field"><span>Field</span><button id="sn-sort-field" class="sn-sort" type="button" title="Sort rows by field name">↕</button></th>

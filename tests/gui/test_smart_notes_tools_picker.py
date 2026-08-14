@@ -404,8 +404,25 @@ class TestToolsPickerPage:
 
         assert "overflow" not in wrap
         assert "table-layout: fixed" in css
-        # The narrow columns are pinned so Field and Prompt absorb the remainder.
-        assert ".sn-table th:nth-child(10)" in css
+        # Widths live on <col>, not on the <th>: `.sn-th-field` is `display: flex`, which
+        # overrides `display: table-cell`, so the browser wraps that header in an anonymous
+        # cell and fixed layout reads the width from THAT — a width set on the th never
+        # reaches the column (it collapsed the Field header to 16px, with the sort button
+        # sitting on top of the label).
+        assert "<colgroup>" in css
+        assert "th:nth-child" not in css
+
+    def test_the_column_budget_sums_to_one_hundred_percent(self):
+        # One unit, in one place. Mixing % with px let the two halves over-allocate against
+        # each other — 54% + 426px at the 1040px dialog left Prompt about 37px — and the
+        # shortfall is invisible until something is measured.
+        css = _strip_css_comments(self._html())
+        widths = [
+            float(w) for w in re.findall(r"\.sn-col-\w+\s*\{ width: ([\d.]+)%", css)
+        ]
+
+        assert len(widths) == 10, widths
+        assert sum(widths) == 100.0, sum(widths)
 
     def test_the_lock_badge_survives_the_prompt_fade(self):
         """`.sn-na` sets `pointer-events: none`, and that INHERITS.
