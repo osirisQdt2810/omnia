@@ -25,9 +25,9 @@ Pure logic — no ``aqt``/``anki`` imports, so tools unit-test headless.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
-from collections.abc import Callable
 
 from omnia.core.audio.sidecar import AudioSidecar
 from omnia.core.providers.errors import ProviderError
