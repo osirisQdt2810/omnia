@@ -23,8 +23,14 @@ build/
 .DS_Store
 *.swp
 
-# AI agent / assistant working folders — local tooling, never shipped or pushed
-.claude/
+# AI agent / assistant working folders.
+#
+# .claude/ IS tracked: it holds the project's durable engineering docs (CLAUDE.md,
+# CONVENTIONS.md, the ADRs, FEATURE_LOG, WORKFLOW) plus the agent and slash-command
+# definitions. Keeping it out of git meant those rules lived on exactly one machine —
+# the moment work moved to another they were simply gone. Two things stay out:
+.claude/settings.local.json
+.claude/tmp/
 .codex/
 .codx/
 .cursor/
