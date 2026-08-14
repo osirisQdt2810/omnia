@@ -131,12 +131,19 @@ class ConfigController:
         return {"all_fields": all_fields}
 
     def on_save(self, data: dict[str, Any]) -> dict[str, Any]:
+        # Per-note-type rules persist in the COLLECTION (synced), not the TOML config. The
+        # global option flags ride along on the same SmartNotesSettings. Load first: the posted
+        # rows are rebuilt against the STORED ones so per-row state the table cannot render
+        # (a field's tool chain) is carried over instead of deleted.
+        settings = self._ctx.store.load()
+        note_type = str(data.get("note_type", ""))
         config = note_type_config_from_payload(
-            str(data.get("note_type", "")),
+            note_type,
             str(data.get("base_field", "")),
             list(data.get("rows", [])),
             list(data.get("decks", [])),
             positions=dict(data.get("positions", {})),
+            stored=settings.note_type_config(note_type),
         )
         if not config.note_type:
             return {"error": "Pick a note type first."}
@@ -146,9 +153,6 @@ class ConfigController:
         cycle = cycle_error_for_config(config)
         if cycle:
             return {"error": cycle}
-        # Per-note-type rules persist in the COLLECTION (synced), not the TOML config. The
-        # global option flags ride along on the same SmartNotesSettings.
-        settings = self._ctx.store.load()
         merged = merge_note_type_into(list(settings.note_types), config)
         opts = dict(data.get("options", {}))
         self._ctx.store.save(
@@ -168,7 +172,9 @@ class ConfigController:
                         opts.get("allow_empty_fields", settings.allow_empty_fields)
                     ),
                     "discard_unfilled_clips": bool(
-                        opts.get("discard_unfilled_clips", settings.discard_unfilled_clips)
+                        opts.get(
+                            "discard_unfilled_clips", settings.discard_unfilled_clips
+                        )
                     ),
                     # Merge so integration keys not sent by this page are preserved.
                     "auto_generate_integrations": {
@@ -265,7 +271,11 @@ class ConfigController:
     def _install_error_text(exc: Exception) -> str:
         """A user-facing one-liner for a failed install (full detail goes to the log)."""
         logger.exception("smart_notes: clipper install failed")
-        return str(exc) if isinstance(exc, InstallError) else "Install failed — see the log."
+        return (
+            str(exc)
+            if isinstance(exc, InstallError)
+            else "Install failed — see the log."
+        )
 
     def _push_install_progress(self, key: str, message: str) -> None:
         """Send an install progress line to ``window.__snClipperInstallProgress`` (main thread).

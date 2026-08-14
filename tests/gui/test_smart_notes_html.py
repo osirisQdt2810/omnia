@@ -19,6 +19,7 @@ from omnia.gui.smart_notes.html import (
 from omnia.plugins.smart_notes.authoring import AutoSmartField, apply_auto_smart
 from omnia.plugins.smart_notes.config import (
     FieldDep,
+    FieldToolConfig,
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
 )
@@ -422,6 +423,59 @@ class TestFieldConfigsFromPayload:
         assert c.overwrite is True and c.prompt_locked is True
 
 
+class TestUnrenderedRowStateSurvivesASave:
+    """State the table cannot render must be carried over from the STORED row, not deleted.
+
+    The tools chain is the live case: there is no tools column yet, so a posted row can never
+    mention it — and rebuilding the row from the payload alone would erase a chain configured
+    by a newer release or on another device (CONVENTIONS Part 2: keep what you could read but
+    not parse).
+    """
+
+    def _stored_row(self) -> SmartNotesFieldConfig:
+        return SmartNotesFieldConfig(
+            field="Meaning",
+            enabled=True,
+            tools=[
+                FieldToolConfig(tool="cloze", params={"sentence_field": "Sentence"}),
+                FieldToolConfig(tool="ai"),
+            ],
+        )
+
+    def test_a_stored_chain_survives_a_payload_that_never_mentions_it(self):
+        stored = self._stored_row()
+
+        rebuilt = field_configs_from_payload([row_to_payload(stored)], [stored])
+
+        assert [t.tool for t in rebuilt[0].tools] == ["cloze", "ai"]
+        assert rebuilt[0].tools[0].params == {"sentence_field": "Sentence"}
+
+    def test_note_type_config_from_payload_threads_the_stored_rows(self):
+        stored_config = _config("Word", [self._stored_row()])
+
+        rebuilt = note_type_config_from_payload(
+            "Vocab",
+            "Word",
+            [row_to_payload(row) for row in stored_config.fields],
+            stored=stored_config,
+        )
+
+        assert [t.tool for t in rebuilt.fields[0].tools] == ["cloze", "ai"]
+
+    def test_a_row_with_no_stored_counterpart_keeps_the_default_empty_chain(self):
+        rebuilt = note_type_config_from_payload(
+            "Vocab", "Word", [_row("Brand New", enabled=True)], stored=_config("Word")
+        )
+
+        assert rebuilt.fields[0].tools == []
+
+    def test_without_stored_rows_nothing_is_invented(self):
+        # The graph/preview callers pass no stored config; they must still build cleanly.
+        rebuilt = note_type_config_from_payload("Vocab", "Word", [_row("Meaning")])
+
+        assert rebuilt.fields[0].tools == []
+
+
 class TestNoteTypeConfigFromPayload:
     def test_assembles_full_config(self):
         config = note_type_config_from_payload(
@@ -763,7 +817,9 @@ class TestBuildSmartNotesHtml:
         # changed edges — including pending derived deletions (removedEdges) — before performSave
         # persists the config.
         html = build_smart_notes_html(dark=False)
-        assert "sn-graph-reload" not in html  # the separate Sync-prompts control is removed
+        assert (
+            "sn-graph-reload" not in html
+        )  # the separate Sync-prompts control is removed
         assert "removedEdges" in html
         assert "function beginSaveWithSync" in html
         assert "function performSave" in html
@@ -796,7 +852,9 @@ class TestBuildSmartNotesHtml:
         # drag elsewhere to connect); no fixed connector port.
         html = build_smart_notes_html(dark=False)
         assert "borderPoint" in html and "nodeCenter" in html
-        assert "function isOverText" in html  # the label = move zone, elsewhere = connect + tip
+        assert (
+            "function isOverText" in html
+        )  # the label = move zone, elsewhere = connect + tip
         assert "sn-handle" not in html  # the fixed connector dot is gone
         assert "border" in html  # the updated hint text
 
@@ -812,5 +870,7 @@ class TestBuildSmartNotesHtml:
         # field or unbalanced braces.
         html = build_smart_notes_html(dark=False)
         assert "sn-modal-warn" in html
-        assert "function promptRefIssues" in html and "function refreshModalWarn" in html
+        assert (
+            "function promptRefIssues" in html and "function refreshModalWarn" in html
+        )
         assert "Not a field on this note type" in html
