@@ -220,37 +220,49 @@ class ClozeMaskPlanner:
             The split sentence, or ``None`` when there is nothing in it to hide (the caller
             turns that into a hard failure — see the module docstring).
         """
+        marked = [(match.start(), match.end()) for match in CLOZE_RE.finditer(value)]
+        if marked:
+            # MARKER PATH — offsets into the RAW value, because strip_markup unwraps a cloze to
+            # its answer and would destroy the very positions this needs.
+            return self._split(value, marked, spoken=self._spoken)
+        if not self._word:
+            return None
+        # WORD PATH — matched on the text that will actually be SPOKEN, where markup has already
+        # vanished. This is what lets an occurrence a tag splits still be hidden: the shared
+        # matcher deliberately DISCARDS a hit reading across a tag (right for the text `cloze`
+        # tool, which must edit the original markup and would otherwise wrap half a word), and
+        # here that would leave "She sur<b>vived</b>" unmasked and then speak it, because
+        # strip_markup re-joins the pieces. This tool never edits markup, so it can simply look
+        # at the stripped text, where the word is whole. See ADR-011.
+        speech = self._spoken(value)
+        spans = [
+            (start, end)
+            for start, end, _ in ClozeRewriter(self._word).occurrences(speech)
+        ]
+        return self._split(speech, spans, spoken=lambda fragment: fragment.strip())
+
+    @staticmethod
+    def _split(
+        text: str,
+        spans: list[tuple[int, int]],
+        *,
+        spoken: Callable[[str], str],
+    ) -> Optional[MaskedSpeech]:
+        """Cut ``text`` at ``spans`` into spoken segments and hidden answers."""
         segments: list[str] = []
         hidden: list[str] = []
         cursor = 0
-        for start, end in self._spans(value):
-            answer = self._spoken(value[start:end])
+        for start, end in spans:
+            answer = spoken(text[start:end])
             if not answer:
                 continue  # a degenerate "{{c1::}}" hides nothing; leave the text as it is
-            segments.append(self._spoken(value[cursor:start]))
+            segments.append(spoken(text[cursor:start]))
             hidden.append(answer)
             cursor = end
         if not hidden:
             return None
-        segments.append(self._spoken(value[cursor:]))
+        segments.append(spoken(text[cursor:]))
         return MaskedSpeech(tuple(segments), tuple(hidden))
-
-    def _spans(self, value: str) -> list[tuple[int, int]]:
-        """Return the ``(start, end)`` offsets to hide, in document order.
-
-        Existing cloze markers win: a field fed by the ``cloze`` tool already says exactly what
-        the card hides, and honouring it keeps the text and audio cards in step. Only when
-        there are none does the headword get located — with
-        :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, so both tools
-        share one matcher (markup projection, two-way de-inflection, the function-word filter).
-        """
-        marked = [(match.start(), match.end()) for match in CLOZE_RE.finditer(value)]
-        if marked:
-            return marked
-        if not self._word:
-            return []
-        rewriter = ClozeRewriter(self._word)
-        return [(start, end) for start, end, _ in rewriter.occurrences(value)]
 
     @staticmethod
     def _spoken(fragment: str) -> str:

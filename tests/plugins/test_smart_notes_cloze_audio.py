@@ -788,3 +788,41 @@ class TestFieldDefaults:
             params={"source_field": "Sentence"},
         )
         assert _decoded_text(clip) == "The catdown."
+
+
+class TestMarkupSplittingAWordStillHidesIt:
+    """Every occurrence is hidden, including one an inline tag cuts in half.
+
+    The shared matcher DISCARDS a hit that reads across a tag — right for the text ``cloze``
+    tool, which edits the original markup and would otherwise wrap half a word, and fatal here:
+    the occurrence would simply go unmasked and ``strip_markup`` re-joins the pieces before the
+    voice reads them. Refusing the sentence would be safe but would lose the feature on ordinary
+    deck content (bold, pasted colour spans, soft hyphens), so the word path matches on the text
+    that will actually be SPOKEN, where the tag has already vanished. See ADR-011.
+    """
+
+    @pytest.mark.parametrize(
+        "sentence",
+        [
+            "She survived the winter. She sur<b>vived</b> again.",
+            "She survived. She surviv<b>ed</b> again.",
+            'She survived. <span style="color:red">sur</span>vived again.',
+            "She survived. She sur&shy;vived.",
+            "She survived. She <b><i>survived</i></b> again.",
+        ],
+    )
+    def test_both_occurrences_are_hidden(self, sentence):
+        plan = ClozeMaskPlanner("survive").plan(sentence)
+
+        assert plan is not None, "the sentence must produce, not refuse"
+        assert len(plan.hidden) == 2
+        assert not any("surviv" in segment.lower() for segment in plan.segments)
+
+    def test_the_marker_path_still_reads_the_raw_value(self):
+        # Markers must be located BEFORE stripping: strip_markup unwraps a cloze to its answer,
+        # which would destroy the very positions the marker path needs.
+        plan = ClozeMaskPlanner("").plan("The cat {{c1::sat}} down.")
+
+        assert plan is not None
+        assert list(plan.hidden) == ["sat"]
+        assert not any("sat" in segment for segment in plan.segments)

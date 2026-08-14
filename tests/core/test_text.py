@@ -81,3 +81,27 @@ class TestAsFieldHtml:
 
     def test_blank_input(self):
         assert as_field_html("") == ""
+
+
+class TestEveryEntityIsDecoded:
+    """An undecoded entity reaches a TTS provider verbatim and gets read out as characters.
+
+    The old hand-kept table covered six entities, so "caf&eacute;" was spoken as its literal
+    characters. Invisible formatting characters are removed for the same reason one layer down:
+    they split a word for every consumer that looks at the text.
+    """
+
+    def test_a_named_entity_outside_the_old_table(self):
+        assert strip_markup("caf&eacute; au lait") == "café au lait"
+
+    def test_nbsp_becomes_a_plain_space_not_u00a0(self):
+        # html.unescape would give U+00A0, which a voice and a \b regex both handle worse.
+        assert strip_markup("a&nbsp;b") == "a b"
+
+    def test_an_escaped_tag_stays_visible_text(self):
+        assert strip_markup("1 &lt; 2") == "1 < 2"
+
+    def test_invisible_formatting_characters_are_removed(self):
+        # A soft hyphen inside a word makes a word-boundary match miss it silently.
+        assert strip_markup("sur&shy;vived") == "survived"
+        assert strip_markup("zero​width") == "zerowidth"
