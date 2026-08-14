@@ -30,6 +30,12 @@ from omnia.plugins.smart_notes.authoring.persona import (
     DEPENDENCY_CLASSIFIER_SYSTEM,
     FLASHCARD_EXPERT_SYSTEM,
 )
+from omnia.plugins.smart_notes.authoring.tool_author import (
+    ToolAuthor,
+    build_user_tool_message,
+    parse_user_tool_reply,
+    user_tool_system_prompt,
+)
 
 __all__ = [
     "DEPENDENCY_CLASSIFIER_SYSTEM",
@@ -40,14 +46,18 @@ __all__ = [
     "EdgeKinding",
     "PromptAuthor",
     "PromptRewrite",
+    "ToolAuthor",
     "apply_auto_smart",
     "build_auto_smart_prompt",
     "build_classify_deps_batch_message",
     "build_classify_deps_message",
     "build_edge_change_message",
     "build_improve_in_popover_message",
+    "build_user_tool_message",
     "candidate_fields",
     "parse_auto_smart_response",
     "parse_classified_deps",
     "parse_classified_deps_batch",
+    "parse_user_tool_reply",
+    "user_tool_system_prompt",
 ]

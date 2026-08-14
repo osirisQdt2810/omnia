@@ -203,6 +203,7 @@
     <div class="sn-tabs">
       <button class="sn-tab sn-tab-active" data-tab="general">General</button>
       <button class="sn-tab" data-tab="account">Usage &amp; Keys</button>
+      <button class="sn-tab" data-tab="tools">Tools</button>
       <button class="sn-tab" data-tab="integrations">Integrations</button>
       <button class="sn-tab" data-tab="advanced">Advanced</button>
     </div>
@@ -230,6 +231,58 @@
         <input type="checkbox" id="sn-opt-discard-unfilled" class="sn-check">
         <span><b>Discard a clipped note when nothing could be generated</b><span class="sn-integ-status">Only affects notes arriving from the clippers above.</span></span>
       </label>
+    </div>
+    <div class="sn-tabpane" data-pane="tools" hidden>
+      <div class="sn-modal-fields">A <b>tool</b> fills a field without asking an AI. Describe a transform once, review the Python it produces, run it on a sample — then use it from any field's Tools picker, for free, forever.</div>
+      <div class="sn-ut-note" id="sn-ut-note">Your tools are Python files in this add-on's <span id="sn-ut-dir" class="sn-ut-dir"></span> folder. They stay on <b>this computer</b> — Anki does not sync them, so a field using one on another device just skips it and tries the next tool. Everything here runs with the same access as the add-on itself, which is why nothing is saved until you have read the code and run it.</div>
+      <div class="sn-ut-section">
+        <div class="sn-native-title">Your tools</div>
+        <div id="sn-ut-warn" class="sn-tools-warn" hidden>
+          <div id="sn-ut-warn-text"></div>
+          <div class="sn-ut-row">
+            <button id="sn-ut-warn-ok" class="sn-btn" type="button">Delete anyway</button>
+            <button id="sn-ut-warn-no" class="sn-btn" type="button">Keep it</button>
+          </div>
+        </div>
+        <div id="sn-ut-list" class="sn-ut-list"></div>
+        <button id="sn-ut-new" class="sn-btn sn-btn-magic" type="button">+ New tool</button>
+      </div>
+      <div id="sn-ut-editor" class="sn-ut-editor" hidden>
+        <div class="sn-ut-row">
+          <label class="sn-field sn-ut-name">
+            <span class="sn-label">Name</span>
+            <input id="sn-ut-label" type="text" class="sn-ut-input" placeholder="Extract extension">
+          </label>
+          <span id="sn-ut-slug" class="sn-ut-slug"></span>
+        </div>
+        <div class="sn-label">What should it do?</div>
+        <textarea id="sn-ut-prompt" class="sn-ut-textarea" rows="3" placeholder="From the audio filename in a field, output just the extension (mp3, wav…)."></textarea>
+        <div class="sn-ut-row">
+          <button id="sn-ut-generate" class="sn-btn sn-btn-magic" type="button">✨ Write the tool</button>
+          <span id="sn-ut-genmsg" class="sn-msg"></span>
+        </div>
+        <div class="sn-label">The tool's code — read it before you save it</div>
+        <textarea id="sn-ut-source" class="sn-ut-source" rows="16" spellcheck="false" placeholder="The generated Python appears here in full. You can edit it; testing it again re-arms Save."></textarea>
+        <div class="sn-ut-test">
+          <div class="sn-native-title">Try it</div>
+          <div class="sn-modal-fields">The sample stands in for the field the tool reads (it is called “Sample”).</div>
+          <textarea id="sn-ut-sample" class="sn-ut-textarea" rows="2" placeholder="[sound:omnia-1234-Audio.mp3]"></textarea>
+          <div class="sn-ut-row">
+            <button id="sn-ut-run" class="sn-btn" type="button">▶ Run test</button>
+            <span id="sn-ut-testmsg" class="sn-msg"></span>
+          </div>
+          <div id="sn-ut-out" class="sn-ut-out" hidden></div>
+        </div>
+        <div class="sn-ut-row sn-ut-foot">
+          <button id="sn-ut-save" class="sn-btn sn-btn-primary" type="button" disabled>Save tool</button>
+          <button id="sn-ut-cancel" class="sn-btn" type="button">Close</button>
+          <span id="sn-ut-savemsg" class="sn-msg"></span>
+        </div>
+      </div>
+      <div class="sn-ut-section">
+        <div class="sn-native-title">Built-in tools</div>
+        <div id="sn-ut-builtins" class="sn-ut-list"></div>
+      </div>
     </div>
     <div class="sn-tabpane" data-pane="advanced" hidden>
       <div class="sn-modal-fields">Advanced settings.</div>

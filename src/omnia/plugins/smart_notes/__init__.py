@@ -24,6 +24,7 @@ from omnia.plugins.smart_notes.engine import (
     GenerationResult,
     GenerationService,
 )
+from omnia.plugins.smart_notes.engine.tools import UserToolLoader, UserToolStore
 from omnia.plugins.smart_notes.integration import (
     BatchGenerator,
     BatchSummary,
@@ -81,9 +82,11 @@ class SmartNotesPlugin(FeaturePlugin):
         self._review: Optional[ReviewTimeEvaluator] = None
         self._gateway: Optional[IntegrationGateway] = None
         self._store: Optional[SmartNotesStore] = None
+        self._user_tools: Optional[UserToolLoader] = None
 
     def on_enable(self, ctx: PluginContext) -> None:
         self._ctx = ctx
+        self._load_user_tools()
         self._service = GenerationService(ctx.providers)
         # Rules persist in the collection (synced), read fresh each card via self._settings.
         self._store = SmartNotesStore()
@@ -111,11 +114,45 @@ class SmartNotesPlugin(FeaturePlugin):
             anki_compat.unsubscribe_anki_hook(
                 _NOTE_ADD_HOOK, self._gateway.on_note_will_be_added
             )
+        if self._user_tools is not None:
+            # A disabled feature must leave no trace: its user-authored tools stop being
+            # offered by the picker and stop resolving in a chain (the pipeline degrades the
+            # name to `unknown_tool`, exactly as on a device that never had the file).
+            self._user_tools.unload_all()
         self._ctx = None
         self._service = None
         self._review = None
         self._gateway = None
         self._store = None
+        self._user_tools = None
+
+    def _load_user_tools(self) -> None:
+        """Import every ``user_files/tools/*.py`` so its ``@register_tool`` runs.
+
+        Real Python the user authored through the Tools tab (see
+        :mod:`omnia.plugins.smart_notes.engine.tools.user_tools` for what that means and why it
+        is acceptable). The loader isolates each file, so a broken one is logged and skipped;
+        this guard is the outer belt — nothing about optional user tools may stop the feature
+        from enabling.
+        """
+        from omnia import addon_user_files_dir
+
+        try:
+            self._user_tools = UserToolLoader(
+                UserToolStore(addon_user_files_dir() / "tools")
+            )
+            loads = self._user_tools.load_all()
+        except Exception:  # boundary: never block enabling on the tools folder
+            logger.exception("smart_notes: could not load user-authored tools")
+            return
+        if not loads:
+            return  # the common case: no user tools, nothing worth a line in the log
+        failed = [load.slug for load in loads if not load.ok]
+        logger.info(
+            "smart_notes: loaded %d user tool(s)%s",
+            sum(1 for load in loads if load.ok),
+            f", skipped {failed}" if failed else "",
+        )
 
     # --- bespoke settings dialog -----------------------------------------------------
     def custom_config_dialog(self, repo: Any, parent: Any) -> Optional[Any]:

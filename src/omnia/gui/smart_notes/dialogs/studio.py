@@ -37,6 +37,7 @@ from omnia.gui.smart_notes.dialogs.controllers import (
     ConfigController,
     GraphController,
     NativeRuntimeController,
+    UserToolsController,
 )
 from omnia.gui.smart_notes.html import build_smart_notes_html
 from omnia.gui.web_dialog import WebDialog
@@ -75,12 +76,14 @@ class SmartNotesDialog(WebDialog):
         self._authoring = AuthoringController(self._ctx, self._graph)
         self._account = AccountController(self._ctx)
         self._native = NativeRuntimeController(self._ctx)
+        self._user_tools = UserToolsController(self._ctx)
         handlers = {
             **self._config.ops(),
             **self._graph.ops(),
             **self._authoring.ops(),
             **self._account.ops(),
             **self._native.ops(),
+            **self._user_tools.ops(),
         }
         super().__init__(
             parent,
@@ -105,7 +108,12 @@ class SmartNotesDialog(WebDialog):
         this needs the provider hub. With a broken provider config there is no hub to ask, and
         the picker degrades to its "no tools available" state (as every other provider-backed
         surface in this dialog does); ``build_hub`` has already logged why.
+
+        The user's own tools are (re)loaded from ``user_files/tools`` first, so one authored in
+        a previous session — or in THIS one, since the Tools tab reloads on save — is offered
+        by the per-row picker like any builtin.
         """
+        self._user_tools.ensure_loaded()
         hub = self._ctx.build_hub()
         if hub is None:
             return []

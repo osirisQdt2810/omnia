@@ -15,6 +15,7 @@ stores, stays a :class:`~omnia.core.config.base.StrictModel`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from pydantic import Field, validator
@@ -70,6 +71,23 @@ class FieldToolConfig(PersistedModel):
 
     tool: str
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ToolUsage:
+    """One place a tool name appears in the settings: ``field`` of ``note_type``'s chain.
+
+    A plain value object rather than a model — it is never persisted, it is computed on demand
+    by :meth:`SmartNotesSettings.fields_using_tool` so the Tools tab can tell the user exactly
+    what a delete would leave behind ("Vocab · Audio Ext").
+    """
+
+    note_type: str
+    field: str
+
+    def __str__(self) -> str:
+        """Render the usage the way the UI shows it (``"Vocab · Audio Ext"``)."""
+        return f"{self.note_type} · {self.field}"
 
 
 class CompiledToolSpec(StrictModel):
@@ -306,3 +324,25 @@ class SmartNotesSettings(PersistedModel):
     def integration_autogen_enabled(self, key: str) -> bool:
         """Return whether auto-generation is enabled for integration ``key`` (default off)."""
         return bool(self.auto_generate_integrations.get(key, False))
+
+    def fields_using_tool(self, tool: str) -> list[ToolUsage]:
+        """Return every field whose tool chain names ``tool``, across all note types.
+
+        Asked before deleting a user-authored tool, so the confirmation can NAME the fields that
+        will change behaviour instead of warning in the abstract. Nothing breaks if the user
+        deletes it anyway — the pipeline degrades an unresolvable name to ``unknown_tool`` and
+        tries the next tool in the chain — but "which cards does this affect?" is a question
+        only the settings can answer.
+
+        Args:
+            tool: The registered tool name (``"user:extract-ext"``).
+
+        Returns:
+            One :class:`ToolUsage` per referencing field, in note-type then field order.
+        """
+        usages: list[ToolUsage] = []
+        for note_type in self.note_types:
+            for field in note_type.fields:
+                if any(entry.tool == tool for entry in field.tools):
+                    usages.append(ToolUsage(note_type.note_type, field.field))
+        return usages

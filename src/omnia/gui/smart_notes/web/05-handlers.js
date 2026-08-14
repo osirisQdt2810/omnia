@@ -509,8 +509,8 @@
   }
 
   /**
-   * Switch the visible Options tab; lazy-load Account data the first time it's shown.
-   * @param {string} name "general" or "account".
+   * Switch the visible Options tab; lazy-load each tab's data the first time it's shown.
+   * @param {string} name "general" | "account" | "tools" | "integrations" | "advanced".
    */
   function showTab(name) {
     Array.prototype.forEach.call(document.querySelectorAll(".sn-tab"), function (t) {
@@ -526,6 +526,9 @@
     }
     if (name === "advanced") {
       loadNativeRuntimes();  // refresh install state each time the Advanced tab opens
+    }
+    if (name === "tools") {
+      loadUserTools();  // re-read user_files/tools each time (the folder is editable by hand)
     }
   }
 

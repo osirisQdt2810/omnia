@@ -15,6 +15,7 @@ from omnia.gui.smart_notes.dialogs.controllers.graph import GraphController
 from omnia.gui.smart_notes.dialogs.controllers.native_runtime import (
     NativeRuntimeController,
 )
+from omnia.gui.smart_notes.dialogs.controllers.user_tools import UserToolsController
 
 __all__ = [
     "AccountController",
@@ -22,4 +23,5 @@ __all__ = [
     "ConfigController",
     "GraphController",
     "NativeRuntimeController",
+    "UserToolsController",
 ]
