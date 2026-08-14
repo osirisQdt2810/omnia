@@ -835,11 +835,37 @@ class TestToolAuthor:
         prompt = user_tool_system_prompt()
 
         assert "ctx.media_dir()" in prompt
-        assert "encode(decode(" in prompt  # the mp4 -> mp3 recipe, spelled out
-        assert "Never shell out" in prompt  # ctx.audio, not a hand-rolled ffmpeg call
+        assert (
+            "ctx.audio" in prompt
+        )  # the runtime, rather than a hand-rolled ffmpeg call
         # …and the refusal is still reachable for what remains genuinely impossible.
         assert CANNOT_MARKER in prompt
         assert "NETWORK" in prompt
+
+    def test_the_media_rules_do_not_bias_toward_one_conversion(self):
+        """The capability is described, not a recipe.
+
+        This is the same anchoring that made the tool author answer every request with a
+        variant of its one worked example, reappearing a level up: a prompt that spells out
+        "mp4 -> mp3 is encode(decode(bytes))" and hardcodes ext='mp3' pulls an image resize, a
+        frame grab or a plain text transform toward audio. The request decides the shape; the
+        prompt only lists what is available.
+        """
+        prompt = user_tool_system_prompt()
+
+        assert "mp4" not in prompt
+        assert "ext='mp3'" not in prompt
+        assert "building blocks, not a" in prompt
+        assert (
+            "It does audio ONLY" in prompt
+        )  # scoped, so nothing else is assumed audio
+
+    def test_the_worked_example_is_framed_as_arbitrary(self):
+        # One example is an anchor unless it is explicitly labelled as one instance among many.
+        prompt = user_tool_system_prompt()
+
+        assert "ONE arbitrary instance" in prompt
+        assert "pattern-matches the example" in prompt
 
     def test_the_prompt_no_longer_claims_files_are_forbidden(self):
         prompt = user_tool_system_prompt()
