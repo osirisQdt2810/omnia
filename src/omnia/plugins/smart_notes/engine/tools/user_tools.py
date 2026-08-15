@@ -60,14 +60,16 @@ import hashlib
 import json
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Final, Optional
 
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.config import SmartNotesFieldRule
 from omnia.plugins.smart_notes.engine.tools.base import (
+    INPUT_KINDS,
+    TEXT_INPUT,
     Empty,
     NotApplicable,
     Produced,
@@ -107,6 +109,12 @@ _HEADER_PREFIX = "# omnia-user-tool: "
 _MODULE_PREFIX = "omnia_user_tool_"
 
 GENERATION_KINDS = ("text", "image", "tts")
+
+#: The field name the Try-it form falls back to when a draft declares no inputs of its own.
+#: Also the rule's base field and its only prompt ref in that case, so a tool whose
+#: ``<something>_field`` param is blank still finds the typed value through the same defaulting
+#: the builtins use.
+SAMPLE_FIELD: Final = "Sample"
 
 logger = get_logger("smart_notes")
 
@@ -755,6 +763,116 @@ def risky_operations(code: str) -> list[str]:
     return found
 
 
+@dataclass(frozen=True)
+class ToolInput:
+    """One control the Try-it form renders: the field it stands for, and what that field holds.
+
+    ``kind`` is one of :data:`~omnia.plugins.smart_notes.engine.tools.base.INPUT_KINDS`, which
+    is what decides whether the control is a box to type in or a button that opens a file
+    browser filtered to that family.
+    """
+
+    field: str
+    kind: str
+
+
+def declared_inputs(code: str) -> list[ToolInput]:
+    """Return the inputs ``code`` declares, read from its source WITHOUT executing it.
+
+    This is the sibling of :func:`risky_operations`: source text in, metadata out, one
+    ``ast.parse``, no ``exec``. That is the whole point. Compiling the draft — the only other
+    way to reach ``Tool.input_kinds`` — runs the module, and in this feature arbitrary
+    execution happens exactly once, on Run, AFTER the risk banner has told the user what the
+    code reaches for. Building the test form needs the inputs BEFORE Run, so discovering them
+    by compiling would move execution ahead of the review that exists to precede it, which is
+    the one safety property the whole authoring flow is built around.
+
+    The price is stated plainly: a tool that COMPUTES its ``input_kinds`` (a comprehension, a
+    dict built at class-creation time) is not readable this way, and falls back to the single
+    text box below. Its field then arrives empty, the tool declines, and the user sees that in
+    the result — a visible decline rather than a silently wrong value, which is the right
+    direction to fail.
+
+    Args:
+        code: The module source as it stands in the editor.
+
+    Returns:
+        One :class:`ToolInput` per declared field, in the order the literal lists them. NEVER
+        empty: a draft with no ``input_kinds``, an empty one, a computed one or a syntax error
+        all yield the single :data:`SAMPLE_FIELD` text input. That row is not a dead end — a
+        text row carries its own attach button, so a tool that declares nothing (every tool
+        authored before this reader existed) can still be handed a file; what it loses is the
+        field's real NAME and the picker's filter, not the ability to be tested.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return [ToolInput(SAMPLE_FIELD, TEXT_INPUT)]
+    inputs: list[ToolInput] = []
+    for name, kind in _input_kinds_literal(tree):
+        field_name = name.strip()
+        if not field_name:
+            continue
+        # An unrecognised value is a typo in generated code, and a typed box — which can still
+        # take a file — is the harmless reading of it.
+        inputs.append(
+            ToolInput(field_name, kind if kind in INPUT_KINDS else TEXT_INPUT)
+        )
+    return inputs or [ToolInput(SAMPLE_FIELD, TEXT_INPUT)]
+
+
+def _input_kinds_literal(tree: ast.AST) -> list[tuple[str, str]]:
+    """Return the ``input_kinds`` a CLASS BODY in ``tree`` declares (``[]`` when none does).
+
+    Only a class body counts. ``input_kinds`` is a ``Tool`` ClassVar, and ``ast.walk`` is
+    breadth-first: a module-level name or a params-model field that happens to be spelled the
+    same would otherwise be reached FIRST and shadow the real declaration — silently costing a
+    media tool its file pickers. Which class is not checked beyond that, because a user-tool
+    module defines exactly one ``Tool`` subclass by contract and ``compile_tool`` enforces it.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            # Both forms: `input_kinds = {...}` and the annotated `input_kinds: ClassVar[...] =
+            # {...}` the authoring prompt's ClassVar style produces. An annotation with no value
+            # is a declaration, so `value` is None and the reader falls back.
+            if isinstance(statement, ast.AnnAssign):
+                targets: list[ast.expr] = [statement.target]
+                value: Optional[ast.expr] = statement.value
+            elif isinstance(statement, ast.Assign):
+                targets = list(statement.targets)
+                value = statement.value
+            else:
+                continue
+            if any(
+                isinstance(target, ast.Name) and target.id == "input_kinds"
+                for target in targets
+            ):
+                return _string_pairs(value)
+    return []
+
+
+def _string_pairs(node: Optional[ast.expr]) -> list[tuple[str, str]]:
+    """Return ``node``'s items when it is a dict of string constants, else ``[]``.
+
+    All-or-nothing on purpose: a mapping with one computed entry is one this reader cannot
+    describe, and half a form is worse than the honest single-box fallback.
+    """
+    if not isinstance(node, ast.Dict):
+        return []
+    pairs: list[tuple[str, str]] = []
+    # strict: ast guarantees the two lists are the same length, and a `**other` entry shows up
+    # as a None key — which the string check below rejects, taking the whole literal with it.
+    for key, value in zip(node.keys, node.values, strict=True):
+        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+            return []
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            return []
+        pairs.append((key.value, value.value))
+    return pairs
+
+
 class ReviewGate:
     """Remembers which exact sources the user has actually TEST-RUN, so Save can require one.
 
@@ -781,11 +899,21 @@ class ReviewGate:
 
 @dataclass(frozen=True)
 class ToolTestResult:
-    """What one test run of a candidate tool produced, ready for the dialog to render."""
+    """What one test run of a candidate tool produced, ready for the dialog to render.
+
+    ``kind``/``data``/``ext`` carry a produced MEDIA result out of the worker thread. They are
+    additive and default to "nothing", so ``output`` stays exactly what it was — the honest
+    one-line summary a text box can show — and a caller that only reads ``output`` keeps
+    working. Without them the bytes died in the worker's closure and the dialog could only ever
+    print "(tts: 55296 bytes of .mp3)", which is not something a person can listen to.
+    """
 
     status: str  # produced | not_applicable | empty | error
     output: str = ""
     detail: str = ""
+    kind: str = ""
+    data: Optional[bytes] = None
+    ext: str = ""
 
     @property
     def ok(self) -> bool:
@@ -794,32 +922,34 @@ class ToolTestResult:
 
 
 class UserToolTester:
-    """Runs a candidate tool once against a sample value — the dialog's mandatory test.
+    """Runs a candidate tool once against the values the Try-it form collected.
 
     Deliberately NOT the pipeline: the pipeline resolves tools by name from the global registry,
     and a candidate that has not been saved must not be registered anywhere. This calls the same
     two methods the pipeline calls (:meth:`Tool.parse_params` then :meth:`Tool.run`) against a
-    one-field note, and maps the outcome the same way.
+    note built from the form, and maps the outcome the same way.
     """
 
-    #: The field name the sample value is presented under. Also the rule's base field and its
-    #: only prompt ref, so a tool whose ``source_field`` param is blank still finds the sample
-    #: through the same defaulting the builtins use.
-    SAMPLE_FIELD = "Sample"
+    #: Kept as a class attribute so existing callers keep reading it here; the module constant
+    #: is the definition, because the AST reader that builds the form has to agree with it.
+    SAMPLE_FIELD = SAMPLE_FIELD
 
     def run(
         self,
         cls: type[Tool],
         *,
-        sample: str,
+        inputs: Mapping[str, str],
         params: Mapping[str, Any],
         ctx: ToolContext,
     ) -> ToolTestResult:
-        """Run ``cls`` once on ``sample`` and describe what came back.
+        """Run ``cls`` once against ``inputs`` and describe what came back.
 
         Args:
             cls: The compiled candidate tool class.
-            sample: The value to place in the sample field.
+            inputs: ``{field name: value}`` from the Try-it form — one entry per input the tool
+                declares, so a tool reading two fields sees both. An empty map still runs, under
+                the single :data:`SAMPLE_FIELD`, which is what keeps a stale page and an
+                input-less tool testable.
             params: The params the user set in the test form.
             ctx: The live tool context (a tool may legitimately read it; a deterministic one
                 should not).
@@ -827,21 +957,79 @@ class UserToolTester:
         Returns:
             The outcome as :class:`ToolTestResult` — including ``status="error"`` when the tool
             raised, because seeing the failure IS a test run.
+
+        Raises:
+            UserToolError: When the tool declares no generation kind this build implements.
         """
-        rule = self._rule(cls)
+        fields = dict(inputs) or {SAMPLE_FIELD: ""}
+        rule = self._rule(cls, fields)
         try:
             request = ToolRequest(
                 rule=rule,
-                fields={self.SAMPLE_FIELD: sample},
+                fields=fields,
                 params=cls.parse_params(params),
             )
             outcome = cls().run(request, ctx)
         except Exception as exc:
             return ToolTestResult("error", detail=_reason(exc))
-        return self._describe(outcome)
+        return self._explain_unoffered(cls, params, fields, self._describe(outcome))
 
-    def _rule(self, cls: type[Tool]) -> SmartNotesFieldRule:
-        """Build the one-field rule a test runs against.
+    def _explain_unoffered(
+        self,
+        cls: type[Tool],
+        params: Mapping[str, Any],
+        fields: Mapping[str, str],
+        result: ToolTestResult,
+    ) -> ToolTestResult:
+        """Name the fields the tool READS that the form never offered a control for.
+
+        The form is built from ``input_kinds`` and the tool reads whatever its params point at;
+        nothing makes the two agree. When they do not — the declaration says ``"Audio"`` and the
+        param defaults to ``"Clip"`` — the panel shows a plausible, correctly-filtered row, the
+        user picks a real file for it, and the tool reads an empty string and declines. Every
+        visible signal says it worked; the result is "it produced nothing" with no cause given.
+
+        Only for a run that produced nothing: a tool that worked has nothing to explain.
+
+        Args:
+            cls: The compiled candidate.
+            params: The params the run used (unvalidated — this is the same map ``run`` got).
+            fields: The note the form built, i.e. exactly the controls the user could fill in.
+            result: What the run produced.
+
+        Returns:
+            ``result``, with the mismatch appended to its detail when there is one.
+        """
+        if result.ok:
+            return result
+        try:
+            referenced = cls.referenced_fields(cls.parse_params(params))
+        # Broad: `referenced_fields` is user code on a path that is only ADDING an explanation,
+        # so a tool that cannot answer must cost the explanation and nothing else.
+        except Exception:
+            return result
+        offered = {name.strip().lower() for name in fields}
+        missing = [
+            name for name in referenced if name and name.strip().lower() not in offered
+        ]
+        if not missing:
+            return result
+        note = (
+            f"It reads {', '.join(missing)}, which this form did not offer a box for: the "
+            "fields its `input_kinds` declares and the fields its params point at do not "
+            "match. Make one agree with the other and run it again."
+        )
+        detail = f"{result.detail} {note}" if result.detail else note
+        return replace(result, detail=detail)
+
+    def _rule(self, cls: type[Tool], fields: Mapping[str, str]) -> SmartNotesFieldRule:
+        """Build the one-rule note a test runs against, named after the FIRST input.
+
+        The first input is what a tool with a blank ``<something>_field`` param resolves to:
+        ``rule_source_fields`` → ``_first_value`` reads ``sources[0]``, which is the rule's only
+        prompt ref. With nothing declared that is ``"Sample"``, so the rule is character-
+        identical to the one this tester has always built; with a declaration it is the tool's
+        own default field, so both lookup paths land on a value the user actually typed.
 
         Raises:
             UserToolError: When the tool declares no generation kind this build implements —
@@ -854,12 +1042,13 @@ class UserToolTester:
                 "the tool declares no generation kind it can serve — `kinds` must contain "
                 + ", ".join(GENERATION_KINDS)
             )
+        first = next(iter(fields))
         return SmartNotesFieldRule(
             kind=kind,
             target_field="Preview",
-            base_field=self.SAMPLE_FIELD,
-            source_field=self.SAMPLE_FIELD,
-            prompt=f"{{{{{self.SAMPLE_FIELD}}}}}",
+            base_field=first,
+            source_field=first,
+            prompt=f"{{{{{first}}}}}",
         )
 
     @staticmethod
@@ -870,9 +1059,15 @@ class UserToolTester:
             if result.text:
                 return ToolTestResult("produced", output=result.text)
             size = len(result.data or b"")
+            # `output` stays the honest one-line summary — it is what a caller with only a text
+            # box shows. The bytes ride ALONGSIDE it so the dialog can render the file by what
+            # it actually is, rather than describing it.
             return ToolTestResult(
                 "produced",
                 output=f"({result.kind}: {size} bytes of .{result.ext or '?'})",
+                kind=result.kind,
+                data=result.data,
+                ext=result.ext,
             )
         if isinstance(outcome, NotApplicable):
             return ToolTestResult("not_applicable", detail=outcome.reason)

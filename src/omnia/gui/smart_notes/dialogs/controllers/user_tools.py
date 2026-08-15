@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Final, Optional
 
 from omnia import addon_user_files_dir
 from omnia.core import anki_compat
@@ -31,6 +31,8 @@ from omnia.core.logging import get_logger
 from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.plugins.smart_notes.engine import LanguageDetector
 from omnia.plugins.smart_notes.engine.tools import (
+    INPUT_KIND_EXTENSIONS,
+    TEXT_INPUT,
     ReviewGate,
     ToolContext,
     UserToolError,
@@ -39,6 +41,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolSource,
     UserToolStore,
     UserToolTester,
+    declared_inputs,
     is_user_tool,
     registered_tools,
     risky_operations,
@@ -48,6 +51,8 @@ from omnia.plugins.smart_notes.engine.tools import (
 )
 from omnia.plugins.smart_notes.engine.tools.media_sample import (
     MediaSampleStage,
+    image_data_uri,
+    media_family,
     media_reference,
 )
 
@@ -56,6 +61,12 @@ if TYPE_CHECKING:
     from omnia.plugins.smart_notes.engine.tools import Tool, ToolTestResult
 
 logger = get_logger("smart_notes")
+
+#: Ceiling on a produced picture the page may inline as a ``data:`` URI. Base64 costs a third
+#: again in size and the marshal runs on the Qt main thread, so a full-resolution render has to
+#: be reported rather than shown. Audio and video are never inlined at any size — they go to
+#: Anki's own player (see :meth:`UserToolsController.on_play_output`).
+MAX_INLINE_PREVIEW_BYTES: Final = 8 * 1024 * 1024
 
 
 class UserToolsController:
@@ -83,6 +94,10 @@ class UserToolsController:
         # never outlives the dialog that staged it.
         self._sample_stage = MediaSampleStage()
         self._tester = UserToolTester()
+        # The bytes of the last MEDIA result, so the page's Play button has something to hand
+        # Anki's player. Session-scoped for the same reason as the stage, and cleared by a text
+        # result or an error so Play can never replay a run the user has moved on from.
+        self._last_output: Optional[tuple[bytes, str]] = None
 
     def ops(self) -> dict[str, Callable[..., Any]]:
         """The ``{op_name: handler}`` map this controller owns."""
@@ -94,6 +109,8 @@ class UserToolsController:
             "user_tool_delete": self.on_delete,
             "user_tool_open_dir": self.on_open_dir,
             "user_tool_pick_sample": self.on_pick_sample,
+            "user_tool_inputs": self.on_inputs,
+            "user_tool_play_output": self.on_play_output,
             "user_tool_risks": self.on_risks,
         }
 
@@ -106,53 +123,137 @@ class UserToolsController:
         """
         return {"risks": risky_operations(str(data.get("source", "")))}
 
+    def on_inputs(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Return the inputs the CURRENT editor contents declare, so the page can build a form.
+
+        This does NOT compile the draft, and that is the point: compiling means ``exec``, and in
+        this flow arbitrary execution happens exactly once — on Run, after the risk banner has
+        told the user what the code reaches for. The form is needed before Run, so it is read
+        from the source text instead (see
+        :func:`~omnia.plugins.smart_notes.engine.tools.user_tools.declared_inputs`). One AST
+        parse, cheap enough to answer on a keystroke debounce, like ``user_tool_risks`` beside
+        it — so this is synchronous and un-threaded too.
+        """
+        return {
+            "inputs": [
+                {"field": item.field, "kind": item.kind}
+                for item in declared_inputs(str(data.get("source", "")))
+            ]
+        }
+
     def dispose(self) -> None:
         """Drop anything this controller staged. Called when the dialog closes.
 
         Must not raise: it runs from ``closeEvent``, where an exception would stop the dialog
         closing over a temp file nobody can see.
         """
+        self._last_output = None
         try:
             self._sample_stage.dispose()
         except Exception:  # pragma: no cover - defensive
             logger.exception("smart_notes: could not clean up the sample stage")
 
-    def on_pick_sample(self, _data: dict[str, Any]) -> dict[str, Any]:
-        """Let the user choose a FILE as the test sample, and return the reference to paste.
+    def on_pick_sample(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Let the user choose a FILE for ONE declared input, and return its reference.
 
         A tool that reads media needs a sample that resolves like a real note's does: the field
         holds a reference, and the file sits where ``ctx.media_dir()`` points. Typing
         ``[sound:x.mp3]`` by hand only works if x.mp3 is already in the collection, which is
         exactly the case a user testing a NEW conversion does not have.
 
-        The picker opens in the collection's media folder — where the interesting files already
-        are — but accepts a file from anywhere. Whatever is chosen is staged OUTSIDE the
-        collection (see :class:`~omnia.plugins.smart_notes.engine.tools.media_sample.MediaSampleStage`
-        for why a test must not add to synced media), and the test context is pointed at the
-        stage.
+        The picker is filtered to the kind that input declares and opens in the collection's
+        media folder — where the interesting files already are — but accepts a file from
+        anywhere. Whatever is chosen is staged OUTSIDE the collection (see
+        :class:`~omnia.plugins.smart_notes.engine.tools.media_sample.MediaSampleStage` for why a
+        test must not add to synced media), under this input's own slot, so another input's file
+        stays staged.
+
+        Any input can reach this, not only a declared media one: a tool whose ``input_kinds``
+        the form could not read (absent, computed, or written before the declaration existed)
+        renders a text row, and that row's own attach button lands here with ``kind="file"`` —
+        unfiltered, because a draft that did not say what it reads cannot have a filter derived
+        from it. That is what keeps such a tool testable without a standalone browse button
+        sitting next to Run whatever the tool takes.
+
+        Args:
+            data: ``{"field": <the input's name>, "kind": <one of INPUT_KINDS>}``.
 
         Returns:
-            ``{"reference": "<what to put in the sample box>", "name": "<file name>"}``, or
+            ``{"reference": "<what to put in the input>", "name": "<staged file name>"}``, or
             ``{}`` when the user cancelled, or ``{"error": …}`` when the file cannot be staged.
         """
+        field = str(data.get("field", "")).strip()
+        kind = str(data.get("kind", TEXT_INPUT)) or TEXT_INPUT
+        if not field:
+            return {"error": "That input has no name, so a file has nowhere to go."}
         start = ""
         try:
             start = anki_compat.media_dir()
         except Exception:  # pragma: no cover - no collection is not an error here
             logger.debug("smart_notes: no media folder to start the picker in")
         path = anki_compat.pick_file(
-            title="Choose a file for the test sample", start_dir=start
+            title=self._picker_title(kind, field),
+            file_filter=self._qt_filter(kind),
+            start_dir=start,
         )
         if not path:
             return {}
         try:
-            name = self._sample_stage.stage(Path(path))
+            name = self._sample_stage.stage(Path(path), slot=field)
         # Broad at the UI boundary: an unreadable file, a full disk and a permissions problem
         # all mean the same thing to the user, and none may take the tab down.
         except Exception as exc:
             logger.exception("smart_notes: could not stage the sample file %r", path)
             return {"error": f"Could not use that file ({exc})."}
+        # From the FILE's extension, not from the declared kind: a "file" input holding a .png
+        # still needs the <img> form, because that is what a real note would hold.
         return {"reference": media_reference(name), "name": name}
+
+    @staticmethod
+    def _picker_title(kind: str, field: str) -> str:
+        """The picker's window title, naming the family only when there IS one.
+
+        ``"file"`` (and anything unrecognised) has no filter, so calling it "a file file" would
+        promise a filtering the dialog is not doing.
+        """
+        if INPUT_KIND_EXTENSIONS.get(kind):
+            return f"Choose the {kind} file for {field}"
+        return f"Choose a file for {field}"
+
+    @staticmethod
+    def _qt_filter(kind: str) -> str:
+        """The Qt filter string for an input of ``kind``.
+
+        Always ends in an All-files entry, including for a filtered kind: a filter that hides
+        the file the user meant is worse than no filter at all (the same reasoning that leaves
+        ``"file"`` with no extension list in the first place).
+        """
+        extensions = INPUT_KIND_EXTENSIONS.get(kind, ())
+        if not extensions:
+            return "All files (*)"
+        patterns = " ".join(f"*.{extension}" for extension in extensions)
+        return f"{kind.title()} files ({patterns});;All files (*)"
+
+    def on_play_output(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Play the last produced media file through Anki's own player.
+
+        A *video* going through a function called ``play_audio`` is deliberate, not a mistake:
+        ``aqt.sound.av_player`` is Anki's audio AND video player (it drives the bundled mpv),
+        and it is the only thing on the machine that decodes H.264 — the dialog's webview does
+        not, via ``data:``, ``blob:`` or ``http:`` alike. So the bytes go to the same player a
+        card's ``[sound:clip.mp4]`` uses, and nothing is marshalled into the page.
+        """
+        if self._last_output is None:
+            return {"error": "There is nothing to play — run the tool first."}
+        data, ext = self._last_output
+        try:
+            anki_compat.play_audio(data, ext)
+        # Broad at the UI boundary: a missing player, an unwritable temp dir and an unsupported
+        # container all mean "it did not play" to the user, and none may take the tab down.
+        except Exception as exc:
+            logger.exception("smart_notes: could not play the tool's output")
+            return {"error": f"Could not play it ({exc})."}
+        return {"ok": True}
 
     def on_open_dir(self, _data: dict[str, Any]) -> dict[str, Any]:
         """Open the tools folder in the OS file manager.
@@ -292,7 +393,7 @@ class UserToolsController:
         result the user saw, and saving a tool that declines is their call to make.
         """
         code = str(data.get("source", ""))
-        sample = str(data.get("sample", ""))
+        inputs = self._posted_inputs(data)
         params = dict(data.get("params", {}) or {})
         try:
             slug = self._slug_from(data)
@@ -304,7 +405,7 @@ class UserToolsController:
         def work() -> ToolTestResult:
             cls = self._loader.compile_tool(UserToolSource(slug=slug, code=code))
             return self._tester.run(
-                cls, sample=sample, params=params, ctx=self._tool_context()
+                cls, inputs=inputs, params=params, ctx=self._tool_context()
             )
 
         anki_compat.run_in_background(
@@ -368,6 +469,19 @@ class UserToolsController:
         return {"ok": True, "slug": slug, "deleted": existed, "usages": usages}
 
     # -- helpers -------------------------------------------------------------------------
+
+    @staticmethod
+    def _posted_inputs(data: dict[str, Any]) -> dict[str, str]:
+        """Read the ``{field: value}`` map the Try-it form posted, defensively.
+
+        A ``pycmd`` payload is untrusted input like any other boundary value, and the tester
+        already has a defined behaviour for an empty map (it runs under the single sample
+        field), so anything unreadable becomes one rather than an exception.
+        """
+        posted = data.get("inputs") or {}
+        if not isinstance(posted, dict):
+            return {}
+        return {str(field): str(value) for field, value in posted.items()}
 
     def _slug_from(self, data: dict[str, Any]) -> str:
         """Resolve the posted ``slug`` (or derive one from ``label``), validated.
@@ -484,6 +598,7 @@ class UserToolsController:
         "the user has seen a result" is exactly what having reached here means.
         """
         if error or result is None:
+            self._last_output = None
             payload: dict[str, Any] = {"error": error or "The tool returned no result."}
         else:
             self._gate.mark_tested(code)
@@ -498,6 +613,61 @@ class UserToolsController:
                 # 3 of forty lines of generated Python, read once, is not a fair ask.
                 "risks": risky_operations(code),
             }
+            # A SIBLING key rather than a repurposed `output`: the text path and everything
+            # reading it stay exactly as they were, and one key keeps meaning one thing.
+            media = self._media_payload(slug, result)
+            if media is not None:
+                payload["media"] = media
         self._ctx.eval_js(
             f"window.__snUserToolTested({json.dumps(slug)}, {json.dumps(payload)});"
         )
+
+    def _media_payload(
+        self, slug: str, result: ToolTestResult
+    ) -> Optional[dict[str, Any]]:
+        """Describe a produced FILE for the page, and remember its bytes for Play.
+
+        Branches on the produced EXTENSION rather than on the generation kind, which is what
+        lets a tool declaring ``kind="tts"`` with an ``mp4`` extension render as a video without
+        touching ``GENERATION_KINDS``, the pipeline or the field-type dropdown.
+
+        Only a picture crosses into the page, and only under
+        :data:`MAX_INLINE_PREVIEW_BYTES`. Audio and video never do: this webview cannot decode
+        H.264 or AAC at all, so the honest render is a name and a button that hands the file to
+        Anki's player.
+
+        Args:
+            slug: The tool being tested — the name shown is ``<slug>.<ext>``, since a produced
+                file has no name of its own until it is written into a note.
+            result: The outcome of the run.
+
+        Returns:
+            The ``media`` block, or None for a result that is not a produced file (which also
+            clears the remembered bytes, so Play cannot replay a run the user has left behind).
+        """
+        if not result.data:
+            self._last_output = None
+            return None
+        data = result.data
+        ext = (result.ext or "").lower()
+        self._last_output = (data, ext)
+        family = media_family(ext)
+        payload: dict[str, Any] = {
+            "kind": family,
+            "name": f"{slug}.{ext or 'bin'}",
+            "ext": ext,
+            "size": len(data),
+            "playable": family != "image",
+            "note": "",
+        }
+        if family == "image":
+            if len(data) <= MAX_INLINE_PREVIEW_BYTES:
+                payload["image"] = image_data_uri(data, ext)
+            else:
+                # Never a blank box: the name, the size and the reason are always present, so
+                # "it produced nothing" is never the impression a large picture leaves.
+                payload["note"] = (
+                    f"{len(data)} bytes — too large to preview here. It is a real file; a "
+                    "field generated with this tool will hold it."
+                )
+        return payload

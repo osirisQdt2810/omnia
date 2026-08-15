@@ -25,7 +25,9 @@ from typing import TYPE_CHECKING
 from omnia import envs
 from omnia.core.providers.errors import ProviderError
 from omnia.plugins.smart_notes.engine.tools import GENERATION_KINDS
+from omnia.plugins.smart_notes.engine.tools.base import INPUT_KINDS
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
+    SAMPLE_FIELD,
     ImportGuard,
     user_tool_name,
 )
@@ -85,6 +87,14 @@ class ExtractExtTool(Tool):
     kinds: ClassVar[frozenset[str]] = frozenset({"text"})
     deterministic: ClassVar[bool] = True
     params_model: ClassVar[type[PersistedModel]] = ExtractExtParams
+    # One entry per field this tool can read. The test form is built from this dict, so a field
+    # left out of it gets no control of its own. `source_field` defaults to blank, meaning "this
+    # rule's first prompt reference" — there is no field NAME to key by, so it is declared under
+    # "Sample", the name the form gives that implicit input. A param with a real default field
+    # name is keyed by that name instead. Either way the VALUE is what the field holds: this one
+    # holds a filename, i.e. ordinary text. A field holding a media reference would say "audio" /
+    # "image" / "video", and the form would offer a file browser filtered to it.
+    input_kinds: ClassVar[dict[str, str]] = {"Sample": "text"}
 
     @classmethod
     def referenced_fields(cls, params):
@@ -148,8 +158,33 @@ def user_tool_system_prompt() -> str:
         "2. Define EXACTLY ONE Tool subclass, decorated @register_tool with the exact name "
         "you are given, and set the same string as its `name` ClassVar.\n"
         "3. Declare the ClassVars: name, label (2-3 words), description (one sentence), "
-        "kinds, deterministic = True, and params_model. `kinds` must match what the tool "
-        "PRODUCES — see rule 10. It is NOT always text.\n"
+        "kinds, deterministic = True, params_model, and input_kinds. `kinds` must match what "
+        "the tool PRODUCES — see rule 10. It is NOT always text.\n"
+        "3b. INPUT KINDS — the test form is BUILT from this dict, so it is not optional. "
+        "`input_kinds` maps each field name the tool READS to what that field holds: one of "
+        f"{', '.join(repr(k) for k in INPUT_KINDS)}. Key each entry by the field's NAME — for a "
+        "`<something>_field` param with a real default, that default. A param whose default is "
+        "BLANK means 'this rule's first prompt reference' and has no name to key by: declare it "
+        f"under {SAMPLE_FIELD!r}, the name the form gives that implicit input. Keep the blank "
+        "default when the tool should follow whatever field the rule points at — do NOT invent a "
+        "field name just to have a key, because a made-up default silently overrides that "
+        "behaviour on every note. Declare an entry for EVERY field the tool can name, the ones "
+        "holding ordinary text included ('text'); an undeclared field gets no control of its own "
+        "in the form. For a field holding a media reference ([sound:...] or <img ...>) name the "
+        "family instead: 'image', 'audio', 'video', or 'file' when it could be anything — that "
+        "is what makes the form offer a file browser filtered to that family rather than asking "
+        "someone to type a filename by hand. A tool that reads a clip and writes text looks "
+        "like this:\n"
+        '       clip_field: str = Field("Audio", description="Field holding the clip.")\n'
+        "       ...\n"
+        '       input_kinds: ClassVar[dict[str, str]] = {"Audio": "audio"}\n'
+        "   and the same tool following the rule's own field instead looks like this:\n"
+        '       clip_field: str = Field("", description="Blank = this rule\'s first reference.")\n'
+        "       ...\n"
+        f'       input_kinds: ClassVar[dict[str, str]] = {{"{SAMPLE_FIELD}": "audio"}}\n'
+        "   It must be a LITERAL dict of literal strings written in the class body — it is read "
+        "from your source WITHOUT running it, so a computed one cannot be read at all. Get this "
+        "wrong and the tool is harder to test even though it works.\n"
         "4. params_model is a pydantic model deriving from omnia.core.config.base."
         "PersistedModel, with a default for EVERY option (the tool must work with no params "
         "configured). Give each option a Field(description=...) — the settings UI renders the "
@@ -222,7 +257,11 @@ def build_user_tool_message(
     fields = ", ".join(name for name in (field_names or []) if name)
     context = (
         f"For context, one note type using this tool has the fields: {fields}. "
-        "Do NOT hard-code them — the tool must work wherever its params point.\n\n"
+        "Use the most fitting of them as the DEFAULT of each `<something>_field` param, and key "
+        "`input_kinds` by those same names — the tool still works wherever its params are later "
+        "pointed, and a param defaulting to nothing is a field the test form cannot offer a "
+        "control for. Do not otherwise hard-code them: read fields through the params, never by "
+        "name in `run`.\n\n"
         if fields
         else ""
     )
