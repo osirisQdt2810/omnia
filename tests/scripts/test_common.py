@@ -21,9 +21,16 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = _REPO_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
+
+#: Every directory holding a standalone Python entry point that PRINTS. ``tests/smoke`` is in
+#: here because ``run_smoke.py`` is one: it lives under ``tests/`` (so pytest does not collect it)
+#: but it is run by hand like any script, prints non-ASCII step labels, and imports the guard from
+#: ``scripts/common.py`` — so it belongs in this net, not outside it because of where it sits.
+PRINTING_ENTRY_POINT_DIRS = (SCRIPTS_DIR, _REPO_ROOT / "tests" / "smoke")
 
 from common import enable_utf8_output  # noqa: E402
 
@@ -80,17 +87,24 @@ class TestEnableUtf8Output:
 
 
 class TestEveryPrintingScriptIsArmed:
-    """The regression net for scripts added after this fix.
+    """The regression net for printing entry points added after this fix.
 
-    Checked structurally rather than by running each script: they symlink into Anki, build
-    archives and shell out to pip, so *executing* them in the suite is not an option — but
-    "forgot to arm it" is precisely the mistake that recurs, and it is visible in the source.
+    Checked structurally rather than by running each one: they symlink into Anki, build archives,
+    shell out to pip, or need Anki's own interpreter, so *executing* them in the suite is not an
+    option — but "forgot to arm it" is precisely the mistake that recurs, and it is visible in the
+    source. Scope is :data:`PRINTING_ENTRY_POINT_DIRS`, not ``scripts/`` alone: a hand-run entry
+    point is in scope because of what it does, not because of which folder it sits in.
     """
 
     @staticmethod
     def _scripts_that_print() -> list[Path]:
         found = []
-        for path in sorted(SCRIPTS_DIR.glob("*.py")):
+        candidates = [
+            path
+            for directory in PRINTING_ENTRY_POINT_DIRS
+            for path in sorted(directory.glob("*.py"))
+        ]
+        for path in candidates:
             if path.name == "common.py":
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))

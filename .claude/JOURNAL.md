@@ -404,7 +404,7 @@ files now in top-level `src/omnia/secrets/` (gitignored except README). `OMNIA_T
 - **Real-Anki visual check is PENDING** — this dev env has no `aqt`, so the GUI launch couldn't be run here.
   On the user's machine: restart Anki → Tools → Omnia → Configure (Smart Notes); test sound→Voice/Language
   columns, Decks picker, Prompt popup ✨Improve/▶Preview, Save → restart → rules persist (now in collection).
-  Headless: `QT_QPA_PLATFORM=offscreen "<anki-python>" scripts/ui_smoke.py`. Launcher:
+  Headless: `QT_QPA_PLATFORM=offscreen "<anki-python>" tests/smoke/run_smoke.py`. Launcher:
   `scratchpad/anki_launch_smartnotes.py` (opens the dialog directly).
 - Gotchas: logging must stay file-only (stderr → Anki crash dialog); nested AnkiWebView opened inside a
   pycmd callback must be DEFERRED (`QTimer.singleShot(0,…)`) or it paints blank; never commit creds

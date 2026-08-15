@@ -1336,3 +1336,40 @@ class TestTeardownIsKeyedOnTheNamespace:
 
         assert get_tool("ai") is not None
         assert get_tool("cloze") is not None
+
+
+class TestTheDescriptionOutranksTheNoteType:
+    """A description that names its fields must not be overridden by the note type's names.
+
+    Reported from real use: a description asking for two sound fields "Audio 1" and "Audio 2"
+    produced a tool whose params defaulted to the note type's OWN field names instead. Editing
+    the description to name them explicitly changed nothing, because the user message was
+    telling the model to prefer the note type — the instruction the user was fighting was the
+    one we had written.
+    """
+
+    def test_the_message_says_the_description_wins(self):
+        message = build_user_tool_message(
+            "concat-audio",
+            "two sound fields called Audio 1 and Audio 2, joined with a configurable gap",
+            ["Audio", "Phát âm định nghĩa", "Front"],
+        )
+
+        # The regression guard: this exact instruction is what overrode the user, and it was in
+        # the repo, so its absence is a real assertion rather than a vacuous one.
+        assert "Use the most fitting of them as the DEFAULT" not in message
+        assert "THE DESCRIPTION WINS" in message
+
+    def test_the_note_type_fields_are_still_offered_as_a_fallback(self):
+        # They are genuinely useful when the description names nothing — a param defaulting to
+        # nothing is an input the test form cannot draw a control for.
+        message = build_user_tool_message("x", "strip the html", ["Front", "Back"])
+
+        assert "Front, Back" in message
+        assert "ONLY when the description names no field" in message
+
+    def test_no_note_type_fields_means_no_context_block(self):
+        message = build_user_tool_message("x", "strip the html", [])
+
+        assert "THE DESCRIPTION WINS" not in message
+        assert "For context" not in message

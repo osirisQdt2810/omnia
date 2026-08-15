@@ -21,6 +21,57 @@ Format for each entry:
 
 ---
 
+## 2026-08-16 — The UI smoke becomes a real test harness, and moves out of `scripts/`
+
+**What:** `scripts/ui_smoke.py` is now `tests/smoke/run_smoke.py`, and it asserts behaviour
+instead of absence-of-exception. Everything else in `scripts/` produces an artefact (an
+`.ankiaddon`, an `addons21` layout, a `vendor/` tree, a badge JSON); this produces a pass/fail,
+so it belongs with the tests — under `tests/`, but named `run_smoke.py`, because pytest collects
+only `test_*.py` and stubbing `aqt`/`anki` (which `tests/conftest.py` deliberately does) would
+remove the only reason this harness exists. Fourteen steps now check what the add-on *did*: the
+JS that actually reached the reviewer webview carries each injecting plugin's payload on the
+side that plugin claims; a real press of an answer button routed through the live
+`Reviewer._answerCard` patch comes back as the ease the rules specify (typed_accuracy
+substitutes its staged grade, overdue_guard then caps it, and the staged ease is consumed
+exactly once); all seven plugins have a step of their own; every Configure dialog is built from
+`manager.plugins()` rather than a hard-coded id list; and disabling everything must leave no
+transformer, no asset, no Tools-menu action and no rewritten grade behind.
+
+**Why:** The harness had stopped being run and had stopped being true. It could not even import
+(no `vendor/universal` on `sys.path` → `No module named 'pydantic'`), three steps pointed at
+modules the dialogs refactor had deleted, and its `mw` stand-in was a `SimpleNamespace` — so
+`QAction(label, mw)` raised, auto_flip's `on_enable` aborted, the manager's plugin-isolation
+boundary swallowed it, `set_enabled` returned a `False` nobody read, and the run printed all
+green with six of seven features on and one leaking a web asset plus two pycmd routes past
+teardown. It also captured every injected script into `js_log` and reported only how many it had
+counted. Its docstring claimed it fired "every gui_hook Omnia subscribes and constructs every
+dialog"; it fired 11 of 14 and built 6 of 8. This is the ONLY thing in the repo that runs Omnia
+against real `aqt` + real `anki` + real Qt, so what it fails to check, nothing checks.
+
+**Files:** `tests/smoke/run_smoke.py` (moved with `git mv`, rewritten);
+`tests/scripts/test_common.py` (the printing-guard net now scans `PRINTING_ENTRY_POINT_DIRS` —
+`scripts/` *and* `tests/smoke/` — so the harness stays inside it after the move);
+`.claude/JOURNAL.md` (the how-to-verify path).
+
+**How to verify:** `.venv/bin/python -m pytest tests/ -q` → 2157 collected, unchanged by the
+move, and `run_smoke.py` is not collected (it appears only as a parametrize id in
+`test_common.py`). Then, with Anki's own interpreter:
+`QT_QPA_PLATFORM=offscreen "<AnkiProgramFiles>/.venv/bin/python" tests/smoke/run_smoke.py` →
+`ALL UI SMOKE STEPS PASSED (14 steps)`, exit 0.
+
+**Notes / rollback:** The harness is hermetic — it seeds a temp config dir from the tracked
+`*.example.toml` only (never the live `config/providers.toml`), binds an ephemeral port for
+word_lookup (8766 is the port the developer's own Anki is already serving), and keeps
+`taskman.run_in_background` a no-op so a `QueryOp` that would call a provider is never executed.
+Two settings are written to make otherwise environment-dependent steps deterministic:
+`overdue_guard.force_again_after_days = 0` (so the expected ease is the rule's own constant, not
+Anki's SM-2 prediction, which moves with the card's due date) and the word_lookup port. The
+card is forged overdue by inserting a `revlog` row, not by backdating `card.mod` —
+`col.update_card` restamps `mod` to now. Older entries below still name `scripts/ui_smoke.py`;
+this log is append-only, so they are left as they were written.
+
+---
+
 ## 2026-08-15 — Piper voices download on first use instead of shipping in the package
 
 **What:** The `.ankiaddon` no longer contains the `*.onnx` TTS voice weights (`build_addon.py`

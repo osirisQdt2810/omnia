@@ -256,12 +256,16 @@ def build_user_tool_message(
     """
     fields = ", ".join(name for name in (field_names or []) if name)
     context = (
+        "THE DESCRIPTION WINS. If it names the fields the tool reads — say two sound fields "
+        "called 'Audio 1' and 'Audio 2' — use those names verbatim as the param defaults and "
+        "as the `input_kinds` keys, EVEN IF the note type below calls them something else. "
+        "Someone describing the tool is telling you what its inputs should be; a note type's "
+        "current field names are only a hint for when they did not say.\n"
         f"For context, one note type using this tool has the fields: {fields}. "
-        "Use the most fitting of them as the DEFAULT of each `<something>_field` param, and key "
-        "`input_kinds` by those same names — the tool still works wherever its params are later "
-        "pointed, and a param defaulting to nothing is a field the test form cannot offer a "
-        "control for. Do not otherwise hard-code them: read fields through the params, never by "
-        "name in `run`.\n\n"
+        "Fall back to the most fitting of THOSE as each `<something>_field` default ONLY when "
+        "the description names no field, because a param defaulting to nothing is an input the "
+        "test form cannot offer a control for. Read fields through the params either way — "
+        "never by name in `run`.\n\n"
         if fields
         else ""
     )
