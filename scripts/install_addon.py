@@ -37,6 +37,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from common import enable_utf8_output
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ADDON_DIR = REPO_ROOT / "src" / "omnia"
 ADDON_FOLDER_NAME = "omnia"  # dev folder name inside addons21/
@@ -55,16 +57,32 @@ SIBLING_LINKS = {
 RUNTIME_DIRS = ("user_files", "user_files/config", "user_files/config/.secrets")
 
 
+def anki_base_dir() -> Path:
+    """Return the Anki base folder this machine's Anki actually uses.
+
+    ``ANKI_BASE`` wins, because Anki itself honours it: pointing Anki at another base folder and
+    then installing the add-on into the default one leaves you debugging an add-on that is not
+    loaded. It is the normal way to run a throwaway profile — a second Anki with its own
+    collection, for testing something that writes to notes — so the install script has to agree
+    with the app rather than assume the default.
+    """
+    override = os.environ.get("ANKI_BASE")
+    if override:
+        return Path(override)
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Anki2"
+    # Branch on sys.platform rather than os.name: it says the same thing here, and it is the one
+    # a test can substitute — pathlib picks PosixPath/WindowsPath off os.name, so patching THAT
+    # makes every Path in the process try to be a WindowsPath on a Mac.
+    if sys.platform.startswith("win"):
+        appdata = os.environ.get("APPDATA")
+        return Path(appdata) / "Anki2" if appdata else Path.home() / "Anki2"
+    return Path.home() / ".local" / "share" / "Anki2"
+
+
 def anki_addons_dir() -> Path:
     """Return the platform-specific Anki ``addons21`` directory."""
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / "Anki2"
-    elif os.name == "nt":
-        appdata = os.environ.get("APPDATA")
-        base = Path(appdata) / "Anki2" if appdata else Path.home() / "Anki2"
-    else:
-        base = Path.home() / ".local" / "share" / "Anki2"
-    return base / "addons21"
+    return anki_base_dir() / "addons21"
 
 
 def _clear_prior_assembly(target: Path) -> None:
@@ -172,6 +190,7 @@ def install(copy: bool = False, target: Path | None = None) -> Path:
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--copy",

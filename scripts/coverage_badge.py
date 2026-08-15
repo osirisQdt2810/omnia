@@ -21,6 +21,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from common import enable_utf8_output
+
 #: Thresholds → shields.io colour, worst first. Kept coarse on purpose: a badge that changes
 #: colour on a one-point move trains people to ignore it.
 _COLOURS: tuple[tuple[float, str], ...] = (
@@ -74,4 +76,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    enable_utf8_output()
     raise SystemExit(main(sys.argv))
