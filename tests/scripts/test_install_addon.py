@@ -33,7 +33,9 @@ class TestAnkiBaseDir:
         for platform in ("darwin", "win32", "linux"):
             monkeypatch.setattr(install_addon.sys, "platform", platform)
 
-            assert install_addon.anki_base_dir() == Path("/tmp/some-test-base"), platform
+            assert install_addon.anki_base_dir() == Path(
+                "/tmp/some-test-base"
+            ), platform
 
     def test_an_empty_anki_base_is_ignored(self, monkeypatch):
         # An exported-but-empty variable must not resolve the base to the current directory.
@@ -56,9 +58,10 @@ class TestAnkiBaseDir:
         monkeypatch.setattr(install_addon.sys, "platform", "win32")
         monkeypatch.setenv("APPDATA", r"C:\Users\Someone\AppData\Roaming")
 
-        assert install_addon.anki_base_dir() == Path(
-            r"C:\Users\Someone\AppData\Roaming"
-        ) / "Anki2"
+        assert (
+            install_addon.anki_base_dir()
+            == Path(r"C:\Users\Someone\AppData\Roaming") / "Anki2"
+        )
 
     def test_windows_without_appdata_falls_back_home(self, monkeypatch):
         monkeypatch.delenv("ANKI_BASE", raising=False)
