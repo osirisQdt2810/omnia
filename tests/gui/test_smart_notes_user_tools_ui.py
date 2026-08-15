@@ -411,12 +411,16 @@ def rendered(tmp_path_factory) -> dict:
     script = tmp_path_factory.mktemp("js") / "renderers.js"
     script.write_text(_DOM_HARNESS + sources + _SCENARIOS, encoding="utf-8")
 
-    finished = subprocess.run(
-        [_NODE, str(script)], capture_output=True, text=True, check=False
-    )
+    # Bytes, then an EXPLICIT utf-8 decode -- not text=True. text=True decodes with the locale
+    # encoding, which on Windows is cp1252, and this harness prints the page's own labels: 📎,
+    # 🖼️, 🔊, 🎬. The same mismatch that killed install_addon.py's success message kills this,
+    # only here it surfaces as a JSON error about NoneType rather than as a UnicodeDecodeError.
+    finished = subprocess.run([_NODE, str(script)], capture_output=True, check=False)
+    stderr = finished.stderr.decode("utf-8", errors="replace")
 
-    assert finished.returncode == 0, finished.stderr
-    return json.loads(finished.stdout)
+    assert finished.returncode == 0, stderr
+    assert finished.stdout, f"node wrote nothing; stderr was: {stderr}"
+    return json.loads(finished.stdout.decode("utf-8"))
 
 
 def _js_function(html: str, marker: str) -> str:
