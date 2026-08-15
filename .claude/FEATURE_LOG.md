@@ -21,6 +21,68 @@ Format for each entry:
 
 ---
 
+## 2026-08-15 — Providers: one generic registry for both kinds; the LLM builder table is gone
+
+**What:** The provider seam now has ONE registration mechanism instead of two. New root-level
+`core/providers/base.py` (`ProviderBase`: `name` / `requires_api` / `from_config`) and
+`core/providers/registry.py` (`ProviderRegistry`, a `Mapping` subclass owning `register` /
+`create` / `names` / `classes` / `requiring_api` / `keyless`), bound once per kind in
+`llm/registry.py` (`@register_llm`, `LLM_REGISTRY`) and `tts/registry.py` (`@register_tts`,
+`TTS_REGISTRY`). `core/providers/llm/factory.py` is **deleted**: its three `_build_*` closures
+moved verbatim into `from_config` classmethods on the providers they built, and its two
+name-keyed dicts collapsed into the registry. No provider was renamed, added, or removed —
+`available_llm_providers()` / `available_tts_providers()` return the identical lists. See
+**ADR-014**.
+
+**Why:** TTS self-registered while LLM carried a hand-maintained `_BUILDERS` table plus a
+parallel `_PROVIDER_CLASSES` map that existed only so callers could read `requires_api` without
+building a provider — two dicts and a test whose whole job was to catch them drifting. The
+duplication had already leaked out of `core/`: `plugins/smart_notes/account.py` imported the
+private `_PROVIDER_CLASSES` to get a provider's class name, the last plugin→core private reach
+in the tree. A third provider kind would have arrived to two patterns and no reason to pick one.
+
+**Files:** added `core/providers/base.py`, `core/providers/registry.py`,
+`core/providers/llm/registry.py`, `tests/providers/test_provider_registry.py`; deleted
+`core/providers/llm/factory.py`; modified `core/providers/{llm,tts}/base.py`,
+`core/providers/llm/{__init__,gemini,gemini_vertex,openai_compatible}.py`,
+`core/providers/tts/{__init__,registry}.py`, `plugins/smart_notes/account.py`,
+`tests/providers/{test_provider_metadata,test_sweep,test_tts_registry}.py`,
+`tests/core/test_config.py`, `.claude/CLAUDE.md`, `.claude/DECISIONS.md` (ADR-014).
+
+A review pass then found the one thing the split had missed: `_OPENAI_DEFAULTS`, the base-URL
+table for the openai family, existed byte for byte in BOTH `llm/openai_compatible.py` and
+`tts/openai_compatible.py`. It describes vendor HTTP endpoints — not text, not audio — so it is
+the most kind-agnostic data in the layer and belongs at the root. Added
+`core/providers/openai_family.py` (`OPENAI_FAMILY_BASE_URLS` + `openai_family_base_url`) with
+`tests/providers/test_openai_family.py` asserting BOTH kinds resolve through it, plus the LLM
+default provider, which had been pinned on the TTS side only. Same pass removed `get_tts()`
+(zero callers) and the `registered_tts_providers()` synonym.
+
+**How to verify:** `pytest tests/ -q` → `1945 passed, 68 skipped, 15 xfailed in 112.57s` (1904
+before this branch; the six deleted TTS-only/vacuous tests are replaced by the new
+`test_provider_registry.py` and `test_openai_family.py`, and the branch also carries the
+`tests/scripts/` suite). `mypy src/omnia/core/providers` → `Found 107 errors in 42 files
+(checked 24 source files)`, the same pre-existing count as before, none in the new modules. The
+names are a persisted contract, so check them without a harness:
+
+```bash
+.venv/bin/python -S -c "import sys;sys.path[:] = [p for p in sys.path if 'site-packages' not in p and '.venv' not in p];sys.path.insert(0,'src');sys.path.append('vendor/universal');from omnia.core.providers import available_llm_providers as a, available_tts_providers as b;print(a());print(b())"
+# ['gemini', 'gemini_vertex', 'openai', 'openai_compatible', 'openrouter']
+# ['edge_tts', 'google_cloud', 'google_translate', 'openai', 'openai_compatible', 'openrouter', 'piper', 'viettts']
+```
+
+**Notes / rollback:** Three constraints the mechanism now imposes, each pinned by a test and
+spelled out in ADR-014: `register` must not stamp `cls.name` (one class serves several names,
+and the usage rows join on that name); `from_config` must be defined on the class, never
+inherited (`GeminiVertexProvider` would otherwise inherit Gemini's and demand an `api_key`); and
+`from_config` must stay pure construction, because `ProviderHub.llm()` calls `create` under its
+cache lock. `test_provider_metadata.py` now also freezes both public name lists as hand-written
+literals — every other guard in that file is derived from the registry and would pass even if a
+name vanished. To reverse, restore `factory.py` from git and re-point `llm/__init__.py` and
+`account.py`; the `from_config` classmethods can stay (nothing else depends on their absence).
+
+---
+
 ## 2026-08-14 — smart_notes tools: one chain rule, honest dependency edges, a picker that refuses guesswork
 
 **What:** Three shared seams changed at once. (1) **The chain has exactly one rule** — run the

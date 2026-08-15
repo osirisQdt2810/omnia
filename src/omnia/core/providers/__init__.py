@@ -61,7 +61,7 @@ class ProviderHub:
 
     Constructed from the typed provider settings + an injected HTTP client (DIP — features
     depend on this hub, not on a concrete SDK). The LLM config is per-provider: the hub picks
-    the active ``[llm.<provider>]`` subsection and flattens it into the dict the factory
+    the active ``[llm.<provider>]`` subsection and flattens it into the dict the registry
     expects (``text_model`` → ``model``). ``google_cloud`` TTS reuses the Google auth that
     lives under ``[llm.gemini_vertex]``, so the hub bridges those fields in.
     """
@@ -143,7 +143,7 @@ class ProviderHub:
     def _llm_config(self, provider: str = "") -> dict[str, Any]:
         """Flatten the active (or named ``provider``) ``[llm.<provider>]`` subsection.
 
-        Maps ``text_model`` → ``model`` for the factory; ``image_model`` passes through.
+        Maps ``text_model`` → ``model`` for the registry; ``image_model`` passes through.
         ``provider`` selects a non-active subsection (a per-rule override); empty = the
         configured active provider.
         """
@@ -155,7 +155,7 @@ class ProviderHub:
         active = getattr(settings, name, None)
         if isinstance(active, BaseModel):
             data = active.dict()
-            # The factory/providers use ``model`` for the chat model; settings use text_model.
+            # The registry/providers use ``model`` for the chat model; settings use text_model.
             # ``image_model`` passes through unchanged so generate_image can target it.
             data["model"] = data.pop("text_model", "")
             config.update(data)

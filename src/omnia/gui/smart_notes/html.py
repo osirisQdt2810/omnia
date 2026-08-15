@@ -81,7 +81,7 @@ from omnia.plugins.smart_notes.config import (
 )
 
 if TYPE_CHECKING:
-    from omnia.core.providers.native_runtime import NativeRuntimeManager
+    from omnia.core.runtime.native_runtime import NativeRuntimeManager
 
 
 def _script_safe(s: str) -> str:
@@ -134,7 +134,7 @@ def native_runtimes_payload(manager: NativeRuntimeManager) -> dict[str, Any]:
         ``{"sections": [{"section": str, "runtimes": [{name, label, size_hint, section,
         installed}, ...]}, ...]}`` in the registry's deterministic section/name order.
     """
-    from omnia.core.providers.native_runtime import native_runtimes_by_section
+    from omnia.core.runtime.native_runtime import native_runtimes_by_section
 
     sections: list[dict[str, Any]] = []
     for section, specs in native_runtimes_by_section().items():
@@ -191,7 +191,7 @@ def set_native_runtime(
     Returns:
         The synchronous uninstall payload, or None when the action is asynchronous/unknown.
     """
-    from omnia.core.providers.native_runtime import native_runtime
+    from omnia.core.runtime.native_runtime import native_runtime
 
     spec = native_runtime(name)
     if spec is None:

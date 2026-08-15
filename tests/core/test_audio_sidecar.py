@@ -1,7 +1,7 @@
 """Tests for the ``audio`` native runtime: the wrapper (``sidecar.py``) and the transcoder it
 runs (``sidecar_cli.py``).
 
-The wrapper's tests fake the :class:`~omnia.core.providers.native_runtime.NativeRuntimeManager`
+The wrapper's tests fake the :class:`~omnia.core.runtime.native_runtime.NativeRuntimeManager`
 and assert the CONTRACT around it — the spec the Advanced tab renders, the file-based argv
 (never stdin/stdout, which Windows would corrupt), and the actionable error a caller gets when
 the runtime is missing.
@@ -23,7 +23,7 @@ from omnia.core.audio import sidecar_cli
 from omnia.core.audio.sidecar import SPEC, AudioSidecar
 from omnia.core.audio.wav import SAMPLE_WIDTH, WavClip
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.native_runtime import (
+from omnia.core.runtime.native_runtime import (
     NATIVE_RUNTIMES,
     native_runtimes_by_section,
 )

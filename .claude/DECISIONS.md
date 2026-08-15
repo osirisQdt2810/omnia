@@ -917,3 +917,101 @@ never executes code on another device.
 - **Refuse the request instead.** What the previous release did, and correct while the
   capability was absent. Once it exists, refusing is as wrong as inventing.
 
+
+---
+
+## ADR-014: One generic `ProviderRegistry`; LLM drops its builder table
+
+**Date**: 2026-08-15
+**Status**: Accepted
+
+### Context
+The provider layer had two kinds and two mechanisms for the same job. TTS self-registered:
+`@register_tts("<name>")` bound a class into `TTS_REGISTRY`, and `create_tts_provider` called
+`cls.from_config(config, http)`. LLM did not — `core/providers/llm/factory.py` carried a
+hand-maintained `_BUILDERS` dict of `_build_*` closures **plus** a second `_PROVIDER_CLASSES`
+dict mapping the same names to classes, because the closures alone could not answer "does this
+provider need a key?" without building one. Two dicts, one truth: a test existed purely to
+assert they had not drifted apart.
+
+The duplication had already leaked out of `core/`. `plugins/smart_notes/account.py` needed the
+provider CLASS name to join usage rows onto the models a collection uses, and the only way to
+get it was to import the private `_PROVIDER_CLASSES` — a feature reaching into a seam's
+internals, which is exactly what the coupling rule exists to prevent.
+
+A third kind is foreseeable, and would have arrived to a choice between two patterns with no
+stated reason to prefer either.
+
+### Decision
+Lift the mechanism to the root of `core/providers`, and bind it once per kind.
+
+* **`core/providers/base.py`** — `ProviderBase`, the kind-agnostic contract: `name`,
+  `requires_api`, `from_config(config, http)`. `LLMProvider` and `TTSProvider` now subclass it
+  and keep only what is theirs (`generate_text`; `synthesize`/`audio_ext`/`CURATED_VOICES`).
+* **`core/providers/registry.py`** — `ProviderRegistry`, one instance per kind, carrying
+  `register`, `create`, `names`, `classes`, `requiring_api`, `keyless`. It subclasses
+  `collections.abc.Mapping`, so every existing read of a registry (`registry[name]`,
+  `dict(registry)`, `set(registry)`, `.items()`, `.values()`, truthiness, `dict == registry`)
+  kept working untouched — the whole TTS suite passed unedited across the change, which is what
+  proved the swap was source-compatible rather than merely plausible.
+* **`llm/registry.py`** binds `LLM_REGISTRY` (`default="openai_compatible"`); `tts/registry.py`
+  binds `TTS_REGISTRY` (`default="google_translate"`). The per-kind default is a constructor
+  argument because it is data, not logic.
+* **`factory.py` is deleted, with no shim.** The three `_build_*` bodies moved verbatim into
+  `from_config` classmethods on the providers they built. `account.py` now calls the public
+  `get_llm(name)`.
+
+No provider was renamed, added, or removed. That is deliberate and is what leaves ADR-010
+config, `.secrets/llm.<name>.*`, synced `SmartNotesFieldConfig.provider` values, and
+`omnia:usage` rows untouched.
+
+### Rationale
+A second mechanism is a second thing to keep correct, and this one had already produced a
+drift-guard test and a private-symbol import from a plugin. Registering *is* the abstraction —
+it is not per-kind — so the kinds should differ only where they genuinely differ:
+`tts_providers_with_ext` reads `audio_ext` and has no LLM analogue, so it stays in the TTS
+binding; the curated GUI subsets and the per-kind default stay per kind.
+
+Deleting the factory rather than leaving a shim was the sharper call. A shim would have meant
+two doorways to one mechanism, a doc that could not state one recipe, and — worse — the
+drift-guard tests would have kept importing a dead module and passing, still pointed at the
+thing that no longer ran.
+
+### Consequences
+**Positive**: one recipe to document and to follow; a third kind costs one line
+(`ProviderRegistry("CV", default=...)`) instead of a design decision. The last plugin→core
+private reach is gone. The mechanics are now testable on a throwaway registry, so registration
+rules are covered without mutating the live ones.
+
+**Negative / constraints this imposes**:
+- **`register` must never stamp `cls.name`** (unlike `core/registry.py`, which stamps `cls.id`).
+  One class serves several names; the usage rows and the Account tab's join read that single
+  class name, and stamping would both corrupt them and make the last registered name win.
+- **`from_config` must stay pure construction.** `ProviderHub.llm()` calls `create` while
+  holding its cache lock. (`GeminiVertexProvider.from_config` reads the service-account file
+  when `credentials_path` is set — that already happened inside the lock before this change and
+  sits at the identical point in the call chain, so it is preserved, not worsened. Do not add
+  more I/O there.)
+- **`from_config` must be defined on the class, not inherited.** `GeminiVertexProvider`
+  subclasses `GeminiProvider`; inheriting its builder would reject a valid Vertex project with
+  "Gemini provider requires an api_key". Pinned by a test over `registry.classes()`.
+- **A registered name still needs its own `LLMSettings`/`TTSSettings` subsection**, or the hub
+  hands the provider `{"provider": name}` with no credentials and the user sees an auth error
+  where a config error belongs. Pinned by `test_every_registered_name_has_a_config_subsection`.
+- `create` raises for an unknown name and never falls back to the default class — a config
+  synced from a newer device must fail loudly, not silently generate on another provider
+  (ADR-010's world, where unknown keys survive a round-trip).
+- `ProviderRegistry` instances are unhashable (`Mapping` sets `__hash__ = None`). Nothing
+  hashes them today.
+
+### Alternatives considered
+- **Keep two mechanisms, just make LLM's private dicts public.** Rejected: it fixes the
+  coupling symptom and leaves the duplication, plus the drift-guard test, in place.
+- **Migrate LLM onto a copy of the TTS registry module.** Rejected: three copies of the
+  mechanism once a third kind lands.
+- **Keep `factory.py` as a deprecation shim re-exporting the new functions.** Rejected — see
+  Rationale; the shim's main effect would have been to keep dead imports passing.
+- **Also migrate `smart_notes/engine/tools/registry.py` and `note_maintenance/registry.py`
+  onto `ProviderRegistry`.** Rejected: they stamp attributes (`cls.task_id`) and preserve
+  registration order for the UI, both of which this registry deliberately does not do — and
+  `core/*` may not know about `Tool`/`MaintenanceTask` anyway.

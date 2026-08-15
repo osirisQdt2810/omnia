@@ -22,8 +22,8 @@ from omnia.core.providers import ProviderError, ProviderHub
 
 if TYPE_CHECKING:
     from omnia.core.config import ConfigRepository
-    from omnia.core.providers.native_runtime import NativeRuntimeManager
-    from omnia.core.providers.voice_cache import VoiceCache
+    from omnia.core.providers.tts.voice_cache import VoiceCache
+    from omnia.core.runtime.native_runtime import NativeRuntimeManager
     from omnia.plugins.smart_notes.engine import GenerationResult
     from omnia.plugins.smart_notes.integration import SmartNotesStore
 

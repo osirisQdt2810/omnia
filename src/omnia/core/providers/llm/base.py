@@ -1,29 +1,26 @@
 """LLM provider interface (adapted from vio-ai's ``LLMProvider``).
 
-Pure module — no Anki imports. Concrete providers live alongside and are built by
-:mod:`omnia.core.providers.llm.factory`.
+Pure module — no Anki imports. Concrete providers live alongside and are built by their
+``@register_llm`` registration (:mod:`omnia.core.providers.llm.registry`).
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Optional
 
+from omnia.core.providers.base import ProviderBase
 from omnia.core.providers.errors import ProviderError
 
 
-class LLMProvider(ABC):
+class LLMProvider(ProviderBase):
     """Generates text (and optionally images) from a prompt.
 
-    Adding a provider means subclassing this and registering it in the factory — no feature
-    code changes (ADR-004).
+    Adding a provider means subclassing this and registering it with ``@register_llm`` — no
+    feature code changes (ADR-004). ``name`` / ``requires_api`` / ``from_config`` come from
+    :class:`~omnia.core.providers.base.ProviderBase`.
     """
 
-    name: str = ""
-    # Whether this provider needs an API key / credentials to call. False for keyless /
-    # offline / open-source providers that must run without any secret. Used to classify
-    # providers (factory: requiring-api vs keyless) and to derive test markers.
-    requires_api: bool = True
     # The token usage of the most recent call, when the provider's response reports it:
     # ``{"in": prompt_tokens, "out": completion_tokens, "total": total_tokens}``. None when
     # the provider/response carries no usage. The usage recorder reads this to log exact

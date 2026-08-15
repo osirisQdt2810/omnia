@@ -504,12 +504,12 @@ class TestShippedModelDefaultsAreOffered:
             ), f"{provider} ships {settings.text_model!r} but its picker does not offer it"
 
     def test_the_factory_fallback_calls_a_model_the_picker_offers(self):
-        # The factory's own `config.get("model", <default>)` is a third source of truth,
-        # reachable whenever a caller builds a provider from a dict with no model. Assert the
-        # BEHAVIOUR — the id in the URL it actually requests — rather than scanning source
-        # text, which would trip over a retired id merely mentioned in a comment.
+        # `GeminiProvider.from_config`'s own `config.get("model", <default>)` is a third source
+        # of truth, reachable whenever a caller builds a provider from a dict with no model.
+        # Assert the BEHAVIOUR — the id in the URL it actually requests — rather than scanning
+        # source text, which would trip over a retired id merely mentioned in a comment.
         from omnia.core.providers import catalog
-        from omnia.core.providers.llm.factory import create_llm_provider
+        from omnia.core.providers.llm import create_llm_provider
 
         called: dict[str, str] = {}
 

@@ -13,7 +13,7 @@ import logging
 
 import pytest
 
-from omnia.core.text import strip_markup
+from omnia.core.lang.text import strip_markup
 from omnia.plugins.smart_notes.config import (
     CompiledToolSpec,
     FieldToolConfig,

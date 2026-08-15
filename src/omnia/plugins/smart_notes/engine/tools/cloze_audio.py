@@ -1,7 +1,7 @@
 """The ``cloze_audio`` tool: speak a sentence with the answer replaced by silence or a beep.
 
 A listening-cloze card is a sentence you hear with a hole in it. Plain TTS cannot make one:
-:func:`omnia.core.text.strip_markup` unwraps ``{{c1::survive}}`` to ``survive`` before the text
+:func:`omnia.core.lang.text.strip_markup` unwraps ``{{c1::survive}}`` to ``survive`` before the text
 reaches a provider, so pointing a TTS field at a cloze field produces audio that **reads the
 answer out loud**. This tool exists to close that hole, and its whole design follows from one
 rule:
@@ -63,9 +63,9 @@ from pydantic import BaseModel, Field, ValidationError
 from omnia.core.audio.sidecar import AudioSidecar
 from omnia.core.audio.wav import WavClip, WavFormatError
 from omnia.core.config.base import PersistedModel
+from omnia.core.lang.text import CLOZE_RE, strip_markup
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts.registry import tts_providers_with_ext
-from omnia.core.text import CLOZE_RE, strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult, ResolvedVoice
 from omnia.plugins.smart_notes.engine.tools.base import (
     Produced,
@@ -215,7 +215,7 @@ class ClozeMaskPlanner:
 
         Args:
             value: The RAW field value — markup and cloze markers included. Never pass a
-                stripped copy: :func:`omnia.core.text.strip_markup` unwraps a cloze to its
+                stripped copy: :func:`omnia.core.lang.text.strip_markup` unwraps a cloze to its
                 answer, which destroys the very positions this needs.
 
         Returns:

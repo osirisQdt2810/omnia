@@ -57,8 +57,10 @@ src/omnia/                  # SOURCE-ONLY add-on package — assembled into Anki
 │   │   ├── ease_pipeline.py   # ONE wrap of Reviewer._answerCard; ordered ease transformers
 │   │   └── web_injector.py    # inject JS/CSS into the reviewer webview; route pycmd messages
 │   └── providers/             # LLM + TTS provider abstraction (adapted from a prior project)
-│       ├── llm/   (base, factory, + concrete providers)
-│       └── tts/   (base, factory, + concrete providers)
+│       ├── base.py            # ProviderBase: name / requires_api / from_config (kind-agnostic)
+│       ├── registry.py        # ProviderRegistry: ONE registration+build mechanism, per kind
+│       ├── llm/   (base, registry, + concrete providers)
+│       └── tts/   (base, registry, + concrete providers)
 ├── plugins/                # ONE folder per feature plugin (thin; sit on top of core seams)
 │   ├── __init__.py         # imports each feature module so its @register runs at load time
 │   ├── auto_flip/
@@ -95,8 +97,10 @@ deploy/Dockerfile           # CI/test image only
    display-interval all use this.
 4. **Provider layer** (`core/providers/`): `LLMProvider` and `TTSProvider` base classes, so
    smart-notes (and future AI features) work against an interface. Adding a provider = one
-   subclass + one registration, no feature code changes — TTS self-registers via
-   `@register_tts` (`core/providers/tts/registry.py`); LLM still uses `core/providers/llm/factory.py`.
+   subclass + one registration, no feature code changes. Both kinds self-register onto ONE
+   generic `ProviderRegistry` (`core/providers/registry.py`), bound per kind in
+   `core/providers/llm/registry.py` (`@register_llm`) and `core/providers/tts/registry.py`
+   (`@register_tts`) — see ADR-014.
 
 ### Coupling rule (enforced in review)
 `plugins/*` depend on `core/*`; **`core/*` never imports `plugins/*`**. Seams don't know
@@ -117,13 +121,20 @@ must not import `aqt`/`anki` at top level so they unit-test headless.
 1. Subclass `LLMProvider` (or `TTSProvider`) in `core/providers/llm|tts/<name>.py`.
 2. Implement the abstract methods; keep network calls in pure modules (vendored HTTP lib
    or stdlib), no UI imports.
-3. Register it — **the two sides differ**:
-   - **TTS:** decorate the class with `@register_tts("<name>")` from `core/providers/tts/registry.py`,
-     give it a `from_config(cls, config, http)` classmethod, declare `CURATED_VOICES` (so it shows
-     in the voice pickers / Auto-detect map), and import the module in `core/providers/tts/__init__.py`
-     so the decorator runs. (No central factory dict.)
-   - **LLM:** add an entry to `core/providers/llm/factory.py` (`_BUILDERS` + `_PROVIDER_CLASSES`).
-     *(LLM has not yet been migrated to a registry; if you do, mirror the TTS pattern and update this doc.)*
+3. Register it — **one recipe, both kinds** (they share `ProviderRegistry`; ADR-014):
+   - Implement `from_config(cls, config, http)` **on the class itself** — never inherit a
+     parent's (that trap is why `GeminiVertexProvider` defines its own; a test pins it).
+   - Decorate it `@register_llm("<name>")` / `@register_tts("<name>")` from the kind's
+     `core/providers/<kind>/registry.py`. Several names may share one class (the openai family).
+   - Import the module in the kind's `__init__.py` so the decorator runs — the registry is
+     empty until it does, and every generation then fails with "Unknown provider".
+   - **TTS only:** declare `CURATED_VOICES` (so it shows in the voice pickers / Auto-detect map).
+   - Add the matching `[llm.<name>]` / `[tts.<name>]` subsection to `LLMSettings`/`TTSSettings`
+     and to `config/providers.example.toml` — a registered name with no settings field gets
+     built with zero credentials (pinned by `test_provider_metadata`).
+   - **LLM only:** add it to `LLM_PROVIDERS`/`_TEXT_MODELS` (`core/providers/llm/__init__.py`)
+     if it should appear in the picker, and to `_KEY_CARD_SPECS` in
+     `plugins/smart_notes/account.py` or it gets no key-entry UI.
 4. Add tests with the HTTP layer mocked — never hit a real API in unit tests.
 
 ## Branching & PRs (branch + PR for everything non-trivial — ALL repos)

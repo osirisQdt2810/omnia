@@ -1,4 +1,4 @@
-"""LLM provider package — interface, factory, and the curated provider/model catalog data.
+"""LLM provider package — interface, registry, and the curated provider/model catalog data.
 
 The provider/model literals the settings catalog offers live HERE (with the providers), not in
 ``core/providers/catalog`` — that module is a thin functions-only aggregator over this data.
@@ -7,8 +7,11 @@ Pure module — no Anki imports; never imports ``omnia.core.providers.catalog``.
 
 from __future__ import annotations
 
+# Import every provider module so its ``@register_llm`` runs at package import (mirrors how
+# ``plugins/__init__.py`` imports each feature). The registry is empty until these run.
+from omnia.core.providers.llm import gemini, gemini_vertex, openai_compatible
 from omnia.core.providers.llm.base import LLMProvider
-from omnia.core.providers.llm.factory import (
+from omnia.core.providers.llm.registry import (
     available_keyless_llm_providers,
     available_llm_providers,
     available_llm_providers_requiring_api,

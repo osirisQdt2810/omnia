@@ -1,4 +1,4 @@
-"""TTS provider package — interface, factory, and the aggregated voice catalog.
+"""TTS provider package — interface, registry, and the aggregated voice catalog.
 
 This package is the SINGLE source of TTS voice data: each provider declares its own curated
 voices on its class (:attr:`TTSProvider.CURATED_VOICES`) and exposes them polymorphically via
@@ -92,21 +92,6 @@ LANGUAGES: list[dict[str, str]] = [
 ]
 
 
-def _provider_classes() -> list[type[TTSProvider]]:
-    """The distinct TTS provider classes (deduped — several registry names share one class).
-
-    Read from the registry so voice listing stays in lockstep with what can be built, without
-    instantiating anything (curated voices are class-level).
-    """
-    seen: set[type[TTSProvider]] = set()
-    classes: list[type[TTSProvider]] = []
-    for cls in TTS_REGISTRY.values():
-        if cls not in seen:
-            seen.add(cls)
-            classes.append(cls)
-    return classes
-
-
 def _group_by_provider(voices: list[TTSVoice]) -> dict[str, list[TTSVoice]]:
     """Group voices by their own ``provider`` tag (keeps the catalog's historical keys).
 
@@ -136,7 +121,9 @@ def aggregated_voices(
         The aggregated voice map, keyed by each voice's ``provider`` tag.
     """
     all_voices: list[TTSVoice] = []
-    for cls in _provider_classes():
+    # Read the distinct classes from the registry so voice listing stays in lockstep with what
+    # can be built, without instantiating anything (curated voices are class-level).
+    for cls in TTS_REGISTRY.classes():
         all_voices.extend(cls.list_voices(http, refresh=refresh))
     return _group_by_provider(all_voices)
 

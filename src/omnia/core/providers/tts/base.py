@@ -8,9 +8,11 @@ polymorphic — the GUI/catalog read the aggregated set without importing any co
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
+
+from omnia.core.providers.base import ProviderBase
 
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient
@@ -41,42 +43,19 @@ class TTSVoice:
         return f"{self.language} · {self.name} · {self.gender}"
 
 
-class TTSProvider(ABC):
-    """Synthesises speech audio from text."""
+class TTSProvider(ProviderBase):
+    """Synthesises speech audio from text.
 
-    name: str = ""
+    Inherits ``name`` / ``requires_api`` / ``from_config`` from :class:`ProviderBase` and adds
+    what only speech has: the audio container, the curated voices, and ``synthesize``.
+    """
+
     # Container/extension of the bytes returned by :meth:`synthesize`.
     audio_ext: str = "mp3"
-    # Whether this provider needs an API key / cloud credentials to call. False for keyless /
-    # offline / open-source providers (google_translate, edge_tts, piper) that must run without
-    # any secret. Used to classify providers and to derive test markers.
-    requires_api: bool = True
     # The provider's own curated voices (the offline seed). Empty for providers whose voices
     # can't be enumerated offline (google_translate is language-only; piper is a local .onnx
     # path). Subclasses override this; :meth:`list_voices` reads it.
     CURATED_VOICES: ClassVar[list[TTSVoice]] = []
-
-    @classmethod
-    def from_config(
-        cls, config: dict[str, Any], http: Optional[HttpClient] = None
-    ) -> TTSProvider:
-        """Build a configured instance from a ``config`` dict (the factory entry point).
-
-        Each provider reads the keys it needs out of ``config`` and (where it does HTTP) wires
-        in the injected ``http`` client. Subclasses MUST override this; the base raises so a
-        provider that forgets to implement it fails loudly rather than mis-building.
-
-        Args:
-            config: The provider's config subsection (already includes ``provider``).
-            http: Optional HTTP client to inject.
-
-        Returns:
-            A ready-to-use provider instance.
-
-        Raises:
-            NotImplementedError: If the subclass does not override this.
-        """
-        raise NotImplementedError(f"{cls.__name__} must implement from_config()")
 
     @abstractmethod
     def synthesize(

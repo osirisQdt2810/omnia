@@ -529,7 +529,7 @@ class TestNeverSpeaksTheAnswer:
         special cases. The consequence is real and belongs in the suite rather than in a
         comment — putting any tts tool after ``cloze_audio`` on a field whose answer must stay
         hidden WILL have that tool speak it, because
-        :func:`omnia.core.text.strip_markup` unwraps ``{{c1::sat}}`` to ``sat``.
+        :func:`omnia.core.lang.text.strip_markup` unwraps ``{{c1::sat}}`` to ``sat``.
 
         What this does NOT weaken is the tool's own guarantee: in both orderings below,
         ``cloze_audio`` itself never speaks the answer — it is the SIBLING that does.

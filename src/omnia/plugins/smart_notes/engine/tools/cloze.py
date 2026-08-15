@@ -19,7 +19,7 @@ Three details carry the tool's whole value, and each is a documented decision be
   wrote it, so "survived" stays "survived" inside ``{{c1::…}}``.
 
 The emitted ``{{c1::…}}`` is inert everywhere else in the engine: the prompt interpolator's
-field-ref regex skips a cloze opener and :func:`omnia.core.text.strip_markup` unwraps one to its
+field-ref regex skips a cloze opener and :func:`omnia.core.lang.text.strip_markup` unwraps one to its
 answer — which is exactly why speaking such a field needs the later ``cloze_audio`` tool rather
 than plain TTS.
 
@@ -34,13 +34,13 @@ from typing import TYPE_CHECKING, ClassVar, Optional
 from pydantic import BaseModel, Field
 
 from omnia.core.config.base import PersistedModel
+from omnia.core.lang.text import strip_markup
 from omnia.core.lang.word_forms import (
     UNAMBIGUOUS_IRREGULAR,
     Deinflector,
     word_variants,
     words_boundary_pattern,
 )
-from omnia.core.text import strip_markup
 from omnia.plugins.smart_notes.engine.generators import GenerationResult
 from omnia.plugins.smart_notes.engine.rules import rule_source_fields
 from omnia.plugins.smart_notes.engine.tools.base import (

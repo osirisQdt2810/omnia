@@ -19,6 +19,7 @@ from omnia.core.logging import get_logger
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm.base import LLMProvider
+from omnia.core.providers.llm.registry import register_llm
 
 _BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -37,6 +38,7 @@ def _usage_from_gemini(resp: Any) -> Optional[dict[str, int]]:
     }
 
 
+@register_llm("gemini")
 class GeminiProvider(LLMProvider):
     """Talks to Google's Generative Language API (AI Studio, API-key auth)."""
 
@@ -57,6 +59,27 @@ class GeminiProvider(LLMProvider):
         self._image_model = image_model
         self._temperature = temperature
         self._http = http or DEFAULT_HTTP_CLIENT
+
+    @classmethod
+    def from_config(
+        cls, config: dict[str, Any], http: Optional[HttpClient] = None
+    ) -> GeminiProvider:
+        """Build the AI-Studio Gemini provider from its config subsection.
+
+        Args:
+            config: The provider's config subsection.
+            http: Optional HTTP client to inject.
+
+        Returns:
+            The configured provider.
+        """
+        return cls(
+            api_key=config.get("api_key", ""),
+            model=config.get("model", "gemini-3.6-flash"),
+            image_model=config.get("image_model", ""),
+            temperature=float(config.get("temperature", 0.7)),
+            http=http,
+        )
 
     # --- hooks subclasses override (the only things that differ for Vertex) ---------
     def _endpoint(self, model: str) -> str:

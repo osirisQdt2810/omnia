@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Optional
 
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.native_runtime import (
+from omnia.core.runtime.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
     default_manager,

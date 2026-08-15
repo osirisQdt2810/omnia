@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from omnia.core.providers.tts.base import TTSVoice
-from omnia.core.providers.voice_cache import (
+from omnia.core.providers.tts.voice_cache import (
     CollectionVoiceCache,
     JsonVoiceCache,
     VoiceCache,

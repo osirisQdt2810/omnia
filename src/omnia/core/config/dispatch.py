@@ -37,6 +37,11 @@ from typing import TypeVar
 
 from omnia import envs
 from omnia.core.config.loader import BaseConfigLoader, build_config_loader
+from omnia.core.providers.tts.voice_cache import (
+    CollectionVoiceCache,
+    JsonVoiceCache,
+    VoiceCache,
+)
 from omnia.core.providers.usage import (
     BufferedUsageRecorder,
     CollectionUsageStore,
@@ -44,11 +49,6 @@ from omnia.core.providers.usage import (
     JsonUsageStore,
     UsageRecorder,
     UsageStore,
-)
-from omnia.core.providers.voice_cache import (
-    CollectionVoiceCache,
-    JsonVoiceCache,
-    VoiceCache,
 )
 
 _MARKER_FILE = ".storage.json"
