@@ -21,6 +21,57 @@ Format for each entry:
 
 ---
 
+## 2026-08-15 — smart_notes Try-it: a test form built from the tool, not a fixed one
+
+**What:** The Tools tab's "Try it" panel now renders ONE control per input the tool declares, and
+renders its result by the kind produced. New on the Tool contract: `input_kinds`
+(`Mapping[str, str]`), `INPUT_KINDS` (`text/image/audio/video/file`) and `INPUT_KIND_EXTENSIONS`,
+re-exported from `engine.tools`. A text row is typed into and carries its own attach; a media row
+opens a browser filtered to its family. Output: text inline, image as name + icon into the existing
+lightbox, audio/video as name + icon handed to Anki's own `av_player`. `MediaSampleStage` became
+multi-slot (one staged file per input, name-collision guarded) and copy-then-replace.
+
+**Why:** The panel showed one textarea called "Sample" plus a PERMANENT "Choose file…" button
+whatever the tool read, so a tool taking a word and a clip got one undifferentiated box, and a
+pure-text tool carried a browse button it had no use for. The cause was a gap in the contract, not
+the CSS: a tool declared what it PRODUCES (`kinds`) and WHICH fields it reads
+(`referenced_fields`), but nothing said what those fields HOLD — and one generic box is the only
+honest form to draw when that is unknown.
+
+**Files:** modified `plugins/smart_notes/engine/tools/{base,user_tools,media_sample,__init__}.py`,
+`plugins/smart_notes/authoring/tool_author.py`, `gui/smart_notes/dialogs/controllers/user_tools.py`,
+`gui/smart_notes/web/{page.html,page.css,10-usertools.js}`; tests in
+`tests/gui/test_smart_notes_user_tools_ui.py`, `tests/plugins/test_smart_notes_{user_tools,media_sample}.py`.
+
+**How to verify:** `pytest tests/ -q` → `1990 passed, 68 skipped, 15 xfailed`. Then LIVE, which is
+the part that matters here — Anki against a throwaway `ANKI_BASE`, driven over CDP, on BOTH
+platforms. A draft declaring `{"Word": "text", "Clip": "audio", "Pic": "image"}` gives, identically
+on macOS 25.09.2 and Windows 26.08.1:
+
+```
+["Word📎", "Clip📎 Choose audio…", "Pic📎 Choose image…"]
+{"hasOldPick": false, "hasOldSample": false, "inputsHost": true}
+```
+
+and real runs producing real bytes render each kind:
+
+```
+image  🖼️ pngdemo.png — 70 bytes    [🔍 View]
+audio  🔊 wavdemo.wav — 244 bytes   [🔊 Play]
+video  🎬 mp4demo.mp4 — 512 bytes   [🎬 Open]
+```
+
+**Notes / rollback:** Inputs are read from the draft source by AST, NEVER by `exec`. Compiling the
+draft is the only other way to reach the ClassVar and it would run the module BEFORE the risk
+banner — inverting the one safety property this flow is built on. The cost: a COMPUTED
+`input_kinds` cannot be read, so that tool falls back to a single row, and that row keeps its own
+attach button, so nothing becomes untestable. A blank-default param (meaning "this rule's first
+prompt reference") is declared under `"Sample"` rather than being given an invented default; an
+earlier revision did invent one and silently disabled that fallback for every generated tool.
+Produced mp4/H.264 and m4a/AAC do NOT decode in Anki's QtWebEngine (verified against the shipped
+Qt 6.8.2 via `data:`, `blob:` and `http://`), which is why playback is handed to `av_player`
+rather than to an in-page element. To reverse, revert the branch; saved tools that declare nothing
+already behave exactly as they did before.
 ## 2026-08-15 — Providers: one generic registry for both kinds; the LLM builder table is gone
 
 **What:** The provider seam now has ONE registration mechanism instead of two. New root-level
