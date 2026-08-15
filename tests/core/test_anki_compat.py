@@ -5,6 +5,7 @@ from __future__ import annotations
 from omnia.core.anki_compat import (
     _guard,
     escape_search_term,
+    progress_label,
     random_note_of_type,
     subscribe_hook,
     unsubscribe_hook,
@@ -129,3 +130,63 @@ class TestRandomNoteOfType:
         random_note_of_type('Basic "Q"', col=col)
 
         assert col.queries == ['note:"Basic \\"Q\\""']
+
+
+class TestProgressLabel:
+    """A background op retitling the progress dialog must not be able to crash Anki.
+
+    ``progress_label`` marshals onto the Qt main thread, so its closure runs LATER, inside
+    ``taskman._on_closures_pending`` — which has no try/except of its own. A guard on the
+    calling side cannot protect anything that happens there.
+    """
+
+    def _mw_with_deferred_taskman(self, monkeypatch):
+        """Install a fake ``mw`` whose taskman only STORES the closure, as the real one queues."""
+        import aqt
+
+        class _Progress:
+            def __init__(self):
+                self.labels = []
+
+            def update(self, label=None, **_kwargs):
+                self.labels.append(label)
+
+        class _Taskman:
+            def __init__(self):
+                self.pending = []
+
+            def run_on_main(self, callback):
+                self.pending.append(callback)
+
+        class _MW:
+            def __init__(self):
+                self.progress = _Progress()
+                self.taskman = _Taskman()
+
+        window = _MW()
+        monkeypatch.setattr(aqt, "mw", window, raising=False)
+        return window
+
+    def test_the_label_reaches_the_dialog_on_the_main_thread(self, monkeypatch):
+        window = self._mw_with_deferred_taskman(monkeypatch)
+
+        progress_label("voice.onnx: 4.2/63.2 MB (6%)")
+
+        assert window.progress.labels == []  # nothing touched Qt from the worker thread
+        window.taskman.pending[0]()  # …until the main thread drains the queue
+        assert window.progress.labels == ["voice.onnx: 4.2/63.2 MB (6%)"]
+
+    def test_a_label_queued_before_shutdown_is_dropped_not_raised(self, monkeypatch):
+        """Quitting Anki mid-download clears ``aqt.mw`` between the queue and the drain.
+
+        The closure would then evaluate ``None.progress``; unguarded, that surfaces as Anki's
+        error dialog with a traceback, for a background op the user never asked about.
+        """
+        import aqt
+
+        window = self._mw_with_deferred_taskman(monkeypatch)
+        progress_label("voice.onnx: 61.0/63.2 MB (96%)")
+
+        monkeypatch.setattr(aqt, "mw", None, raising=False)
+
+        window.taskman.pending[0]()  # must not raise

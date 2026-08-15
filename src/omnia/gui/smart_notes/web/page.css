@@ -938,10 +938,6 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   background: color-mix(in srgb, var(--accent-2) 10%, transparent);
 }
 .sn-ut-risks[hidden] { display: none; }
-/* Which staged file the next test will read. Quiet — it is a statement of fact, not a warning
-   — but present, so "why did it read THAT?" is answerable without opening a file dialog. */
-.sn-ut-samplefile { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
-.sn-ut-samplefile[hidden] { display: none; }
 /* Inline with the sentence: the folder is being named, so the way to open it belongs there. */
 .sn-ut-open { font-size: 11px; padding: 1px 7px; margin-left: 2px; vertical-align: baseline; }
 .sn-ut-section { margin: 14px 0; display: flex; flex-direction: column; gap: 8px; }
@@ -989,3 +985,54 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
 }
 .sn-ut-out[hidden] { display: none; }
+/* --- Try it: one control per input the tool declares ---------------------------------- */
+/* Stacked rows, because the tool decides how many there are — a horizontal form would reflow
+   differently for every tool the user opens. */
+.sn-ut-inputs { display: flex; flex-direction: column; gap: 6px; }
+/* Baseline-aligned so a one-line label sits with the first line of a two-row textarea, and
+   wrapping so a long field name never squeezes its own control off the panel. */
+.sn-ut-input-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* The NOTE FIELD's name, in the code face it has everywhere else in this dialog. min-width so
+   consecutive rows line up instead of stair-stepping with the length of each name. */
+.sn-ut-input-name {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px; color: var(--accent); min-width: 96px;
+}
+/* Takes the rest of the row (flex: 1 with a 0 basis, so a long value cannot push the label
+   out); metrics match .sn-ut-textarea so a text input reads the same as the prompt box. */
+.sn-ut-input-text {
+  flex: 1 1 0; min-width: 160px; resize: vertical; line-height: 1.5;
+}
+/* On a media row this is the row's whole control; on a text row it is the small attach beside
+   the box, which is what keeps a tool that declared no kinds able to take a file at all. */
+.sn-ut-input-pick { font-size: 12px; padding: 3px 8px; flex: 0 0 auto; }
+/* Which staged file this input will be read as — the Anki reference AND the file behind it.
+   Quiet: it is a statement of fact, not a warning. Full-width so it sits UNDER the control
+   rather than squeezing it, since a reference plus a file name is longer than either. */
+.sn-ut-input-file {
+  font-size: 11.5px; color: var(--muted); flex: 1 0 100%;
+  padding-left: 104px; word-break: break-all;
+}
+/* A produced FILE is a name + an icon + a button, so this is a ROW — deliberately not the
+   monospace pre-wrap of .sn-ut-out, which is a text box and fights that layout. */
+.sn-ut-outmedia { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sn-ut-outmedia[hidden] { display: none; }
+.sn-ut-out-name { font-size: 12px; color: var(--fg); word-break: break-all; }
+.sn-ut-out-note { font-size: 11.5px; color: var(--muted); }
+/* The produced-video popup. Modelled on .sn-lightbox (same full-screen scrim, same z-layer)
+   because it is the other overlay in this page and the two should behave alike. */
+.sn-ut-video {
+  position: fixed; inset: 0; z-index: 100; padding: 20px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.88);
+}
+.sn-ut-video[hidden] { display: none; }
+/* Opaque, like .sn-modal-card: the scrim behind it must not read through the text. */
+.sn-ut-video-box {
+  background: linear-gradient(150deg, var(--bg-top), var(--bg-bottom));
+  border: 1px solid var(--card-border); border-radius: 14px;
+  box-shadow: 0 14px 40px var(--shadow);
+  padding: 14px 16px; max-width: 520px; display: flex; flex-direction: column; gap: 8px;
+}
+.sn-ut-video-name { font-size: 13px; font-weight: 700; word-break: break-all; }
+.sn-ut-video-note { font-size: 12px; color: var(--muted); line-height: 1.45; }

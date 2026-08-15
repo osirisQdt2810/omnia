@@ -499,6 +499,30 @@ def progress_was_cancelled() -> bool:
     return bool(main_window().progress.want_cancel())
 
 
+def progress_label(label: str) -> None:
+    """Retitle the CURRENTLY-OPEN progress dialog — safe to call from a background thread.
+
+    A long background op already runs under ``run_in_background(..., label=…)``'s spinner, which
+    is indeterminate: its label is the only channel the op has to report what it is doing (e.g.
+    how far a voice-model download has got). Marshalled onto the Qt main thread because touching
+    Qt from a worker thread is a native crash, not a catchable exception.
+
+    The guard lives INSIDE the closure, not around this call: the closure runs later, on the
+    main thread, where Anki's ``_on_closures_pending`` has no try/except of its own. A user who
+    quits mid-download clears ``aqt.mw``, and an unguarded ``None.progress`` there would raise a
+    traceback dialog for a background op they never asked about. A cosmetic label is not worth
+    that, so a vanished main window simply drops the update.
+    """
+
+    def _apply() -> None:
+        window = main_window()
+        if window is None:
+            return
+        window.progress.update(label=label)
+
+    run_on_main(_apply)
+
+
 def run_on_main(callback: Callable[[], None]) -> None:
     """Schedule ``callback`` to run on the Qt main thread (from a background thread)."""
     main_window().taskman.run_on_main(callback)

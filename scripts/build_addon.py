@@ -8,11 +8,21 @@ into one archive:
 
 * ``src/omnia/**`` at the archive root (``__init__.py`` at the top),
 * ``vendor/**`` under ``vendor/`` (shipped vendored deps),
-* ``models/**`` under ``models/`` (bundled TTS voice models), and
+* ``models/**`` under ``models/`` MINUS the ``.onnx`` weights (see below), and
 * ``config/*.example.toml`` under ``config/`` (tracked templates the add-on seeds from).
 
 It EXCLUDES everything that must not ship: tests/requirements/docs/deploy/scripts, the live
-``*.toml`` config + ``.secrets/``, ``user_files/``, caches, ``meta.json``, ``.DS_Store``.
+``*.toml`` config + ``.secrets/``, ``user_files/``, caches, ``meta.json``, ``.DS_Store``, and
+the ``*.onnx`` TTS voice weights.
+
+**Why the weights are excluded.** One piper voice is ~60 MB; with it the package was ~59 MB and
+without it ~1 MB. AnkiWeb users would download that 60 MB to install AND again on every update,
+for a voice most of them never play. The add-on fetches a voice on first use into ``user_files``
+instead (``core/providers/tts/voice_models.py``). The tiny ``.onnx.json`` next to it (~5 KB) and
+the README DO still ship: the JSON is piper's inference config, which piper loads by guessing
+``<model>.json``, so keeping it means a user on a blocked network can drop a hand-downloaded
+``.onnx`` into ``models/piper/`` and have a complete voice — and the README is where that is
+explained.
 
 Usage:
     python scripts/build_addon.py
@@ -41,7 +51,9 @@ EXCLUDE_DIRS = {
     ".secrets",
     "user_files",
 }
-EXCLUDE_SUFFIXES = {".pyc", ".pyo"}
+# ``.onnx`` = TTS voice weights (tens of MB each). Never packaged — the add-on downloads the
+# voice it needs on first use into user_files (see this module's docstring).
+EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".onnx"}
 EXCLUDE_NAMES = {
     ".DS_Store",
     "meta.json",  # created by Anki at install time

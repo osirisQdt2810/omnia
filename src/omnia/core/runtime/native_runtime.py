@@ -693,11 +693,16 @@ class NativeRuntimeManager:
                 self._terminate(server.proc)
             shutil.rmtree(self.venv_dir(spec), ignore_errors=True)
 
-    def _require_installed(self, spec: NativeRuntimeSpec) -> None:
+    def require_installed(self, spec: NativeRuntimeSpec) -> None:
         """Raise an actionable error if ``spec`` is not installed (opt-in model, ADR-005).
 
         The run paths never auto-install: installing is an explicit user toggle (Phase C wires
         it). This keeps the slow, network-heavy first-run install out of the synthesis path.
+
+        Public because a provider needs this check BEFORE it resolves anything expensive —
+        piper's voice weights are a 60 MB download, and paying for them to then be told the
+        runtime is off is the exact inversion of the sentence above (ADR-015). The run paths
+        below still call it themselves; this is a cheap early gate, not a replacement.
 
         Raises:
             ProviderError: If ``spec``'s venv is not installed.
@@ -744,7 +749,7 @@ class NativeRuntimeManager:
                 # Another caller already started this server; wait for THAT one, don't respawn.
                 server = existing
             else:
-                self._require_installed(spec)
+                self.require_installed(spec)
                 argv = self._substitute(
                     spec.server_argv,
                     {
@@ -797,7 +802,7 @@ class NativeRuntimeManager:
             raise ProviderError(
                 f"{spec.name}: run_in_venv requires mode='cli', got {spec.mode!r}."
             )
-        self._require_installed(spec)
+        self.require_installed(spec)
         argv = self._substitute(
             spec.cli_argv,
             {

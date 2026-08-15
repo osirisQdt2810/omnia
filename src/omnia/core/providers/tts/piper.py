@@ -1,11 +1,14 @@
 """Piper TTS — local, offline, open-source (WAV output).
 
 Piper is a CPU-friendly neural TTS that runs fully offline from an ONNX voice model. The model
-itself is plain data and ships in the add-on under ``models/piper/`` (a ``<voice>.onnx``
-+ ``<voice>.onnx.json`` pair); a sound field's "voice" is either a bundled voice NAME
-(resolved to that dir) or an absolute ``.onnx`` path. The runtime, however, is the
-``piper-tts`` package, which wraps **native** ``onnxruntime`` — a compiled, platform-specific
-wheel that cannot be vendored cross-platform and so is NOT shipped.
+is plain data (a ``<voice>.onnx`` + ``<voice>.onnx.json`` pair) but the weights are tens of MB,
+so they are NOT packaged: they are fetched once, on first synthesis, into ``user_files`` by the
+:class:`~omnia.core.providers.tts.voice_models.PiperVoiceStore` (which prefers an existing copy
+— a previous download, or a developer's Git-LFS checkout under ``models/piper/``). A sound
+field's "voice" is either a voice NAME (resolved through that store) or an absolute ``.onnx``
+path (used verbatim — the user's own model). The RUNTIME is the ``piper-tts`` package, which
+wraps **native** ``onnxruntime`` — a compiled, platform-specific wheel that cannot be vendored
+cross-platform and so is not shipped either.
 
 Per ADR-005 the add-on **manages** piper in a per-provider sidecar venv (the native
 ``onnxruntime`` ABI matches the venv interpreter by construction). Synthesis goes through the
@@ -25,9 +28,16 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
+from omnia.core import anki_compat
+from omnia.core.logging import get_logger
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.voice_models import (
+    DownloadFeedback,
+    PiperVoiceStore,
+    default_voice_store,
+)
 from omnia.core.runtime.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
@@ -38,34 +48,56 @@ from omnia.core.runtime.native_runtime import (
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient
 
+_logger = get_logger("piper")
 
-def _resolve_models_dir() -> Path:
-    """Locate the bundled ``models/piper`` dir across the deploy and dev layouts.
+# The default Vietnamese voice; its weights are fetched on first use, not packaged.
+_DEFAULT_VOICE = "vi_VN-vais1000-medium"
 
-    ``models`` is NOT inside the source package — it sits at the repo/add-on root. Two layouts
-    resolve differently from ``__file__`` (``<root>/core/providers/tts/piper.py``):
 
-    * Deployed (per-item symlinks): ``models`` is a symlinked SIBLING of the package items, so
-      it is ``parents[3]/models`` — using the un-resolved path so the ``core`` symlink isn't
-      chased back into ``src/omnia`` (where no ``models`` sibling exists).
-    * Dev/headless (``src/omnia`` package, repo-root ``models``): it is ``parents[5]/models``.
+def _require_model_file(model_path: str) -> None:
+    """Raise a legible error when the resolved model file is not on disk.
 
-    Prefer whichever ``models/piper`` actually exists; fall back to the deploy location so a
-    fresh install still produces a sensible "voice model not found" message.
+    Only reachable for a voice the user pointed at by PATH: a catalog voice NAME is resolved —
+    and downloaded if missing — by the voice store before a runner ever sees it. Shared by both
+    runners so the advice cannot drift between the two paths.
+
+    Raises:
+        ProviderError: If ``model_path`` is not an existing file.
     """
-    here = Path(__file__)
-    candidates = (
-        here.parents[3] / "models" / "piper",  # deployed add-on root sibling
-        here.parents[5] / "models" / "piper",  # dev repo root
-    )
-    for candidate in candidates:
-        if candidate.is_dir():
-            return candidate.resolve(strict=False)
-    return candidates[0].resolve(strict=False)
+    if not os.path.isfile(model_path):
+        raise ProviderError(
+            f"piper voice model not found at {model_path}. Pick one of Omnia's piper voices in "
+            "the voice picker (it downloads itself the first time you use it), or point the "
+            "voice at an existing .onnx file whose .onnx.json sits next to it."
+        )
 
 
-_MODELS_DIR = _resolve_models_dir()
-_DEFAULT_VOICE = "vi_VN-vais1000-medium"  # the bundled Vietnamese voice
+class AnkiProgressFeedback(DownloadFeedback):
+    """Wires a voice download to the progress dialog synthesis is already running under.
+
+    The interactive paths (the editor button, the Studio preview, the account voice test) run
+    synthesis off the Qt main thread inside a ``QueryOp`` **with** an indeterminate progress
+    dialog: its label is the one channel a 60 MB download has to say how far it has got, and
+    its Cancel button the one way out of a multi-minute fetch on a slow link. The review-time
+    pre-generation path deliberately runs without a dialog (it must not interrupt a review), so
+    there both directions are no-ops — as they are outside Anki, in tests and headless imports.
+    Neither is a failure worth aborting a working download for, so both are swallowed here.
+    """
+
+    def report(self, message: str) -> None:
+        # Boundary: a cosmetic label must never break an otherwise working download.
+        try:
+            anki_compat.progress_label(message)
+        except Exception:
+            _logger.debug("piper: could not update the progress dialog", exc_info=True)
+
+    def cancelled(self) -> bool:
+        try:
+            return anki_compat.progress_was_cancelled()
+        except Exception:  # no dialog / no Anki: nobody can have clicked Cancel
+            _logger.debug("piper: could not read the cancel flag", exc_info=True)
+            return False
+
 
 # The managed-venv spec (ADR-005): a one-shot CLI run in the venv via piper's console script.
 # Per-call args (``-m <model> -f <output>``) are appended as ``extra_argv`` by the runner.
@@ -85,6 +117,22 @@ SPEC: NativeRuntimeSpec = register_native_runtime(
 class PiperRunner(ABC):
     """Transport that turns (text, model_path) into WAV bytes."""
 
+    def ensure_ready(self) -> None:  # noqa: B027
+        """Raise if this runner could not synthesize at all, BEFORE a model is resolved.
+
+        Resolving a model may cost a 60 MB download; deciding whether piper can run at all is a
+        directory stat or an ``import``. Doing the cheap, always-failing check first is what
+        stops a user who never enabled the opt-in native runtime from paying for a fetch whose
+        synthesis cannot succeed (ADR-015).
+
+        The empty body is a concrete default, not a forgotten ``@abstractmethod`` (hence the
+        B027 waiver): a runner that is always ready — an in-test fake — inherits it and says
+        nothing, which is exactly right.
+
+        Raises:
+            ProviderError: If the runtime this runner needs is not available.
+        """
+
     @abstractmethod
     def run(self, text: str, model_path: str) -> bytes:
         """Return WAV audio for ``text`` using the voice model at ``model_path``."""
@@ -103,13 +151,12 @@ class SidecarPiperRunner(PiperRunner):
         # Inject for tests; default to the process-wide manager (lazy — no Anki import here).
         self._manager = manager
 
+    def ensure_ready(self) -> None:
+        """Check the managed venv is installed — one ``is_dir``, no network, no side effects."""
+        (self._manager or default_manager()).require_installed(SPEC)
+
     def run(self, text: str, model_path: str) -> bytes:
-        if not os.path.isfile(model_path):
-            raise ProviderError(
-                f"piper voice model not found at {model_path}. Put a <voice>.onnx (+ .onnx.json) "
-                "in the add-on's models/piper/ dir, e.g. `python -m piper.download_voices "
-                "vi_VN-vais1000-medium --data-dir <addon>/models/piper`."
-            )
+        _require_model_file(model_path)
         manager = self._manager or default_manager()
         # piper writes the WAV to a file rather than stdout, so use a temp output path and read
         # the bytes back; text goes in on stdin.
@@ -136,10 +183,16 @@ class PiperVoiceRunner(PiperRunner):
     injectable alternative to the default managed-venv :class:`SidecarPiperRunner`.
     """
 
-    def run(self, text: str, model_path: str) -> bytes:
-        import io
-        import wave
+    @staticmethod
+    def _piper_voice_class() -> Any:
+        """Import ``piper.PiperVoice`` or raise the one "how to get it" message.
 
+        Shared by :meth:`ensure_ready` and :meth:`run` so the advice cannot drift between the
+        cheap pre-check and the real call; the second import is a ``sys.modules`` hit.
+
+        Raises:
+            ProviderError: If the ``piper-tts`` package is not importable.
+        """
         try:
             from piper import PiperVoice
         except ImportError as exc:
@@ -148,15 +201,21 @@ class PiperVoiceRunner(PiperRunner):
                 "can't ship with the add-on). Run `pip install piper-tts`, or pick edge_tts / "
                 "google_translate (free, nothing to install)."
             ) from exc
-        if not os.path.isfile(model_path):
-            raise ProviderError(
-                f"piper voice model not found at {model_path}. Put a <voice>.onnx (+ .onnx.json) "
-                "in the add-on's models/piper/ dir, e.g. `python -m piper.download_voices "
-                "vi_VN-vais1000-medium --data-dir <addon>/models/piper`."
-            )
+        return PiperVoice
+
+    def ensure_ready(self) -> None:
+        """Check ``piper-tts`` is importable — before a voice is resolved or downloaded."""
+        self._piper_voice_class()
+
+    def run(self, text: str, model_path: str) -> bytes:
+        import io
+        import wave
+
+        voice_class = self._piper_voice_class()
+        _require_model_file(model_path)
         # Boundary: surface any piper/onnx failure as a ProviderError.
         try:
-            voice = PiperVoice.load(model_path)
+            voice = voice_class.load(model_path)
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav:
                 voice.synthesize_wav(text, wav)
@@ -175,8 +234,9 @@ class PiperTTS(TTSProvider):
     audio_ext = "wav"
     # offline, open-source; needs the native piper-tts package, not a key
     requires_api = False
-    # The bundled voices (their .onnx ships under models/piper/). A field's voice is the NAME
-    # here; other voices can be dropped into models/piper/ and typed in the picker.
+    # The voices Omnia offers. Their weights are not packaged — the store fetches them on first
+    # use (see voice_models.DOWNLOADABLE_VOICES). A field's voice is the NAME here; another
+    # voice can be dropped into the voices dir and typed in the picker.
     CURATED_VOICES: ClassVar[list[TTSVoice]] = [
         TTSVoice("piper", _DEFAULT_VOICE, "Vietnamese", "vais1000", "Female", "", "vi"),
     ]
@@ -185,9 +245,13 @@ class PiperTTS(TTSProvider):
         self,
         model: str = "",
         runner: Optional[PiperRunner] = None,
+        store: Optional[PiperVoiceStore] = None,
     ) -> None:
         self._model = model
         self._runner = runner or SidecarPiperRunner()
+        # Inject for tests; default lazily — building the store resolves Anki's user_files, so
+        # constructing a provider must not do it (construction stays I/O-free).
+        self._store = store
 
     @classmethod
     def from_config(
@@ -198,23 +262,52 @@ class PiperTTS(TTSProvider):
     def synthesize(
         self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
     ) -> bytes:
+        """Synthesize ``text`` to WAV, checking the runtime BEFORE resolving the voice.
+
+        The order is the point (ADR-015). ``ensure_ready`` is a directory stat; resolving the
+        voice may be a 60 MB download. Piper's native runtime is opt-in and OFF by default, so
+        the reverse order makes a user who never enabled it wait out an entire fetch to be told
+        the synthesis could never have run.
+        """
+        self._runner.ensure_ready()
         return self._runner.run(text, self._resolve_model_path(voice))
 
-    def _resolve_model_path(self, voice: Optional[str]) -> str:
-        """Resolve a voice NAME or path to an ``.onnx`` model file.
+    def _voice_store(self) -> PiperVoiceStore:
+        """The injected store, or the process-wide one (built on first use)."""
+        if self._store is None:
+            self._store = default_voice_store()
+        return self._store
 
-        A bundled voice name (e.g. ``"vi_VN-vais1000-medium"``) resolves to
-        ``models/piper/<name>.onnx``; a relative ``.onnx`` path resolves under that dir; an
-        absolute ``.onnx`` path is used as-is. Falls back to the bundled default voice.
+    def _resolve_model_path(self, voice: Optional[str]) -> str:
+        """Resolve a voice NAME or path to an ``.onnx`` model file on disk.
+
+        A voice NAME (e.g. ``"vi_VN-vais1000-medium"``) goes through the voice store's ladder:
+        the ``user_files`` copy, else the copy beside the add-on, else a one-time download that
+        reports progress into — and takes its Cancel from — Anki's progress dialog. An ABSOLUTE
+        ``.onnx`` path is the user's own model and is used verbatim; a RELATIVE ``.onnx`` path
+        names a file they dropped into a voices dir, which is looked up there and never
+        downloaded. Falls back to the default voice.
+
+        Only ever called after :meth:`PiperRunner.ensure_ready` has passed, so nothing here can
+        download a voice for a runtime that is not installed.
         """
         name = (voice or self._model or _DEFAULT_VOICE).strip()
         if not name:
             raise ProviderError(
-                "piper needs a voice — a bundled voice name or a path to a .onnx file"
+                "piper needs a voice — a voice name or a path to a .onnx file"
             )
         path = Path(name)
-        if path.suffix != ".onnx":
-            path = _MODELS_DIR / f"{name}.onnx"
-        elif not path.is_absolute():
-            path = _MODELS_DIR / path
-        return str(path)
+        store = self._voice_store()
+        if path.suffix == ".onnx":
+            if path.is_absolute():
+                return str(path)
+            # A bare "<voice>.onnx" is a VOICE, not a file. That spelling is what
+            # providers.example.toml suggests and what every setup made before the weights
+            # stopped being packaged already holds, and it used to resolve because the file
+            # was always there. Reading it as a path now would break exactly the configs that
+            # worked yesterday — including the catalog's own default voice. A name with a
+            # directory in it is still a path: that one can only have been meant as one.
+            if path.parent == Path(".") and store.knows(path.stem):
+                return str(store.resolve(path.stem, feedback=AnkiProgressFeedback()))
+            return str(store.local_path(path))
+        return str(store.resolve(name, feedback=AnkiProgressFeedback()))

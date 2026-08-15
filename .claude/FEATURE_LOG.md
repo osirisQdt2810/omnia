@@ -21,6 +21,94 @@ Format for each entry:
 
 ---
 
+## 2026-08-15 — Piper voices download on first use instead of shipping in the package
+
+**What:** The `.ankiaddon` no longer contains the `*.onnx` TTS voice weights (`build_addon.py`
+excludes the suffix); the ~5 KB `.onnx.json` + README still ship. A new
+`core/providers/tts/voice_models.py` holds `PiperVoiceStore`, which resolves a voice as
+`user_files/models/piper/` → the `models/piper/` copy beside the add-on → a one-time download
+from the upstream HuggingFace voice repo. Downloads stream through the injectable `ByteStreamer`
+seam into a temp file inside the destination dir, verify the pinned byte count + SHA-256, and
+`os.replace` into place; progress goes to Anki's progress dialog through the new
+`anki_compat.progress_label` (marshalled to the main thread). `PiperTTS` takes an injectable
+`store`; both piper runners now share one `_require_model_file` message.
+
+**Why:** The package was 59 MB and 99% of it was one Vietnamese voice — over AnkiWeb's limit, and
+every user downloaded it to install AND again on every single update, for a voice most of them
+will never play. Package is now ~1 MB.
+
+**Files:** `src/omnia/core/providers/tts/voice_models.py` (new), `.../tts/piper.py`,
+`src/omnia/core/anki_compat.py`, `scripts/build_addon.py`, `models/piper/README.md`,
+`config/providers.example.toml`, `README.md`, `.claude/CLAUDE.md`,
+`tests/providers/test_piper_voice_models.py` (new), `tests/scripts/test_build_addon.py` (new),
+`tests/providers/test_sweep.py`.
+
+**How to verify:** `pytest tests/providers/test_piper_voice_models.py tests/scripts -q`, then
+`python scripts/build_addon.py` and check the archive has no `*.onnx` and is ~1 MB.
+
+**Notes / rollback:** The checked-in `models/` + its Git LFS setup are untouched — a developer's
+local copy still wins over any download. Resolution rejects a weights file whose size differs from
+the catalog's, which is what makes an unfetched LFS *pointer* (CI never runs `git lfs pull`) fall
+through to a download rather than be handed to piper as a model. The native-runtime toggle's
+`size_hint="~50 MB"` is unchanged: it still installs only the venv, and the voice reports its own
+size in the download's progress label. The narrow exception to ADR-005's "run paths never
+auto-install" — a run path may fetch inert DATA, never a RUNTIME, and must check the runtime
+FIRST — is recorded as **ADR-015** in `DECISIONS.md`, which is where the next reader of ADR-005
+will look. Rollback = drop `.onnx` from `EXCLUDE_SUFFIXES`.
+
+---
+
+## 2026-08-15 — smart_notes Try-it: a test form built from the tool, not a fixed one
+
+**What:** The Tools tab's "Try it" panel now renders ONE control per input the tool declares, and
+renders its result by the kind produced. New on the Tool contract: `input_kinds`
+(`Mapping[str, str]`), `INPUT_KINDS` (`text/image/audio/video/file`) and `INPUT_KIND_EXTENSIONS`,
+re-exported from `engine.tools`. A text row is typed into and carries its own attach; a media row
+opens a browser filtered to its family. Output: text inline, image as name + icon into the existing
+lightbox, audio/video as name + icon handed to Anki's own `av_player`. `MediaSampleStage` became
+multi-slot (one staged file per input, name-collision guarded) and copy-then-replace.
+
+**Why:** The panel showed one textarea called "Sample" plus a PERMANENT "Choose file…" button
+whatever the tool read, so a tool taking a word and a clip got one undifferentiated box, and a
+pure-text tool carried a browse button it had no use for. The cause was a gap in the contract, not
+the CSS: a tool declared what it PRODUCES (`kinds`) and WHICH fields it reads
+(`referenced_fields`), but nothing said what those fields HOLD — and one generic box is the only
+honest form to draw when that is unknown.
+
+**Files:** modified `plugins/smart_notes/engine/tools/{base,user_tools,media_sample,__init__}.py`,
+`plugins/smart_notes/authoring/tool_author.py`, `gui/smart_notes/dialogs/controllers/user_tools.py`,
+`gui/smart_notes/web/{page.html,page.css,10-usertools.js}`; tests in
+`tests/gui/test_smart_notes_user_tools_ui.py`, `tests/plugins/test_smart_notes_{user_tools,media_sample}.py`.
+
+**How to verify:** `pytest tests/ -q` → `1990 passed, 68 skipped, 15 xfailed`. Then LIVE, which is
+the part that matters here — Anki against a throwaway `ANKI_BASE`, driven over CDP, on BOTH
+platforms. A draft declaring `{"Word": "text", "Clip": "audio", "Pic": "image"}` gives, identically
+on macOS 25.09.2 and Windows 26.08.1:
+
+```
+["Word📎", "Clip📎 Choose audio…", "Pic📎 Choose image…"]
+{"hasOldPick": false, "hasOldSample": false, "inputsHost": true}
+```
+
+and real runs producing real bytes render each kind:
+
+```
+image  🖼️ pngdemo.png — 70 bytes    [🔍 View]
+audio  🔊 wavdemo.wav — 244 bytes   [🔊 Play]
+video  🎬 mp4demo.mp4 — 512 bytes   [🎬 Open]
+```
+
+**Notes / rollback:** Inputs are read from the draft source by AST, NEVER by `exec`. Compiling the
+draft is the only other way to reach the ClassVar and it would run the module BEFORE the risk
+banner — inverting the one safety property this flow is built on. The cost: a COMPUTED
+`input_kinds` cannot be read, so that tool falls back to a single row, and that row keeps its own
+attach button, so nothing becomes untestable. A blank-default param (meaning "this rule's first
+prompt reference") is declared under `"Sample"` rather than being given an invented default; an
+earlier revision did invent one and silently disabled that fallback for every generated tool.
+Produced mp4/H.264 and m4a/AAC do NOT decode in Anki's QtWebEngine (verified against the shipped
+Qt 6.8.2 via `data:`, `blob:` and `http://`), which is why playback is handed to `av_player`
+rather than to an in-page element. To reverse, revert the branch; saved tools that declare nothing
+already behave exactly as they did before.
 ## 2026-08-15 — Providers: one generic registry for both kinds; the LLM builder table is gone
 
 **What:** The provider seam now has ONE registration mechanism instead of two. New root-level

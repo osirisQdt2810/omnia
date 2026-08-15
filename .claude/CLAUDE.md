@@ -73,7 +73,11 @@ src/omnia/                  # SOURCE-ONLY add-on package — assembled into Anki
 # Non-source data lives at the repo ROOT (not under src/omnia, which is source-only). The
 # install/build scripts assemble these in next to the package as siblings:
 vendor/                     # vendored pure-Python deps (committed; on sys.path at startup)
-models/                     # bundled TTS voice models (piper .onnx via Git LFS + small json/README)
+models/                     # TTS voice models for DEV (piper .onnx via Git LFS + small json/README).
+                            #   The .onnx weights are NOT packaged (they were ~99% of a 59 MB
+                            #   .ankiaddon); only the .onnx.json + README ship. At runtime a voice
+                            #   resolves user_files/models/piper/ -> models/piper/ -> download on
+                            #   first use (core/providers/tts/voice_models.py).
 config/                     # tracked *.example.toml templates + secrets.README.md (live *.toml/.secrets are runtime, gitignored)
 
 tests/                      # pytest; conftest.py stubs aqt/anki so logic tests run headless

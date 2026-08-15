@@ -13,6 +13,9 @@ from __future__ import annotations
 from omnia.plugins.smart_notes.engine.tools import ai, cloze, cloze_audio
 from omnia.plugins.smart_notes.engine.tools.ai import AiTool
 from omnia.plugins.smart_notes.engine.tools.base import (
+    INPUT_KIND_EXTENSIONS,
+    INPUT_KINDS,
+    TEXT_INPUT,
     Empty,
     NotApplicable,
     Produced,
@@ -59,9 +62,11 @@ from omnia.plugins.smart_notes.engine.tools.registry import (
 )
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
     GENERATION_KINDS,
+    SAMPLE_FIELD,
     USER_TOOL_PREFIX,
     ImportGuard,
     ReviewGate,
+    ToolInput,
     ToolTestResult,
     UserToolError,
     UserToolLoad,
@@ -69,6 +74,7 @@ from omnia.plugins.smart_notes.engine.tools.user_tools import (
     UserToolSource,
     UserToolStore,
     UserToolTester,
+    declared_inputs,
     is_user_tool,
     risky_operations,
     slugify,
@@ -78,6 +84,10 @@ from omnia.plugins.smart_notes.engine.tools.user_tools import (
 
 __all__ = [
     "GENERATION_KINDS",
+    "INPUT_KINDS",
+    "INPUT_KIND_EXTENSIONS",
+    "SAMPLE_FIELD",
+    "TEXT_INPUT",
     "TOOL_REGISTRY",
     "USER_TOOL_PREFIX",
     "AiTool",
@@ -104,6 +114,7 @@ __all__ = [
     "ToolChainError",
     "ToolContext",
     "ToolError",
+    "ToolInput",
     "ToolOutcome",
     "ToolRequest",
     "ToolTestResult",
@@ -117,6 +128,7 @@ __all__ = [
     "ai",
     "cloze",
     "cloze_audio",
+    "declared_inputs",
     "get_tool",
     "is_user_tool",
     "register_tool",

@@ -1015,3 +1015,90 @@ rules are covered without mutating the live ones.
   onto `ProviderRegistry`.** Rejected: they stamp attributes (`cls.task_id`) and preserve
   registration order for the UI, both of which this registry deliberately does not do — and
   `core/*` may not know about `Tool`/`MaintenanceTask` anyway.
+
+---
+
+## ADR-015: A run path may fetch inert DATA on first use; it still never installs a RUNTIME
+
+**Date**: 2026-08-15
+**Status**: Accepted (refines ADR-005)
+
+### Context
+ADR-005 gave native-runtime providers an add-on-managed sidecar venv and one hard invariant,
+repeated in three docstrings and in `native_runtime`'s module header: **the synthesis/run paths
+never auto-install**. Installing is an explicit user toggle; a run path that finds the runtime
+missing raises "enable it in Smart Notes → Options → Advanced" and stops. The stated reason is
+that this "keeps the slow, network-heavy first-run install out of the synthesis path".
+
+Shipping the piper voice weights inside the `.ankiaddon` then became untenable: the package was
+59 MB, ~99% of it one Vietnamese voice, re-downloaded by every user on install *and on every
+update*, for a voice most of them will never play. The weights moved out, and the first
+synthesis with a piper voice now fetches them into `user_files/models/piper/`.
+
+That is a run path reaching the network on first use — close enough to the ADR-005 invariant
+that a reader is entitled to think the rule was quietly abandoned. It was not. But recording
+that only in FEATURE_LOG left the next contributor reading ADR-005 and three `require_installed`
+docstrings with an invariant the code appears to break, and no stated boundary.
+
+### Decision
+Draw the line at **what is being acquired**, not at how long it takes:
+
+* **A RUNTIME is never auto-acquired.** A venv + `pip install` needs a host interpreter Omnia
+  may not find, pulls arbitrary transitive code, can fail in a dozen ways a user cannot read,
+  and costs up to gigabytes. It stays an explicit toggle. ADR-005 is unchanged.
+* **Inert DATA may be fetched once, on the run path**, when it is: a single URL, pinned by exact
+  byte count *and* SHA-256, written atomically, cached in `user_files` (so it survives every
+  add-on update and is fetched once per machine, not once per release), and reportable in the
+  progress dialog the op already owns. A voice model is data: nothing is executed, nothing is
+  installed, and a wrong or truncated byte stream is rejected rather than used.
+* **The cheap check runs FIRST.** Any provider whose run path can fetch data must verify its
+  runtime is available *before* resolving anything expensive. `PiperRunner.ensure_ready()` is
+  that seam: `PiperTTS.synthesize` calls it, and only then resolves the voice.
+  `NativeRuntimeManager._require_installed` became public `require_installed` so the runner
+  reuses the one message rather than re-wording it.
+
+### Rationale
+The ordering is the whole point of ADR-005's rationale, and reversing it produced the worst
+possible outcome: piper's runtime is opt-in and **off by default**, so a user who had never
+enabled it downloaded all 63 MB — minutes, with a ticking progress label — and *then* read
+"piper isn't installed". The expensive step ran exclusively for people it could not help.
+
+With the check first, the two costs are correctly ordered: an unavailable runtime fails in one
+`is_dir()`, and the 63 MB is only ever spent by a user who can actually synthesize with it.
+
+The data/runtime distinction is not a loophole for convenience — it is the difference between
+"the add-on downloaded a file it verified against a digest" and "the add-on installed and ran
+software on the user's machine". The first is what any add-on with a model does; the second is
+what ADR-005 exists to keep opt-in.
+
+### Consequences
+- (+) The 59 MB package is ~1 MB; nobody re-downloads a voice on every add-on update.
+- (+) A user without the piper runtime gets the actionable "enable it in Advanced" message
+  immediately, having spent no bandwidth.
+- (−) The first piper synthesis on a new machine is slow (a ~60 MB fetch) — reported in, and
+  cancellable from, the progress dialog on the interactive paths. Review-time pre-generation has
+  no dialog by design, so there the fetch is silent; that is stated in the README rather than
+  papered over with a dialog that would interrupt a review.
+- (−) One more thing that can fail at synthesis time. Contained by construction: every failure
+  (dead network, truncated chunked body, over-long body, full disk, bad digest, user cancel)
+  becomes ONE `ProviderError` naming the voice, and leaves no partial file behind.
+
+### The rule this imposes on the next provider
+A new native provider that wants first-use data must: (1) pin size + digest, (2) write via
+temp-file → verify → `fsync` → `os.replace` into `user_files`, (3) implement `ensure_ready()`
+and have the provider call it before resolving the data, and (4) funnel every failure into one
+message that names the asset. If any of those is impractical, the data is not "inert" enough
+and belongs behind the install toggle with the runtime.
+
+### Alternatives considered
+- **Keep bundling the weights.** Rejected: 59 MB per install and per update, over AnkiWeb's
+  practical limit, for a voice most users never play.
+- **Make the voice download part of the runtime install toggle.** Rejected: it welds an
+  8 MB-ish decision to a ~50 MB one, forces users who already have a voice on disk (developers
+  with Git LFS, anyone who dropped in their own `.onnx`) through an install they do not need,
+  and still leaves the run path needing a fallback when a *different* voice is selected later.
+- **Ship a smaller default voice.** Rejected: it shrinks the problem without changing its shape
+  — every user still pays for a voice on every update — and costs audio quality.
+- **Auto-install the runtime too, "since we're downloading anyway".** Rejected: that is exactly
+  ADR-005's decision, and none of the properties that make a voice safe (one URL, pinned digest,
+  inert bytes) hold for a pip install.

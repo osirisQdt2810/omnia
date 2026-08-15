@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 import types
 from typing import Any
@@ -67,11 +69,15 @@ from omnia.plugins.smart_notes.config import (  # noqa: E402
     SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.engine.tools import (  # noqa: E402
+    INPUT_KIND_EXTENSIONS,
     TOOL_REGISTRY,
     UserToolLoader,
     UserToolSource,
     UserToolStore,
     get_tool,
+)
+from omnia.plugins.smart_notes.engine.tools.media_sample import (  # noqa: E402
+    media_family,
 )
 
 _TOOL_SOURCE = '''
@@ -161,10 +167,282 @@ def controller(store, registry_guard, sync_background):
 def _test_run(controller_tuple, source: str = _TOOL_SOURCE) -> dict:
     """Run the test op the way the page does, returning the pushed result payload."""
     controller, _ctx, pushed = controller_tuple
-    controller.on_test({"slug": "ext", "source": source, "sample": "clip.mp3"})
+    controller.on_test(
+        {"slug": "ext", "source": source, "inputs": {"Sample": "clip.mp3"}}
+    )
     return json.loads(
         pushed[-1].split("window.__snUserToolTested(", 1)[1][:-2].split(", ", 1)[1]
     )
+
+
+def _strip_js_comments(source: str) -> str:
+    """Return ``source`` with ``/* … */`` blocks AND ``//`` line comments removed.
+
+    ``10-usertools.js`` is dense with JSDoc blocks that already contain every phrase a lazy
+    assertion would grep for — "file", "sample", "staged", "reference", "audio", even the id of
+    an element the page no longer has. A negative assertion run against the raw text therefore
+    fails on prose, and an ordering assertion can find its tokens inside a comment. Blocks are
+    stripped first, then lines, because a block comment can contain a ``//``.
+    """
+    without_blocks = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+    return "\n".join(
+        line.split("//")[0] if "//" in line else line
+        for line in without_blocks.splitlines()
+    )
+
+
+def _strip_css_comments(source: str) -> str:
+    """Return ``source`` with ``/* … */`` blocks removed.
+
+    Same reason as :func:`_strip_js_comments`: this stylesheet explains WHY a declaration is
+    absent, naming it, so an assertion that greps the prose passes on its own comment.
+    """
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
+
+def _js(html: str, marker: str, length: int = 1400) -> str:
+    """The slice of the built page starting at ``marker`` (a function/handler to inspect).
+
+    Scoped rather than grepping the whole 7,800-line bundle: a token asserted against the full
+    page proves only that SOMETHING in Smart Notes contains it.
+    """
+    start = html.index(marker)
+    return html[start : start + length]
+
+
+#: Where the page's own JS is actually executed (see
+#: :class:`TestTheKindDecidesTheControlAndTheRendering`). Present on every CI runner and on a
+#: normal dev machine; the class skips rather than fails where it is not, because a missing
+#: JavaScript engine is not a defect in this add-on.
+_NODE = shutil.which("node")
+
+#: The smallest DOM the Try-it renderers need, plus recorders for the collaborators they call.
+#: Deliberately not a DOM library: these functions use ``createElement``, four properties and
+#: ``appendChild``, and a dependency that has to be installed would make the pin skippable in
+#: exactly the environments that most need it.
+_DOM_HARNESS = """
+'use strict';
+function makeElement(tag) {
+  const el = {
+    tagName: tag,
+    className: "",
+    textContent: "",
+    title: "",
+    type: "",
+    value: "",
+    rows: 0,
+    hidden: false,
+    attributes: {},
+    children: [],
+    listeners: {},
+    setAttribute: function (name, value) { el.attributes[name] = value; },
+    appendChild: function (child) { el.children.push(child); return child; },
+    addEventListener: function (name, handler) {
+      (el.listeners[name] = el.listeners[name] || []).push(handler);
+    }
+  };
+  Object.defineProperty(el, "innerHTML", {
+    get: function () { return ""; },
+    set: function () { el.children.length = 0; }
+  });
+  return el;
+}
+
+const document = {createElement: makeElement};
+const utOutMediaEl = makeElement("div");
+const utInputsEl = makeElement("div");
+const utSourceEl = makeElement("textarea");
+let utInputs = [];
+
+// The bridge, answering synchronously with whatever the scenario staged.
+let sendReply = {};
+function send(op, payload, callback) { callback(sendReply); }
+
+// The collaborators the renderers reach for. Recorded rather than run: what is under test is
+// WHICH one a kind reaches for, not what it then does (that is covered on the Python side).
+const calls = [];
+function pickInputFile(field, kind) { calls.push(["pickInputFile", field, kind]); }
+function openLightbox(src) { calls.push(["openLightbox", src]); }
+function playToolOutput() { calls.push(["playToolOutput"]); }
+function openVideoPopup(media) { calls.push(["openVideoPopup", media.kind]); }
+
+function describe(el) {
+  return {
+    tag: el.tagName,
+    className: el.className,
+    text: el.textContent,
+    title: el.title,
+    value: el.value,
+    attrs: el.attributes,
+    children: el.children.map(describe)
+  };
+}
+
+function clickAll(el) {
+  (el.listeners.click || []).forEach(function (handler) { handler({}); });
+  el.children.forEach(clickAll);
+}
+
+const out = {};
+function scenario(name, body) {
+  calls.length = 0;
+  const result = body();
+  result.calls = calls.slice();
+  out[name] = result;
+}
+
+function entryFor(field, kind, value, name) {
+  return {field: field, kind: kind, value: value, name: name, valueEl: null, fileEl: null};
+}
+"""
+
+#: The states the two renderers are asked about. One node run answers all of them.
+_SCENARIOS = """
+scenario("text_row", function () {
+  const row = toolInputRow(entryFor("Sentence", "text", "hello", ""));
+  clickAll(row);
+  return {dom: describe(row)};
+});
+
+scenario("audio_row", function () {
+  const row = toolInputRow(entryFor("Clip", "audio", "", ""));
+  clickAll(row);
+  return {dom: describe(row)};
+});
+
+scenario("staged_row", function () {
+  return {dom: describe(toolInputRow(entryFor("Clip", "audio", "[sound:take.wav]", "take.wav")))};
+});
+
+scenario("rebuild_keeps_the_pick", function () {
+  renderToolInputs([{field: "Clip", kind: "audio"}]);
+  utInputs[0].value = "[sound:take.wav]";
+  utInputs[0].name = "take.wav";
+  renderToolInputs([{field: "Clip", kind: "audio"}]);
+  return {dom: describe(utInputsEl.children[0]), value: utInputs[0].value};
+});
+
+scenario("rebuild_only_when_the_form_changes", function () {
+  renderToolInputs([{field: "Clip", kind: "audio"}]);
+  const row = utInputsEl.children[0];
+  sendReply = {inputs: [{field: "Clip", kind: "audio"}]};
+  refreshInputsFromEditor();
+  const kept = utInputsEl.children[0] === row;
+  sendReply = {inputs: [{field: "Clip", kind: "text"}]};
+  refreshInputsFromEditor();
+  return {kept: kept, rebuilt: utInputsEl.children[0] !== row};
+});
+
+scenario("image_output", function () {
+  renderToolOutput({kind: "image", name: "t.png", size: 12,
+                    image: "data:image/png;base64,AA", note: ""});
+  clickAll(utOutMediaEl);
+  return {dom: describe(utOutMediaEl)};
+});
+
+scenario("audio_output", function () {
+  renderToolOutput({kind: "audio", name: "t.mp3", size: 12, playable: true, note: ""});
+  clickAll(utOutMediaEl);
+  return {dom: describe(utOutMediaEl)};
+});
+
+scenario("video_output", function () {
+  renderToolOutput({kind: "video", name: "t.mp4", size: 12, playable: true, note: ""});
+  clickAll(utOutMediaEl);
+  return {dom: describe(utOutMediaEl)};
+});
+
+scenario("unviewable_output", function () {
+  renderToolOutput({kind: "image", name: "t.png", size: 99, note: "too large to preview here."});
+  clickAll(utOutMediaEl);
+  return {dom: describe(utOutMediaEl)};
+});
+
+console.log(JSON.stringify(out));
+"""
+
+#: The page functions the scenarios exercise — lifted from the BUILT page, so what runs here is
+#: what ships, not a copy.
+_RENDERERS = (
+    "function renderToolInputs(",
+    "function refreshInputsFromEditor(",
+    "function sameToolInputs(",
+    "function toolInputRow(",
+    "function pickRowButton(",
+    "function showInputFile(",
+    "function renderToolOutput(",
+    "function utOutButton(",
+)
+
+
+def _tags(node: dict, tag: str) -> list[dict]:
+    """Every descendant of ``node`` (and ``node``) with that tag name."""
+    found = [node] if node["tag"] == tag else []
+    for child in node["children"]:
+        found.extend(_tags(child, tag))
+    return found
+
+
+def _text(node: dict) -> str:
+    """All the text ``node``'s tree renders, joined."""
+    return " ".join(
+        [node["text"]] + [_text(child) for child in node["children"]]
+    ).strip()
+
+
+def _caption(row: dict) -> str:
+    """The ``.sn-ut-input-file`` line of one input row: what file it will be read as."""
+    return next(
+        child["text"]
+        for child in row["children"]
+        if child["className"] == "sn-ut-input-file"
+    )
+
+
+@pytest.fixture(scope="module")
+def rendered(tmp_path_factory) -> dict:
+    """Run the BUILT page's own Try-it renderers in node, and return what each one built.
+
+    One node process for every scenario: the page is assembled once, the renderers are lifted
+    out of it once, and the answers are read back as JSON.
+    """
+    html = build_smart_notes_html(dark=False, init={}, catalog={}, tools=[])
+    sources = "\n".join(_js_function(html, marker) for marker in _RENDERERS)
+    script = tmp_path_factory.mktemp("js") / "renderers.js"
+    script.write_text(_DOM_HARNESS + sources + _SCENARIOS, encoding="utf-8")
+
+    # Bytes, then an EXPLICIT utf-8 decode -- not text=True. text=True decodes with the locale
+    # encoding, which on Windows is cp1252, and this harness prints the page's own labels: 📎,
+    # 🖼️, 🔊, 🎬. The same mismatch that killed install_addon.py's success message kills this,
+    # only here it surfaces as a JSON error about NoneType rather than as a UnicodeDecodeError.
+    finished = subprocess.run([_NODE, str(script)], capture_output=True, check=False)
+    stderr = finished.stderr.decode("utf-8", errors="replace")
+
+    assert finished.returncode == 0, stderr
+    assert finished.stdout, f"node wrote nothing; stderr was: {stderr}"
+    return json.loads(finished.stdout.decode("utf-8"))
+
+
+def _js_function(html: str, marker: str) -> str:
+    """The WHOLE function/handler starting at ``marker``, found by balancing its braces.
+
+    :func:`_js` takes a fixed number of characters, so a comment added inside the function
+    silently pushes the line an assertion is looking for out of the window and the test fails
+    for a reason that has nothing to do with the behaviour. This ends where the function does.
+    """
+    start = html.index(marker)
+    depth = 0
+    opened = False
+    for index in range(start, len(html)):
+        char = html[index]
+        if char == "{":
+            depth += 1
+            opened = True
+        elif char == "}":
+            depth -= 1
+            if opened and depth == 0:
+                return html[start : index + 1]
+    raise AssertionError(f"unbalanced braces after {marker!r}")
 
 
 class TestSaveNeedsATestRun:
@@ -321,7 +599,7 @@ class TestTheTestRunIsRepresentative:
         monkeypatch.setattr(
             "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
         )
-        ctrl.on_pick_sample({})
+        ctrl.on_pick_sample({"field": "Clip", "kind": "video"})
 
         # …and once a file is picked, it resolves — against the copy, not the original.
         staged = ctrl._tool_context().media_dir()
@@ -416,11 +694,63 @@ class TestTheWarningPrecedesTheRun:
         assert any("run other programs" in risk for risk in risks)
 
 
+_AUDIO_PICK = {"field": "Clip", "kind": "audio"}
+
+
+class TestTheInputForm:
+    """What the Try-it panel offers is read from the DRAFT, and read without running it.
+
+    The tool is what knows which fields it reads and what each one holds, so the form is derived
+    from its source rather than being one undifferentiated box. It has to be derived by READING,
+    though: compiling means ``exec``, and execution in this flow happens exactly once — on Run,
+    after the risk banner. Building a form before Run by compiling would put arbitrary execution
+    ahead of the review that exists to precede it.
+    """
+
+    def test_the_declared_inputs_are_returned_for_a_draft_source(self, controller):
+        ctrl, _ctx, _pushed = controller
+        source = _TOOL_SOURCE.replace(
+            "    params_model: ClassVar[type] = ExtParams",
+            "    params_model: ClassVar[type] = ExtParams\n"
+            '    input_kinds = {"Clip": "audio", "Word": "text"}',
+        )
+
+        payload = ctrl.on_inputs({"source": source})
+
+        assert payload["inputs"] == [
+            {"field": "Clip", "kind": "audio"},
+            {"field": "Word", "kind": "text"},
+        ]
+
+    def test_a_tool_declaring_nothing_gets_one_text_input(self, controller):
+        # Exactly the panel every tool authored before this change was tested with.
+        ctrl, _ctx, _pushed = controller
+
+        payload = ctrl.on_inputs({"source": _TOOL_SOURCE})
+
+        assert payload["inputs"] == [{"field": "Sample", "kind": "text"}]
+
+    def test_asking_for_the_inputs_never_runs_the_code(self, controller, tmp_path):
+        ctrl, _ctx, _pushed = controller
+        sentinel = tmp_path / "ran"
+        source = (
+            "import pathlib\n"
+            f"pathlib.Path({str(sentinel)!r}).write_text('yes')\n" + _TOOL_SOURCE
+        )
+
+        ctrl.on_inputs({"source": source})
+
+        assert not sentinel.exists()
+        # …and the sentinel is live: the SAME source writes it when the tool is actually run.
+        _test_run(controller, source)
+        assert sentinel.read_text() == "yes"
+
+
 class TestTheMediaSample:
     """Testing a tool that reads a FILE.
 
     Typing `[sound:x.mp3]` by hand only works if x.mp3 is already in the collection — exactly
-    what someone testing a NEW conversion does not have. So the sample can be a file the user
+    what someone testing a NEW conversion does not have. So a media input is a file the user
     picks, staged OUTSIDE the collection with the test's media folder pointed at the stage: the
     reference resolves, the tool reads a real file, and nothing is added to synced media.
     """
@@ -435,7 +765,7 @@ class TestTheMediaSample:
             "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
         )
 
-        result = ctrl.on_pick_sample({})
+        result = ctrl.on_pick_sample({"field": "Clip", "kind": "video"})
 
         assert result["reference"] == "[sound:clip.mp4]"
         assert result["name"] == "clip.mp4"
@@ -443,7 +773,103 @@ class TestTheMediaSample:
         staged = pathlib.Path(ctrl._tool_context().media_dir()) / "clip.mp4"
         assert staged.read_bytes() == b"data"
 
-    def test_the_picker_opens_in_the_collection_media_folder(
+    def test_the_picker_is_filtered_to_the_input_kind(self, controller, monkeypatch):
+        # A picker that offers every file for an input the tool told us is audio is the same
+        # undifferentiated box this change exists to remove.
+        ctrl, _ctx, _pushed = controller
+        seen: dict = {}
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **kw: seen.update(kw) or ""
+        )
+
+        ctrl.on_pick_sample(_AUDIO_PICK)
+
+        assert "*.mp3" in seen["file_filter"]
+        assert "*.wav" in seen["file_filter"]
+        # …and the escape hatch is always last: a filter that hides the right file is worse
+        # than no filter at all.
+        assert seen["file_filter"].endswith("All files (*)")
+        assert "Clip" in seen["title"]
+
+    def test_the_image_filter_offers_everything_this_addon_calls_a_picture(
+        self, controller, monkeypatch
+    ):
+        """The picker's filter and the classifier read the SAME table.
+
+        They were written out separately and drifted: the filter listed six extensions while
+        the classifier called ten of them pictures, so a user whose scans are .bmp or .tiff
+        opened the picker on their media folder and saw an empty directory.
+        """
+        ctrl, _ctx, _pushed = controller
+        seen: dict = {}
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **kw: seen.update(kw) or ""
+        )
+
+        ctrl.on_pick_sample({"field": "Scan", "kind": "image"})
+
+        for extension in INPUT_KIND_EXTENSIONS["image"]:
+            assert f"*.{extension}" in seen["file_filter"], extension
+            assert media_family(extension) == "image", extension
+
+    def test_the_file_kind_offers_every_file(self, controller, monkeypatch):
+        ctrl, _ctx, _pushed = controller
+        seen: dict = {}
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **kw: seen.update(kw) or ""
+        )
+
+        ctrl.on_pick_sample({"field": "Any", "kind": "file"})
+
+        assert seen["file_filter"] == "All files (*)"
+        # …and the title does not promise a filtering that is not happening.
+        assert seen["title"] == "Choose a file for Any"
+
+    def test_a_text_input_can_be_handed_a_file_too(
+        self, controller, monkeypatch, tmp_path
+    ):
+        """The per-row attach that replaced the standalone Choose-file button.
+
+        A tool whose ``input_kinds`` cannot be read — absent, computed, or written before the
+        declaration existed — renders as ONE text row. That row's own attach posts
+        ``kind="file"`` and must stage exactly like a declared media input, or every media tool
+        authored until now becomes impossible to test at all.
+        """
+        ctrl, _ctx, _pushed = controller
+        chosen = tmp_path / "take.wav"
+        chosen.write_bytes(b"data")
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
+        )
+
+        result = ctrl.on_pick_sample({"field": "Sample", "kind": "file"})
+
+        assert result["reference"] == "[sound:take.wav]"
+        staged = pathlib.Path(ctrl._tool_context().media_dir()) / "take.wav"
+        assert staged.read_bytes() == b"data"
+
+    def test_an_unknown_kind_offers_every_file(self, controller, monkeypatch):
+        ctrl, _ctx, _pushed = controller
+        seen: dict = {}
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **kw: seen.update(kw) or ""
+        )
+
+        ctrl.on_pick_sample({"field": "Any", "kind": "hologram"})
+
+        assert seen["file_filter"] == "All files (*)"
+
+    def test_a_pick_with_no_field_is_refused(self, controller, monkeypatch):
+        # A staged file needs a slot to live in and an input to be read as.
+        ctrl, _ctx, _pushed = controller
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file",
+            lambda **_k: pytest.fail("the picker must not open"),
+        )
+
+        assert "error" in ctrl.on_pick_sample({"kind": "audio"})
+
+    def test_the_picker_still_opens_in_the_collection_media_folder(
         self, controller, monkeypatch, tmp_path
     ):
         # The interesting files are already there, and its real path is a per-platform profile
@@ -458,7 +884,7 @@ class TestTheMediaSample:
             lambda **kw: seen.update(kw) or "",
         )
 
-        ctrl.on_pick_sample({})
+        ctrl.on_pick_sample(_AUDIO_PICK)
 
         assert seen["start_dir"] == "/collection/media"
 
@@ -479,11 +905,11 @@ class TestTheMediaSample:
             "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
         )
 
-        ctrl.on_pick_sample({})
+        ctrl.on_pick_sample({"field": "Clip", "kind": "video"})
 
         assert list(collection.iterdir()) == []
 
-    def test_picking_again_removes_the_previous_file(
+    def test_picking_again_for_the_same_input_replaces_it(
         self, controller, monkeypatch, tmp_path
     ):
         # Otherwise a session accumulates a copy of everything the user browsed through.
@@ -493,23 +919,45 @@ class TestTheMediaSample:
         second.write_bytes(b"2")
 
         monkeypatch.setattr("omnia.core.anki_compat.pick_file", lambda **_k: str(first))
-        ctrl.on_pick_sample({})
+        ctrl.on_pick_sample(_AUDIO_PICK)
         staged_first = pathlib.Path(ctrl._tool_context().media_dir()) / "a.mp3"
         assert staged_first.exists()
 
         monkeypatch.setattr(
             "omnia.core.anki_compat.pick_file", lambda **_k: str(second)
         )
-        ctrl.on_pick_sample({})
+        ctrl.on_pick_sample(_AUDIO_PICK)
 
         assert not staged_first.exists()
         assert (pathlib.Path(ctrl._tool_context().media_dir()) / "b.mp3").exists()
+
+    def test_two_inputs_can_hold_files_at_once(self, controller, monkeypatch, tmp_path):
+        """A tool reading a clip AND a picture must see both.
+
+        Staging used to clear before every copy, so picking the second input's file deleted the
+        first's and the tool then declined — on a panel that had just been told about both.
+        """
+        ctrl, _ctx, _pushed = controller
+        clip, picture = tmp_path / "a.mp3", tmp_path / "b.png"
+        clip.write_bytes(b"1")
+        picture.write_bytes(b"2")
+
+        monkeypatch.setattr("omnia.core.anki_compat.pick_file", lambda **_k: str(clip))
+        ctrl.on_pick_sample(_AUDIO_PICK)
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.pick_file", lambda **_k: str(picture)
+        )
+        ctrl.on_pick_sample({"field": "Picture", "kind": "image"})
+
+        directory = pathlib.Path(ctrl._tool_context().media_dir())
+        assert (directory / "a.mp3").read_bytes() == b"1"
+        assert (directory / "b.png").read_bytes() == b"2"
 
     def test_cancelling_changes_nothing(self, controller, monkeypatch):
         ctrl, _ctx, _pushed = controller
         monkeypatch.setattr("omnia.core.anki_compat.pick_file", lambda **_k: "")
 
-        assert ctrl.on_pick_sample({}) == {}
+        assert ctrl.on_pick_sample(_AUDIO_PICK) == {}
 
     def test_an_unreadable_file_reports_instead_of_raising(
         self, controller, monkeypatch, tmp_path
@@ -519,7 +967,7 @@ class TestTheMediaSample:
             "omnia.core.anki_compat.pick_file", lambda **_k: str(tmp_path / "gone.mp4")
         )
 
-        assert "error" in ctrl.on_pick_sample({})
+        assert "error" in ctrl.on_pick_sample({"field": "Clip", "kind": "video"})
 
     def test_disposing_removes_the_staging_folder(
         self, controller, monkeypatch, tmp_path
@@ -531,13 +979,139 @@ class TestTheMediaSample:
         monkeypatch.setattr(
             "omnia.core.anki_compat.pick_file", lambda **_k: str(chosen)
         )
-        ctrl.on_pick_sample({})
+        ctrl.on_pick_sample(_AUDIO_PICK)
         stage = pathlib.Path(ctrl._tool_context().media_dir())
         assert stage.exists()
 
         ctrl.dispose()
 
         assert not stage.exists()
+
+
+def _media_tool(kind: str, ext: str, size: int = 8) -> str:
+    """A tool source that produces ``size`` bytes of ``ext`` under generation kind ``kind``."""
+    return _TOOL_SOURCE.replace(
+        'kinds: ClassVar[frozenset] = frozenset({"text"})',
+        f'kinds: ClassVar[frozenset] = frozenset({{"{kind}"}})',
+    ).replace(
+        'return Produced(GenerationResult("text", text=value.rsplit(".", 1)[-1]))',
+        f'return Produced(GenerationResult("{kind}", data=b"x" * {size}, ext="{ext}"))',
+    )
+
+
+class TestTypedOutput:
+    """A produced FILE is rendered as what it is, not described in a text box.
+
+    The tester used to flatten bytes to "(tts: 55296 bytes of .mp3)" and let them die in the
+    worker's closure, so "name + icon, click to play" was not expressible. They now ride
+    alongside that line, under a SIBLING key — the text path and everything reading `output`
+    are untouched.
+    """
+
+    def test_a_text_result_carries_no_media_block(self, controller):
+        assert "media" not in _test_run(controller)
+
+    def test_the_output_text_is_unchanged_for_a_text_tool(self, controller):
+        # The regression lock: nesting the media under its own key is what keeps this true.
+        assert _test_run(controller)["output"] == "mp3"
+
+    def test_an_image_result_is_pushed_as_a_data_uri_with_its_name(self, controller):
+        media = _test_run(controller, _media_tool("image", "jpg"))["media"]
+
+        assert media["kind"] == "image"
+        assert media["name"] == "ext.jpg"
+        assert media["size"] == 8
+        # The canonical type, not the `image/jpg` a bare f"image/{ext}" produces.
+        assert media["image"].startswith("data:image/jpeg;base64,")
+
+    def test_a_sound_result_is_playable_and_never_ships_its_bytes(self, controller):
+        # This webview cannot decode AAC or H.264 at all, so audio goes to Anki's player and
+        # nothing is marshalled into the page — which is also what keeps a 9 MB clip cheap.
+        media = _test_run(controller, _media_tool("tts", "mp3"))["media"]
+
+        assert media["kind"] == "audio"
+        assert media["playable"] is True
+        assert "image" not in media
+
+    def test_a_video_result_is_reported_as_video(self, controller):
+        # The EXTENSION decides, not the generation kind: nothing in GENERATION_KINDS says
+        # "video", so a produced video can only ever arrive as tts with a video extension.
+        media = _test_run(controller, _media_tool("tts", "mp4"))["media"]
+
+        assert media["kind"] == "video"
+        assert media["ext"] == "mp4"
+
+    def test_a_large_image_reports_its_size_instead_of_a_preview(self, controller):
+        from omnia.gui.smart_notes.dialogs.controllers.user_tools import (
+            MAX_INLINE_PREVIEW_BYTES,
+        )
+
+        media = _test_run(
+            controller, _media_tool("image", "png", MAX_INLINE_PREVIEW_BYTES + 1)
+        )["media"]
+
+        assert "image" not in media
+        # Never a blank box: the name, the size and the reason are all still there.
+        assert str(MAX_INLINE_PREVIEW_BYTES + 1) in media["note"]
+        assert media["name"] == "ext.png"
+
+    def test_playing_the_output_hands_the_bytes_to_ankis_player(
+        self, controller, monkeypatch
+    ):
+        ctrl, _ctx, _pushed = controller
+        played: list = []
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.play_audio",
+            lambda data, ext: played.append((data, ext)) or "",
+        )
+        _test_run(controller, _media_tool("tts", "mp3"))
+
+        assert ctrl.on_play_output({}) == {"ok": True}
+        assert played == [(b"x" * 8, "mp3")]
+
+    def test_a_video_plays_through_the_same_player(self, controller, monkeypatch):
+        # `play_audio` is not a misnomer here: av_player is Anki's video player too (it drives
+        # the bundled mpv), and it is the only thing on the machine that decodes H.264.
+        ctrl, _ctx, _pushed = controller
+        played: list = []
+        monkeypatch.setattr(
+            "omnia.core.anki_compat.play_audio",
+            lambda data, ext: played.append(ext) or "",
+        )
+        _test_run(controller, _media_tool("tts", "mp4"))
+        ctrl.on_play_output({})
+
+        assert played == ["mp4"]
+
+    def test_playing_before_a_run_reports_instead_of_raising(self, controller):
+        ctrl, _ctx, _pushed = controller
+
+        assert "error" in ctrl.on_play_output({})
+
+    def test_a_text_run_clears_a_previous_media_output(self, controller, monkeypatch):
+        # Otherwise Play replays a run the user has already moved on from.
+        ctrl, _ctx, _pushed = controller
+        monkeypatch.setattr("omnia.core.anki_compat.play_audio", lambda data, ext: "")
+        _test_run(controller, _media_tool("tts", "mp3"))
+        _test_run(controller)
+
+        assert "error" in ctrl.on_play_output({})
+
+    def test_a_failed_run_clears_a_previous_media_output(self, controller):
+        ctrl, _ctx, _pushed = controller
+        _test_run(controller, _media_tool("tts", "mp3"))
+
+        ctrl.on_test({"slug": "ext", "source": "import socket\n", "inputs": {}})
+
+        assert "error" in ctrl.on_play_output({})
+
+    def test_disposing_forgets_the_last_output(self, controller):
+        ctrl, _ctx, _pushed = controller
+        _test_run(controller, _media_tool("tts", "mp3"))
+
+        ctrl.dispose()
+
+        assert "error" in ctrl.on_play_output({})
 
 
 class TestTheReviewIsToldWhatTheToolReaches:
@@ -665,9 +1239,15 @@ class TestTheToolsFolderIsNeverHardcoded:
         assert "no file manager" in result["error"]
 
     def test_the_op_is_routed(self, controller):
+        # An op missing from this map is routed to None and fails SILENTLY, so this one-liner
+        # is the only guard the Tools tab's ops have.
         ctrl, _ctx, _pushed = controller
 
-        assert "user_tool_open_dir" in ctrl.ops()
+        ops = ctrl.ops()
+
+        assert "user_tool_open_dir" in ops
+        assert "user_tool_inputs" in ops
+        assert "user_tool_play_output" in ops
 
 
 class TestDelete:
@@ -812,3 +1392,198 @@ class TestToolsTabPage:
         assert ids, "the Tools tab script did not make it into the page"
         for element_id in ids:
             assert f'id="{element_id}"' in html, element_id
+
+    def test_there_is_no_permanent_choose_file_button(self):
+        # The panel used to carry one sample box and a Choose-file button whatever the tool
+        # read. Asserted on the ID literals, which prose cannot accidentally satisfy.
+        html = self._html()
+
+        assert 'id="sn-ut-pick"' not in html
+        assert 'id="sn-ut-sample"' not in html
+        assert 'id="sn-ut-inputs"' in html
+
+    def test_the_input_rows_are_rendered_into_the_container(self):
+        render = _strip_js_comments(
+            _js_function(self._html(), "function renderToolInputs(")
+        )
+
+        assert "utInputsEl.innerHTML" in render
+        assert "toolInputRow(entry)" in render
+
+    def test_a_media_row_asks_the_picker_for_its_field_and_kind(self):
+        pick = _strip_js_comments(_js_function(self._html(), "function pickInputFile("))
+
+        assert 'send("user_tool_pick_sample"' in pick
+        assert "field: field" in pick
+        assert "kind: kind" in pick
+
+    def test_the_test_run_posts_one_value_per_input(self):
+        run = _strip_js_comments(
+            _js_function(self._html(), "function runUserToolTest(")
+        )
+
+        assert "inputs: collectToolInputs()" in run
+        assert "sample" not in run
+
+    def test_the_video_popup_plays_through_the_backend(self):
+        # No <video> element anywhere: this webview cannot decode mp4/H.264 however the bytes
+        # arrive, so the popup starts Anki's own player instead.
+        popup = _strip_js_comments(
+            _js_function(self._html(), "function openVideoPopup(")
+        )
+        play = _strip_js_comments(
+            _js_function(self._html(), "function playToolOutput(")
+        )
+
+        assert "playToolOutput(" in popup
+        assert 'send("user_tool_play_output"' in play
+        assert 'createElement("video")' not in _strip_js_comments(self._html())
+
+    def test_a_play_that_fails_says_so_inside_the_popup(self):
+        # The default sink is the message under Run, which the popup's full-screen scrim covers:
+        # the file would simply not play, with the reason hidden behind the popup naming it.
+        popup = _strip_js_comments(
+            _js_function(self._html(), "function openVideoPopup(")
+        )
+
+        assert "utVideoNote.textContent = error;" in popup
+
+    def test_the_save_gate_is_still_armed_by_a_test_push(self):
+        # The four load-bearing lines of the push hook, in order.
+        hook = _strip_js_comments(
+            _js_function(self._html(), "window.__snUserToolTested = function")
+        )
+
+        assert "utTestedSource = utSourceEl.value;" in hook
+        assert "refreshSaveState();" in hook
+        assert hook.index("utTestedSource = utSourceEl.value;") < hook.index(
+            "refreshSaveState();"
+        )
+
+    def test_the_risk_banner_still_follows_the_push(self):
+        hook = _strip_js_comments(
+            _js_function(self._html(), "window.__snUserToolTested = function")
+        )
+
+        assert "showToolRisks(result.risks || [])" in hook
+        assert (
+            "showToolRisks([])" in hook
+        )  # …and is cleared when the push carried an error
+
+    def test_the_media_output_row_is_not_the_monospace_text_node(self):
+        # `.sn-ut-out` is a pre-wrap monospace text box, which fights an icon + name + button
+        # layout — so the produced file gets its own node rather than a restyle.
+        css = _strip_css_comments(self._html())
+
+        assert "pre-wrap" in _js(css, ".sn-ut-out {", 320)
+        assert "pre-wrap" not in _js(css, ".sn-ut-outmedia {", 200)
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is needed to run the page's own JS")
+class TestTheKindDecidesTheControlAndTheRendering:
+    """The requirement itself, run rather than grepped.
+
+    "One control per input, a file browser for a media one" and "output rendered BY KIND" are
+    the two sentences this feature was asked for, and both live entirely in JavaScript. Greps
+    over the built page cannot fail for the mutations that matter — deleting the ``text`` branch
+    of ``toolInputRow`` or the ``video`` arm of ``renderToolOutput`` leaves every string an
+    assertion was looking for exactly where it was. So the page's OWN functions are lifted out
+    of the built HTML, given a minimal DOM, and asked what they build.
+    """
+
+    def test_a_text_input_is_a_box_to_type_in(self, rendered):
+        row = rendered["text_row"]["dom"]
+
+        boxes = _tags(row, "textarea")
+        assert len(boxes) == 1
+        assert boxes[0]["value"] == "hello"
+
+    def test_a_text_input_can_still_be_handed_a_file(self, rendered):
+        """The tolerance the removed standalone button used to provide, per input.
+
+        A tool whose ``input_kinds`` cannot be read renders as ONE text row. Without an attach
+        on the row itself there is no control anywhere on the panel that reaches the picker, and
+        every media tool authored before the declaration existed becomes impossible to test.
+        """
+        assert ["pickInputFile", "Sentence", "file"] in rendered["text_row"]["calls"]
+
+    def test_a_media_input_is_a_file_browser_and_not_a_box(self, rendered):
+        row = rendered["audio_row"]["dom"]
+
+        assert _tags(row, "textarea") == []
+        buttons = _tags(row, "button")
+        assert len(buttons) == 1
+        assert "audio" in buttons[0]["text"]
+
+    def test_a_media_pick_is_filtered_to_that_input_s_own_kind(self, rendered):
+        assert ["pickInputFile", "Clip", "audio"] in rendered["audio_row"]["calls"]
+
+    def test_a_staged_row_states_the_reference_and_the_file_behind_it(self, rendered):
+        # "its Anki reference form is shown" is the requirement; the file name and the
+        # outside-your-collection statement are what make the reference answerable.
+        caption = _caption(rendered["staged_row"]["dom"])
+
+        assert "[sound:take.wav]" in caption
+        assert "take.wav" in caption
+        assert "staged outside your collection" in caption
+
+    def test_a_row_with_nothing_staged_says_nothing(self, rendered):
+        assert _caption(rendered["audio_row"]["dom"]) == ""
+
+    def test_a_rebuild_keeps_the_pick_and_still_reads_the_same(self, rendered):
+        """The form is rebuilt on every debounced keystroke; a pick must survive that.
+
+        And read the SAME afterwards: the two render paths disagreed, so one staged file was
+        captioned with its name after a pick and with the raw reference after the next
+        keystroke.
+        """
+        result = rendered["rebuild_keeps_the_pick"]
+
+        assert result["value"] == "[sound:take.wav]"
+        assert _caption(result["dom"]) == _caption(rendered["staged_row"]["dom"])
+
+    def test_an_unchanged_declaration_does_not_replace_the_rows(self, rendered):
+        """The form is re-fetched 300ms after every keystroke in the SOURCE box.
+
+        Most edits do not touch ``input_kinds``, and rebuilding regardless replaced the rows
+        under a user who had clicked into one — the values survive a rebuild, the caret does
+        not. A declaration that really did change must still rebuild.
+        """
+        result = rendered["rebuild_only_when_the_form_changes"]
+
+        assert result["kept"] is True
+        assert result["rebuilt"] is True
+
+    def test_a_produced_picture_is_a_name_and_a_way_to_view_it(self, rendered):
+        result = rendered["image_output"]
+
+        assert "🖼️" in _text(result["dom"])
+        assert [button["text"] for button in _tags(result["dom"], "button")] == [
+            "🔍 View"
+        ]
+        assert ["openLightbox", "data:image/png;base64,AA"] in result["calls"]
+
+    def test_a_produced_sound_is_a_name_and_a_play_button(self, rendered):
+        result = rendered["audio_output"]
+
+        assert "🔊" in _text(result["dom"])
+        assert [button["text"] for button in _tags(result["dom"], "button")] == [
+            "🔊 Play"
+        ]
+        assert ["playToolOutput"] in result["calls"]
+
+    def test_a_produced_video_opens_the_popup_that_plays_it(self, rendered):
+        result = rendered["video_output"]
+
+        assert "🎬" in _text(result["dom"])
+        assert [button["text"] for button in _tags(result["dom"], "button")] == [
+            "🎬 Open"
+        ]
+        assert ["openVideoPopup", "video"] in result["calls"]
+
+    def test_a_file_with_no_viewer_here_is_still_named_and_explained(self, rendered):
+        # Never a blank box: a picture too large to inline reports its size and why.
+        result = rendered["unviewable_output"]
+
+        assert _tags(result["dom"], "button") == []
+        assert "too large to preview" in _text(result["dom"])

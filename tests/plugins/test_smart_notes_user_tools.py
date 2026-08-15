@@ -20,6 +20,7 @@ importable Python file at collection time.
 from __future__ import annotations
 
 import logging
+import re
 from typing import ClassVar
 
 import pytest
@@ -42,6 +43,8 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.engine.tools import (
+    INPUT_KIND_EXTENSIONS,
+    SAMPLE_FIELD,
     TOOL_REGISTRY,
     GenerationPipeline,
     ImportGuard,
@@ -53,6 +56,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolSource,
     UserToolStore,
     UserToolTester,
+    declared_inputs,
     get_tool,
     is_user_tool,
     register_tool,
@@ -580,13 +584,112 @@ class TestUserToolRuntime:
         assert get_tool("user:ext").parse_params({}) == {"source_field": ""}
 
 
+class TestDeclaredInputs:
+    """The Try-it form is read from the draft's SOURCE, never by executing it.
+
+    Compiling is the only other way to reach ``Tool.input_kinds``, and compiling means ``exec``.
+    In this feature arbitrary execution happens exactly once — on Run, AFTER the risk banner has
+    told the user what the code reaches for — so discovering the inputs by compiling would move
+    execution ahead of the review that exists to precede it.
+    """
+
+    def _declaring(self, mapping: str) -> str:
+        """The working tool source with ``input_kinds`` set to ``mapping``."""
+        return _good_source("ext").replace(
+            "    params_model: ClassVar[type] = ExtParams",
+            f"    params_model: ClassVar[type] = ExtParams\n    input_kinds = {mapping}",
+        )
+
+    def test_the_declared_fields_are_returned_in_order(self):
+        source = self._declaring('{"Clip": "audio", "Word": "text", "Pic": "image"}')
+
+        inputs = declared_inputs(source)
+
+        assert [(item.field, item.kind) for item in inputs] == [
+            ("Clip", "audio"),
+            ("Word", "text"),
+            ("Pic", "image"),
+        ]
+
+    def test_an_unknown_kind_falls_back_to_text(self):
+        # A typo in generated code costs a typed box, nothing more — and that box can still be
+        # handed a file, so an unrecognised kind is not a dead end either.
+        inputs = declared_inputs(self._declaring('{"Clip": "sound"}'))
+
+        assert [(item.field, item.kind) for item in inputs] == [("Clip", "text")]
+
+    def test_a_tool_declaring_nothing_gets_one_text_input(self):
+        # Byte-for-byte the form this panel offered before it could read a declaration, which is
+        # what keeps every tool authored until now exactly as testable as it was.
+        inputs = declared_inputs(_good_source("ext"))
+
+        assert [(item.field, item.kind) for item in inputs] == [("Sample", "text")]
+
+    def test_an_empty_mapping_gets_one_text_input(self):
+        inputs = declared_inputs(self._declaring("{}"))
+
+        assert [(item.field, item.kind) for item in inputs] == [("Sample", "text")]
+
+    def test_a_computed_mapping_falls_back_to_one_text_input(self):
+        # The stated cost of not exec-ing: a mapping this reader cannot describe gets the
+        # fallback form, and half a form would be worse than that.
+        source = self._declaring('{name: "audio" for name in ("Clip",)}')
+
+        assert [(item.field, item.kind) for item in declared_inputs(source)] == [
+            ("Sample", "text")
+        ]
+
+    def test_a_module_level_name_does_not_shadow_the_class_declaration(self):
+        """``input_kinds`` is a ClassVar, so only a class body may answer for it.
+
+        ``ast.walk`` is breadth-first: a module-level assignment of the same name is reached
+        FIRST, and reading it would silently cost a media tool every one of its file pickers
+        while the tool's real declaration sat two lines further down.
+        """
+        source = "input_kinds = {}\n" + self._declaring('{"Clip": "audio"}')
+
+        assert [(item.field, item.kind) for item in declared_inputs(source)] == [
+            ("Clip", "audio")
+        ]
+
+    def test_a_broken_source_falls_back_instead_of_raising(self):
+        # The form is rebuilt on a keystroke debounce, so half-typed code is the NORMAL state.
+        assert [
+            (item.field, item.kind)
+            for item in declared_inputs("class T:\n  input_kinds")
+        ] == [("Sample", "text")]
+
+    def test_reading_the_inputs_never_executes_the_module(self, tmp_path, loader):
+        """The load-bearing safety property of the whole Try-it form.
+
+        The sentinel is proven live by compiling the SAME source afterwards: if the write never
+        happened either way the first assertion would pass for the wrong reason.
+        """
+        sentinel = tmp_path / "ran"
+        code = (
+            "import pathlib\n"
+            f"pathlib.Path({str(sentinel)!r}).write_text('yes')\n"
+            + self._declaring('{"Clip": "audio"}')
+        )
+
+        inputs = declared_inputs(code)
+
+        assert not sentinel.exists()
+        assert [(item.field, item.kind) for item in inputs] == [("Clip", "audio")]
+        # …and the same source DOES write it when it is actually executed.
+        loader.compile_tool(UserToolSource(slug="ext", code=code))
+        assert sentinel.read_text() == "yes"
+
+
 class TestUserToolTester:
     """The dialog's test box: run the candidate once, describe what came back."""
 
     def test_a_produced_result_is_reported_with_its_text(self, loader):
         cls = loader.compile_tool(UserToolSource(slug="ext", code=_good_source("ext")))
 
-        result = UserToolTester().run(cls, sample="clip.mp3", params={}, ctx=_ctx())
+        result = UserToolTester().run(
+            cls, inputs={"Sample": "clip.mp3"}, params={}, ctx=_ctx()
+        )
 
         assert result.ok is True
         assert result.output == "mp3"
@@ -594,7 +697,9 @@ class TestUserToolTester:
     def test_a_decline_is_reported_with_its_reason(self, loader):
         cls = loader.compile_tool(UserToolSource(slug="ext", code=_good_source("ext")))
 
-        result = UserToolTester().run(cls, sample="no extension", params={}, ctx=_ctx())
+        result = UserToolTester().run(
+            cls, inputs={"Sample": "no extension"}, params={}, ctx=_ctx()
+        )
 
         assert result.ok is False
         assert result.status == "not_applicable"
@@ -606,7 +711,9 @@ class TestUserToolTester:
         )
         cls = loader.compile_tool(UserToolSource(slug="ext", code=code))
 
-        result = UserToolTester().run(cls, sample="clip.mp3", params={}, ctx=_ctx())
+        result = UserToolTester().run(
+            cls, inputs={"Sample": "clip.mp3"}, params={}, ctx=_ctx()
+        )
 
         assert result.status == "error"
         assert result.detail == "kaput"
@@ -616,7 +723,88 @@ class TestUserToolTester:
         cls = loader.compile_tool(UserToolSource(slug="ext", code=code))
 
         with pytest.raises(UserToolError, match="no generation kind"):
-            UserToolTester().run(cls, sample="clip.mp3", params={}, ctx=_ctx())
+            UserToolTester().run(
+                cls, inputs={"Sample": "clip.mp3"}, params={}, ctx=_ctx()
+            )
+
+    def test_each_declared_input_becomes_a_note_field(self, loader):
+        # A tool reading a field by NAME must find the value the form collected for that name,
+        # not a single undifferentiated sample.
+        code = _good_source("ext").replace('or "Sample"', 'or "Clip"')
+        cls = loader.compile_tool(UserToolSource(slug="ext", code=code))
+
+        result = UserToolTester().run(
+            cls,
+            inputs={"Word": "ignored", "Clip": "[sound:take.wav]"},
+            params={},
+            ctx=_ctx(),
+        )
+
+        assert result.ok is True
+        assert result.output == "wav"
+
+    def test_the_rule_names_the_first_input(self, loader):
+        # A tool with a blank `<something>_field` param reads the rule's first source field.
+        # That has to be the FIRST declared input, or the fallback finds nothing. The prompt
+        # now asks for a real default, so the blank case is built here rather than borrowed
+        # from the worked example — the runtime still has to honour it (a tool synced from an
+        # older Omnia, or one whose param the user cleared).
+        blank_default = tool_author_module._EXAMPLE.replace(
+            '"Audio", description=', '"", description='
+        )
+        cls = loader.compile_tool(
+            UserToolSource(slug="extract-ext", code=blank_default)
+        )
+
+        result = UserToolTester().run(
+            cls,
+            inputs={"Clip": "[sound:take.wav]", "Word": "ignored"},
+            params={},
+            ctx=_ctx(),
+        )
+
+        assert result.output == "wav"
+
+    def test_a_field_the_form_never_offered_is_named_in_the_result(self, loader):
+        """A declaration keyed by a name the tool does not read fails INVISIBLY otherwise.
+
+        The panel builds its rows from ``input_kinds``, so a mis-keyed one renders a plausible,
+        correctly-filtered control; the user picks a real file for it; the tool reads the field
+        its params actually name, finds nothing, and declines. Every visible signal says the
+        pick worked, and the result is "it produced nothing" with no cause anywhere.
+        """
+        code = _good_source("ext").replace(
+            'Field("", description', 'Field("Clip", description'
+        )
+        cls = loader.compile_tool(UserToolSource(slug="ext", code=code))
+
+        result = UserToolTester().run(
+            cls, inputs={"Audio": "[sound:take.wav]"}, params={}, ctx=_ctx()
+        )
+
+        assert result.ok is False
+        assert "Clip" in result.detail
+        assert "input_kinds" in result.detail
+
+    def test_a_tool_reading_only_offered_fields_is_left_alone(self, loader):
+        code = _good_source("ext").replace(
+            'Field("", description', 'Field("Clip", description'
+        )
+        cls = loader.compile_tool(UserToolSource(slug="ext", code=code))
+
+        result = UserToolTester().run(
+            cls, inputs={"Clip": "take"}, params={}, ctx=_ctx()
+        )
+
+        assert result.detail == "no extension in Clip"  # …and nothing appended
+
+    def test_an_empty_input_map_still_runs_under_sample(self, loader):
+        # A stale page, or a tool that declares nothing: the run must still happen.
+        cls = loader.compile_tool(UserToolSource(slug="ext", code=_good_source("ext")))
+
+        result = UserToolTester().run(cls, inputs={}, params={}, ctx=_ctx())
+
+        assert result.status == "not_applicable"  # nothing typed, so nothing to extract
 
 
 class TestReviewGate:
@@ -707,15 +895,23 @@ class TestTheWorkedExampleIsReal:
         ImportGuard().check(tool_author_module._EXAMPLE)
 
     def test_the_test_box_can_run_it_with_no_params_configured(self, loader):
-        # The sample field is also the rule's only prompt ref, so a tool that defaults its
-        # source to "the field this rule reads" finds the sample — the path the dialog's test
-        # box actually takes, since it configures no params.
+        """The form the example's OWN declaration produces is a form that can run it.
+
+        The panel builds one control per ``input_kinds`` entry and configures no params, so the
+        declared field name and the param's default have to be the same name. When they are
+        not, the user fills in the only box on the panel and the tool reads nothing — and the
+        example is the shape every generated tool imitates.
+        """
+        inputs = declared_inputs(tool_author_module._EXAMPLE)
         cls = loader.compile_tool(
             UserToolSource(slug="extract-ext", code=tool_author_module._EXAMPLE)
         )
 
         result = UserToolTester().run(
-            cls, sample="[sound:clip.mp3]", params={}, ctx=_ctx()
+            cls,
+            inputs={item.field: "[sound:clip.mp3]" for item in inputs},
+            params={},
+            ctx=_ctx(),
         )
 
         assert result.ok is True
@@ -922,6 +1118,74 @@ class TestToolAuthor:
         prompt = user_tool_system_prompt()
 
         assert "read or write files" not in prompt
+
+    def test_the_worked_example_declares_the_inputs_its_form_is_built_from(self):
+        """The example is the strongest signal in the prompt, so it must teach the right shape.
+
+        Asserted on what ``declared_inputs`` READS out of it rather than on the prose around it:
+        a rewording of rule 3b must not fail this, and an example that quietly stops declaring
+        anything must.
+        """
+        inputs = declared_inputs(tool_author_module._EXAMPLE)
+
+        assert [(item.field, item.kind) for item in inputs] == [(SAMPLE_FIELD, "text")]
+
+    def test_the_example_keeps_its_blank_default_and_declares_under_sample(self):
+        """The two halves have to agree, and the earlier fix broke them apart.
+
+        Giving ``input_kinds`` a name to key by is not a reason to invent a default field name:
+        ``source_field=""`` is what makes the tool follow whatever field the rule points at, and
+        baking a literal name in silently overrides that on every note the tool ever runs on.
+        The implicit input is declared under ``SAMPLE_FIELD`` instead — the name the form gives
+        it — so the picker still knows the kind while the runtime keeps the fallback.
+
+        Pinned because the two are in different parts of the file and nothing else couples them.
+        """
+        example = tool_author_module._EXAMPLE
+
+        assert 'source_field: str = Field(\n        ""' in example
+        assert declared_inputs(example)[0].field == SAMPLE_FIELD
+
+    def test_the_media_shape_the_prompt_teaches_yields_a_file_picker(self):
+        """Rule 3b's worked snippet, put through the reader that builds the form.
+
+        The instruction is only worth what the code does with it: a model that follows the
+        snippet must get a row whose control is a browser filtered to audio. Greping the prompt
+        for its own wording proves nothing about that — this compiles the shape the rule
+        describes and asks the reader what form it produces.
+        """
+        prompt = user_tool_system_prompt()
+        snippet = prompt[prompt.index("3b.") : prompt.index("\n4. ")]
+        declaration = re.search(r"input_kinds: ClassVar\[.+?\] = (\{[^}]*\})", snippet)
+        assert declaration is not None, snippet
+        source = _good_source("clip").replace(
+            "    params_model: ClassVar[type] = ExtParams",
+            "    params_model: ClassVar[type] = ExtParams\n"
+            f"    input_kinds = {declaration.group(1)}",
+        )
+
+        inputs = declared_inputs(source)
+
+        assert [(item.field, item.kind) for item in inputs] == [("Audio", "audio")]
+        assert INPUT_KIND_EXTENSIONS[inputs[0].kind]  # …so the picker HAS a filter
+
+    def test_a_declaration_the_prompt_forbids_costs_only_the_filter(self):
+        """The stated price of reading the source instead of running it.
+
+        A computed ``input_kinds`` — which rule 3b tells the model not to write — cannot be
+        read without ``exec``, and ``exec`` before the risk banner is the one thing this flow
+        must never do. So it falls back to a single text box, which is still a control the user
+        can type into AND attach a file to; what is lost is the field's name and the filter.
+        """
+        source = _good_source("clip").replace(
+            "    params_model: ClassVar[type] = ExtParams",
+            "    params_model: ClassVar[type] = ExtParams\n"
+            '    input_kinds = {n: "audio" for n in ("Audio",)}',
+        )
+
+        assert [(item.field, item.kind) for item in declared_inputs(source)] == [
+            (SAMPLE_FIELD, "text")
+        ]
 
     def test_a_refusal_is_surfaced_rather_than_treated_as_broken_code(self):
         """The model must be able to say no — and be believed.

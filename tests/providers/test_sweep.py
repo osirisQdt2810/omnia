@@ -129,9 +129,13 @@ class TestTTSSweep:
         assert audio == b"EDGE-MP3"
 
     def test_piper_synthesizes_with_injected_runner(self):
-        class _FakeRunner:
+        from omnia.core.providers.tts.piper import PiperRunner
+
+        class _FakeRunner(PiperRunner):
+            # Subclasses the seam so it inherits the no-op ``ensure_ready`` the provider now
+            # calls before resolving a voice; a duck-typed stand-in would miss that contract.
             def run(self, text, model_path):
-                # A bare ".onnx" name resolves under the bundled models/piper dir.
+                # A bare ".onnx" name is looked up in the voice dirs, never downloaded.
                 assert model_path.endswith("voice.onnx")
                 return b"RIFFwav"
 
@@ -146,11 +150,14 @@ class TestTTSSweep:
         from omnia.core.providers.tts.piper import SidecarPiperRunner
         from omnia.core.runtime.native_runtime import NativeRuntimeManager
 
-        # The bundled default voice exists, so resolution passes the file check and reaches the
-        # manager's not-installed guard. Point the manager at an empty dir (nothing installed).
+        # Point the provider at an absolute .onnx this test owns, so the guard being exercised
+        # is the manager's — not voice resolution, and never a 60 MB fetch. (This used to lean
+        # on the repo's LFS voice, which on CI is a pointer file and would now be re-fetched.)
+        model = tmp_path / "voice.onnx"
+        model.write_bytes(b"onnx")
         runner = SidecarPiperRunner(manager=NativeRuntimeManager(tmp_path))
         with pytest.raises(ProviderError, match="isn't installed"):
-            PiperTTS(runner=runner).synthesize("hi")
+            PiperTTS(model=str(model), runner=runner).synthesize("hi")
 
 
 # --------------------------------------------------------------------------------------

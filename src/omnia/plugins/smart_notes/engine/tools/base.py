@@ -25,16 +25,15 @@ Pure logic — no ``aqt``/``anki`` imports, so tools unit-test headless.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Optional
 
 from omnia.core.audio.sidecar import AudioSidecar
 from omnia.core.providers.errors import ProviderError
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Mapping
 
     from pydantic import BaseModel
 
@@ -42,6 +41,46 @@ if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
     from omnia.plugins.smart_notes.engine.generators import GenerationResult
     from omnia.plugins.smart_notes.engine.language import LanguageDetector
+
+
+#: What testing one of a tool's inputs asks of a person. ``"text"`` is typed in place; every
+#: other value means "pick a file", and names the family the picker filters to. Kept separate
+#: from the OUTPUT vocabulary (``GENERATION_KINDS``) on purpose: a tool that reads a video and
+#: writes text has an input kind and an output kind that must not be confused, and video is a
+#: legitimate input while nothing in this add-on generates one.
+INPUT_KINDS: Final[tuple[str, ...]] = ("text", "image", "audio", "video", "file")
+
+#: The default for any input a tool does not describe.
+TEXT_INPUT: Final = "text"
+
+#: The ONE per-kind extension vocabulary: which files belong to which media family.
+#:
+#: It answers two questions that must never disagree — what the file picker offers for an input
+#: of this kind, and which family a file already in hand belongs to (``media_sample`` derives
+#: its ``<img>``-vs-``[sound:]`` split and its produced-file classification from it). They were
+#: written out separately once, and the copies drifted: the picker hid ``.bmp``/``.tiff`` scans
+#: that the rest of the code happily called pictures. Every consumer reads this table.
+#:
+#: ``"file"`` deliberately has no extensions — it is the escape hatch for a tool reading
+#: something this table does not anticipate, and a filter that silently hides the right file is
+#: worse than no filter at all.
+INPUT_KIND_EXTENSIONS: Final[Mapping[str, tuple[str, ...]]] = {
+    "image": (
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "svg",
+        "avif",
+        "bmp",
+        "tif",
+        "tiff",
+    ),
+    "audio": ("mp3", "wav", "ogg", "m4a", "flac", "opus"),
+    "video": ("mp4", "mkv", "webm", "mov", "avi"),
+    "file": (),
+}
 
 
 class ToolError(ProviderError):
@@ -195,6 +234,14 @@ class Tool(ABC):
             keeps honouring the fallbacks: a chain synced from a device on an older Omnia
             predates this validation and must still generate.
         params_model: Pydantic model validating the field's per-tool params (None = no params).
+        input_kinds: ``{field name: one of INPUT_KINDS}`` — what each field the tool READS
+            holds. ``referenced_fields`` already says WHICH fields a tool reads; this says what
+            is in them, which is what lets the Try-it form offer a file browser for a clip
+            instead of asking someone to type ``[sound:x.mp3]`` by hand. It is a DECLARATION,
+            read from the module's source text without executing it (see
+            :func:`~omnia.plugins.smart_notes.engine.tools.user_tools.declared_inputs`), so it
+            must be a literal dict of literal strings; anything else, and anything left out,
+            falls back to a text box that can still take an attached file.
     """
 
     name: ClassVar[str]
@@ -205,6 +252,7 @@ class Tool(ABC):
     uses_provider: ClassVar[bool] = True
     required_params: ClassVar[frozenset[str]] = frozenset()
     params_model: ClassVar[Optional[type[BaseModel]]] = None
+    input_kinds: ClassVar[Mapping[str, str]] = {}
 
     @abstractmethod
     def run(self, request: ToolRequest, ctx: ToolContext) -> ToolOutcome:
