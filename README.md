@@ -76,6 +76,16 @@ the GUI and stored in your collection — see *Where your settings & data live* 
 no config file to edit **unless** you use the AI features, which need `providers.toml` (next
 section).
 
+> The package is deliberately small (~1 MB): the offline **piper** TTS voice models (~60 MB
+> each) are **not** bundled, so you don't re-download them on every add-on update. The first
+> time you actually synthesize with a piper voice, Omnia fetches it into `user_files/` once per
+> machine and reuses it forever after. When you triggered the generation yourself (the editor
+> button, a Studio preview, a voice test) the fetch reports its progress in Anki's progress
+> dialog and its **Cancel** button stops it; review-time pre-generation runs silently in the
+> background by design, so there it is invisible. Every other TTS provider needs no download at
+> all. Note that piper *also* needs its opt-in native runtime (**Smart Notes → Options →
+> Advanced**) — Omnia checks that first, so it never downloads a voice it could not have used.
+
 > Installing on another machine? Just repeat A on that machine. Your **plugin settings sync
 > automatically** with the rest of your collection through AnkiWeb (they live in the collection,
 > not in a local file). The only per-machine step is re-creating `providers.toml` with your API
@@ -89,6 +99,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements/requirements-dev.txt
 pre-commit install
 
+git lfs pull                       # optional: the piper voice weights (else they download on use)
 python scripts/install_addon.py    # assemble src/omnia + vendor/ + models/ + config/ into addons21/
 ```
 Restart Anki; edits to the source are picked up on the next Anki start (re-run
@@ -110,6 +121,10 @@ created on your machine on first run** (ADR-006). Nothing runtime is committed t
 | Fetched-voice cache (TTS voice lists) | Anki **collection config** | ✅ Yes |
 | A tiny backend marker | `user_files/.storage.json` | ❌ No — device-local |
 | **AI provider config + API keys** | **`user_files/config/providers.toml`** + `user_files/config/.secrets/` | ❌ No — stays a local file, never synced |
+| Downloaded piper voice models (~60 MB each) | `user_files/models/piper/<voice>.onnx` (+ `.onnx.json`) | ❌ No — device-local, fetched on first use |
+
+The piper voice is the largest thing Omnia ever writes to your disk, and it is **safe to
+delete**: the next synthesis with that voice simply fetches it again.
 
 `user_files/` is the one directory Anki **preserves across add-on updates**, so your local
 config and secrets survive upgrades (the rest of the add-on folder is replaced on update).
@@ -167,7 +182,7 @@ pre-commit install
 
 pytest tests/ -vv                 # logic tests (Anki is stubbed)
 python scripts/install_addon.py   # assemble into local Anki for manual testing
-python scripts/build_addon.py     # -> dist/omnia.ankiaddon
+python scripts/build_addon.py     # -> dist/omnia.ankiaddon (excludes the *.onnx voice weights)
 ```
 
 The add-on runs inside Anki's bundled Python (3.13, latest Anki) with PyQt6 — no server, no external

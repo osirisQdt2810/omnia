@@ -76,8 +76,9 @@ class TestVoices:
         # google_translate is language-only — it enumerates no named voices.
         assert voices_for("google_translate") == []
 
-    def test_piper_ships_a_bundled_vietnamese_voice(self):
-        # piper now carries a bundled vi voice (resolved to models/piper/<name>.onnx).
+    def test_piper_offers_a_vietnamese_voice(self):
+        # piper curates a vi voice. Its weights are NOT packaged: the store resolves it from
+        # user_files/models/piper -> models/piper -> a one-time download on first use.
         assert any(v.lang_code == "vi" for v in voices_for("piper"))
 
 

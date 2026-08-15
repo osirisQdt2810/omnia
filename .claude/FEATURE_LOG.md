@@ -21,6 +21,43 @@ Format for each entry:
 
 ---
 
+## 2026-08-15 — Piper voices download on first use instead of shipping in the package
+
+**What:** The `.ankiaddon` no longer contains the `*.onnx` TTS voice weights (`build_addon.py`
+excludes the suffix); the ~5 KB `.onnx.json` + README still ship. A new
+`core/providers/tts/voice_models.py` holds `PiperVoiceStore`, which resolves a voice as
+`user_files/models/piper/` → the `models/piper/` copy beside the add-on → a one-time download
+from the upstream HuggingFace voice repo. Downloads stream through the injectable `ByteStreamer`
+seam into a temp file inside the destination dir, verify the pinned byte count + SHA-256, and
+`os.replace` into place; progress goes to Anki's progress dialog through the new
+`anki_compat.progress_label` (marshalled to the main thread). `PiperTTS` takes an injectable
+`store`; both piper runners now share one `_require_model_file` message.
+
+**Why:** The package was 59 MB and 99% of it was one Vietnamese voice — over AnkiWeb's limit, and
+every user downloaded it to install AND again on every single update, for a voice most of them
+will never play. Package is now ~1 MB.
+
+**Files:** `src/omnia/core/providers/tts/voice_models.py` (new), `.../tts/piper.py`,
+`src/omnia/core/anki_compat.py`, `scripts/build_addon.py`, `models/piper/README.md`,
+`config/providers.example.toml`, `README.md`, `.claude/CLAUDE.md`,
+`tests/providers/test_piper_voice_models.py` (new), `tests/scripts/test_build_addon.py` (new),
+`tests/providers/test_sweep.py`.
+
+**How to verify:** `pytest tests/providers/test_piper_voice_models.py tests/scripts -q`, then
+`python scripts/build_addon.py` and check the archive has no `*.onnx` and is ~1 MB.
+
+**Notes / rollback:** The checked-in `models/` + its Git LFS setup are untouched — a developer's
+local copy still wins over any download. Resolution rejects a weights file whose size differs from
+the catalog's, which is what makes an unfetched LFS *pointer* (CI never runs `git lfs pull`) fall
+through to a download rather than be handed to piper as a model. The native-runtime toggle's
+`size_hint="~50 MB"` is unchanged: it still installs only the venv, and the voice reports its own
+size in the download's progress label. The narrow exception to ADR-005's "run paths never
+auto-install" — a run path may fetch inert DATA, never a RUNTIME, and must check the runtime
+FIRST — is recorded as **ADR-015** in `DECISIONS.md`, which is where the next reader of ADR-005
+will look. Rollback = drop `.onnx` from `EXCLUDE_SUFFIXES`.
+
+---
+
 ## 2026-08-15 — smart_notes Try-it: a test form built from the tool, not a fixed one
 
 **What:** The Tools tab's "Try it" panel now renders ONE control per input the tool declares, and

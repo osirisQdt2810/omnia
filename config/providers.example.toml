@@ -119,7 +119,7 @@ model = "tts-1"
 voice = ""             # e.g. "nu-nhe-nhang"; empty -> provider default
 autostart = true       # auto-start the local viet-tts server on first use (needs viet-tts installed)
 
-# Offline; needs a vendored native runner injected (the add-on never shells out) + a `model`
-# (.onnx) voice path. Out of the box piper raises a clear error — prefer google_translate/edge_tts.
+# Offline neural TTS. Enable its runtime in Smart Notes -> Options -> Advanced (native runtimes);
+# the voice model itself is not packaged and downloads itself into user_files on first use.
 [tts.piper]
-model = ""             # piper .onnx voice path
+model = ""             # voice name (e.g. "vi_VN-vais1000-medium") or a path to a .onnx; empty -> default

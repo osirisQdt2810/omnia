@@ -304,9 +304,9 @@ class TestToolContract:
             assert name in reason
 
     def test_a_wav_only_machine_can_still_enable_the_tool(self):
-        # The zero-install path: piper's bundled voice needs nothing, so the picker must not be
-        # able to read this as "unavailable" and grey the tool out (the reason it renders the
-        # advice without gating). A tool cannot see which voice the ROW will resolve to.
+        # The zero-setup path: a piper voice installs itself on first use, so the picker must
+        # not be able to read this as "unavailable" and grey the tool out (the reason it renders
+        # the advice without gating). A tool cannot see which voice the ROW will resolve to.
         entry = {
             item["name"]: item
             for item in tools_catalog(_ctx(audio=_FakeSidecar(installed=False)))

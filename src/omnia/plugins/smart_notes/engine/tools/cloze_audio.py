@@ -520,11 +520,15 @@ class ClozeAudioTool(Tool):
     def availability(cls, ctx: ToolContext) -> str | None:
         """Name what a voice on THIS machine might still need — advice, never a gate.
 
-        The tool is fully usable with nothing installed: a WAV voice (the bundled piper one
-        included) splices with the stdlib. Only an MP3 voice needs the codec runtime, and which
-        voice a FIELD uses is a per-row setting this classmethod cannot see — so a global "no"
-        would be wrong in both directions. The picker renders this next to the tool without
-        disabling it (see :meth:`Tool.availability`).
+        The tool is fully usable with nothing installed: any WAV voice splices with the stdlib,
+        no codec runtime involved. Only an MP3 voice needs that runtime, and which voice a FIELD
+        uses is a per-row setting this classmethod cannot see — so a global "no" would be wrong
+        in both directions. The picker renders this next to the tool without disabling it (see
+        :meth:`Tool.availability`).
+
+        Piper is NOT the free case it once looked like: its weights are no longer packaged (they
+        download on first use) and its native runtime is opt-in, so a piper WAV needs both. That
+        is the provider's own error to raise at synthesis time, not a gate here.
         """
         if ctx.audio.is_installed():
             return None

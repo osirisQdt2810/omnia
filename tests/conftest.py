@@ -524,7 +524,7 @@ def _tts_unavailable_reason(provider: str, repo, user_file) -> Optional[str]:
     if provider == "piper":
         # piper synthesizes via the native `piper-tts` package (onnxruntime), which can't be
         # vendored and isn't installed in the Anki-like test env — skip the live case when it's
-        # absent (its bundled .onnx voice ships in models/piper/).
+        # absent (its .onnx voice comes from models/piper/ or a first-use download).
         try:
             import piper  # noqa: F401
         except ImportError:
