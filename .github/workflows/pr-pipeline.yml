@@ -189,6 +189,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # TEMPORARY diagnostic. The review kept failing with "Could not resolve
+      # authentication" in 88ms having spent $0 -- i.e. the SDK got no credential at all and
+      # never called the API, so rotating the secret could not have helped. This reports the
+      # SHAPE of the secret without revealing it (GitHub masks the value itself), which is the
+      # only way to tell "wrong kind of token" from "not reaching the action". Remove once the
+      # cause is known.
+      - name: What shape is the credential?
+        env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          APIKEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          shape() {
+            local name="$1" value="$2"
+            if [ -z "$value" ]; then echo "$name: EMPTY / not set"; return; fi
+            local prefix="unrecognised"
+            case "$value" in
+              sk-ant-oat01-*) prefix="sk-ant-oat01- (OAuth token)" ;;
+              sk-ant-api03-*) prefix="sk-ant-api03- (API key)" ;;
+              sk-ant-*)       prefix="sk-ant-… (some other Anthropic credential)" ;;
+            esac
+            echo "$name: length=${#value} prefix=$prefix"
+            case "$value" in
+              *[[:space:]]*) echo "$name: WARNING contains whitespace or a newline" ;;
+            esac
+          }
+          shape CLAUDE_CODE_OAUTH_TOKEN "$OAUTH"
+          shape ANTHROPIC_API_KEY "$APIKEY"
+
       - name: Review the PR
         uses: anthropics/claude-code-action@c3d45e8e941e1b2ad7b278c57482d9c5bf1f35b3 # v1.0.99
         env:
