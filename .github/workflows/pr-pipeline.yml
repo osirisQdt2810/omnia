@@ -203,6 +203,13 @@ jobs:
           # before making any request at all: 44ms, one turn, $0 spent, and a stack trace
           # that names neither secret. Pass only the one this repo actually uses.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # OFF because it authenticates differently from the rest of the action: the
+          # classifier constructs `new Anthropic({ apiKey })` directly, which has no OAuth
+          # path, so with only CLAUDE_CODE_OAUTH_TOKEN set it throws "Could not resolve
+          # authentication" and fails the whole job -- in 88ms, having spent $0, while the
+          # perfectly good OAuth token sits unused. It defaults to true, so it has to be
+          # switched off explicitly by anyone authenticating the way this repo does.
+          classify_inline_comments: false
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
