@@ -1036,3 +1036,14 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
 }
 .sn-ut-video-name { font-size: 13px; font-weight: 700; word-break: break-all; }
 .sn-ut-video-note { font-size: 12px; color: var(--muted); line-height: 1.45; }
+
+/* A row whose Generate is OFF produces nothing, so every setting on it -- Tools, Type, Prompt,
+   Provider, Model, Voice, Preview, Overwrite -- is a control that cannot take effect. Fading
+   them says "nothing to configure here" at a glance, the same way `.sn-na` does for a single
+   column a chain never reaches. Field stays readable so the row is still identifiable, and the
+   Generate switch stays crisp and clickable so it can be turned back on. Slightly gentler than
+   the lock blur: not generating is a normal state, not a frozen one. */
+.sn-row-off td:not(.sn-fieldname):not(.sn-gen-cell) {
+  filter: blur(1px) saturate(0.45); opacity: 0.3; pointer-events: none;
+  transition: filter 0.25s ease, opacity 0.25s ease;
+}

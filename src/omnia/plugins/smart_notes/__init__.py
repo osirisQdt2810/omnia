@@ -13,6 +13,7 @@ written back to notes + media on the main thread. The pure logic lives in the ``
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Optional
 
 from omnia.core import anki_compat
@@ -33,6 +34,7 @@ from omnia.plugins.smart_notes.integration import (
     SmartNotesStore,
     add_generate_button,
     materialize,
+    note_materializer,
     set_button_enabled,
 )
 
@@ -232,6 +234,10 @@ class SmartNotesPlugin(FeaturePlugin):
         settings = self._settings()
         fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
 
+        # Shared by the generation chain and the write below, so a field's media is written
+        # once and the name the chain handed downstream is the name the note ends up with.
+        materialize_once = note_materializer(int(getattr(note, "id", 0)))
+
         def op() -> list[tuple[Any, GenerationResult]]:
             # Blocked fields stay empty (their hard prerequisites are missing); the editor only
             # writes generated results, so the block list is unused on this manual path.
@@ -239,18 +245,25 @@ class SmartNotesPlugin(FeaturePlugin):
                 config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
+                materialize=materialize_once,
             )
             return results
 
         anki_compat.run_in_background(
             op,
-            on_success=lambda results: self._apply_to_editor(editor, note, results),
+            on_success=lambda results: self._apply_to_editor(
+                editor, note, results, materialize_once
+            ),
             on_failure=lambda exc: self._on_editor_error(editor, exc),
             label="Omnia: generating…",
         )
 
     def _apply_to_editor(
-        self, editor: Any, note: Any, results: list[tuple[Any, GenerationResult]]
+        self,
+        editor: Any,
+        note: Any,
+        results: list[tuple[Any, GenerationResult]],
+        materialize_once: Callable[[Any, GenerationResult], str],
     ) -> None:
         """Write generated content into the editor's note + refresh it (main thread)."""
         from aqt.utils import showWarning, tooltip
@@ -261,9 +274,7 @@ class SmartNotesPlugin(FeaturePlugin):
             try:
                 if rule.target_field not in note:
                     continue
-                note[rule.target_field] = materialize(
-                    int(getattr(note, "id", 0)), rule, result
-                )
+                note[rule.target_field] = materialize_once(rule, result)
                 written += 1
             except Exception:  # one bad field must not abort the rest
                 logger.exception(

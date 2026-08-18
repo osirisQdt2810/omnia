@@ -37,8 +37,14 @@
     tdName.textContent = row.field;
     tr.appendChild(tdName);
 
-    const tdOn = cell("sn-center");
-    tdOn.appendChild(makeToggle("sn-enabled", row.enabled));
+    // Its own class, because `sn-center` is shared with Preview and Overwrite and the
+    // not-generating fade has to keep exactly this cell (and the field name) legible.
+    const tdOn = cell("sn-center sn-gen-cell");
+    const enabledBox = makeToggle("sn-enabled", row.enabled);
+    enabledBox.addEventListener("change", function () {
+      applyEnabledState(tr);
+    });
+    tdOn.appendChild(enabledBox);
     tr.appendChild(tdOn);
 
     tr.appendChild(makeToolsCell(tr));
@@ -80,6 +86,7 @@
     updatePromptSummary(tr);
     updateToolsSummary(tr);
     applyLockState(tr);
+    applyEnabledState(tr);
     return tr;
   }
 
@@ -346,6 +353,23 @@
   }
 
   /**
+   * Fade everything but Field and Generate on a row that is not generating.
+   *
+   * A row with Generate off produces nothing, so its Type, Tools, Prompt, Provider, Model,
+   * Voice, Preview and Overwrite are settings that cannot take effect. Leaving them lit
+   * invites someone to tune a row that will never run and then wonder why nothing changed —
+   * the same reasoning as the `.sn-na` fade on a provider column a chain never reaches, one
+   * level up. Field stays readable so the row is still identifiable, and Generate stays
+   * crisp and clickable so it can be turned back on.
+   *
+   * @param {!HTMLTableRowElement} tr The row.
+   */
+  function applyEnabledState(tr) {
+    const box = tr.querySelector(".sn-enabled");
+    tr.classList.toggle("sn-row-off", !!box && !box.checked);
+  }
+
+  /**
    * Apply the row's lock state: toggle the blur class and disable the frozen controls (the
    * Generate switch and the Lock toggle stay live so generation can still be toggled).
    * @param {!HTMLTableRowElement} tr The row.
@@ -609,6 +633,9 @@
             },
             setActive: function (on) {
               box.checked = on;
+              // Same reason as the graph's toggle: a scripted .checked fires nothing, so the
+              // row fade would not follow a whole-column Generate toggle.
+              box.dispatchEvent(new Event("change", { bubbles: true }));
             }
           });
         }
