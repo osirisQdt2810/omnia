@@ -734,6 +734,9 @@
     const box = row.querySelector(".sn-enabled");
     if (box) {
       box.checked = !box.checked;
+      // Setting .checked in code fires nothing, so the row's own listeners -- the fade that
+      // greys a field which is no longer generating -- would not run. Dispatch it.
+      box.dispatchEvent(new Event("change", { bubbles: true }));
       recomputeGraph();
     }
   }

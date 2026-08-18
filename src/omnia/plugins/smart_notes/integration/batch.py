@@ -42,7 +42,13 @@ _CHUNK_SIZE = 5
 
 @dataclass
 class _NotePlan:
-    """One note's generation inputs, read on the main thread (the bg op never touches the col)."""
+    """One note's generation inputs, read on the main thread.
+
+    The background op DOES now touch the collection: media results are materialized as they
+    are produced (see GenerationService.generate_note), so add_media_file runs inside the
+    QueryOp. That is deliberate — Anki hands the collection to a QueryOp's background thread
+    and the backend serialises the write — and it is what lets a later tool read the
+    reference the note will hold. These inputs are still read on the main thread."""
 
     nid: int
     config: SmartNotesNoteTypeConfig
@@ -120,11 +126,37 @@ class BatchSummary:
         return prefix + ", ".join(parts) + "."
 
 
+def _unmaterialized(rule: Any, result: GenerationResult) -> str:
+    """The fallback for an outcome built without its note's materializer.
+
+    TEXT needs no materializer — no bytes, no media folder, nothing to name — so it is
+    rendered here exactly as :func:`materialize` would. The first version of this raised for
+    ANY kind, which turned a note whose only result was plain text into a counted failure
+    written nowhere: precisely the "no output, no error" shape this whole change set out to
+    remove, recreated one layer down.
+
+    Media still raises, because a caller that produced bytes and carried no way to store them
+    has a bug that silence would hide.
+    """
+    if result.kind == "text":
+        return result.text or ""
+    raise RuntimeError(
+        f"no materializer for {getattr(rule, 'target_field', '?')!r}: an outcome carrying a "
+        f"{result.kind} result must be built with the note's materializer"
+    )
+
+
 @dataclass
 class _NoteOutcome:
     """The generated results for one note (or its failure), carried back to the main thread."""
 
     nid: int
+    # The note's own memoised materializer, carried from generation to the write so both see
+    # the SAME media filename. Defaults to a fresh one for the outcomes built in tests and on
+    # the failure paths, which have no media to write.
+    materialize: Callable[[SmartNotesFieldRule, GenerationResult], str] = field(
+        default=_unmaterialized
+    )
     results: list[tuple[SmartNotesFieldRule, GenerationResult]] = field(
         default_factory=list
     )
@@ -267,14 +299,19 @@ class BatchGenerator:
 
     def _generate_one(self, plan: _NotePlan, *, force_overwrite: bool) -> _NoteOutcome:
         try:
+            # One materializer for the whole note, shared with _write_note below, so a
+            # field's media is written once and the chain and the note agree on its name.
+            materialize_once = note_materializer(plan.nid)
             results, blocked, failed = self._service.generate_note(
                 plan.config,
                 plan.fields,
                 allow_empty_fields=self._settings.allow_empty_fields,
                 force_overwrite=force_overwrite,
+                materialize=materialize_once,
             )
             return _NoteOutcome(
                 plan.nid,
+                materialize=materialize_once,
                 results=results,
                 blocked=len(blocked),
                 blocked_examples=[
@@ -339,7 +376,7 @@ class BatchGenerator:
             for rule, result in outcome.results:
                 if rule.target_field not in note:
                     continue
-                note[rule.target_field] = materialize(outcome.nid, rule, result)
+                note[rule.target_field] = outcome.materialize(rule, result)
                 wrote = True
             if wrote:
                 anki_compat.update_note(note)
@@ -374,6 +411,30 @@ def materialize(nid: int, rule: Any, result: GenerationResult) -> str:
     if result.kind == "image":
         return f'<img src="{stored}">'
     return f"[sound:{stored}]"  # tts
+
+
+def note_materializer(nid: int) -> Callable[[Any, GenerationResult], str]:
+    """Return a per-note :func:`materialize` that writes each field's media exactly ONCE.
+
+    Two moments need the string a result becomes, and they are not the same moment. The
+    generation chain needs it DURING the run — a tool reading an audio field must see the
+    ``[sound:…]`` reference the note is going to hold, or it reads blank and the field is
+    dropped before the tool is ever consulted. The writer needs it afterwards.
+
+    Calling :func:`materialize` at both moments would add the same bytes to the media folder
+    twice, and Anki renames on collision — so the second call would return a DIFFERENT filename
+    from the one already handed downstream, and the extracted name would point at a file the
+    note does not reference. Memoising per target field makes the two moments agree.
+    """
+    written: dict[str, str] = {}
+
+    def materialize_once(rule: Any, result: GenerationResult) -> str:
+        key = str(rule.target_field)
+        if key not in written:
+            written[key] = materialize(nid, rule, result)
+        return written[key]
+
+    return materialize_once
 
 
 def _note_type_name(note: Any) -> str:

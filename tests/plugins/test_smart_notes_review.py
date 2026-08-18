@@ -209,7 +209,9 @@ class TestReviewTimeEvaluator:
             def __init__(self):
                 self.calls = 0
 
-            def generate_note(self, config, fields, *, allow_empty_fields):
+            def generate_note(
+                self, config, fields, *, allow_empty_fields, materialize=None
+            ):
                 self.calls += 1
                 rule = SimpleNamespace(target_field="Def")
                 return [(rule, GenerationResult("text", text=""))], [], []

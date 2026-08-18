@@ -11,6 +11,7 @@ from omnia.plugins.smart_notes.integration.batch import (
     BatchGenerator,
     BatchSummary,
     materialize,
+    note_materializer,
 )
 from omnia.plugins.smart_notes.integration.editor import (
     add_generate_button,
@@ -43,6 +44,7 @@ __all__ = [
     "build_field_menu",
     "integration_for_tags",
     "materialize",
+    "note_materializer",
     "set_button_enabled",
     "single_field_config",
 ]

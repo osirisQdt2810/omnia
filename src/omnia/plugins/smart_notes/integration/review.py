@@ -23,7 +23,9 @@ from omnia.plugins.smart_notes.engine import (
     GenerationService,
     applies_to_deck,
 )
-from omnia.plugins.smart_notes.integration.batch import materialize
+from omnia.plugins.smart_notes.integration.batch import (
+    note_materializer,
+)
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule, SmartNotesSettings
@@ -89,6 +91,10 @@ class ReviewTimeEvaluator:
         self._in_flight.add(nid)
         service = self._service
 
+        # One per note, shared with the write below: media written once, and the reference the
+        # chain handed downstream is the one the note keeps.
+        materialize_once = note_materializer(nid)
+
         def op() -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
             # Review-time pre-generation only fills empty fields; blocked fields stay empty and
             # are simply not written (the next show re-evaluates), so the block list is unused.
@@ -96,17 +102,21 @@ class ReviewTimeEvaluator:
                 config,
                 fields,
                 allow_empty_fields=settings.allow_empty_fields,
+                materialize=materialize_once,
             )
             return results
 
         anki_compat.run_in_background(
             op,
-            on_success=lambda results: self._apply(nid, results),
+            on_success=lambda results: self._apply(nid, results, materialize_once),
             on_failure=lambda exc: self._on_failure(nid, exc),
         )
 
     def _apply(
-        self, nid: int, results: list[tuple[SmartNotesFieldRule, GenerationResult]]
+        self,
+        nid: int,
+        results: list[tuple[SmartNotesFieldRule, GenerationResult]],
+        materialize_once: Callable[[SmartNotesFieldRule, GenerationResult], str],
     ) -> None:
         self._in_flight.discard(nid)
         if not results:
@@ -117,7 +127,7 @@ class ReviewTimeEvaluator:
             for rule, result in results:
                 if rule.target_field not in note:
                     continue
-                note[rule.target_field] = materialize(nid, rule, result)
+                note[rule.target_field] = materialize_once(rule, result)
                 wrote = True
             if wrote:
                 anki_compat.update_note(note)

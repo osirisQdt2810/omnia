@@ -48,6 +48,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     tool_referenced_fields,
     tool_required_params,
     tools_catalog,
+    unregister_tool,
 )
 from omnia.plugins.smart_notes.engine.tools.pipeline import ToolAttempt
 
@@ -769,3 +770,149 @@ class TestAnExhaustedChainKeepsItsCause:
         error = ToolChainError((ToolAttempt("cloze", "not_applicable", "no match"),))
 
         assert error.cause is None
+
+
+def _tool_hub():
+    """The same provider hub the service tests use: fake HTTP, a real TTS path."""
+    from test_smart_notes import _hub
+
+    return _hub()
+
+
+@pytest.fixture
+def sound_name_tool():
+    """A user tool that pulls the filename out of a ``[sound:…]`` reference."""
+    import re as _re
+
+    class _Params(BaseModel):
+        source_field: str = ""
+
+    @register_tool("user:sound-name")
+    class _SoundName(Tool):
+        name: ClassVar[str] = "user:sound-name"
+        label: ClassVar[str] = "Sound name"
+        description: ClassVar[str] = "Filename out of a [sound:...] reference."
+        kinds: ClassVar[frozenset] = frozenset({"text"})
+        deterministic: ClassVar[bool] = True
+        uses_provider: ClassVar[bool] = False
+        params_model: ClassVar[type] = _Params
+
+        @classmethod
+        def referenced_fields(cls, params):
+            name = str(params.get("source_field", "") or "").strip()
+            return [name] if name else []
+
+        def run(self, request, ctx):
+            wanted = str(request.params.get("source_field", "") or "").strip()
+            value = ""
+            for key, val in request.fields.items():
+                if key.strip().lower() == wanted.strip().lower():
+                    value = str(val)
+            if not value.strip():
+                return NotApplicable("the source field is empty")
+            match = _re.search(r"\[sound:\s*([^\]]+?)\s*\]", value)
+            if match is None:
+                return NotApplicable("no [sound:] reference in the value")
+            return Produced(GenerationResult("text", text=match.group(1)))
+
+    yield _SoundName
+    unregister_tool("user:sound-name")
+
+
+class TestAMediaFieldFeedsTheFieldsThatReadIt:
+    """A field reading a generated audio field must see the reference the note will hold.
+
+    Reported from real use: a tool extracting the filename out of ``[sound:…]`` produced nothing
+    when the note was generated for real, while Preview looked right. Preview reads the SAVED
+    note, where the audio already exists; a real run generated the audio and then handed the
+    dependent field a blank source, because media results were deliberately kept out of the
+    working map ("embed refs, not prompt text").
+
+    The dependent field was not merely wrong — it was skipped by ``should_skip_rule`` before its
+    tools were consulted, so it appeared in neither ``blocked`` nor ``failed``. No output, no
+    error, nothing to explain it.
+    """
+
+    @staticmethod
+    def _config():
+        return SmartNotesNoteTypeConfig(
+            note_type="AnkiVocabulary",
+            base_field="Word",
+            enabled=True,
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition (audio)",
+                    enabled=True,
+                    type="tts",
+                    prompt="{{Definition}}",
+                ),
+                SmartNotesFieldConfig(
+                    field="Definition (audio filename)",
+                    enabled=True,
+                    type="text",
+                    prompt="{{Definition (audio)}}",
+                    tools=[
+                        FieldToolConfig(
+                            tool="user:sound-name",
+                            params={"source_field": "Definition (audio)"},
+                        )
+                    ],
+                ),
+            ],
+        )
+
+    @staticmethod
+    def _fields():
+        return {
+            "Word": "cowork",
+            "Definition": "to work together",
+            "Definition (audio)": "",
+            "Definition (audio filename)": "",
+        }
+
+    def test_the_dependent_field_generates(self, sound_name_tool):
+        service = GenerationService(_tool_hub())
+        seen: list[str] = []
+
+        def materialize(rule, result):
+            seen.append(rule.target_field)
+            return f"[sound:omnia-1-{rule.target_field}.mp3]"
+
+        results, blocked, failed = service.generate_note(
+            self._config(), self._fields(), materialize=materialize
+        )
+
+        produced = {rule.target_field: res for rule, res in results}
+        assert "Definition (audio filename)" in produced, (blocked, failed)
+        assert produced["Definition (audio filename)"].text == (
+            "omnia-1-Definition (audio).mp3"
+        )
+
+    def test_media_is_materialized_exactly_once(self, sound_name_tool):
+        """The chain and the note must agree on the filename.
+
+        Anki renames on collision, so materializing a second time at write would return a
+        DIFFERENT name than the one already handed downstream — and the extracted filename
+        would point at a file the note does not reference.
+        """
+        service = GenerationService(_tool_hub())
+        calls: list[str] = []
+
+        def materialize(rule, result):
+            calls.append(rule.target_field)
+            return f"[sound:omnia-1-{rule.target_field}.mp3]"
+
+        service.generate_note(self._config(), self._fields(), materialize=materialize)
+
+        assert calls == ["Definition (audio)"]
+
+    def test_without_a_materializer_the_old_behaviour_stands(self, sound_name_tool):
+        # Callers that pass none (the engine's own tests, any headless use) must not start
+        # requiring Anki's media folder just because this seam grew a parameter.
+        service = GenerationService(_tool_hub())
+
+        results, _blocked, _failed = service.generate_note(
+            self._config(), self._fields()
+        )
+
+        assert [rule.target_field for rule, _ in results] == ["Definition (audio)"]

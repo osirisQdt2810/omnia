@@ -14,8 +14,9 @@ The injected :class:`~omnia.core.providers.ProviderHub` keeps it testable with a
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine.generators import LanguageDetector
@@ -159,6 +160,9 @@ class GenerationService:
         *,
         allow_empty_fields: bool = False,
         force_overwrite: bool = False,
+        materialize: Optional[
+            Callable[[SmartNotesFieldRule, GenerationResult], str]
+        ] = None,
     ) -> tuple[
         list[tuple[SmartNotesFieldRule, GenerationResult]],
         list[BlockedField],
@@ -216,10 +220,10 @@ class GenerationService:
         results: list[tuple[SmartNotesFieldRule, GenerationResult]] = []
         blocked: list[BlockedField] = []
         failed: list[FailedField] = []
-        # Lower-cased target names that generated a non-error result this run. Media (image/tts)
-        # results are NOT chained into ``working`` (they are embed refs, not prompt text), so a
-        # field hard-depending on a media field would falsely read it blank; ``produced`` records
-        # the success so such a prerequisite still counts as satisfied.
+        # Lower-cased target names that generated a non-error result this run. Media results
+        # ARE chained now (as their reference) when a materializer is supplied, but a caller
+        # that supplies none still leaves them out of ``working``; ``produced`` records the
+        # success either way, so a hard prerequisite on a media field stays satisfied.
         produced: set[str] = set()
         for rule in order_rules(rules):
             missing = self._missing_hard_prerequisites(rule, working, produced)
@@ -245,10 +249,15 @@ class GenerationService:
             result = outcome.produced
             results.append((rule, result))
             produced.add(rule.target_field.strip().lower())
-            # Only text feeds downstream prompts; media (image/tts) becomes an embed ref a
-            # later prompt shouldn't consume.
             if result.kind == "text" and result.text is not None:
                 working[rule.target_field] = result.text
+            elif result.kind in ("image", "tts") and materialize is not None:
+                # Media belongs in the working map too — as the REFERENCE the note will hold,
+                # not as bytes. Without it a field reading an audio field sees blank, and
+                # should_skip_rule drops that field before its tools are ever consulted: no
+                # output, no error, nothing to explain it. That is exactly what a tool
+                # extracting a filename out of [sound:…] needs to read.
+                working[rule.target_field] = materialize(rule, result)
         return results, blocked, failed
 
     @staticmethod
