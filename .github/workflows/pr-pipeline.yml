@@ -196,8 +196,13 @@ jobs:
           # can never retrigger workflows — no self-trigger loops.
           GH_TOKEN: ${{ github.token }}
         with:
+          # ONE credential, not two. An unset secret renders as an EMPTY STRING, so passing
+          # both made the action set ANTHROPIC_API_KEY="" whenever that secret was absent —
+          # and the SDK treats a present-but-blank api key as the credential to use rather
+          # than falling back to the OAuth token. It then fails to resolve authentication
+          # before making any request at all: 44ms, one turn, $0 spent, and a stack trace
+          # that names neither secret. Pass only the one this repo actually uses.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
 
