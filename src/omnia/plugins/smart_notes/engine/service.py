@@ -251,7 +251,7 @@ class GenerationService:
             produced.add(rule.target_field.strip().lower())
             if result.kind == "text" and result.text is not None:
                 working[rule.target_field] = result.text
-            elif materialize is not None:
+            elif result.kind in ("image", "tts") and materialize is not None:
                 # Media belongs in the working map too — as the REFERENCE the note will hold,
                 # not as bytes. Without it a field reading an audio field sees blank, and
                 # should_skip_rule drops that field before its tools are ever consulted: no

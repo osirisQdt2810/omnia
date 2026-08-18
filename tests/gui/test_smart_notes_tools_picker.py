@@ -546,3 +546,50 @@ class TestToolsPickerPage:
         # edits a COPY of the stored params object rather than building a fresh one.
         html = self._html()
         assert "params[key] = entry.params[key];" in html
+
+
+class TestTheNotGeneratingFade:
+    """A row with Generate off fades every column but Field and Generate.
+
+    Source assertions, the same way the `.sn-na` fade above is pinned: the built page is the
+    artefact that ships, and these three pieces are silent on removal — a later refactor drops
+    a `dispatchEvent` and the fade quietly stops following the column and graph toggles, with
+    nothing failing.
+    """
+
+    @staticmethod
+    def _page() -> str:
+        return build_smart_notes_html(dark=False, init={}, catalog={}, tools=[])
+
+    def test_the_row_class_follows_the_toggle(self):
+        state = _js(self._page(), "function applyEnabledState")
+
+        assert 'classList.toggle("sn-row-off"' in state
+        assert ".sn-enabled" in state
+
+    def test_field_and_generate_are_excluded_from_the_fade(self):
+        """Excluding both is what keeps the row identifiable AND re-enableable.
+
+        Dropping either exclusion is the failure that matters: without `sn-fieldname` you
+        cannot tell which field the row is, and without `sn-gen-cell` `pointer-events: none`
+        makes the switch unclickable, so a row turned off could never be turned back on.
+        """
+        css = self._page()
+
+        assert ".sn-row-off td:not(.sn-fieldname):not(.sn-gen-cell)" in css
+
+    def test_the_generate_cell_is_identifiable(self):
+        # `sn-center` is shared with Preview and Overwrite, so the fade needs its own hook.
+        page = self._page()
+
+        assert 'cell("sn-center sn-gen-cell")' in page
+
+    def test_both_scripted_toggles_announce_themselves(self):
+        """`.checked = x` in code fires no event, so the fade would not follow those paths.
+
+        One is the graph node toggle, the other the whole-column header toggle; both set the
+        checkbox directly.
+        """
+        page = self._page()
+
+        assert page.count('dispatchEvent(new Event("change", { bubbles: true }))') >= 2

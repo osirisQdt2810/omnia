@@ -42,7 +42,13 @@ _CHUNK_SIZE = 5
 
 @dataclass
 class _NotePlan:
-    """One note's generation inputs, read on the main thread (the bg op never touches the col)."""
+    """One note's generation inputs, read on the main thread.
+
+    The background op DOES now touch the collection: media results are materialized as they
+    are produced (see GenerationService.generate_note), so add_media_file runs inside the
+    QueryOp. That is deliberate — Anki hands the collection to a QueryOp's background thread
+    and the backend serialises the write — and it is what lets a later tool read the
+    reference the note will hold. These inputs are still read on the main thread."""
 
     nid: int
     config: SmartNotesNoteTypeConfig
@@ -121,12 +127,19 @@ class BatchSummary:
 
 
 def _unmaterialized(rule: Any, result: GenerationResult) -> str:
-    """The default for an outcome that never generated media (failures, and tests).
+    """The fallback for an outcome built without its note's materializer.
 
-    Raises rather than returning "", because reaching it means a media result exists and no
-    materializer was carried alongside it — a silently empty field is precisely the failure
-    this whole path was changed to remove.
+    TEXT needs no materializer — no bytes, no media folder, nothing to name — so it is
+    rendered here exactly as :func:`materialize` would. The first version of this raised for
+    ANY kind, which turned a note whose only result was plain text into a counted failure
+    written nowhere: precisely the "no output, no error" shape this whole change set out to
+    remove, recreated one layer down.
+
+    Media still raises, because a caller that produced bytes and carried no way to store them
+    has a bug that silence would hide.
     """
+    if result.kind == "text":
+        return result.text or ""
     raise RuntimeError(
         f"no materializer for {getattr(rule, 'target_field', '?')!r}: an outcome carrying a "
         f"{result.kind} result must be built with the note's materializer"

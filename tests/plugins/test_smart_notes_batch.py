@@ -516,3 +516,160 @@ class TestToolChainCounters:
         outcome = self._generate_one([(self._rule("ai"), self._result(""))], [])
 
         assert outcome.tool_fallbacks == 0
+
+
+class TestNoteMaterializer:
+    """The memoisation is the load-bearing half of the media-chaining fix.
+
+    Its job is that the filename handed to the generation chain is the one the note ends up
+    referencing. `materialize` adds bytes to the media folder and Anki renames on collision, so
+    a second call for the same field would return a DIFFERENT name — and a tool that already
+    extracted the first one would be pointing at a file the note does not reference.
+
+    The previous version of this suite asserted only that the ENGINE invoked a hand-rolled
+    callback once, which was true before the fix as well: the engine reaches that line once per
+    rule regardless. These call `note_materializer` itself.
+    """
+
+    @staticmethod
+    def _rule(field="Audio"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(target_field=field)
+
+    def test_the_same_field_is_written_once_and_answers_the_same(self, monkeypatch):
+        from omnia.core import anki_compat
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration.batch import note_materializer
+
+        writes: list[str] = []
+        monkeypatch.setattr(
+            anki_compat,
+            "add_media_file",
+            lambda name, data: writes.append(name) or name,
+        )
+        materialize_once = note_materializer(7)
+        rule = self._rule()
+        result = GenerationResult("tts", data=b"aa", ext="mp3")
+
+        first = materialize_once(rule, result)
+        second = materialize_once(rule, result)
+
+        assert first == second
+        assert len(writes) == 1, writes
+
+    def test_a_second_field_is_its_own_file(self, monkeypatch):
+        # Memoising per NOTE rather than per field would collapse two fields into one clip.
+        from omnia.core import anki_compat
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration.batch import note_materializer
+
+        writes: list[str] = []
+        monkeypatch.setattr(
+            anki_compat,
+            "add_media_file",
+            lambda name, data: writes.append(name) or name,
+        )
+        materialize_once = note_materializer(7)
+        result = GenerationResult("tts", data=b"aa", ext="mp3")
+
+        a = materialize_once(self._rule("Audio"), result)
+        b = materialize_once(self._rule("Example"), result)
+
+        assert a != b
+        assert len(writes) == 2, writes
+
+    def test_generation_and_the_write_share_one_materializer(self):
+        """The regression the reviewer showed stays green without this.
+
+        Swapping `outcome.materialize(...)` for a fresh `note_materializer(outcome.nid)(...)`
+        at the write passes every other test in the suite while restoring the bug in its worse
+        form — a second media write under a renamed file. Only identity catches that.
+        """
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        captured: dict[str, object] = {}
+
+        class _Service:
+            def generate_note(self, config, fields, **kwargs):
+                captured["passed"] = kwargs.get("materialize")
+                return [], [], []
+
+        settings = SmartNotesSettings(note_types=[])
+        generator = BatchGenerator(_Service(), settings)
+        plan = batch_module._NotePlan(
+            nid=7,
+            config=SmartNotesNoteTypeConfig(note_type="T", base_field="Front"),
+            fields={"Front": "x"},
+        )
+
+        outcome = generator._generate_one(plan, force_overwrite=False)
+
+        assert captured["passed"] is outcome.materialize
+
+    def test_the_write_reuses_the_generation_materializer(self, monkeypatch):
+        """Catches the swap the identity test above cannot see.
+
+        Replacing `outcome.materialize(...)` at the write with a FRESH
+        `note_materializer(outcome.nid)(...)` leaves every other test green while restoring the
+        bug in its worse form: the same bytes added a second time, Anki renaming on collision,
+        and the filename a tool already extracted pointing at a file the note does not
+        reference. Counting the media writes across generation AND the write is what sees it.
+        """
+        from omnia.core import anki_compat
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        writes: list[str] = []
+        monkeypatch.setattr(
+            anki_compat,
+            "add_media_file",
+            lambda name, data: writes.append(name) or name,
+        )
+        note: dict[str, str] = {"Audio": ""}
+        monkeypatch.setattr(anki_compat, "get_note", lambda nid: note)
+        monkeypatch.setattr(anki_compat, "update_note", lambda n: None)
+
+        materialize_once = batch_module.note_materializer(7)
+        rule = self._rule("Audio")
+        result = GenerationResult("tts", data=b"aa", ext="mp3")
+        during_generation = materialize_once(rule, result)  # what the chain saw
+
+        outcome = batch_module._NoteOutcome(
+            7, materialize=materialize_once, results=[(rule, result)]
+        )
+        settings = SmartNotesSettings(note_types=[])
+        BatchGenerator(object(), settings)._write_note(outcome)
+
+        assert (
+            len(writes) == 1
+        ), writes  # generation wrote it; the write must not write again
+        assert note["Audio"] == during_generation  # and must agree on the name
+
+    def test_a_text_result_needs_no_materializer_at_all(self):
+        """A note of pure text must not be punished for carrying no materializer.
+
+        The first version of `_unmaterialized` raised for ANY kind, so an outcome built without
+        one — every default construction, including the three helpers in this file — turned a
+        perfectly writable text result into a note swallowed by the broad `except Exception`,
+        written nowhere, and counted as FAILED. That is the same "no output, no error" shape
+        this change set out to remove, one layer down.
+        """
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration.batch import _unmaterialized
+
+        assert (
+            _unmaterialized(self._rule(), GenerationResult("text", text="hello"))
+            == "hello"
+        )
+        assert _unmaterialized(self._rule(), GenerationResult("text", text=None)) == ""
+
+    def test_media_without_a_materializer_still_refuses(self):
+        # Bytes with nowhere to store them is a real bug; silence there would hide it.
+        import pytest as _pytest
+
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration.batch import _unmaterialized
+
+        with _pytest.raises(RuntimeError, match="no materializer"):
+            _unmaterialized(self._rule(), GenerationResult("tts", data=b"x", ext="mp3"))
