@@ -157,6 +157,40 @@ def _generator(settings: SmartNotesSettings) -> GenerationService:
     return GenerationService(_StubHub(FakeLLMProvider(text="generated")))
 
 
+class _CannedRun:
+    """A :class:`NoteRun` stand-in that finishes in one empty round with a fixed triple."""
+
+    def __init__(self, triple) -> None:
+        self._triple = triple
+        self.done = False
+
+    def commit(self, outcomes) -> None:
+        assert outcomes == []
+
+    def finish(self):
+        return self._triple
+
+
+class _CannedService:
+    """A GenerationService stand-in: every note resolves at once to one canned triple.
+
+    Lets a test drive the REAL cohort runner (gates, commit, outcome building, `_apply`)
+    against an exact ``(results, blocked, failed)`` without standing up providers.
+    """
+
+    def __init__(self, results=(), blocked=(), failed=()) -> None:
+        self._triple = (list(results), list(blocked), list(failed))
+        self.materializers: list = []
+
+    def make_run(self, config, fields, **kwargs):
+        self.materializers.append(kwargs.get("materialize"))
+        return _CannedRun(self._triple)
+
+    def works_for(self, run):
+        run.done = True
+        return []
+
+
 class TestBatchGenerator:
     def _settings(self, **kw) -> SmartNotesSettings:
         base = {
@@ -221,21 +255,82 @@ class TestBatchGenerator:
         assert summaries[0].processed == 0
         assert fake.progress == []  # never opened progress for an empty plan
 
-    def test_cancel_stops_before_finishing(self, monkeypatch):
+    def test_cancel_stops_between_cohorts_and_emits_no_outcome_for_undispatched_notes(
+        self, monkeypatch
+    ):
         notes = {
             n: _FakeNote(n, "Basic", {"Word": "w", "Def": ""}) for n in range(1, 13)
         }
-        # Cancel is polled once per chunk (size 5); allow the first poll, cancel the second.
+        # Cancel is polled once per COHORT, before it starts; let the first through.
         fake = _FakeCompat(notes, cancel_after=1)
         _patch_compat(monkeypatch, fake)
-        settings = self._settings()
+        # K = 1 so the cohort is the WORKER count and nothing else: a cohort is
+        # ``max(workers, K)``, and this test is about cancel granularity, not about batching.
+        settings = self._settings(max_concurrent_generations=3, batch_notes_per_call=1)
         summaries: list = []
         BatchGenerator(_generator(settings), settings).run(
             list(range(1, 13)), summaries.append
         )
         assert summaries[0].cancelled is True
-        # Only the first chunk (5) was generated before the cancel was honoured.
-        assert summaries[0].processed == 5
+        # Exactly the first cohort (3 = max_concurrent_generations) was generated + written.
+        assert fake.updated == [1, 2, 3]
+        assert summaries[0].processed == 3
+        # The notes never dispatched must leave NO trace: an outcome with no results reads as
+        # "we tried and there was nothing to make", and that verdict deletes clipped notes.
+        assert summaries[0].empty_note_ids == []
+        assert summaries[0].errored_note_ids == []
+        assert summaries[0].skipped == 0
+
+    def test_a_cancel_never_leaves_a_note_half_generated(self, monkeypatch):
+        """Every note the run touched is COMPLETE, and every one of them is counted.
+
+        The regression this pins: polling cancel once per dependency LEVEL cut notes mid-walk,
+        so a note came out with its first level written and its later levels empty — written to
+        the collection, and counted in no summary bucket, so the tooltip said "Processed 3" while
+        five notes had been modified. Two levels here (``Def`` from ``Word``, ``Extra`` from
+        ``Def``) are what make a half-walk visible at all; a one-level note type cannot show it.
+        """
+        config = SmartNotesNoteTypeConfig(
+            note_type="Basic",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Def", enabled=True, type="text", prompt="define {{Word}}"
+                ),
+                SmartNotesFieldConfig(
+                    field="Extra", enabled=True, type="text", prompt="expand {{Def}}"
+                ),
+            ],
+        )
+        notes = {
+            n: _FakeNote(n, "Basic", {"Word": f"w{n}", "Def": "", "Extra": ""})
+            for n in range(1, 13)
+        }
+        # Cancel from the very first poll of the SECOND cohort onwards; with two levels per
+        # note, a per-level poll would have fired inside the first cohort's second round.
+        fake = _FakeCompat(notes, cancel_after=1)
+        _patch_compat(monkeypatch, fake)
+        settings = SmartNotesSettings(
+            note_types=[config],
+            regenerate_when_batching=False,
+            max_concurrent_generations=3,
+            # As above: K = 1 pins the cohort to the worker count.
+            batch_notes_per_call=1,
+        )
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run(
+            list(range(1, 13)), summaries.append
+        )
+
+        assert summaries[0].cancelled is True
+        touched = sorted(set(fake.updated))
+        assert touched == [1, 2, 3]
+        # Complete, not half-walked: BOTH levels are filled on every note that was written.
+        for nid in touched:
+            assert notes[nid]["Def"], f"note {nid} lost its first level"
+            assert notes[nid]["Extra"], f"note {nid} lost its second level"
+        # And every touched note is accounted for — none silently in no bucket.
+        assert summaries[0].processed == len(touched)
 
 
 class TestBatchGeneratorDisabledRules:
@@ -445,17 +540,16 @@ class TestToolChainCounters:
         return GenerationResult("text", text="x", tool=tool)
 
     def _generate_one(self, results, failed):
-        """Run ``_generate_one`` against a service stub returning the given per-field outcome."""
+        """Run one note through the real cohort runner against a canned per-field outcome."""
         from omnia.plugins.smart_notes.integration.batch import _NotePlan
 
-        class _Service:
-            def generate_note(self, config, fields, **kwargs):
-                return results, [], failed
-
-        gen = BatchGenerator(_Service(), SmartNotesSettings())
-        return gen._generate_one(
-            _NotePlan(1, _note_type_config(), {}), force_overwrite=False
+        gen = BatchGenerator(
+            _CannedService(results, failed=failed), SmartNotesSettings()
         )
+        outcomes = gen._run_cohort(
+            [_NotePlan(1, _note_type_config(), {})], force_overwrite=False
+        )
+        return outcomes[0]
 
     def test_a_declined_chain_counts_as_unfilled_not_as_an_error(self):
         from omnia.plugins.smart_notes.engine import FailedField
@@ -588,24 +682,18 @@ class TestNoteMaterializer:
         """
         from omnia.plugins.smart_notes.integration import batch as batch_module
 
-        captured: dict[str, object] = {}
-
-        class _Service:
-            def generate_note(self, config, fields, **kwargs):
-                captured["passed"] = kwargs.get("materialize")
-                return [], [], []
-
+        service = _CannedService()
         settings = SmartNotesSettings(note_types=[])
-        generator = BatchGenerator(_Service(), settings)
+        generator = BatchGenerator(service, settings)
         plan = batch_module._NotePlan(
             nid=7,
             config=SmartNotesNoteTypeConfig(note_type="T", base_field="Front"),
             fields={"Front": "x"},
         )
 
-        outcome = generator._generate_one(plan, force_overwrite=False)
+        outcomes = generator._run_cohort([plan], force_overwrite=False)
 
-        assert captured["passed"] is outcome.materialize
+        assert service.materializers == [outcomes[0].materialize]
 
     def test_the_write_reuses_the_generation_materializer(self, monkeypatch):
         """Catches the swap the identity test above cannot see.

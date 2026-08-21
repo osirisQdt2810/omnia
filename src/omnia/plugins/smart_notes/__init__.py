@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 from omnia.core import anki_compat
+from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
@@ -233,20 +234,27 @@ class SmartNotesPlugin(FeaturePlugin):
         assert service is not None
         settings = self._settings()
         fields = {name: note[name] for name in note.keys()}  # noqa: SIM118
+        nid = int(getattr(note, "id", 0))
 
         # Shared by the generation chain and the write below, so a field's media is written
         # once and the name the chain handed downstream is the name the note ends up with.
-        materialize_once = note_materializer(int(getattr(note, "id", 0)))
+        materialize_once = note_materializer(nid)
 
         def op() -> list[tuple[Any, GenerationResult]]:
             # Blocked fields stay empty (their hard prerequisites are missing); the editor only
             # writes generated results, so the block list is unused on this manual path.
-            results, _blocked, _failed = service.generate_note(
-                config,
-                fields,
-                allow_empty_fields=settings.allow_empty_fields,
-                materialize=materialize_once,
-            )
+            # One note, but its independent fields still overlap — a 17-field note type is 5
+            # dependency levels, not 17 round trips. The pool is created and torn down inside
+            # op() so nothing outlives the QueryOp.
+            with pooled_dispatch(settings.workers()) as dispatch:
+                results, _blocked, _failed = service.generate_note(
+                    config,
+                    fields,
+                    allow_empty_fields=settings.allow_empty_fields,
+                    materialize=materialize_once,
+                    note_id=nid,
+                    dispatch=dispatch,
+                )
             return results
 
         anki_compat.run_in_background(

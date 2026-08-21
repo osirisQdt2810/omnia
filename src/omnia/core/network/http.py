@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from omnia.core.network.limiter import PROVIDER_LIMITER, ProviderLimiter
 from omnia.core.providers.errors import ProviderError
 
 DEFAULT_TIMEOUT = 60
@@ -228,6 +229,19 @@ class UrllibHttpClient(HttpClient):
             )
         return parsed
 
+    def _open(self, req: urllib.request.Request) -> bytes:
+        """Perform ONE attempt and return the body. The only I/O in this class.
+
+        Separated from :meth:`_request` so a test or the throughput benchmark can substitute a
+        transport and still run the REAL retry loop above it. Before this seam existed the
+        benchmark replaced the whole client, which silently removed ``RetryPolicy`` from the
+        rig — and then used that rig to make a claim about the division of labour between the
+        limiter and retry.
+        """
+        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            body: bytes = resp.read()
+            return body
+
     def _request(self, req: urllib.request.Request) -> bytes:
         retry = self._retry
         # A non-idempotent method (POST) retries only on 429 (rate-limited — rejected, not
@@ -241,8 +255,7 @@ class UrllibHttpClient(HttpClient):
             last = attempt >= retry.max_attempts - 1
             retry_after: Optional[float] = None
             try:
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                    return resp.read()
+                return self._open(req)
             except urllib.error.HTTPError as exc:
                 if last or exc.code not in retriable:
                     body = exc.read().decode("utf-8", "replace")[:500]
@@ -253,6 +266,14 @@ class UrllibHttpClient(HttpClient):
                 # Honor a server-supplied Retry-After (429/503) over the computed backoff.
                 retry_after = _parse_retry_after(exc.headers)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                # EVERY method keeps the full budget here, POST included, and that is a
+                # deliberate non-change: the 5xx narrowing above rests on the server having
+                # ANSWERED, while a network error means nothing came back at all. Narrowing a
+                # POST's network retry to bound a possible double-charge was tried and reverted —
+                # it does not avoid the charge (the user re-runs the field and pays anyway, after
+                # being shown an error), and an ungated change to how every provider on every
+                # path retries does not belong in a throughput change. Pinned by
+                # ``test_a_post_keeps_the_full_network_retry_budget``.
                 if last:
                     raise ProviderError(
                         f"Network error calling {req.full_url}: {exc}"
@@ -264,5 +285,84 @@ class UrllibHttpClient(HttpClient):
         )  # unreachable
 
 
-# Process-wide default; providers fall back to this when none is injected.
-DEFAULT_HTTP_CLIENT: HttpClient = UrllibHttpClient()
+class ThrottledHttpClient(HttpClient):
+    """Decorates an :class:`HttpClient` so every request holds one limiter permit.
+
+    The HTTP request boundary is the only altitude at which the bound is both COMPLETE and
+    NON-NESTING. Complete, because every provider call — the chat completion, the TTS
+    synthesis, the OAuth token refresh, the language detection a voice-less TTS rule makes on
+    the side — goes through an ``HttpClient``, while a bound placed on rules or notes counts
+    the wrong thing (one rule can be several calls). Non-nesting, because an HTTP request never
+    contains another HTTP request, so a permit can never be waited on by the holder of one.
+
+    The permit is held ACROSS :class:`RetryPolicy`'s backoff, deliberately. That is natural
+    backpressure, and it is what keeps the two mechanisms from being confused for each other:
+    the limiter is what prevents a SYSTEMATIC 429, retry is what absorbs an occasional one.
+    Releasing during the sleep would let the pool refill with fresh requests inside the very
+    rate-limit window that produced the 429, turning one into a storm.
+    """
+
+    def __init__(self, inner: HttpClient, limiter: ProviderLimiter) -> None:
+        self._inner = inner
+        self._limiter = limiter
+
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        with self._limiter.permit():
+            return self._inner.post_json(url, payload, headers=headers)
+
+    def post_form(
+        self,
+        url: str,
+        fields: dict[str, str],
+        *,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        with self._limiter.permit():
+            return self._inner.post_form(url, fields, headers=headers)
+
+    def post_json_for_bytes(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: Optional[dict[str, str]] = None,
+    ) -> bytes:
+        with self._limiter.permit():
+            return self._inner.post_json_for_bytes(url, payload, headers=headers)
+
+    def get_bytes(
+        self,
+        url: str,
+        *,
+        params: Optional[dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> bytes:
+        with self._limiter.permit():
+            return self._inner.get_bytes(url, params=params, headers=headers)
+
+    def get_json(
+        self,
+        url: str,
+        *,
+        params: Optional[dict[str, str]] = None,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        with self._limiter.permit():
+            # The inner client's get_json calls its OWN get_bytes, not this decorator's, so
+            # exactly one permit is spent per request — never two for one round trip.
+            return self._inner.get_json(url, params=params, headers=headers)
+
+
+# Process-wide default; providers fall back to this when none is injected. Note this is NOT a
+# swappable global: providers capture it BY VALUE at construction (``http or
+# DEFAULT_HTTP_CLIENT``), so rebinding the name later would be invisible to them. What changes
+# at runtime is the limiter's CAPACITY, not this object.
+DEFAULT_HTTP_CLIENT: HttpClient = ThrottledHttpClient(
+    UrllibHttpClient(), PROVIDER_LIMITER
+)

@@ -104,9 +104,12 @@ class TestToolParamsAreDependencyEdges:
         assert edge.derived is True
         assert edge.from_tool is False
 
-    def test_a_field_named_by_both_a_prompt_and_a_tool_counts_as_a_prompt_edge(self):
-        # Deleting it must still offer the prompt rewrite — a real, visible change — even though
-        # the tool keeps its own edge alive afterwards.
+    def test_a_configured_tool_owns_the_edge_even_when_the_prompt_names_it_too(self):
+        # It USED to count as a prompt edge, on the reasoning that deleting it could offer the
+        # prompt rewrite. That reasoning only holds if the prompt is read: a `cloze` with its
+        # `sentence_field` set does string surgery on the named fields and never looks at the
+        # prompt, so rewriting the prompt would change nothing and the offer would be a lie.
+        # The edge belongs to the tool, and the graph says so.
         graph = FieldGraph.from_config(
             _config(
                 "Word",
@@ -132,7 +135,7 @@ class TestToolParamsAreDependencyEdges:
 
         edge = _edge(graph, "Sentence", "Cloze")
         assert edge.derived is True
-        assert edge.from_tool is False
+        assert edge.from_tool is True
 
     def test_an_explicit_dep_still_recolours_a_tool_edge(self):
         graph = FieldGraph.from_config(

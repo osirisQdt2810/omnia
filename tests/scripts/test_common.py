@@ -30,7 +30,11 @@ if str(SCRIPTS_DIR) not in sys.path:
 #: here because ``run_smoke.py`` is one: it lives under ``tests/`` (so pytest does not collect it)
 #: but it is run by hand like any script, prints non-ASCII step labels, and imports the guard from
 #: ``scripts/common.py`` — so it belongs in this net, not outside it because of where it sits.
-PRINTING_ENTRY_POINT_DIRS = (SCRIPTS_DIR, _REPO_ROOT / "tests" / "smoke")
+PRINTING_ENTRY_POINT_DIRS = (
+    SCRIPTS_DIR,
+    _REPO_ROOT / "tests" / "smoke",
+    _REPO_ROOT / "tests" / "benchmarks",
+)
 
 from common import enable_utf8_output  # noqa: E402
 

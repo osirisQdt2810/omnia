@@ -699,6 +699,66 @@ class TestBuildSmartNotesHtml:
         for col in ("Field", "Type", "Prompt", "Provider", "Model", "Overwrite"):
             assert col in html
 
+    def test_the_concurrency_control_is_wired_end_to_end(self):
+        """One assertion covers all four edited web files — the builder concatenates them.
+
+        The half that is invisible until a second device disagrees is the SEEDING: a control
+        that is read back on save but never seeded posts its own blank value and resets
+        whatever another device set.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert 'id="sn-opt-concurrency"' in html  # page.html: the control
+        assert (
+            'getElementById("sn-opt-concurrency")' in html
+        )  # 01-bridge.js: the handle
+        assert "optConcurrency.value = String(" in html  # 05-handlers.js: seeded
+        # Read back INSIDE the `if (optConcurrency)` guard: the key must be omitted, not
+        # defaulted, when the control did not render — see collectOptions.
+        assert "opts.max_concurrent_generations = clampInt(" in html
+        assert "function clampInt(" in html  # bounded before it leaves the page
+
+    def test_an_absent_control_omits_its_key_instead_of_posting_a_default(self):
+        """The page must not send a number it did not read from a control.
+
+        The controller keeps the STORED value for an absent key, which is what a device whose
+        Advanced pane failed to render needs. A hard-coded fallback in the page sends the key,
+        bypasses that branch, and overwrites what another device set — so no literal fallback
+        may appear on either read-back line.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert "if (optConcurrency) {\n      opts.max_concurrent_generations" in html
+        assert "if (optBatchNotes) {\n      opts.batch_notes_per_call" in html
+        assert "max_concurrent_generations: optConcurrency" not in html
+        assert "batch_notes_per_call: optBatchNotes" not in html
+
+    def test_the_batch_size_control_is_wired_end_to_end(self):
+        """Same four-file wiring for the notes-per-request control (LAYER 3)."""
+        html = build_smart_notes_html(dark=False)
+
+        assert 'id="sn-opt-batch-notes"' in html  # page.html: the control
+        assert 'getElementById("sn-opt-batch-notes")' in html  # 01-bridge.js
+        assert "optBatchNotes.value = String(" in html  # 05-handlers.js: seeded
+        assert "opts.batch_notes_per_call = clampInt(" in html  # …and read back
+        # The env knob caps this number and can switch grouping off entirely, so the pane must
+        # name it — a control the environment can silently override is worse than no control.
+        assert "OMNIA_SMART_NOTES_BATCHING" in html
+
+    def test_the_batch_size_control_does_not_promise_speed(self):
+        """The one description of LAYER 3 inside the product must match what was measured.
+
+        The tooltip used to sell it as a cost AND speed win. It is neither in general: the
+        envelope can raise input characters on a short template, and at 8 parallel generations
+        grouping measured ~1.4x SLOWER than not grouping, because a chunk hands K answers to one
+        worker that a wide pool would have written at once. What it does buy is requests.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert "does NOT make a batch finish sooner" in html
+        assert "SLOWER" in html
+        assert "Fewer requests, not less waiting" in html
+
     def test_auto_result_hook_exposed(self):
         # Auto-smart's off-thread result is pushed via this global hook.
         assert "window.__snAutoResult" in build_smart_notes_html(dark=False)

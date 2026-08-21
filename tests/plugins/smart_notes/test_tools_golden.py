@@ -68,7 +68,7 @@ class _StubHub:
     def tts(self, *, provider: str = ""):
         return self._tts
 
-    def resolve_auto_voice(self, lang: str):
+    def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         if lang not in self._auto_voices:
             raise ProviderError(f"No Auto-detect voice set for language {lang!r}")
         return self._auto_voices[lang]

@@ -31,7 +31,8 @@ from omnia.plugins.typed_accuracy.store import (
 # The feature's web assets live in its GUI package's ``web/`` folder; StatsInjector reads from
 # that web_dir.
 _WEB_DIR = (
-    Path(__file__).resolve().parent.parent.parent
+    # tests/plugins/<plugin>/<file>.py -> the repo root.
+    Path(__file__).resolve().parents[3]
     / "src"
     / "omnia"
     / "gui"

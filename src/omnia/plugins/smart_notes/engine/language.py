@@ -7,7 +7,10 @@ best-effort: the caller treats any failure or unrecognised reply as "use the con
 default voice/language", so audio generation never fails just because detection did.
 
 :func:`detect_language` is the raw LLM call; :class:`LanguageDetector` is the best-effort
-wrapper injected into the TTS generator, swallowing every failure into "no language hint".
+wrapper injected into the TTS generator, turning every failure into "no language hint" — and,
+since it swallows the exception, CARRYING THE REASON out with it (:class:`LanguageGuess`).
+Without that, a precise provider error ("Gemini returned no text; finishReason='MAX_TOKENS'")
+reached the user as generic advice to configure a text provider, which they already had.
 
 Pure module — it takes a duck-typed provider (anything with ``generate_text``) and imports
 nothing from ``aqt``/``anki``.
@@ -16,13 +19,22 @@ nothing from ``aqt``/``anki``.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from omnia import envs
+from omnia.core.logging import get_logger
 
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub
     from omnia.core.providers.llm.base import LLMProvider
+
+logger = get_logger("smart_notes")
+
+# The reply is two characters. The cap is this high only as belt and braces: with thinking
+# disabled (see the Gemini provider) 8 was already enough, and with a model that insists on
+# thinking anyway a few dozen tokens is the difference between a usable answer and an empty one.
+_DETECT_MAX_TOKENS = 64
 
 _DETECT_SYSTEM = (
     "You are a language detector. Reply with ONLY the ISO 639-1 two-letter code of the "
@@ -249,7 +261,7 @@ def detect_language(llm: LLMProvider, text: str, *, fallback: str = "en") -> str
         snippet[:400],
         system=_DETECT_SYSTEM,
         temperature=envs.OMNIA_SMART_NOTES_DETECT_LANGUAGE_TEMPERATURE,
-        max_tokens=8,
+        max_tokens=_DETECT_MAX_TOKENS,
     )
     for token in _CODE_RE.findall((raw or "").lower()):
         if token in _ISO_639_1:
@@ -257,22 +269,54 @@ def detect_language(llm: LLMProvider, text: str, *, fallback: str = "en") -> str
     return fallback
 
 
+@dataclass(frozen=True)
+class LanguageGuess:
+    """What detection concluded: a code, or the reason there is none.
+
+    A bare ``Optional[str]`` was the bug. Detection is best-effort, so the wrapper swallows every
+    exception — and with the exception went the only description of what actually happened. The
+    caller downstream (``ProviderHub.resolve_auto_voice``) sees an empty language and can say
+    nothing better than "make sure a text provider is configured", which is advice, not a
+    diagnosis, and is wrong whenever a provider IS configured and answered badly.
+
+    ``reason`` is empty when there is nothing to report — detection was off, the text was blank,
+    or it simply worked.
+    """
+
+    code: Optional[str] = None
+    reason: str = ""
+
+
 class LanguageDetector:
     """Best-effort spoken-language detection injected into the TTS generator.
 
-    Swallows every error (no LLM configured, provider/network failure, …): detection is a
-    nicety, so a failure must fall back to the provider's configured language rather than
-    break audio generation. A no-op (returns None) when disabled or the text is blank.
+    Swallows every error (no LLM configured, provider/network failure, a model that spent its
+    whole token budget thinking): detection is a nicety, so a failure must fall back to the
+    provider's configured language rather than break audio generation. What it does NOT do is
+    lose the failure — the message rides out on :class:`LanguageGuess` and is logged.
     """
 
     def __init__(self, enabled: bool = True) -> None:
         self._enabled = enabled
 
-    def detect(self, providers: ProviderHub, text: str) -> Optional[str]:
-        """Return a best-effort language code for ``text`` (None when disabled/unavailable)."""
+    def detect(self, providers: ProviderHub, text: str) -> LanguageGuess:
+        """Return a best-effort language code for ``text``, or why there is none.
+
+        Args:
+            providers: The hub that builds the configured LLM.
+            text: The text whose language to detect.
+
+        Returns:
+            A :class:`LanguageGuess`; its ``code`` is None when detection is off, the text is
+            blank, or the attempt failed — and then ``reason`` says which.
+        """
         if not self._enabled or not text.strip():
-            return None
+            return LanguageGuess()
         try:
-            return detect_language(providers.llm(), text, fallback="") or None
-        except Exception:  # best-effort: any failure → provider's configured default
-            return None
+            code = detect_language(providers.llm(), text, fallback="")
+        except Exception as exc:  # best-effort: fall back to the configured default
+            # WARNING, not exception(): a failure here costs a voice, not a generation, and a
+            # traceback per note on a long batch buries the run's real errors.
+            logger.warning("smart_notes: language detection failed: %s", exc)
+            return LanguageGuess(reason=str(exc))
+        return LanguageGuess(code or None)

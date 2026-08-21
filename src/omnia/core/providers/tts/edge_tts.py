@@ -25,6 +25,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from xml.sax.saxutils import escape
 
+from omnia.core.network.limiter import PROVIDER_LIMITER
 from omnia.core.network.websocket import (
     OPCODE_BINARY,
     OPCODE_CLOSE,
@@ -183,6 +184,22 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
 
     # --- protocol details ---------------------------------------------------------------
     def _synthesize_chunk(self, text: str, voice: str) -> bytes:
+        """One Edge session: open the socket, send the two messages, collect the MP3 frames.
+
+        Holds a :data:`~omnia.core.network.limiter.PROVIDER_LIMITER` permit for the whole
+        session. Every OTHER provider spends its permit inside ``ThrottledHttpClient``, which
+        this transport never touches — it speaks a raw WebSocket, because the maintained
+        ``edge-tts`` package needs compiled ``aiohttp`` and cannot be vendored. Taking the permit
+        explicitly here is what keeps the limiter's bound COMPLETE instead of quietly exempting
+        the one provider most likely to answer a burst by closing the connection, and the one
+        whose failures never reach ``RetryPolicy`` either. It is also why long text costs one
+        permit per chunk rather than one per field: each chunk is its own session against the
+        service, so each is what the bound is counting.
+        """
+        with PROVIDER_LIMITER.permit():
+            return self._synthesize_one_session(text, voice)
+
+    def _synthesize_one_session(self, text: str, voice: str) -> bytes:
         connection_id = uuid.uuid4().hex
         url = (
             f"wss://{self._BASE_HOST}{self._BASE_PATH}"

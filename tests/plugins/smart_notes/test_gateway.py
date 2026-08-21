@@ -328,7 +328,9 @@ class TestDiscardUnfilledClips:
 
         import aqt
 
-        monkeypatch.setattr(aqt, "mw", types.SimpleNamespace(col=FakeCol()), raising=False)
+        monkeypatch.setattr(
+            aqt, "mw", types.SimpleNamespace(col=FakeCol()), raising=False
+        )
         assert self._discard()([7, 8]) == 2
         assert removed == [[7, 8]]
 

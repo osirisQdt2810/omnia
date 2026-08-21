@@ -157,13 +157,18 @@ class ToolRequest:
     """One tool invocation: the compiled rule, the note's fields, and this tool's params.
 
     ``fields`` is the working map :meth:`GenerationService.generate_note` maintains, so a tool
-    reads freshly chained values exactly as the generators do. ``params`` are the field's
-    per-tool params AFTER :meth:`Tool.parse_params` validated them (defaults filled in).
+    reads freshly chained values exactly as the generators do — a READ-ONLY view of it while a
+    level is in flight, so a tool that tries to mutate its inputs fails loudly instead of
+    silently changing what a sibling field sees. ``params`` are the field's per-tool params
+    AFTER :meth:`Tool.parse_params` validated them (defaults filled in). ``note_id`` is the
+    note being generated, so a tool's diagnostics can name it: with several notes in flight,
+    position in the log no longer identifies the note.
     """
 
     rule: SmartNotesFieldRule
     fields: Mapping[str, str]
     params: Mapping[str, Any] = field(default_factory=dict)
+    note_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -210,6 +215,15 @@ class Tool(ABC):
     Subclasses are **stateless** and must be constructible with no arguments — the registry
     instantiates them on resolve and hands everything they need through :meth:`run`'s
     ``request``/``ctx`` (DIP), so the same instance is safe on any worker thread.
+
+    **``run`` may execute concurrently with itself.** Since bounded concurrency landed, a level's
+    fields — and several notes of a batch — are dispatched together, so the same tool CLASS runs
+    on several threads at once for different notes. The engine guarantees the tool's INPUTS are
+    safe (a frozen read-only field map per level, a fresh instance per resolve); it can guarantee
+    nothing about a tool's SIDE EFFECTS. A tool that writes a fixed scratch path, or names its
+    output after the field rather than the note, will put one note's output in another note's
+    field with no error anywhere. Derive every path from ``request.note_id`` or a ``tempfile``,
+    and keep no mutable state on the class.
 
     Class attributes:
         name: The stable config key the field's chain stores (``"ai"``, ``"cloze"``, …).
@@ -292,6 +306,36 @@ class Tool(ABC):
             return dict(params)
         validated: dict[str, Any] = cls.params_model(**params).dict()
         return validated
+
+    @classmethod
+    def reads_prompt(cls, params: Mapping[str, Any]) -> bool:
+        """Whether this tool, configured with ``params``, READS the field's prompt.
+
+        What it decides is whether the prompt's ``{{refs}}`` are real dependency edges
+        (:func:`~omnia.plugins.smart_notes.engine.rules.rule_source_fields`). False means "my
+        inputs are the fields my params name, and nothing else", so a prompt left behind from an
+        earlier configuration is dead text rather than a set of edges the tool will never honour
+        — and a stale HARD edge onto a field that is empty on most notes blocks generation
+        forever with nothing to show why.
+
+        It takes ``params`` because for the tools that answer False the honest answer depends on
+        them: ``cloze``'s ``sentence_field`` and ``cloze_audio``'s ``source_field`` fall back to
+        the rule's first prompt ref when left blank (chains synced from a release before those
+        params were required), and a chain that reads the prompt through that fallback must keep
+        the edges the fallback depends on.
+
+        Not derivable from :attr:`deterministic` or :attr:`uses_provider`, which answer different
+        questions: ``cloze_audio`` is deterministic AND provider-using AND does not read the
+        prompt. Three flags because there are three questions.
+
+        Args:
+            params: The tool's validated params for this field.
+
+        Returns:
+            True by default, so a tool that never considered the question keeps every edge it
+            would have had.
+        """
+        return True
 
     @classmethod
     def referenced_fields(cls, params: Mapping[str, Any]) -> list[str]:

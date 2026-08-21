@@ -36,7 +36,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
-from omnia.core.providers.llm.base import LLMProvider
+from omnia.core.providers.llm.base import LLMProvider, PromptParts
 from omnia.core.providers.tts.base import TTSProvider
 
 
@@ -391,6 +391,20 @@ class BufferedUsageRecorder(UsageRecorder):
             self._store.save(data)
 
 
+# The sampling temperature every recorded generation has used since this wrapper was written.
+#
+# It is a LITERAL, and keeping it is deliberate. The base declares ``temperature: Optional[float]
+# = None`` and every concrete provider reads ``self._temperature if temperature is None else
+# temperature``, so passing ``None`` through would honour the user's configured per-provider
+# temperature — which is what this wrapper arguably should do, and what an earlier revision of
+# this change made it do. It was reverted: the configured DEFAULT is itself 0.7, so at defaults
+# nothing differs, and the only people the "fix" reaches are those who deliberately set another
+# value and would find their model's output changing under them because a throughput change
+# shipped. Un-breaking it is a real improvement and belongs in its own change, with a release
+# note. Applied to every text method so the batched, cached and plain paths sample alike.
+_RECORDED_TEMPERATURE = 0.7
+
+
 class RecordingLLMProvider(LLMProvider):
     """Wraps an :class:`LLMProvider`, recording usage after each successful generation.
 
@@ -429,7 +443,7 @@ class RecordingLLMProvider(LLMProvider):
         prompt: str,
         *,
         system: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: Optional[float] = _RECORDED_TEMPERATURE,
         max_tokens: Optional[int] = None,
     ) -> str:
         # Take the usage as the call's RETURN VALUE, not off the wrapped provider's shared
@@ -449,6 +463,68 @@ class RecordingLLMProvider(LLMProvider):
             usage=usage,
         )
         return result
+
+    def generate_cached_text(
+        self,
+        parts: PromptParts,
+        *,
+        system: Optional[str] = None,
+        temperature: Optional[float] = _RECORDED_TEMPERATURE,
+        max_tokens: Optional[int] = None,
+    ) -> tuple[str, Optional[dict[str, int]]]:
+        """Forward a prefix-cacheable generation, recording it like any other text call.
+
+        Forwarded EXPLICITLY rather than left to the base's default. The default would call
+        ``self.generate_text_with_usage`` — this wrapper's — and so would silently bypass a
+        wrapped provider's own override, sending the plain concatenated prompt and losing the
+        cache marker with no error anywhere. Every public generation method must reach the
+        wrapped instance's own implementation; a test enumerates them to keep it that way.
+        """
+        result, usage = self._wrapped.generate_cached_text(
+            parts, system=system, temperature=temperature, max_tokens=max_tokens
+        )
+        self.last_usage = usage
+        self._record(
+            kind="text",
+            model=self._model,
+            in_chars=len(parts.joined()) + len(system or ""),
+            out_chars=len(result),
+            usage=usage,
+        )
+        return result, usage
+
+    def generate_json(
+        self,
+        parts: PromptParts,
+        *,
+        schema: dict[str, Any],
+        system: Optional[str] = None,
+        temperature: Optional[float] = _RECORDED_TEMPERATURE,
+        max_tokens: Optional[int] = None,
+    ) -> tuple[str, Optional[dict[str, int]]]:
+        """Forward a schema-shaped generation, recording it like any other text call.
+
+        Forwarded EXPLICITLY for the same reason as :meth:`generate_cached_text`: the base
+        default would delegate to this wrapper's own ``generate_cached_text`` and so never enter
+        the wrapped provider's JSON-mode override — the schema would be silently dropped and the
+        request would go out in the wrong shape with nothing to show for it.
+        """
+        result, usage = self._wrapped.generate_json(
+            parts,
+            schema=schema,
+            system=system,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        self.last_usage = usage
+        self._record(
+            kind="text",
+            model=self._model,
+            in_chars=len(parts.joined()) + len(system or ""),
+            out_chars=len(result),
+            usage=usage,
+        )
+        return result, usage
 
     def generate_image(self, prompt: str, *, size: str = "1024x1024") -> bytes:
         result, usage = self._wrapped.generate_image_with_usage(prompt, size=size)

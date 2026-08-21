@@ -316,6 +316,18 @@
     <div class="sn-tabpane" data-pane="advanced" hidden>
       <div class="sn-modal-fields">Advanced settings.</div>
       <div class="sn-native sn-acct-section">
+        <div class="sn-native-title">Generation speed</div>
+        <div class="sn-modal-fields">How many fields Omnia generates at the same time. Higher is faster but hits your AI provider harder — if you start seeing rate-limit errors, lower it. 1 = one field at a time (the old behaviour).</div>
+        <label class="sn-opt-row" title="Independent fields of a note — and several notes of a batch — are generated at the same time, up to this many.&#10;&#10;The limit is per PROVIDER ACCOUNT, not per note type, so it is the total load Omnia puts on your key.&#10;&#10;Raise it for a faster batch; lower it to 1 if your provider rate-limits you.">
+          <input type="number" id="sn-opt-concurrency" class="sn-input-num" min="1" max="16" step="1">
+          <span><b>Parallel generations</b> — how many fields may generate at once (1–16).</span>
+        </label>
+        <label class="sn-opt-row" title="Asks for the SAME field on several notes in one request. What that saves is REQUESTS — about 64% fewer on the workload this was measured against (700 → 250) — which is what keeps a big batch under a provider&apos;s rate limit.&#10;&#10;It does NOT make a batch finish sooner. One request now writes ten answers instead of one, so it takes about as long as the ten calls it replaced. Above one parallel generation it is measurably SLOWER: a group hands ten answers to a single worker that the others would have written at the same time (at 8 parallel generations it took ~1.4x as long as not grouping).&#10;&#10;Only plain AI text fields are grouped — audio, images and tool chains always generate one note at a time.&#10;&#10;Trade-off: a model answering ten items at once can let one note&apos;s wording drift into another&apos;s. Lower it, or set 1 to switch grouping off, if quality matters more than requests.&#10;&#10;Correctness is not at risk: every answer is matched back by an explicit id, and any note the model does not answer for is generated on its own.">
+          <input type="number" id="sn-opt-batch-notes" class="sn-input-num" min="1" max="20" step="1">
+          <span><b>Notes per request</b> — group this many notes into one AI call for the same field (1 = off). Fewer requests, not less waiting — and worth lowering as you raise Parallel generations. <em><code>OMNIA_SMART_NOTES_BATCHING</code> in the environment caps this (set it to <code>-1</code> to switch grouping off everywhere).</em></span>
+        </label>
+      </div>
+      <div class="sn-native sn-acct-section">
         <div class="sn-native-title">Native runtimes</div>
         <div class="sn-modal-fields">Optional local engines — installed into an isolated venv; the first install downloads the runtime.</div>
         <div id="sn-native-list" class="sn-native-list"></div>

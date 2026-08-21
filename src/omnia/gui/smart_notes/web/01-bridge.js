@@ -57,6 +57,10 @@
   const optRegenBatch = document.getElementById("sn-opt-regen-batch");
   const optAllowEmpty = document.getElementById("sn-opt-allow-empty");
   const optDiscardUnfilled = document.getElementById("sn-opt-discard-unfilled");
+  // Advanced tab: how many fields/notes generate at once (bounded 1..16 on both sides).
+  const optConcurrency = document.getElementById("sn-opt-concurrency");
+  // Advanced tab: how many notes share ONE request for the same field (1 = off, bounded 1..20).
+  const optBatchNotes = document.getElementById("sn-opt-batch-notes");
   // Integrations tab: the per-integration auto-generate toggle + its "Detected N cards" line.
   const integrationsList = document.getElementById("sn-integrations-list");
   const nativeListEl = document.getElementById("sn-native-list");

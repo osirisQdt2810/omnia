@@ -9,6 +9,7 @@ POSIX (``bin/python``) and Windows (``Scripts/python.exe``) branches are covered
 from __future__ import annotations
 
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -763,6 +764,61 @@ class TestInstallLock:
         manager.ensure_installed(spec)
 
         assert holder["held"] is True
+
+
+class TestDefaultManagerIsOneObject:
+    """The process-wide manager must be built exactly once, however many threads race for it.
+
+    Each :class:`NativeRuntimeManager` owns its own ``_servers`` dict and ``_servers_lock`` —
+    the lock whose entire job is stopping two callers double-spawning a fixed-port sidecar
+    (viettts binds :8298). Two managers means two lock domains, so ``ensure_running`` on one
+    cannot see the other's server: both spawn, the loser fails to bind, and its process is
+    tracked by a manager the global no longer points at. Generation used to be sequential, so
+    the first touch was always single-threaded; with a pool it is not.
+    """
+
+    def test_concurrent_first_touches_get_the_same_manager(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+
+        monkeypatch.setattr(native_runtime, "_default_manager", None)
+        built: list[NativeRuntimeManager] = []
+        gate = threading.Barrier(4)
+        real_init = NativeRuntimeManager.__init__
+
+        def _slow_init(self, envs_dir, runner=None):
+            # Widen the window the racing threads have to interleave in; without the lock this
+            # makes the double-build reliable rather than a one-in-a-thousand flake.
+            time.sleep(0.01)
+            real_init(self, envs_dir, runner)
+            built.append(self)
+
+        monkeypatch.setattr(NativeRuntimeManager, "__init__", _slow_init)
+        monkeypatch.setattr(
+            native_runtime, "_addon_user_files_dir_for_test", None, raising=False
+        )
+        import omnia
+
+        monkeypatch.setattr(omnia, "addon_user_files_dir", lambda: tmp_path)
+
+        got: list[NativeRuntimeManager] = []
+        lock = threading.Lock()
+
+        def _touch() -> None:
+            gate.wait()
+            manager = native_runtime.default_manager()
+            with lock:
+                got.append(manager)
+
+        threads = [threading.Thread(target=_touch) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(built) == 1, "the manager was constructed more than once"
+        assert all(manager is got[0] for manager in got)
 
 
 class TestNoWindowFlag:

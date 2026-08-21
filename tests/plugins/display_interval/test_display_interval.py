@@ -178,7 +178,9 @@ class TestTemplateExpose:
 
     def test_answer_prepends_intervals_script(self, monkeypatch):
         plugin = self._plugin(self._active_pipeline(), monkeypatch=monkeypatch)
-        out = plugin._on_card_will_show("<b>ans</b>", FakeCard(id=1, ivl=6), "reviewAnswer")
+        out = plugin._on_card_will_show(
+            "<b>ans</b>", FakeCard(id=1, ivl=6), "reviewAnswer"
+        )
         assert out.endswith("<b>ans</b>")  # original html intact, script prepended
         assert '"next_days": 3.0' in out
         assert '"next_seconds": 259200' in out
@@ -215,7 +217,9 @@ class TestTemplateExpose:
         assert plugin._on_card_will_show("q", FakeCard(id=1), "reviewQuestion") == "q"
 
     def test_flag_off_leaves_html_untouched(self, monkeypatch):
-        plugin = self._plugin(self._active_pipeline(), expose=False, monkeypatch=monkeypatch)
+        plugin = self._plugin(
+            self._active_pipeline(), expose=False, monkeypatch=monkeypatch
+        )
         assert plugin._on_card_will_show("a", FakeCard(id=1), "reviewAnswer") == "a"
 
     def test_no_interval_available_passes_through(self, monkeypatch):

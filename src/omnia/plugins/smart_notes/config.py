@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 from pydantic import Field, validator
 
+from omnia import envs
 from omnia.core.config.base import PersistedModel, StrictModel
 
 _GENERATION_TYPES = {"text", "image", "tts"}
@@ -28,6 +29,18 @@ _GENERATION_TYPES = {"text", "image", "tts"}
 # before tool chains existed. Named here rather than on the tool class so the config layer
 # never has to import the engine (the dependency runs engine → config).
 DEFAULT_TOOL_NAME = "ai"
+
+# Top-level SmartNotesSettings keys added AFTER the blob's shape was already syncing, and
+# therefore omitted from the serialized form while they hold their default (see
+# SmartNotesSettings.dict). Listed once so the prune cannot drift from the set it covers.
+_PRUNE_WHILE_DEFAULT = ("max_concurrent_generations", "batch_notes_per_call")
+
+# The ceilings this build will honour, applied by SmartNotesSettings.workers() /
+# .notes_per_call() rather than by a model validator — see max_concurrent_generations for why a
+# SYNCED field must not carry a range. They live next to the fields they bound so the settings
+# model, the GUI controller and the runner cannot drift apart on what "too big" means.
+MAX_WORKERS = 16
+MAX_NOTES_PER_CALL = 20
 
 
 class FieldDep(PersistedModel):
@@ -313,6 +326,99 @@ class SmartNotesSettings(PersistedModel):
     # a note type with no smart-notes config never reaches this, and a note whose generation
     # RAISED is kept so a provider hiccup cannot throw a capture away.
     discard_unfilled_clips: bool = True
+    # How many generation units (one field's tool chain) may run at once, and — via the
+    # limiter, which ``pooled_dispatch`` narrows to exactly this for the duration of a run — how
+    # hard the PROVIDER is hit. Exactly this, not "this + 1": a reserved lane for an interactive
+    # call was tried, could never be used (Anki serialises every collection QueryOp) and made
+    # the bound provably non-binding. ``OMNIA_MAX_CONCURRENT_REQUESTS`` is what sets the two
+    # apart when they should differ. Lives at the top
+    # level, not per note type: the quota belongs to the provider account, which every note
+    # type shares, so a per-note-type bound would let two note types each open N connections
+    # against the same account. 1 = fully sequential, exactly as before concurrency existed.
+    #
+    # Deliberately NO ``ge``/``le`` here; the bound is applied where the value is USED instead.
+    # This blob syncs and :meth:`SmartNotesStore.load` has no ``try`` around ``parse_obj``, so
+    # a range validator would turn a value written by a future release that raised the ceiling
+    # into a ValidationError — which PluginManager swallows into "the feature silently never
+    # enables" (ADR-010). Clamping on load is no better: it would rewrite the other device's
+    # value on the next save. The stored number round-trips untouched, and this build simply
+    # runs as many workers as it is willing to.
+    #
+    # DEFAULT 1 — a user who changed nothing gets exactly the pre-concurrency behaviour: no
+    # pool is created, one field at a time, one provider request in flight. Concurrency raises
+    # the load on a shared provider ACCOUNT, and a default that raises it for someone who never
+    # asked is a rate-limit bill they did not opt into.
+    max_concurrent_generations: int = 1
+    # How many NOTES one provider request may cover for the same field. Every note of a note
+    # type shares that field's prompt template, so K of them can be asked in one call — see
+    # ADR-017 and :mod:`~omnia.plugins.smart_notes.engine.batching`.
+    #
+    # 1 means OFF for this collection. The DEFAULT is 10, matching
+    # ``envs.OMNIA_SMART_NOTES_BATCHING``: batching cuts requests by about two thirds and the
+    # shipped worker count is 1, where a chunk has no parallelism to destroy. ONE key rather
+    # than a bool plus an int — "off" is exactly what K = 1 expresses, and every extra persisted
+    # key is another ADR-010 surface.
+    #
+    # No ``ge``/``le``, and clamped at the point of use, for the same reason as the field above.
+    #
+    # This is what the user asks for; ``envs.OMNIA_SMART_NOTES_BATCHING`` is what the machine
+    # allows, and :meth:`notes_per_call` — the only place either is read — takes the smaller.
+    batch_notes_per_call: int = 10
+
+    def workers(self) -> int:
+        """How many generation units may run at once, clamped to what this build supports.
+
+        Clamped HERE, at the single read site, rather than on the model: the blob syncs, so a
+        value written by a release that raised the ceiling has to degrade rather than raise
+        (ADR-010). Every path that starts a pool goes through this one method, so the editor
+        button and review-time pre-generation cannot fan out wider than the batch runner —
+        they used to read the raw field and were bounded by nothing.
+        """
+        return max(1, min(int(self.max_concurrent_generations), MAX_WORKERS))
+
+    def notes_per_call(self) -> int:
+        """The EFFECTIVE K for LAYER 3 batching — the env knob's K, or less if the user asked.
+
+        Two inputs, one rule: ``envs.OMNIA_SMART_NOTES_BATCHING`` decides, and the synced
+        ``batch_notes_per_call`` may only ask for a SMALLER chunk than the environment allows.
+        The env knob is therefore both the off switch (``-1``, or anything below 1) and the
+        ceiling, so a machine can always force a collection's batching down — including to off —
+        without editing a setting that would then sync to every other device.
+
+        A returned 1 does not mean "batching at a width of one": ``batch_planner`` hands back
+        ``SOLO_PLANNER``, so the code that builds envelopes, mints item ids and parses batched
+        replies is never constructed and every field takes the pre-LAYER-3 path. The stored
+        number is left untouched either way, so raising the ceiling again restores whatever this
+        user (or another device) chose.
+        """
+        allowed = int(envs.OMNIA_SMART_NOTES_BATCHING)
+        if allowed < 1:
+            return 1
+        return max(1, min(int(self.batch_notes_per_call), allowed, MAX_NOTES_PER_CALL))
+
+    def dict(self, **kwargs: Any) -> dict[str, Any]:
+        """Serialize the settings, OMITTING the performance keys while they are default.
+
+        Same reasoning as :meth:`SmartNotesFieldConfig.dict`, and the same stakes: this blob
+        SYNCS. A device on a build from before
+        :class:`~omnia.core.config.base.PersistedModel` (ADR-010) validates it with
+        ``extra = "forbid"`` and has no ``try`` around
+        :meth:`~omnia.plugins.smart_notes.integration.store.SmartNotesStore.load`, so an
+        unknown key there is not a lost setting — it is a crash on every note-add hook. A user
+        who never opens Advanced therefore keeps writing a blob byte-identical to today's, and
+        a key appears only once someone actually changes it.
+
+        Args:
+            **kwargs: Passed through to :meth:`pydantic.BaseModel.dict` unchanged.
+
+        Returns:
+            The settings' serialized form, without the still-default performance keys.
+        """
+        data: dict[str, Any] = super().dict(**kwargs)
+        for key in _PRUNE_WHILE_DEFAULT:
+            if data.get(key) == type(self).__fields__[key].default:
+                data.pop(key, None)
+        return data
 
     def note_type_config(self, note_type: str) -> Optional[SmartNotesNoteTypeConfig]:
         """Return the config for ``note_type``, or None when it has no smart-notes config."""

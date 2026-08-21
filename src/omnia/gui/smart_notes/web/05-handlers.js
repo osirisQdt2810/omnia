@@ -93,6 +93,17 @@
     if (optDiscardUnfilled) {
       optDiscardUnfilled.checked = opts.discard_unfilled_clips !== false;
     }
+    // Seeding matters as much as reading back: an unseeded control posts its own blank value
+    // on the next save and silently resets what another device set.
+    if (optConcurrency) {
+      optConcurrency.value = String(clampInt(opts.max_concurrent_generations, 1, 16, 1));
+    }
+    if (optBatchNotes) {
+      // 10, not 1, when the key is absent: it is the model's default (see
+      // SmartNotesSettings.batch_notes_per_call), and seeding a 1 here would show "off" for a
+      // collection that is in fact grouping — and write that 1 back on the next save.
+      optBatchNotes.value = String(clampInt(opts.batch_notes_per_call, 1, 20, 10));
+    }
     renderIntegrations(opts);
   }
 
@@ -274,13 +285,40 @@
         autoGenerateIntegrations[box.dataset.integKey] = box.checked;
       }
     }
-    return {
+    const opts = {
       generate_at_review: optGenReview.checked,
       regenerate_when_batching: optRegenBatch.checked,
       allow_empty_fields: optAllowEmpty.checked,
       discard_unfilled_clips: optDiscardUnfilled ? optDiscardUnfilled.checked : true,
       auto_generate_integrations: autoGenerateIntegrations
     };
+    // OMITTED, not defaulted, when the control is missing. The controller's contract is that an
+    // ABSENT key keeps the stored value verbatim — which is what a device whose Advanced pane
+    // failed to render needs, so it does not overwrite a number set on another device. Posting
+    // a hard-coded fallback here would send the key, bypass that branch, and do exactly the
+    // clobbering the branch was written to prevent.
+    if (optConcurrency) {
+      opts.max_concurrent_generations = clampInt(optConcurrency.value, 1, 16, 1);
+    }
+    if (optBatchNotes) {
+      opts.batch_notes_per_call = clampInt(optBatchNotes.value, 1, 20, 10);
+    }
+    return opts;
+  }
+
+  /**
+   * Coerce a numeric input to a whole number inside [lo, hi], or `dflt` when it is not one.
+   * Number("1e999") is Infinity and Number("") is 0 — either would reach the backend as a
+   * worker count, so the bound is applied here as well as in the controller.
+   * @param {*} raw
+   * @param {number} lo
+   * @param {number} hi
+   * @param {number} dflt
+   * @return {number}
+   */
+  function clampInt(raw, lo, hi, dflt) {
+    const n = Math.round(Number(raw));
+    return Number.isFinite(n) ? Math.min(Math.max(n, lo), hi) : dflt;
   }
 
   function closeOptions() {

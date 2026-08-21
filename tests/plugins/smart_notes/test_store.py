@@ -278,6 +278,90 @@ class TestSyncedBlobForwardCompat:
         store.save(store.load())
         assert fake.get_config(SmartNotesStore.KEY) == saved
 
+    def test_a_default_config_still_writes_no_concurrency_key_at_all(self):
+        # Same rule as the tools key above, for the key LAYER 1 adds: while it holds the
+        # shipped default it carries no information, so a user who never opens Advanced keeps
+        # writing a blob byte-identical to one from a build that has no such setting.
+        fake = _FakeCol()
+        fake.set_config(
+            SmartNotesStore.KEY,
+            {
+                "note_types": [
+                    {
+                        "note_type": "Basic",
+                        "base_field": "Word",
+                        "fields": [{"field": "Def", "enabled": True, "type": "text"}],
+                    }
+                ]
+            },
+        )
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        store.save(store.load())
+
+        saved = fake.get_config(SmartNotesStore.KEY)
+        assert "max_concurrent_generations" not in json.dumps(saved)
+        assert "batch_notes_per_call" not in json.dumps(saved)
+        store.save(store.load())
+        assert fake.get_config(SmartNotesStore.KEY) == saved
+
+    def test_a_changed_concurrency_setting_is_persisted_and_round_trips(self):
+        # The flip side: once the user changes it, the key MUST be written and read back.
+        fake = _FakeCol()
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        store.save(SmartNotesSettings(max_concurrent_generations=8))
+
+        assert fake.get_config(SmartNotesStore.KEY)["max_concurrent_generations"] == 8
+        assert store.load().max_concurrent_generations == 8
+
+    def test_a_changed_batch_size_is_persisted_and_round_trips(self):
+        fake = _FakeCol()
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        store.save(SmartNotesSettings(batch_notes_per_call=4))
+
+        assert fake.get_config(SmartNotesStore.KEY)["batch_notes_per_call"] == 4
+        assert store.load().batch_notes_per_call == 4
+
+    def test_a_batch_size_from_a_newer_release_loads_instead_of_crashing(
+        self, monkeypatch
+    ):
+        # Same ADR-010 rule as the concurrency key: a number from a build that raised the
+        # ceiling must degrade at the point of use, never turn into a ValidationError that
+        # PluginManager swallows into "the feature silently never enables".
+        fake = _FakeCol()
+        fake.set_config(SmartNotesStore.KEY, {"batch_notes_per_call": 500})
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        loaded = store.load()
+
+        assert loaded.batch_notes_per_call == 500  # stored untouched
+        # Clamped where it is USED, and by TWO ceilings: this build's MAX_NOTES_PER_CALL and the
+        # env knob, whichever is lower. Raised above the build ceiling here so the test measures
+        # the build's clamp rather than the environment's.
+        monkeypatch.setenv("OMNIA_SMART_NOTES_BATCHING", "100")
+        assert loaded.notes_per_call() == 20
+
+    def test_a_concurrency_value_from_a_newer_release_loads_instead_of_crashing(self):
+        # A future build may raise the ceiling. Loading must not raise — PluginManager swallows
+        # a ValidationError into "the feature never enables" — so out-of-range values are
+        # clamped where they are USED, not rejected here.
+        fake = _FakeCol()
+        fake.set_config(SmartNotesStore.KEY, {"max_concurrent_generations": 64})
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        settings = store.load()
+
+        # The property ADR-016 actually states: the stored number ROUND-TRIPS UNTOUCHED. A bare
+        # "did not raise" assertion would still pass if someone added the clamp-on-load that
+        # ADR-010 forbids — and that clamp would rewrite the other device's value on the next
+        # save. The bound is applied by .workers(), at the point of use, which is asserted next.
+        assert settings.max_concurrent_generations == 64
+        assert (
+            settings.workers() == 16
+        )  # clamped where it is USED, not where it is stored
+
     def test_a_configured_tool_chain_is_persisted(self):
         # The flip side: once the user configures a chain, the key MUST be written (and load
         # back) — the omission above is about an empty chain carrying no information.

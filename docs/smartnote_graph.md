@@ -315,8 +315,8 @@ rỗng thì các field hard phụ thuộc bị chặn.
 cat src/omnia/gui/smart_notes/web/0*.js | node --check -
 ```
 
-Test liên quan: `tests/plugins/test_smart_notes_graph.py` (dựng/validate/cycle/layout),
-`tests/plugins/test_smart_notes.py` (model `FieldDep`, ordering với cạnh tường minh, chặn,
+Test liên quan: `tests/plugins/smart_notes/test_graph.py` (dựng/validate/cycle/layout),
+`tests/plugins/smart_notes/test_smart_notes.py` (model `FieldDep`, ordering với cạnh tường minh, chặn,
 auto-prompt parse/apply), `tests/gui/test_smart_notes_html.py` (`graph_payload`, round-trip
 `depends_on`).
 

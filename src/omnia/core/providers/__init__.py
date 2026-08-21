@@ -97,9 +97,19 @@ class ProviderHub:
         # NEW settings object, so a mismatch means the cached providers are stale (built for old
         # config) and must be dropped. Stays None for snapshot hubs (config is None).
         self._llm_cache_ref: Optional[LLMSettings] = None
-        # ``llm()`` runs on background generation threads (QueryOp); guard every read/mutate of
-        # the override cache + its ref so concurrent callers can't corrupt the dict or double-build.
-        self._llm_cache_lock = threading.Lock()
+        # The same treatment for TTS, and for the same measured reason: ``tts()`` is called once
+        # per audio FIELD (ResolvedVoice.for_rule), and for google_cloud each rebuild mints a
+        # fresh ServiceAccountTokenSource with an empty token cache — an RS256 sign in pure
+        # Python plus an OAuth round trip per synthesis. Keyed on the provider name alone: unlike
+        # llm(), a TTS provider carries no per-rule model/voice on the instance (the voice is a
+        # per-call argument), so one instance serves every rule that names that provider.
+        self._tts_cache: dict[str, TTSProvider] = {}
+        self._tts_cache_ref: Optional[TTSSettings] = None
+        # ``llm()``/``tts()`` run on background generation threads (QueryOp); guard every
+        # read/mutate of the provider caches + their refs so concurrent callers can't corrupt a
+        # dict or double-build. ONE lock for both: construction is short, the two are never held
+        # nested, and two locks would be two things to reason about for no measurable gain.
+        self._cache_lock = threading.Lock()
 
     @property
     def _llm_settings(self) -> Optional[LLMSettings]:
@@ -139,6 +149,20 @@ class ProviderHub:
         if cur is not self._llm_cache_ref:
             self._llm_cache.clear()
             self._llm_cache_ref = cur
+
+    def _maybe_invalidate_tts_cache(self) -> None:
+        """The TTS twin of :meth:`_maybe_invalidate_cache`.
+
+        Separate from the LLM one because the two settings objects reload independently: a voice
+        edit rebuilds ``TTSSettings`` and must not throw away LLM providers whose token sources
+        are still warm, and vice versa.
+        """
+        if self._config is None:
+            return
+        cur = self._tts_settings  # fresh
+        if cur is not self._tts_cache_ref:
+            self._tts_cache.clear()
+            self._tts_cache_ref = cur
 
     def _llm_config(self, provider: str = "") -> dict[str, Any]:
         """Flatten the active (or named ``provider``) ``[llm.<provider>]`` subsection.
@@ -206,15 +230,19 @@ class ProviderHub:
             image_model: Override the image model id (empty = the subsection's configured one).
         """
         # Hold the cache lock across invalidate + get + build + set so concurrent generation
-        # threads can't race the dict (create_llm_provider is pure construction — no network —
-        # so the lock is held only briefly).
-        with self._llm_cache_lock:
+        # threads can't race the dict. Construction is CHEAP but not always network-free: a
+        # gemini_vertex provider resolves a service-account token source, whose first use signs
+        # an RS256 JWT and POSTs for an access token. That is exactly why the unpinned path is
+        # cached too — see the key below.
+        with self._cache_lock:
             self._maybe_invalidate_cache()
-            if not model and not image_model and not provider:
-                config = self._llm_config()
-                built = create_llm_provider(config, self._http)
-                return self._record_llm(built, config)
-            key = (provider, model, image_model)
+            # The UNPINNED call (a rule that pins neither provider nor model — the default for
+            # every field) resolves to the active provider, so it keys the same cache entry an
+            # explicitly-pinned call to that provider would. Leaving it uncached rebuilt the
+            # provider — and with it a token source holding an EMPTY token cache — for every
+            # single field of every single note, turning one JWT sign + OAuth round trip per
+            # generation into the dominant cost of a batch.
+            key = (provider or self._active_llm_name(), model, image_model)
             cached = self._llm_cache.get(key)
             if cached is None:
                 config = self._llm_config(provider)
@@ -227,6 +255,11 @@ class ProviderHub:
                 self._llm_cache[key] = cached
             return cached
 
+    def _active_llm_name(self) -> str:
+        """The configured active LLM provider name (empty when there are no settings)."""
+        settings = self._llm_settings
+        return str(settings.provider) if settings is not None else ""
+
     def tts(self, *, provider: str = "") -> TTSProvider:
         """Build a TTS provider, optionally pinned to a different ``provider``.
 
@@ -234,13 +267,32 @@ class ProviderHub:
         provider (e.g. a sound field's pinned provider, or an Auto-detect voice's provider).
         Wrapped so each synthesis records usage.
 
+        Cached, under the same lock and for the same measured reason as :meth:`llm`: this is
+        called once per audio field of every note, and a google_cloud rebuild mints a fresh
+        service-account token source whose empty cache turns one RS256 sign (pure-Python, so it
+        holds the GIL and serialises the workers) plus one OAuth round trip into a per-synthesis
+        cost. The unpinned call keys the same entry a call naming the active provider would, so
+        the default path is cached too — the omission that made the LLM version slow.
+
         Args:
             provider: Override the active provider name (empty = the configured one).
         """
-        built = create_tts_provider(self._tts_config(provider), self._http)
-        return RecordingTTSProvider(built, self._recorder)
+        with self._cache_lock:
+            self._maybe_invalidate_tts_cache()
+            key = provider or self._active_tts_name()
+            cached = self._tts_cache.get(key)
+            if cached is None:
+                built = create_tts_provider(self._tts_config(provider), self._http)
+                cached = RecordingTTSProvider(built, self._recorder)
+                self._tts_cache[key] = cached
+            return cached
 
-    def resolve_auto_voice(self, lang: str) -> tuple[str, str]:
+    def _active_tts_name(self) -> str:
+        """The configured active TTS provider name (empty when there are no settings)."""
+        settings = self._tts_settings
+        return str(settings.provider) if settings is not None else ""
+
+    def resolve_auto_voice(self, lang: str, *, reason: str = "") -> tuple[str, str]:
         """Resolve the global Auto-detect ``(provider, voice)`` for a language code.
 
         Looks ``lang`` up in ``[tts.auto_voices]`` and splits the stored ``"provider:voice"``
@@ -250,6 +302,10 @@ class ProviderHub:
 
         Args:
             lang: The detected ISO 639-1 language code.
+            reason: Why detection produced no code, when that is what happened. Quoted verbatim
+                in the error — a caller that swallowed the provider's own message is the only
+                thing that knows it, and without it the user is told to configure something
+                they already configured.
 
         Returns:
             ``(provider, voice)`` for ``lang``.
@@ -268,10 +324,11 @@ class ProviderHub:
                 # between: use it rather than fail over a detection that was only advisory.
                 value = next(iter(mapping.values()))
             else:
+                detail = f" Detection failed with: {reason}." if reason else ""
                 raise ProviderError(
                     "Could not detect the language of the text, so no Auto-detect voice could "
-                    "be chosen. Pin a voice on the field, set the field's Language, or make "
-                    "sure a text provider is configured for language detection."
+                    f"be chosen.{detail} Pin a voice on the field, set the field's Language, or "
+                    "make sure a text provider is configured for language detection."
                 )
         else:
             value = mapping.get(lang, "")

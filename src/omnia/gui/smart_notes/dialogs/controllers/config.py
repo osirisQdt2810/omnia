@@ -26,6 +26,7 @@ from omnia.gui.smart_notes.html import (
     row_to_payload,
     rows_for_note_type,
 )
+from omnia.plugins.smart_notes.config import MAX_NOTES_PER_CALL, MAX_WORKERS
 from omnia.plugins.smart_notes.integration.installer import (
     ClipperInstaller,
     InstallError,
@@ -37,6 +38,27 @@ from omnia.plugins.smart_notes.integration.integrations import (
 )
 
 logger = get_logger("smart_notes")
+
+# The range the Advanced pane's number input offers — the SAME ceilings the runner applies
+# (``SmartNotesSettings.workers`` / ``.notes_per_call``), imported rather than restated so the
+# dialog cannot start offering a number the runner would silently clamp. NOT a model constraint:
+# see SmartNotesSettings.max_concurrent_generations for why a persisted field must not carry one.
+_MAX_CONCURRENCY = MAX_WORKERS
+
+
+def _clamp_int(raw: Any, low: int, high: int, fallback: int) -> int:
+    """Coerce ``raw`` to an int inside ``[low, high]``, falling back when it is not a number.
+
+    The page is the untrusted side of a ``pycmd`` boundary and JavaScript will happily send
+    ``Infinity`` or ``null`` for a number input (ADR-011's post-mortem: ``Number("1e999")``).
+    An unbounded worker count here is an unbounded fan-out at the provider, so the value is
+    clamped on BOTH sides of the bridge, not just in the page.
+    """
+    try:
+        value = round(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return max(low, min(value, high))
 
 
 class ConfigController:
@@ -176,6 +198,35 @@ class ConfigController:
                             "discard_unfilled_clips", settings.discard_unfilled_clips
                         )
                     ),
+                    # An ABSENT key keeps the stored value verbatim — not clamped, not
+                    # defaulted. A page that predates this control (or one that failed to seed
+                    # it) would otherwise reset a value set on another device on every save,
+                    # and clamping the fallback would quietly narrow a newer release's number.
+                    "max_concurrent_generations": (
+                        _clamp_int(
+                            opts["max_concurrent_generations"],
+                            1,
+                            _MAX_CONCURRENCY,
+                            settings.max_concurrent_generations,
+                        )
+                        if "max_concurrent_generations" in opts
+                        else settings.max_concurrent_generations
+                    ),
+                    # Same absent-key rule, same reason (see above): 1 means "grouping off" for
+                    # this collection, and defaulting an omitted key to it would switch off a
+                    # setting another device chose. What the ENVIRONMENT allows is a separate
+                    # ceiling applied at the point of use (SmartNotesSettings.notes_per_call),
+                    # never written here — a machine's knob must not travel through sync.
+                    "batch_notes_per_call": (
+                        _clamp_int(
+                            opts["batch_notes_per_call"],
+                            1,
+                            MAX_NOTES_PER_CALL,
+                            settings.batch_notes_per_call,
+                        )
+                        if "batch_notes_per_call" in opts
+                        else settings.batch_notes_per_call
+                    ),
                     # Merge so integration keys not sent by this page are preserved.
                     "auto_generate_integrations": {
                         **settings.auto_generate_integrations,
@@ -304,6 +355,8 @@ class ConfigController:
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
             "discard_unfilled_clips": settings.discard_unfilled_clips,
+            "max_concurrent_generations": settings.max_concurrent_generations,
+            "batch_notes_per_call": settings.batch_notes_per_call,
             "auto_generate_integrations": settings.auto_generate_integrations,
             "integration_status": self._integration_status(),
             # The registered integrations (key + display text), so the Integrations tab renders

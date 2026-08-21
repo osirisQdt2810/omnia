@@ -50,6 +50,8 @@ _webview_mod.AnkiWebView = type("AnkiWebView", (), {})
 sys.modules.setdefault("aqt.webview", _webview_mod)
 aqt.webview = _webview_mod
 
+from conftest import FakeLLMProvider as _FakeLLMProvider  # noqa: E402
+
 from omnia.gui.smart_notes.dialogs.controllers.account import (  # noqa: E402
     AccountController,
 )
@@ -441,7 +443,7 @@ class TestImprovePinnedThreadRouting:
 class TestSaveCycleGuard:
     """The save-path persistence backstop (W2): a cyclic config is refused, not persisted."""
 
-    def _save(self, rows, stored: SmartNotesSettings | None = None):
+    def _save(self, rows, stored: SmartNotesSettings | None = None, options=None):
         """Run ``on_save`` over a fake store holding ``stored``; return (result, saved)."""
         saved: list[SmartNotesSettings] = []
         settings = SmartNotesSettings() if stored is None else stored
@@ -449,9 +451,15 @@ class TestSaveCycleGuard:
             load=lambda: settings, save=lambda updated: saved.append(updated)
         )
         ctrl = ConfigController(_fake_ctx(store=store), reject=lambda: None)
-        result = ctrl.on_save(
-            {"note_type": "Vocab", "base_field": "Word", "rows": rows, "decks": []}
-        )
+        payload = {
+            "note_type": "Vocab",
+            "base_field": "Word",
+            "rows": rows,
+            "decks": [],
+        }
+        if options is not None:
+            payload["options"] = options
+        result = ctrl.on_save(payload)
         return result, saved
 
     def test_cyclic_config_is_rejected_and_not_persisted(self):
@@ -503,6 +511,87 @@ class TestSaveCycleGuard:
         persisted = saved[0].note_type_config("Vocab")
         assert persisted is not None
         assert [t.tool for t in persisted.fields[0].tools] == ["cloze", "ai"]
+
+
+class TestConcurrencyOptionSaveCycle:
+    """The Advanced pane's worker count must survive a save that does not mention it."""
+
+    _save = TestSaveCycleGuard._save
+
+    def _rows(self):
+        rows = [_row("Definition", "Define {{Word}}")]
+        rows[0]["enabled"] = True
+        return rows
+
+    def test_a_payload_that_omits_the_option_does_not_reset_it(self):
+        # An older page — or one where seeding failed — sends no key. Treating that as "the
+        # user chose the default" is how a value set on another device silently disappears.
+        stored = SmartNotesSettings(max_concurrent_generations=7)
+
+        _result, saved = self._save(self._rows(), stored, options={})
+
+        assert saved[0].max_concurrent_generations == 7
+
+    def test_a_sent_value_is_persisted(self):
+        _result, saved = self._save(
+            self._rows(), None, options={"max_concurrent_generations": 5}
+        )
+
+        assert saved[0].max_concurrent_generations == 5
+
+    def test_a_nonsense_value_falls_back_to_the_stored_one(self):
+        # JavaScript will happily post Infinity or null for a number input; an unbounded worker
+        # count is an unbounded fan-out at the provider.
+        stored = SmartNotesSettings(max_concurrent_generations=4)
+
+        _result, saved = self._save(
+            self._rows(), stored, options={"max_concurrent_generations": None}
+        )
+
+        assert saved[0].max_concurrent_generations == 4
+
+    def test_an_out_of_range_value_is_clamped_not_rejected(self):
+        _result, saved = self._save(
+            self._rows(), None, options={"max_concurrent_generations": 9999}
+        )
+
+        assert saved[0].max_concurrent_generations == 16
+
+    def test_a_payload_that_omits_the_batch_size_does_not_reset_it(self):
+        # The stakes are higher for this one than for the worker count: its default is 1, i.e.
+        # OFF, so treating an absent key as "the default" would silently switch off grouping the
+        # user turned on somewhere else.
+        stored = SmartNotesSettings(batch_notes_per_call=8)
+
+        _result, saved = self._save(self._rows(), stored, options={})
+
+        assert saved[0].batch_notes_per_call == 8
+
+    def test_a_sent_batch_size_is_persisted(self):
+        _result, saved = self._save(
+            self._rows(), None, options={"batch_notes_per_call": 6}
+        )
+
+        assert saved[0].batch_notes_per_call == 6
+
+    def test_an_out_of_range_batch_size_is_clamped_not_rejected(self):
+        _result, saved = self._save(
+            self._rows(), None, options={"batch_notes_per_call": 9999}
+        )
+
+        assert saved[0].batch_notes_per_call == 20
+
+    def test_an_infinite_batch_size_falls_back_instead_of_clamping(self):
+        # ADR-011's post-mortem: Number("1e999") is Infinity, and a number input will post it.
+        # There is no honest clamp for "not a number" — a wildly out-of-range VALUE is a slider
+        # pushed too far, but Infinity is a broken payload, so the stored value stands.
+        stored = SmartNotesSettings(batch_notes_per_call=5)
+
+        _result, saved = self._save(
+            self._rows(), stored, options={"batch_notes_per_call": float("inf")}
+        )
+
+        assert saved[0].batch_notes_per_call == 5
 
 
 class TestClassifyDepsThreadRouting:
@@ -557,8 +646,11 @@ class TestPreviewRunsTheRowsToolChain:
     LLM call the real run never makes — wrong output AND a bill for it.
     """
 
-    class _CountingLLM:
+    class _CountingLLM(_FakeLLMProvider):
+        """A real ``LLMProvider`` subclass — the preview drives the whole interface."""
+
         def __init__(self) -> None:
+            super().__init__()
             self.prompts: list[str] = []
 
         def generate_text(

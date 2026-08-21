@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING, Optional
 
 from omnia.plugins.smart_notes.engine.language import LanguageDetector
 from omnia.plugins.smart_notes.engine.markdown import convert_markdown_to_html
-from omnia.plugins.smart_notes.engine.rules import prompt_for, tts_text
+from omnia.plugins.smart_notes.engine.rules import (
+    prompt_for,
+    prompt_parts_for,
+    tts_text,
+)
 
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub
@@ -61,7 +65,11 @@ class TextGenerator(Generator):
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> GenerationResult:
         llm = self._providers.llm(model=rule.model, provider=rule.provider)
-        text = llm.generate_text(prompt_for(rule, fields))
+        # generate_cached_text, not generate_text: every note of a note type shares this rule's
+        # template, so the instructions ahead of the first {{ref}} are the same bytes on every
+        # call and are worth offering a provider as a cacheable prefix. A provider that cannot
+        # cache concatenates the two parts and sends the identical request.
+        text, _usage = llm.generate_cached_text(prompt_parts_for(rule, fields))
         return GenerationResult("text", text=convert_markdown_to_html(text))
 
 
@@ -118,14 +126,25 @@ class ResolvedVoice:
             The resolved provider/voice/language.
 
         Raises:
-            ProviderError: When Auto-detect has no voice mapped for the detected language.
+            ProviderError: When Auto-detect has no voice mapped for the detected language — with
+                the detector's own reason attached when detection is what failed.
         """
         if rule.voice:
             # A pinned voice fixes the language; synthesize on the rule's provider directly.
             return cls(providers.tts(provider=rule.provider), None, rule.voice)
         # Auto-detect: find the language, then the global map's (provider, voice) for it.
-        lang = rule.language or detector.detect(providers, text)
-        picked_provider, voice = providers.resolve_auto_voice(lang or "")
+        # An explicit Language IS the answer, so detecting one would be a paid LLM round trip
+        # per note per tts field whose result the next line throws away. Only ask when the rule
+        # has not already said.
+        if rule.language:
+            lang, reason = rule.language, ""
+        else:
+            guess = detector.detect(providers, text)
+            lang, reason = guess.code, guess.reason
+        # The reason travels with the failure: without it "no language" reaches the user as
+        # advice to configure a provider they already configured, and the model's own complaint
+        # — the thing that says what to change — is nowhere.
+        picked_provider, voice = providers.resolve_auto_voice(lang or "", reason=reason)
         # An empty voice (a language-only provider, e.g. google_translate) → None so the
         # provider uses the language directly rather than an empty voice id.
         return cls(providers.tts(provider=picked_provider), lang, voice or None)

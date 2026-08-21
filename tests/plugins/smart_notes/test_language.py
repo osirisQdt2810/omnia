@@ -45,7 +45,7 @@ class _Hub:
     def tts(self, *, provider: str = ""):
         return self._tts
 
-    def resolve_auto_voice(self, lang: str):
+    def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         if lang not in self._auto_voices:
             raise ProviderError(f"No Auto-detect voice set for language {lang!r}")
         return self._auto_voices[lang]
@@ -100,29 +100,47 @@ class TestDetectLanguage:
 
 class TestLanguageDetector:
     def test_returns_detected_code(self):
-        assert LanguageDetector().detect(_Hub(llm=_CodeLLM("vi")), "xin chào") == "vi"
+        guess = LanguageDetector().detect(_Hub(llm=_CodeLLM("vi")), "xin chào")
 
-    def test_disabled_returns_none(self):
-        assert (
-            LanguageDetector(enabled=False).detect(_Hub(llm=_CodeLLM("vi")), "text")
-            is None
-        )
+        assert guess.code == "vi"
+        assert guess.reason == ""  # nothing to report when it worked
 
-    def test_blank_text_returns_none(self):
-        assert LanguageDetector().detect(_Hub(llm=_CodeLLM("vi")), "   ") is None
+    def test_disabled_returns_no_code(self):
+        guess = LanguageDetector(enabled=False).detect(_Hub(llm=_CodeLLM("vi")), "text")
 
-    def test_provider_failure_is_swallowed(self):
-        assert LanguageDetector().detect(_Hub(llm=_BoomLLM()), "text") is None
+        assert guess.code is None
+        assert guess.reason == ""  # not a failure — there was nothing to do
+
+    def test_blank_text_returns_no_code(self):
+        assert LanguageDetector().detect(_Hub(llm=_CodeLLM("vi")), "   ").code is None
+
+    def test_a_provider_failure_is_swallowed_but_its_reason_is_not(self):
+        """Best-effort must not mean silent.
+
+        The failure this pins was reported as "Auto-detect fails on every tts field": the model
+        spent its whole token budget thinking and returned no text, the detector swallowed that
+        precise message, and the user was told to configure a text provider they had already
+        configured. Drop the reason and the only description of what went wrong is gone.
+        """
+        guess = LanguageDetector().detect(_Hub(llm=_BoomLLM()), "text")
+
+        assert guess.code is None
+        assert "boom" in guess.reason
 
 
 @pytest.mark.llm
 class TestLanguageDetectorReal:
     def test_detects_a_two_letter_code(self):
         provider = real_llm_provider_or_skip()
-        code = LanguageDetector().detect(
+        guess = LanguageDetector().detect(
             _Hub(llm=provider), "This is plain English text."
         )
-        assert code is None or (isinstance(code, str) and len(code) == 2)
+        # The reason is asserted too: a live model that answers nothing must say WHY here, or
+        # the failure the wrapper swallows is invisible in exactly the case it was reported in.
+        assert guess.reason == "", guess.reason
+        assert guess.code is None or (
+            isinstance(guess.code, str) and len(guess.code) == 2
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -220,3 +238,38 @@ class TestTTSLanguagePath:
         )
         service.generate(rule, {"Word": "x"})
         assert tts.calls == [("x", None, "en-US-X")]  # voice wins; no lang threaded
+
+
+class TestAnExplicitLanguageCostsNothing:
+    """A field with its Language set must not pay for detecting one.
+
+    ``for_rule`` used to call the detector unconditionally and then discard the answer on the
+    very next line whenever ``rule.language`` was set — one LLM round trip per note, per tts
+    field, for a question already answered in the config.
+    """
+
+    def test_the_detector_is_never_asked(self):
+        from types import SimpleNamespace
+
+        from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
+
+        class _ForbiddenDetector:
+            def detect(self, providers, text):
+                raise AssertionError("detection ran despite an explicit Language")
+
+        picked: dict[str, object] = {}
+
+        class _Hub:
+            def resolve_auto_voice(self, lang, *, reason=""):
+                picked["lang"], picked["reason"] = lang, reason
+                return "google_translate", ""
+
+            def tts(self, provider=None):
+                return SimpleNamespace(audio_ext="mp3")
+
+        rule = SimpleNamespace(voice="", provider="", language="vi")
+
+        ResolvedVoice.for_rule(_Hub(), _ForbiddenDetector(), rule, "bất kỳ câu nào")
+
+        assert picked["lang"] == "vi"
+        assert picked["reason"] == ""  # nothing failed, so there is no reason to carry

@@ -49,7 +49,9 @@ def service_factory():
 
 class TestLookupEndpoint:
     def test_returns_the_lookup_payload(self, service_factory):
-        _service, port = service_factory(lambda word: {"word": word, "cards": [{"title": word}]})
+        _service, port = service_factory(
+            lambda word: {"word": word, "cards": [{"title": word}]}
+        )
         status, body = _get(port, "/lookup?word=plunge")
         assert status == 200
         assert body == {"word": "plunge", "cards": [{"title": "plunge"}]}
@@ -105,7 +107,9 @@ class TestMainThreadMarshalling:
         assert status == 200
         assert ran_on == ["fake-main"]  # not the HTTP worker thread
 
-    def test_a_wedged_main_thread_becomes_503_not_a_hang(self, service_factory, monkeypatch):
+    def test_a_wedged_main_thread_becomes_503_not_a_hang(
+        self, service_factory, monkeypatch
+    ):
         monkeypatch.setattr(
             "omnia.plugins.word_lookup.service._MAIN_THREAD_TIMEOUT_SECONDS", 0.2
         )

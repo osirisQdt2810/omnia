@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core import anki_compat
+from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine import (
     GenerationResult,
@@ -98,12 +99,17 @@ class ReviewTimeEvaluator:
         def op() -> list[tuple[SmartNotesFieldRule, GenerationResult]]:
             # Review-time pre-generation only fills empty fields; blocked fields stay empty and
             # are simply not written (the next show re-evaluates), so the block list is unused.
-            results, _blocked, _failed = service.generate_note(
-                config,
-                fields,
-                allow_empty_fields=settings.allow_empty_fields,
-                materialize=materialize_once,
-            )
+            # The card is already on screen, so the note's independent fields overlap here too;
+            # the pool lives and dies inside op().
+            with pooled_dispatch(settings.workers()) as dispatch:
+                results, _blocked, _failed = service.generate_note(
+                    config,
+                    fields,
+                    allow_empty_fields=settings.allow_empty_fields,
+                    materialize=materialize_once,
+                    note_id=nid,
+                    dispatch=dispatch,
+                )
             return results
 
         anki_compat.run_in_background(

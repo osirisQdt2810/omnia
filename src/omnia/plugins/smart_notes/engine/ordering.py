@@ -57,6 +57,89 @@ def order_rules(rules: list[SmartNotesFieldRule]) -> list[SmartNotesFieldRule]:
         SmartNotesCycleError: If a rule hard-references itself, or the HARD edges form a cycle.
     """
     count = len(rules)
+    adjacency = _build_adjacency(rules)
+
+    # Stable Kahn's over the resulting DAG (ready rules processed in input order).
+    indegree = _indegrees(adjacency)
+    ready = sorted(index for index in range(count) if indegree[index] == 0)
+    ordered: list[SmartNotesFieldRule] = []
+    while ready:
+        index = ready.pop(0)
+        ordered.append(rules[index])
+        for dependent in sorted(adjacency[index]):
+            indegree[dependent] -= 1
+            if indegree[dependent] == 0:
+                ready.append(dependent)
+        ready.sort()  # stable: lower input index first
+    return ordered
+
+
+def order_rule_levels(
+    rules: list[SmartNotesFieldRule],
+) -> list[list[SmartNotesFieldRule]]:
+    """Group ``rules`` into dependency LEVELS: every rule in a level is independent of its peers.
+
+    Same rules, same edges, same rejections as :func:`order_rules` — it is the identical graph,
+    read for PARALLELISM instead of for order. Level 0 is everything with no prerequisite among
+    ``rules``; level *n* is everything whose prerequisites are all in levels < *n*. Rules inside
+    a level keep their input order.
+
+    Derived from the SURVIVING edge set (the one :func:`_build_adjacency` returns), not from the
+    hard edges alone. A level built from hard edges only would put a soft dependent beside its
+    soft prerequisite; nothing blocks a soft dependency, so that rule would run and interpolate
+    a blank — no exception, no blocked count, no failed count, no way for the user to find out.
+
+    Note this is NOT the display layering
+    (:meth:`~omnia.plugins.smart_notes.engine.graph.FieldGraph._layered_columns`), which is
+    cycle-tolerant, includes the base field and non-generatable rows, and does not drop the
+    cyclic soft edges — it answers "how should this be drawn", not "what may run together".
+
+    Args:
+        rules: The rules selected for one note.
+
+    Returns:
+        The rules grouped into levels, outermost list in dependency order. Flattening it yields
+        a valid topological order (though not necessarily :func:`order_rules`' one — that stays
+        the sole authority on ORDER; this function supplies only parallelism).
+
+    Raises:
+        SmartNotesCycleError: If a rule hard-references itself, or the HARD edges form a cycle.
+    """
+    count = len(rules)
+    adjacency = _build_adjacency(rules)
+    indegree = _indegrees(adjacency)
+    levels: list[list[SmartNotesFieldRule]] = []
+    current = sorted(index for index in range(count) if indegree[index] == 0)
+    while current:
+        levels.append([rules[index] for index in current])
+        following: list[int] = []
+        for index in current:
+            for dependent in adjacency[index]:
+                indegree[dependent] -= 1
+                if indegree[dependent] == 0:
+                    following.append(dependent)
+        current = sorted(following)
+    return levels
+
+
+def _build_adjacency(rules: list[SmartNotesFieldRule]) -> list[set[int]]:
+    """Build the (prerequisite -> dependents) graph both traversals walk.
+
+    ONE function so :func:`order_rules` and :func:`order_rule_levels` can never disagree about
+    what depends on what: the same hard-cycle rejection, the same self-reference rule, and the
+    same "drop a soft edge that would close a loop" decision. Two copies of this would drift,
+    and the drift would show up as a field generated against a blank prerequisite.
+
+    Args:
+        rules: The rules selected for one note.
+
+    Returns:
+        ``adjacency[i]`` = the indices of the rules that depend on ``rules[i]``.
+
+    Raises:
+        SmartNotesCycleError: If a rule hard-references itself, or the HARD edges form a cycle.
+    """
+    count = len(rules)
     by_target: dict[str, int] = {
         rule.target_field.strip().lower(): index
         for index, rule in enumerate(rules)
@@ -96,23 +179,16 @@ def order_rules(rules: list[SmartNotesFieldRule]) -> list[SmartNotesFieldRule]:
     for producer, dependent in soft_pairs:
         if not _reaches(adjacency, dependent, producer):
             adjacency[producer].add(dependent)
+    return adjacency
 
-    # Stable Kahn's over the resulting DAG (ready rules processed in input order).
-    indegree = [0] * count
-    for producer in range(count):
+
+def _indegrees(adjacency: list[set[int]]) -> list[int]:
+    """Return each node's incoming-edge count for ``adjacency``."""
+    indegree = [0] * len(adjacency)
+    for producer in range(len(adjacency)):
         for dependent in adjacency[producer]:
             indegree[dependent] += 1
-    ready = sorted(index for index in range(count) if indegree[index] == 0)
-    ordered: list[SmartNotesFieldRule] = []
-    while ready:
-        index = ready.pop(0)
-        ordered.append(rules[index])
-        for dependent in sorted(adjacency[index]):
-            indegree[dependent] -= 1
-            if indegree[dependent] == 0:
-                ready.append(dependent)
-        ready.sort()  # stable: lower input index first
-    return ordered
+    return indegree
 
 
 def _reaches(adjacency: list[set[int]], start: int, target: int) -> bool:

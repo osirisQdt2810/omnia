@@ -169,13 +169,20 @@ class GenerationPipeline:
         self._ctx = ctx
 
     def run(
-        self, rule: SmartNotesFieldRule, fields: Mapping[str, str]
+        self,
+        rule: SmartNotesFieldRule,
+        fields: Mapping[str, str],
+        *,
+        note_id: int = 0,
     ) -> PipelineResult:
         """Run ``rule``'s tools in order and return the first result, plus the full trace.
 
         Args:
             rule: The compiled rule, whose ``tools`` chain is run in its configured order.
             fields: The note's working field map (freshly chained values included).
+            note_id: The note being generated. Named in every log line this method writes:
+                attribution used to be positional — the sequential loop meant "the line above
+                says which note" — and interleaving notes takes that away silently.
 
         Returns:
             A :class:`PipelineResult` whose ``produced`` is the winning tool's result, or None
@@ -185,12 +192,13 @@ class GenerationPipeline:
         attempts: list[ToolAttempt] = []
         for spec in rule.tools:
             try:
-                attempt, result = self._attempt(spec, rule, fields)
+                attempt, result = self._attempt(spec, rule, fields, note_id)
             except Exception as exc:  # a broken tool must not fail the whole chain
                 self._ctx.logger.exception(
-                    "smart_notes: tool %r failed for field %r",
+                    "smart_notes: tool %r failed for field %r on note %s",
                     spec.name,
                     rule.target_field,
+                    note_id,
                 )
                 attempt, result = (
                     ToolAttempt(spec.name, "error", str(exc), error=exc),
@@ -206,6 +214,7 @@ class GenerationPipeline:
         spec: CompiledToolSpec,
         rule: SmartNotesFieldRule,
         fields: Mapping[str, str],
+        note_id: int = 0,
     ) -> tuple[ToolAttempt, Optional[GenerationResult]]:
         """Resolve ONE tool and give it its turn, returning its attempt and any result.
 
@@ -218,6 +227,7 @@ class GenerationPipeline:
             spec: The chain entry to run (tool name + its stored params).
             rule: The compiled rule being generated.
             fields: The note's working field map.
+            note_id: The note being generated, handed to the tool for its diagnostics.
 
         Returns:
             The attempt to record, and the produced result (None unless the status is
@@ -239,7 +249,10 @@ class GenerationPipeline:
                 None,
             )
         request = ToolRequest(
-            rule=rule, fields=fields, params=tool.parse_params(spec.params)
+            rule=rule,
+            fields=fields,
+            params=tool.parse_params(spec.params),
+            note_id=note_id,
         )
         outcome = tool.run(request, self._ctx)
         match outcome:

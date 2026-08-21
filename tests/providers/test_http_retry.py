@@ -165,9 +165,94 @@ class TestUrllibHttpClientRetry:
         def fake(req, timeout=None):
             calls["n"] += 1
             if calls["n"] < 2:
-                raise urllib.error.URLError("connection refused")
+                # urllib wraps the underlying OSError as the URLError's ``reason`` — and the
+                # reason is what says whether the request ever left this machine.
+                raise urllib.error.URLError(
+                    ConnectionRefusedError("connection refused")
+                )
             return _Resp(b"OK")
 
         monkeypatch.setattr(urllib.request, "urlopen", fake)
         assert _client().post_json_for_bytes("https://x", {}) == b"OK"
+        assert calls["n"] == 2
+
+    def test_a_post_read_timeout_is_retried_and_can_succeed(self, monkeypatch):
+        """A hotel-wifi timeout on a completion must not lose the field on the first try.
+
+        The ambiguity is real (the request went out, the answer did not come back, so a retry
+        MAY pay twice) but refusing to retry does not avoid that cost — the user re-runs the
+        field and pays anyway, having first been shown an error.
+        """
+        calls = {"n": 0}
+
+        def fake(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise TimeoutError("read timed out")
+            return _Resp(b"OK")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        assert _client().post_json_for_bytes("https://x", {}) == b"OK"
+        assert calls["n"] == 2
+
+    def test_a_post_keeps_the_full_network_retry_budget(self, monkeypatch):
+        """A POST retries a read timeout the FULL budget — the same as a GET, as it always has.
+
+        This pins an intent, not a discovery. Bounding a POST to one network retry (to cap a
+        possible double-charge on a request that may already have been applied) was written and
+        reverted: it costs a field that the third attempt would have generated, it does not
+        actually save the charge, and changing how every provider on every path retries is not
+        something a throughput change gets to do quietly. If this test starts asserting two
+        attempts, that decision is being reversed — do it deliberately, in its own change, with
+        a release note.
+        """
+        calls = {"n": 0}
+
+        def fake(req, timeout=None):
+            calls["n"] += 1
+            raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        with pytest.raises(ProviderError):
+            _client().post_json_for_bytes("https://x", {})
+        assert calls["n"] == 3
+
+    def test_a_post_refused_connection_keeps_the_full_retry_budget(self, monkeypatch):
+        """A refused connection is provably PRE-send: retrying it cannot double-charge."""
+        calls = {"n": 0}
+
+        def fake(req, timeout=None):
+            calls["n"] += 1
+            raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        with pytest.raises(ProviderError):
+            _client().post_json_for_bytes("https://x", {})
+        assert calls["n"] == 3
+
+    def test_a_get_exhausts_the_full_budget_on_read_timeouts(self, monkeypatch):
+        """An idempotent request exhausts the budget too — the 5xx narrowing is method-only."""
+        calls = {"n": 0}
+
+        def fake(req, timeout=None):
+            calls["n"] += 1
+            raise TimeoutError("read timed out")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        with pytest.raises(ProviderError):
+            _client().get_bytes("https://x")
+        assert calls["n"] == 3
+
+    def test_a_get_read_timeout_is_still_retried(self, monkeypatch):
+        """GET carries no side effect, so the ambiguity does not exist and retry is free."""
+        calls = {"n": 0}
+
+        def fake(req, timeout=None):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise TimeoutError("read timed out")
+            return _Resp(b"OK")
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        assert _client().get_bytes("https://x") == b"OK"
         assert calls["n"] == 2

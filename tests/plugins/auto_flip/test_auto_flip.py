@@ -1009,6 +1009,8 @@ class TestHtml5MediaWait:
         # emit events we can see) -> the new side must not stay held forever.
         plugin._on_media_busy({}, None)
         gui_hooks.reviewer_will_play_question_sounds.fire(object(), [])
-        assert len(schedule) == 1  # armed: the stale busy flag was reset by the new side
+        assert (
+            len(schedule) == 1
+        )  # armed: the stale busy flag was reset by the new side
 
         plugin.on_disable(ctx)
