@@ -315,6 +315,50 @@ class TestSyncedBlobForwardCompat:
         assert fake.get_config(SmartNotesStore.KEY)["max_concurrent_generations"] == 8
         assert store.load().max_concurrent_generations == 8
 
+    @pytest.mark.parametrize(
+        "key", ["max_concurrent_generations", "batch_notes_per_call"]
+    )
+    def test_a_value_the_user_set_survives_being_the_shipped_default(self, key):
+        """The prune is on PROVENANCE, not on equality with this build's default.
+
+        This is the bug the 1 -> 8 defaults move created and this test exists to stop it coming
+        back. While the prune asked "does it equal the default?", the day the default became 8
+        every user who had deliberately chosen 8 wrote a blob byte-identical to a user who had
+        never opened Advanced — so a device on a build with a different default silently ran
+        something else, and 8 could not be pinned at all (only 7 or 9 survived a save). Both of
+        these knobs move as the measurements do, so equality is never a safe test for either.
+        """
+        default = SmartNotesSettings.__fields__[key].default
+        fake = _FakeCol()
+        store = SmartNotesStore(col_provider=lambda: fake)
+
+        store.save(SmartNotesSettings(**{key: default}))
+
+        assert fake.get_config(SmartNotesStore.KEY)[key] == default
+        # …and it is still there after a load/save cycle: parse_obj marks a key that was in the
+        # blob as set, so re-saving does not quietly drop it on the second write.
+        store.save(store.load())
+        assert fake.get_config(SmartNotesStore.KEY)[key] == default
+
+    def test_a_stored_value_is_not_dropped_when_the_default_moves_to_it(
+        self, monkeypatch
+    ):
+        """Moving a default must never discard what the collection already stored.
+
+        Simulated by moving the default TO the stored value, which is exactly the shape of the
+        1 -> 8 change: the user picked 8 back when the default was 1, then upgraded.
+        """
+        fake = _FakeCol()
+        fake.set_config(SmartNotesStore.KEY, {"max_concurrent_generations": 8})
+        store = SmartNotesStore(col_provider=lambda: fake)
+        monkeypatch.setattr(
+            SmartNotesSettings.__fields__["max_concurrent_generations"], "default", 8
+        )
+
+        store.save(store.load())
+
+        assert fake.get_config(SmartNotesStore.KEY)["max_concurrent_generations"] == 8
+
     def test_a_changed_batch_size_is_persisted_and_round_trips(self):
         fake = _FakeCol()
         store = SmartNotesStore(col_provider=lambda: fake)

@@ -31,9 +31,14 @@ _GENERATION_TYPES = {"text", "image", "tts"}
 DEFAULT_TOOL_NAME = "ai"
 
 # Top-level SmartNotesSettings keys added AFTER the blob's shape was already syncing, and
-# therefore omitted from the serialized form while they hold their default (see
+# therefore omitted from the serialized form while NOBODY HAS EVER SET THEM (see
 # SmartNotesSettings.dict). Listed once so the prune cannot drift from the set it covers.
-_PRUNE_WHILE_DEFAULT = ("max_concurrent_generations", "batch_notes_per_call")
+#
+# "Never set", not "equal to the default": these are the two knobs whose defaults move as the
+# measurements do, and a prune keyed on the current default deletes precisely the value a user
+# deliberately chose the day it becomes the shipped one — see the test named after this
+# constant in tests/plugins/smart_notes/test_store.py.
+_PRUNE_WHILE_UNSET = ("max_concurrent_generations", "batch_notes_per_call")
 
 # The ceilings this build will honour, applied by SmartNotesSettings.workers() /
 # .notes_per_call() rather than by a model validator — see max_concurrent_generations for why a
@@ -344,20 +349,97 @@ class SmartNotesSettings(PersistedModel):
     # value on the next save. The stored number round-trips untouched, and this build simply
     # runs as many workers as it is willing to.
     #
-    # DEFAULT 1 — a user who changed nothing gets exactly the pre-concurrency behaviour: no
-    # pool is created, one field at a time, one provider request in flight. Concurrency raises
-    # the load on a shared provider ACCOUNT, and a default that raises it for someone who never
-    # asked is a rate-limit bill they did not opt into.
-    max_concurrent_generations: int = 1
+    # DEFAULT 8, from the LIVE benchmark (``tests/benchmarks/smart_notes_live.py``, rows in
+    # ``tests/benchmarks/data/live_100notes_2026-08-22.json``): 100 real notes of the measured
+    # note type, 19 generated fields each, against the real Vertex endpoint, every arm run
+    # twice. Mean wall clock, with the min–max of the two runs:
+    #
+    #   arm      wall clock      spread   provider calls   429s   fill    bleed/1000
+    #   4x1      1905.1 s  (1852–1958)     5.6%     1300      0   89.47%      140.5
+    #   8x1      1254.1 s  (1210–1298)     7.0%     1300      0   89.47%      143.5
+    #   4x10     1501.5 s  (1394–1609)    14.3%      808      0   89.50%      133.0
+    #   8x10     1162.5 s  (1110–1215)     9.0%      794      0   89.50%      138.5
+    #   8x20     1049.5 s   (998–1101)     9.8%      574      0   89.50%      131.0
+    #   16x10     748.2 s   (685–812)     16.9%      877      0   89.42%      145.5
+    #
+    # Read the last column with its instrument's sensitivity attached: "bleed" is a headword
+    # scan that fires only when the bleeding text restates the OTHER note's headword, and against
+    # a constructed neighbour swap on this deck it catches ~42% of deliberate mis-attributions
+    # (0–12% on Definition, Antonyms, Meaning (vi), part of speech and IPA). A flat bleed column
+    # means "not detected", never "did not happen" — the harness now prints its own recall next
+    # to the number so this caveat travels with every future run.
+    #
+    # THE ONE COLUMN THAT REPRODUCED IS THE WORKER COUNT, and it reproduced on BOTH same-K
+    # comparisons the study contains, not one: 4x1 (1851.8–1958.4 s) against 8x1
+    # (1210.4–1297.8 s), and 4x10 (1394.5–1608.5 s) against 8x10 (1110.0–1214.9 s). Neither
+    # pair's ranges overlap, and a second session on 20 notes separates again — 4x1
+    # (370.9–393.7 s) against 8x1 (206.3–221.5 s), ``live_20notes_repro_2026-08-22.json``.
+    # Three independent separations, all the same direction, is why this number is shipped
+    # while the one below is not.
+    # The K column did NOT reproduce between those two sessions — see ``batch_notes_per_call``
+    # below — so nothing on this field rests on it.
+    #
+    # 8, not 16, even though 16x10 was the fastest arm measured and its two samples do not
+    # overlap 8x20's. Three reasons, and the ranking is honest about which are measurement.
+    # (1) JUDGMENT, and the reason that actually decides it: the zero in the 429 column is a
+    # property of the ACCOUNT this ran against (one Vertex project with a generous quota), not
+    # of the world. A default that is the widest thing that happened to work on a generous key
+    # is a rate-limit bill for someone on a free-tier one. (2) 16 is ``MAX_WORKERS``, so
+    # shipping it leaves the Advanced control able only to go down. (3) THIN, n = 1: 16x10 is
+    # the only arm that lost a field, an edge_tts WebSocket connect timing out in one of its two
+    # runs (1698/1900 where the other eleven runs filled 1700 or 1701). That is one flake on
+    # Microsoft's keyless TTS endpoint, not on the LLM whose concurrency this knob bounds, and
+    # 16x10 rep 2 filled 1700 — so it is a tiebreaker, not evidence. Note also that 16 was only
+    # ever run at K = 10, whose cohort is ``max(16, 10) = 16`` and therefore splits 10 + 6 with
+    # singleton leftovers falling back to solo (877 calls against 8x10's 794): the 16-worker arm
+    # was never measured at a K that divides its cohort cleanly.
+    #
+    # It was 1 — the pre-concurrency behaviour. That exact pairing (1 worker, K = 10) appears in
+    # none of the twelve rows above; it was measured separately, once, on ten notes
+    # (``live_10notes_old_default_2026-08-22.json``): 167.1 s against 8x1's 110.1 s and 8x20's
+    # 100.0 s in the same session, i.e. roughly 1.5–1.7x. The hundred-note table is what
+    # establishes the 4 → 8 step; the ten-note run is what establishes that the OLD default was
+    # on the slow side of it. Neither is quoted for more than it is.
+    max_concurrent_generations: int = 8
     # How many NOTES one provider request may cover for the same field. Every note of a note
     # type shares that field's prompt template, so K of them can be asked in one call — see
     # ADR-017 and :mod:`~omnia.plugins.smart_notes.engine.batching`.
     #
     # 1 means OFF for this collection. The DEFAULT is 10, matching
-    # ``envs.OMNIA_SMART_NOTES_BATCHING``: batching cuts requests by about two thirds and the
-    # shipped worker count is 1, where a chunk has no parallelism to destroy. ONE key rather
-    # than a bool plus an int — "off" is exactly what K = 1 expresses, and every extra persisted
-    # key is another ADR-010 surface.
+    # ``envs.OMNIA_SMART_NOTES_BATCHING``.
+    #
+    # WHAT BATCHING BUYS IS REQUESTS, AND ONLY REQUESTS. That half is measured and it reproduces:
+    # at 8 workers over 100 notes, K = 10 sent 794 provider calls and K = 20 sent 574, against
+    # 1300 ungrouped (−39% and −56%); the second session's 20-note runs came out at −41% and
+    # −59%.
+    #
+    # THE LATENCY EFFECT IS UNPROVEN. The table above has 8x20 at 1049.5 s and 8x10 at 1162.5 s
+    # against 8x1's 1254.1 s, which reads as grouping being mildly faster; re-running the same
+    # harness against the same collection in a second session
+    # (``live_20notes_repro_2026-08-22.json``) gave 8x1 213.9 s (206.3–221.5), 8x20 215.2 s
+    # (175.0–255.4 — a tie) and 8x10 476.5 s (435.4–517.6 — 2.2x SLOWER). Two sessions, opposite
+    # answers, with the within-arm spread as wide as the between-arm gap. Do not write "batching
+    # is faster" or "batching is slower" anywhere; n = 2 per arm cannot tell.
+    #
+    # 10 rather than 20 for a reason that does not depend on the timing study at all: the output
+    # budget. A chunk asks for K answers inside ONE completion, the measured deck's binding field
+    # is "Synonyms (explained)" at ~677 output tokens at its longest, and 8192/677 ≈ 12 — so 10
+    # stays under the cap even when every answer in the chunk is the longest ever seen and 20
+    # does not. ``FieldBudget`` shrinks K further per field from the lengths that field actually
+    # produces (the 8x20 runs sent 155 and 124 chunks where a flat K = 20 would have sent 50),
+    # but a floor that holds without the adaptive layer is worth having. ONE key rather than a
+    # bool plus an int — "off" is exactly what K = 1 expresses, and every extra persisted key is
+    # another ADR-010 surface.
+    #
+    # The price, stated because nothing else states it: a cohort is ``max(workers, K)`` notes and
+    # a cancel lands between cohorts (ADR-016), so at the shipped 8 workers the cancel window is
+    # 10 notes rather than 8 — roughly 2 minutes on the measured deck.
+    #
+    # One axis nothing here measures: batched answers came back about 20% SHORTER than solo ones
+    # on the same fields (93.5 chars mean solo, 74.5 at K = 10, 75.3 at K = 20 over 100 AI text
+    # fields). Terser, not truncated, and present at both K — but ``fields_filled`` scores a
+    # half-length answer as a success, so "no observable price" is not a claim this build can
+    # make about content.
     #
     # No ``ge``/``le``, and clamped at the point of use, for the same reason as the field above.
     #
@@ -397,7 +479,7 @@ class SmartNotesSettings(PersistedModel):
         return max(1, min(int(self.batch_notes_per_call), allowed, MAX_NOTES_PER_CALL))
 
     def dict(self, **kwargs: Any) -> dict[str, Any]:
-        """Serialize the settings, OMITTING the performance keys while they are default.
+        """Serialize the settings, OMITTING the performance keys nobody has ever set.
 
         Same reasoning as :meth:`SmartNotesFieldConfig.dict`, and the same stakes: this blob
         SYNCS. A device on a build from before
@@ -406,17 +488,34 @@ class SmartNotesSettings(PersistedModel):
         :meth:`~omnia.plugins.smart_notes.integration.store.SmartNotesStore.load`, so an
         unknown key there is not a lost setting — it is a crash on every note-add hook. A user
         who never opens Advanced therefore keeps writing a blob byte-identical to today's, and
-        a key appears only once someone actually changes it.
+        a key appears only once someone actually sets it.
+
+        The test is PROVENANCE (``__fields_set__``), not equality with the current default, and
+        the difference is the whole point. Equality was fine while the defaults were the
+        pre-feature behaviour and could not move; the moment a measurement moved
+        ``max_concurrent_generations`` to 8, an equality prune started deleting the stored 8 of
+        every user who had deliberately chosen it — leaving a blob byte-identical to one from a
+        user who never opened Advanced, so a device on a build with a different default silently
+        ran something else, and the value could not be pinned at all (only 7 or 9 survived).
+        A key that was present in the loaded blob, passed to the constructor, or written through
+        :meth:`pydantic.BaseModel.copy` is SET and is always serialized, whatever it holds; a
+        key nobody has ever named is omitted, whatever this build's default happens to be. That
+        keeps the ADR-010 promise attached to "the user never touched it", which is the thing it
+        was always about.
+
+        The GUI cooperates: the save controller puts these keys into its ``copy(update=…)`` only
+        when the pane sends a value that DIFFERS from the stored one, so opening the dialog and
+        saving an untouched Advanced pane still writes nothing.
 
         Args:
             **kwargs: Passed through to :meth:`pydantic.BaseModel.dict` unchanged.
 
         Returns:
-            The settings' serialized form, without the still-default performance keys.
+            The settings' serialized form, without the never-set performance keys.
         """
         data: dict[str, Any] = super().dict(**kwargs)
-        for key in _PRUNE_WHILE_DEFAULT:
-            if data.get(key) == type(self).__fields__[key].default:
+        for key in _PRUNE_WHILE_UNSET:
+            if key not in self.__fields_set__:
                 data.pop(key, None)
         return data
 

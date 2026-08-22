@@ -95,8 +95,14 @@
     }
     // Seeding matters as much as reading back: an unseeded control posts its own blank value
     // on the next save and silently resets what another device set.
+    //
+    // The four fallbacks below (two here, two in collectOptions) MUST equal
+    // SmartNotesSettings.max_concurrent_generations / .batch_notes_per_call. They are pinned to
+    // the Python model by test_the_pane_fallbacks_match_the_python_defaults — a stale number
+    // here seeds a control whose key is absent, posts it, and writes it, which is exactly the
+    // clobbering the absent-key rule exists to prevent.
     if (optConcurrency) {
-      optConcurrency.value = String(clampInt(opts.max_concurrent_generations, 1, 16, 1));
+      optConcurrency.value = String(clampInt(opts.max_concurrent_generations, 1, 16, 8));
     }
     if (optBatchNotes) {
       // 10, not 1, when the key is absent: it is the model's default (see
@@ -298,7 +304,7 @@
     // a hard-coded fallback here would send the key, bypass that branch, and do exactly the
     // clobbering the branch was written to prevent.
     if (optConcurrency) {
-      opts.max_concurrent_generations = clampInt(optConcurrency.value, 1, 16, 1);
+      opts.max_concurrent_generations = clampInt(optConcurrency.value, 1, 16, 8);
     }
     if (optBatchNotes) {
       opts.batch_notes_per_call = clampInt(optBatchNotes.value, 1, 20, 10);

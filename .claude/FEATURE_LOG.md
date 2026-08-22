@@ -21,6 +21,88 @@ Format for each entry:
 
 ---
 
+## 2026-08-22 — Generation defaults from a live benchmark: 8 workers, K stays 10
+
+**What:** `max_concurrent_generations` ships at **8** instead of 1;
+`OMNIA_SMART_NOTES_BATCHING` / `batch_notes_per_call` stay at **10** (they were briefly moved to
+20 and moved back); `OMNIA_MAX_CONCURRENT_REQUESTS` stays 0. A live benchmark
+(`tests/benchmarks/smart_notes_live.py`) and the raw rows of all three measurement sessions
+(`tests/benchmarks/data/`) are now part of the repo, so a default can be re-derived rather than
+taken on trust. The prune that hides these two keys from the synced blob is now on PROVENANCE
+(`__fields_set__`) rather than on equality with the current default. See ADR-018.
+
+**Why:** the previous defaults came from `smart_notes_throughput.py`, a fake rig whose latency
+model is a parameter rather than a measurement — it charges a chunk per OUTPUT ITEM, so K answers
+in one call cost exactly what K calls cost and grouping could only ever measure slower. That
+artefact had been quoted forward into a source comment, an ADR, this file and a user-facing
+tooltip that told people grouping was "measurably SLOWER". A live session then produced the
+opposite result and it, too, was briefly shipped — and **it did not reproduce**.
+
+**What reproduced, and what did not.** Both sessions ran the same harness against the same
+collection with the same settings and the same account.
+
+| comparison | 100-note session | 20-note session | verdict |
+|---|---|---|---|
+| 4 → 8 workers, K = 1 | 1851.8–1958.4 s → 1210.4–1297.8 s | 370.9–393.7 s → 206.3–221.5 s | **established** (ranges do not overlap, twice) |
+| requests, 8 workers | 1300 → 794 (K=10, −39%) → 574 (K=20, −56%) | 260 → 152.5 (−41%) → 106 (−59%) | **established** |
+| K on wall clock, 8 workers | 8x1 1254.1, 8x10 1162.5, 8x20 1049.5 | 8x1 213.9, 8x10 476.5 (2.2x slower), 8x20 215.2 (tie) | **UNPROVEN — do not claim faster OR slower** |
+
+Within-arm spread was as wide as the between-arm gap (8x20 varied 175.0–255.4 s in the second
+session). Two samples of a network-bound arm is not a measurement of it.
+
+**So K = 10 ships for the reason that never depended on the timing study**: a chunk asks for K
+answers inside one completion, the measured deck's binding field runs ~677 output tokens at its
+longest, and 8192/677 ≈ 12. And **8 workers, not 16** — the 429 column's zero is one generous
+Vertex project's quota rather than a property of the world (judgment), 16 is `MAX_WORKERS`
+(principle), and the one field 16x10 lost was an `edge_tts` WebSocket timeout in one of its two
+runs (n = 1, and on a different provider from the one this knob bounds).
+
+**Files:** `src/omnia/envs.py`, `src/omnia/plugins/smart_notes/config.py` (both defaults, the
+prune, the rationale comments), `src/omnia/gui/smart_notes/dialogs/controllers/config.py`
+(`_performance_updates` — a save records only a CHANGE), `src/omnia/gui/smart_notes/web/page.html`
+(the Advanced tooltip), `src/omnia/gui/smart_notes/web/05-handlers.js` (the four fallbacks),
+`engine/{batching,service}.py` docstrings; new `tests/benchmarks/data/` (three sessions' rows +
+README), `tests/benchmarks/smart_notes_live.py` (`WriteGuard`, bleed-recall calibration, token and
+answer-length columns, the not-HTTP-metered column); `tests/benchmarks/smart_notes_throughput.py`
+(a warning that its wall-clock column cannot decide a batching default); tests in
+`tests/gui/{test_smart_notes_html,test_smart_notes_dialog_deps}.py` and
+`tests/plugins/smart_notes/{test_batching,test_store}.py`.
+
+**How to verify:**
+`.venv/bin/python -m pytest tests/ -q -m "not llm and not tts and not integration"` →
+`2281 passed, 18 skipped, 105 deselected`. Re-derive any quoted table from the committed rows:
+
+```bash
+python3 - <<'EOF'
+import json, statistics
+rows = json.load(open("tests/benchmarks/data/live_100notes_2026-08-22.json"))
+by_arm = {}
+for r in rows:
+    by_arm.setdefault(r["label"], []).append(r["seconds"])
+for arm, secs in by_arm.items():
+    print(f"{arm:>6} {statistics.mean(secs):8.1f} s  ({min(secs):.1f}-{max(secs):.1f})")
+EOF
+```
+
+**Numbers this entry deliberately does not repeat**, because they were wrong the first time and
+the corrected values are the only ones that reconcile with the committed rows: the twelve
+100-note runs contain **four** retries (one each in 4x1 r1, 4x10 r1, 8x20 r2, 16x10 r1), all
+network errors and no 429s; their arm time sums to **15,241.8 s = 4 h 14 m**, not 3 h 07 m; fill
+was 1700 or 1701 in eleven runs and 1698 in 16x10 r1, so "1700 everywhere else" was not what the
+table showed.
+
+**Notes / rollback:** `max_concurrent_generations = 1` is the exact revert to pre-concurrency
+execution (no pool is created), and `OMNIA_SMART_NOTES_BATCHING=-1` still switches grouping off
+machine-wide. Residuals, all in ADR-018: 8 workers is a **load increase for every existing user**
+against a provider account whose 429 behaviour was measured on one generous key; the **bleed
+metric catches ~42%** of a constructed neighbour swap and is near-blind (0–12%) on `Definition`,
+`Antonyms`, `Meaning (vi)`, part of speech and IPA, so a flat bleed column means "not detected";
+about a **third of provider calls (`edge_tts`, WebSocket) never reach the 429 instrument**, so
+"zero 429s" is a statement about the HTTP providers only; **batched answers ran ~20% shorter**
+than solo ones at both K, which `fields_filled` scores as a success; and **pinning the shipped
+default from a blob that never carried the key takes two saves** (set another value, then set it
+back) because the controller records only a change.
+
 ## 2026-08-21 — K-note batching for smart-notes text fields (LAYER 3)
 
 **What:** A batch run can ask for the SAME field on several notes in one provider call.
@@ -48,6 +130,13 @@ field's answers actually cost. Default ON because it pairs with
 `max_concurrent_generations = 1`: at one worker there is no parallelism for a chunk to
 serialise, so the −64% request saving costs nothing. **That interaction is the whole
 justification — raise the worker count and K should come down.**
+
+> **CORRECTED (2026-08-22) — see the 2026-08-22 entry at the top and ADR-018.** The output-budget
+> half of this paragraph is right and is now the WHOLE justification for K = 10. The pairing half
+> is not: `max_concurrent_generations` ships at 8, and "raise the worker count and K should come
+> down" was derived from a fake rig's latency model that a real endpoint did not confirm — and
+> that a second live session contradicted in the other direction. **K's effect on wall clock is
+> unproven either way**; K = 10 stands on 8192/677 ≈ 12 alone.
 
 **Files:** new `plugins/smart_notes/engine/batching.py` (`FieldWork`, `WaveTask`/`SoloTask`/
 `ChunkTask`, `SoloPlanner`/`FieldBatchRunner`, `FieldBudget`, `parse_batch_items`, `match_items`,
@@ -96,6 +185,17 @@ serialise, so the request saving costs nothing. Raising the worker count should 
 That number depends on no latency model. Turn it on to stay under a rate limit or to cut
 per-request overhead; do not turn it on to make a batch finish sooner, and do not turn it on at
 a high worker count at all.
+
+> **RETRACTED IN PART (2026-08-22) — see ADR-018.** The half that survives is the one depending on
+> no latency model: **LAYER 3 buys REQUESTS.** Everything above about SECONDS does not. `output=`
+> is an assumption about how a provider splits a call between fixed overhead and generating
+> tokens; nothing in this repo measures it, and at `output=0%` the same rig has batching winning
+> everywhere. Against the real endpoint one session had grouping faster at every worker count and
+> a second had K=20 tied with ungrouped and K=10 2.2x slower, with each arm's own run-to-run
+> spread as wide as the gap between arms (rows in `tests/benchmarks/data/`). So: do not read
+> "0.75× at N=8" as a property of the feature, do not read the live session's opposite as one
+> either, and note that the shipped default no longer pairs K with one worker — it is 8 workers
+> and K = 10, the latter on the output budget alone.
 
 Input tokens are not a free win either. On the long template the envelope amortises
 (211,082 → 92,442 prompt chars) but the prefix-cache hits drop 490 → 40; on a one-line template
@@ -200,6 +300,9 @@ the calling thread, with the `ThreadPoolExecutor`-backed `PooledDispatch` in `in
 a `NoteRun` that walks one note a dependency LEVEL at a time, which the batch runner drives for
 several notes at once (cohort → round → wave). One setting, `max_concurrent_generations`,
 **default 1 — the pre-concurrency behaviour, with no pool created at all**. See ADR-016.
+
+> **SUPERSEDED (2026-08-22): the default is 8** — see the 2026-08-22 entry at the top and
+> ADR-018. `= 1` is still the exact revert; it is no longer what a user gets without asking.
 
 **Why:** On the note type this was measured against (35 fields, 17 with generation on, 8435
 notes) the dependency graph puts those 17 fields in only 5 levels of widths 2/4/6/4/1 — fields

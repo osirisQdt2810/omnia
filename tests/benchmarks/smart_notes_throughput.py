@@ -13,6 +13,16 @@ Run it:
     python tests/benchmarks/smart_notes_throughput.py --template short      # LAYER 2 on a one-line template
     python tests/benchmarks/smart_notes_throughput.py --rate-limit 4 --request-limit 4   # the limiter, binding
 
+**Its wall-clock column cannot decide a batching default, and has twice been read as if it
+could.** ``--output-share`` is an ASSUMPTION about how a provider divides a call between fixed
+overhead and generating tokens, not a calibration of one: at ``0`` grouping wins everywhere, at
+``0.5`` it loses above one worker, and nothing in this repo measures the real split for any
+model. The 0.5 rows were once quoted as "batching is measurably slower above one worker" and
+shipped into a UI tooltip; the live rig (``smart_notes_live.py``) then produced the opposite
+result, and a second live session produced neither. Use this file for what it can prove — CALL
+COUNTS, prompt-cache hits, field identity, the fallback ladder under a hostile provider — and
+use the live rig plus ``tests/benchmarks/data/`` for anything about seconds.
+
 Three things this file was rebuilt to stop overstating, all of them the same mistake — a number
 that is a property of the RIG being reported as a property of the WORLD:
 

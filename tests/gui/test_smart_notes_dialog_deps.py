@@ -593,6 +593,47 @@ class TestConcurrencyOptionSaveCycle:
 
         assert saved[0].batch_notes_per_call == 5
 
+    def test_saving_an_untouched_pane_writes_no_performance_key_at_all(self):
+        """Opening the dialog and pressing Save must not start writing these two keys.
+
+        The pane always posts both numbers when its controls render, so the controller cannot
+        tell "the user chose 8" from "the seeded 8 came back unchanged" by presence alone — it
+        compares against the STORED value. Naming a key in ``copy(update=…)`` marks it set, and
+        :meth:`SmartNotesSettings.dict` serializes exactly the keys that are set, so including an
+        unchanged value would make every save write two keys a pre-ADR-010 device rejects with a
+        crash on every note-add hook.
+        """
+        defaults = {
+            "max_concurrent_generations": SmartNotesSettings.__fields__[
+                "max_concurrent_generations"
+            ].default,
+            "batch_notes_per_call": SmartNotesSettings.__fields__[
+                "batch_notes_per_call"
+            ].default,
+        }
+
+        _result, saved = self._save(self._rows(), None, options=dict(defaults))
+
+        blob = saved[0].dict()
+        assert "max_concurrent_generations" not in blob
+        assert "batch_notes_per_call" not in blob
+
+    def test_choosing_this_build_s_default_on_purpose_is_written(self):
+        """The other half: a real change TO the default value must persist.
+
+        The old prune dropped any value equal to the current default, so the day the default
+        moved to 8 a user who deliberately picked 8 wrote nothing and every other device kept
+        running its own default. Changing 4 -> 8 is a change, and it is stored as one.
+        """
+        default = SmartNotesSettings.__fields__["max_concurrent_generations"].default
+        stored = SmartNotesSettings(max_concurrent_generations=4)
+
+        _result, saved = self._save(
+            self._rows(), stored, options={"max_concurrent_generations": default}
+        )
+
+        assert saved[0].dict()["max_concurrent_generations"] == default
+
 
 class TestClassifyDepsThreadRouting:
     """Guards the single most dangerous invariant: an off-main-thread eval_js is a native Qt

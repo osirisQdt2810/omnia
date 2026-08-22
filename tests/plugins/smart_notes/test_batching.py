@@ -592,7 +592,15 @@ class TestTheEnvKnobDecides:
         assert settings.notes_per_call() == 1
 
     def test_the_default_is_ten_when_nothing_is_set(self, monkeypatch):
-        """The shipped configuration: K = 10, chosen from the output budget (see envs.py)."""
+        """The shipped configuration: K = 10, from the OUTPUT BUDGET (see envs.py).
+
+        Briefly 20, on the strength of one live session that had K = 20 finishing sooner. It
+        does not reproduce — a second session had K = 20 tied with ungrouped and K = 10 2.2x
+        slower — so the latency argument cannot carry a default in either direction. 10 is what
+        the argument that does NOT depend on the timing study gives: a chunk asks for K answers
+        inside one completion, the binding field runs ~677 output tokens at its longest, and
+        8192/677 ~= 12. Both sessions' rows are in ``tests/benchmarks/data/``.
+        """
         monkeypatch.delenv("OMNIA_SMART_NOTES_BATCHING", raising=False)
 
         assert SmartNotesSettings().notes_per_call() == 10
@@ -1024,10 +1032,16 @@ class TestChunkSizing:
 
     def test_a_halving_is_remembered_for_the_rest_of_the_run(self, monkeypatch):
         # 10 notes, K=5: the first chunk halves and pins 2, so the remaining chunks are 2 wide.
+        #
+        # One worker, pinned, because a cohort is max(workers, K) and this assertion counts
+        # chunks per cohort. At the shipped 8 workers the cohort is 8, so the first wave is
+        # planned as 5 + 3 — and that 3 was sized BEFORE the halving was recorded, which is
+        # correct behaviour and not what this test is about. Pinning the cohort to K keeps the
+        # subject the budget's memory rather than the shipped worker count.
         llm = _BatchingLLM(corrupt="not-json")
 
         _notes, _summary, _compat = _run_batch(
-            monkeypatch, llm, notes=10, notes_per_call=5
+            monkeypatch, llm, notes=10, notes_per_call=5, max_concurrent_generations=1
         )
 
         assert llm.batch_calls[0] and len(llm.batch_calls[0]) == 5

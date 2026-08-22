@@ -94,20 +94,34 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # ids, no batched parser. Any value >= 1 is K, and it is the CEILING the stored
     # ``batch_notes_per_call`` is clamped to, so this knob always has the last word.
     #
-    # DEFAULT 10, and the number comes from the output budget rather than from taste. On the
-    # deck this was sized against, the binding field is "Synonyms (explained)" at ~385 output
-    # tokens p95 and ~677 at its longest; a chunk asks for K answers inside ONE completion, so K
-    # must satisfy K x 677 <= the model's output cap. Against Gemini Flash's 8192 that is
-    # 8192/677 ≈ 12 in the worst case, and 10 stays under it even when every answer in the chunk
-    # is the longest one ever seen. FieldBudget then shrinks K further, per field, from what that
-    # field's answers actually cost.
+    # DEFAULT 10, from the OUTPUT BUDGET, which is the one argument for a K that does not depend
+    # on a timing study: a chunk asks for K answers inside ONE completion, the measured deck's
+    # binding field is "Synonyms (explained)" at ~677 output tokens at its longest, and
+    # 8192/677 ~= 12. 10 stays under the cap even when every answer in the chunk is the longest
+    # ever seen. FieldBudget shrinks K further per field from the lengths that field actually
+    # produces (the K=20 runs sent 155 and 124 chunks where a flat 20 would have sent 50), but a
+    # floor that holds without the adaptive layer is worth having.
     #
-    # What batching buys is REQUESTS, not seconds: on the benchmark workload 700 -> 250 (-64%).
-    # It does NOT finish sooner, and above one worker it is slower — a chunk serialises K
-    # answers' worth of generation into one worker that a wide pool would have run in parallel
-    # (at 8 workers, 0.71x at output share 0.5 and 0.39x at 1.0). It pairs with the default of
-    # ONE worker (``max_concurrent_generations``), where there is no parallelism for a chunk to
-    # destroy and grouping is a clear win. Raise the worker count and this should come down.
+    # WHAT BATCHING BUYS IS REQUESTS. That is measured and it reproduces: at 8 workers over 100
+    # real notes, K=10 sent 794 provider calls and K=20 sent 574, against 1300 ungrouped (-39%
+    # and -56%); the second session's 20-note runs came out at -41% and -59%. The harness is
+    # tests/benchmarks/smart_notes_live.py and the rows both sessions produced are committed
+    # beside it in tests/benchmarks/data/ — see that directory's README for what each session
+    # does and does not establish.
+    #
+    # THE LATENCY EFFECT IS UNPROVEN, AND TWO OPPOSITE CLAIMS HAVE BEEN MADE HERE ALREADY. The
+    # first came from the fake rig, which charged a chunk per OUTPUT ITEM — so K answers in one
+    # call cost exactly what K calls cost and grouping could only ever measure slower; that is an
+    # artefact of the rig and "fewer requests, never fewer seconds" was never established. The
+    # second came from one live session, which had K=20 at 1049.5 s and K=10 at 1162.5 s against
+    # 1254.1 s ungrouped and was read as "faster everywhere". It does not reproduce: re-running
+    # the same harness against the same collection gave 8x1 213.9 s (206.3-221.5), 8x20 215.2 s
+    # (175.0-255.4, a tie) and 8x10 476.5 s (435.4-517.6, 2.2x SLOWER). Two sessions, opposite
+    # answers, within-arm spread as wide as the between-arm gap. Treat K's effect on wall clock
+    # as WITHIN NOISE: do not claim batching is faster, and do not claim it is slower.
+    #
+    # The worker count is the knob the same study DID settle, and it is a different knob — see
+    # SmartNotesSettings.max_concurrent_generations.
     "OMNIA_SMART_NOTES_BATCHING": lambda: _int("OMNIA_SMART_NOTES_BATCHING", 10),
     # ── provider request bound ── how many provider HTTP requests may be in flight at once
     # while a generation fan-out is running (see core/network/limiter.py). 0 = size the bound
@@ -115,6 +129,25 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # count to express "run 8 fields at once but keep at most 3 requests in flight" — the case
     # a bound derived from the pool width cannot express, and the reason the limiter is a
     # separate mechanism from the pool rather than a restatement of it.
+    #
+    # STAYS 0 after the live benchmark, and that is a result rather than an omission. Across
+    # twelve real runs at 4, 8 and 16 workers the provider returned ZERO 429s; the retry loop
+    # fired FOUR times, once each in four different runs (4x1 rep1, 4x10 rep1, 8x20 rep2,
+    # 16x10 rep1), every one of them a network error rather than a throttle. The limiter's own
+    # peak was exactly the pool width in every arm and its total wait was 0.0 s, i.e. nothing
+    # ever queued behind the bound. There is no measured load at which the limiter needs to bind
+    # BELOW the pool, so shipping a number here would only be a slower default wearing a safety
+    # label. It stays the escape hatch for a tighter account — which is exactly the account whose
+    # 429s this run could not observe, because it ran against one Vertex project with a generous
+    # quota.
+    #
+    # TWO LIMITS ON THAT ZERO, both stated because the number is otherwise read as a guarantee.
+    # (a) It is one account's quota, not a property of the provider. (b) The 429 counter watches
+    # the urllib client, and about a third of the run's provider calls do not go through it: the
+    # edge_tts TTS path speaks a WebSocket (198-201 of every run's calls; 200 of the 8x20 arm's
+    # 600). Throttling there arrives as a socket timeout, which no 429 classifier can recognise —
+    # and the study's single provider error was on exactly that path. "Zero 429s" is established
+    # for the HTTP providers and is simply not measured for edge_tts.
     "OMNIA_MAX_CONCURRENT_REQUESTS": lambda: _int("OMNIA_MAX_CONCURRENT_REQUESTS", 0),
     # ── HTTP ── default request timeout (seconds) for the stdlib HTTP client.
     "OMNIA_HTTP_TIMEOUT": lambda: _float("OMNIA_HTTP_TIMEOUT", 30.0),

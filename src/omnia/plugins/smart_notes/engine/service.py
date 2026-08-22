@@ -184,9 +184,9 @@ class GenerationService:
     def batch_planner(self, *, notes_per_call: int) -> WavePlanner:
         """Return the planner a batch run's waves go through.
 
-        ``notes_per_call <= 1`` — the shipped default — returns the SOLO planner, so "batching
-        off" is the pre-batching code path rather than the batching code path configured to a
-        width of one: no envelope, no ids, no parsing, nothing to get wrong.
+        ``notes_per_call <= 1`` — which the shipped default of 10 is NOT — returns the SOLO
+        planner, so "batching off" is the pre-batching code path rather than the batching code
+        path configured to a width of one: no envelope, no ids, no parsing, nothing to get wrong.
         """
         if notes_per_call <= 1:
             return SOLO_PLANNER

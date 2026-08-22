@@ -26,7 +26,11 @@ from omnia.gui.smart_notes.html import (
     row_to_payload,
     rows_for_note_type,
 )
-from omnia.plugins.smart_notes.config import MAX_NOTES_PER_CALL, MAX_WORKERS
+from omnia.plugins.smart_notes.config import (
+    MAX_NOTES_PER_CALL,
+    MAX_WORKERS,
+    SmartNotesSettings,
+)
 from omnia.plugins.smart_notes.integration.installer import (
     ClipperInstaller,
     InstallError,
@@ -180,6 +184,7 @@ class ConfigController:
         self._ctx.store.save(
             settings.copy(
                 update={
+                    **self._performance_updates(opts, settings),
                     "note_types": merged,
                     "generate_at_review": bool(
                         opts.get("generate_at_review", settings.generate_at_review)
@@ -198,35 +203,9 @@ class ConfigController:
                             "discard_unfilled_clips", settings.discard_unfilled_clips
                         )
                     ),
-                    # An ABSENT key keeps the stored value verbatim — not clamped, not
-                    # defaulted. A page that predates this control (or one that failed to seed
-                    # it) would otherwise reset a value set on another device on every save,
-                    # and clamping the fallback would quietly narrow a newer release's number.
-                    "max_concurrent_generations": (
-                        _clamp_int(
-                            opts["max_concurrent_generations"],
-                            1,
-                            _MAX_CONCURRENCY,
-                            settings.max_concurrent_generations,
-                        )
-                        if "max_concurrent_generations" in opts
-                        else settings.max_concurrent_generations
-                    ),
-                    # Same absent-key rule, same reason (see above): 1 means "grouping off" for
-                    # this collection, and defaulting an omitted key to it would switch off a
-                    # setting another device chose. What the ENVIRONMENT allows is a separate
-                    # ceiling applied at the point of use (SmartNotesSettings.notes_per_call),
-                    # never written here — a machine's knob must not travel through sync.
-                    "batch_notes_per_call": (
-                        _clamp_int(
-                            opts["batch_notes_per_call"],
-                            1,
-                            MAX_NOTES_PER_CALL,
-                            settings.batch_notes_per_call,
-                        )
-                        if "batch_notes_per_call" in opts
-                        else settings.batch_notes_per_call
-                    ),
+                    # The two performance knobs are handled by _performance_updates above, and
+                    # deliberately not here: naming a key in this dict marks it SET on the model,
+                    # which is exactly what decides whether SmartNotesSettings.dict serializes it.
                     # Merge so integration keys not sent by this page are preserved.
                     "auto_generate_integrations": {
                         **settings.auto_generate_integrations,
@@ -236,6 +215,55 @@ class ConfigController:
             )
         )
         return {"ok": True}
+
+    @staticmethod
+    def _performance_updates(
+        opts: dict[str, Any], settings: SmartNotesSettings
+    ) -> dict[str, int]:
+        """The performance keys this save actually CHANGES — usually none.
+
+        Three rules, and each one is a bug that happened.
+
+        An ABSENT key keeps the stored value verbatim — not clamped, not defaulted. A page that
+        predates one of these controls (or one that failed to seed it) would otherwise reset a
+        value set on another device on every save, and clamping the fallback would quietly narrow
+        a newer release's number.
+
+        A key whose value EQUALS the stored one is left out too, and that is not an
+        optimisation. Naming a key here marks it set on the model, and
+        :meth:`~omnia.plugins.smart_notes.config.SmartNotesSettings.dict` serializes exactly the
+        keys that are set — so including an unchanged value would make merely opening the dialog
+        and pressing Save write two keys that a pre-ADR-010 device rejects with a crash on every
+        note-add hook. Untouched stays unwritten.
+
+        A key the user really did change IS named, whatever it holds — including this build's own
+        default. That is the half that used to be missing: the old prune dropped any value equal
+        to the current default, so the day the default moved to 8 nobody could pin 8.
+
+        Args:
+            opts: The ``options`` object the Advanced pane posted.
+            settings: The settings as loaded, i.e. what the collection currently stores.
+
+        Returns:
+            The subset of ``{"max_concurrent_generations", "batch_notes_per_call"}`` whose posted
+            value differs from the stored one, clamped to this build's ceiling.
+        """
+        # What the ENVIRONMENT allows is a separate ceiling applied at the point of use
+        # (SmartNotesSettings.notes_per_call), never written here — a machine's knob must not
+        # travel through sync.
+        ceilings = {
+            "max_concurrent_generations": _MAX_CONCURRENCY,
+            "batch_notes_per_call": MAX_NOTES_PER_CALL,
+        }
+        updates: dict[str, int] = {}
+        for key, ceiling in ceilings.items():
+            if key not in opts:
+                continue
+            stored = int(getattr(settings, key))
+            chosen = _clamp_int(opts[key], 1, ceiling, stored)
+            if chosen != stored:
+                updates[key] = chosen
+        return updates
 
     def on_cancel(self, _data: dict[str, Any]) -> None:
         # The shell owns the QDialog; reject() lives there, wired in at construction.
