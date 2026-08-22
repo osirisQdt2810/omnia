@@ -715,7 +715,10 @@ class TestBuildSmartNotesHtml:
         assert (
             'getElementById("sn-opt-concurrency")' in html
         )  # 01-bridge.js: the handle
-        assert "optConcurrency.value = String(" in html  # 05-handlers.js: seeded
+        assert "optConcurrency.value =" in html  # 05-handlers.js: seeded
+        assert (
+            "String(opts.max_concurrent_generations)" in html
+        )  # ...from the stored value
         # Read back INSIDE the `if (optConcurrency)` guard: the key must be omitted, not
         # defaulted, when the control did not render — see collectOptions.
         assert "opts.max_concurrent_generations = clampInt(" in html
@@ -742,7 +745,8 @@ class TestBuildSmartNotesHtml:
 
         assert 'id="sn-opt-batch-notes"' in html  # page.html: the control
         assert 'getElementById("sn-opt-batch-notes")' in html  # 01-bridge.js
-        assert "optBatchNotes.value = String(" in html  # 05-handlers.js: seeded
+        assert "optBatchNotes.value =" in html  # 05-handlers.js: seeded
+        assert "String(opts.batch_notes_per_call)" in html  # ...from the stored value
         assert "opts.batch_notes_per_call = clampInt(" in html  # …and read back
         # The env knob caps this number and can switch grouping off entirely, so the pane must
         # name it — a control the environment can silently override is worse than no control.
@@ -807,16 +811,18 @@ class TestBuildSmartNotesHtml:
         workers = SmartNotesSettings.__fields__["max_concurrent_generations"].default
         notes_per_call = SmartNotesSettings.__fields__["batch_notes_per_call"].default
 
-        # Seeded (applyOptions) and read back (collectOptions), for both controls.
+        # The ABSENT-key fallbacks, which are the only place this build's own numbers belong.
+        # A STORED value is seeded as stored — clamping it would let this build narrow a newer
+        # release's setting merely by opening the pane (see applyOptions), so the seed path is
+        # deliberately NOT a clampInt call any more and asserting one here would re-forbid the
+        # fix.
+        assert f'? "{workers}"' in html, "the workers fallback is not the model default"
         assert (
-            f"clampInt(opts.max_concurrent_generations, 1, {MAX_WORKERS}, {workers})"
-            in html
-        )
+            f'? "{notes_per_call}"' in html
+        ), "the notes-per-call fallback is not the model default"
+
+        # What the user TYPES is still clamped to what this build can honour, on read-back.
         assert f"clampInt(optConcurrency.value, 1, {MAX_WORKERS}, {workers})" in html
-        assert (
-            f"clampInt(opts.batch_notes_per_call, 1, {MAX_NOTES_PER_CALL}, "
-            f"{notes_per_call})" in html
-        )
         assert (
             f"clampInt(optBatchNotes.value, 1, {MAX_NOTES_PER_CALL}, "
             f"{notes_per_call})" in html
@@ -1009,3 +1015,36 @@ class TestBuildSmartNotesHtml:
             "function promptRefIssues" in html and "function refreshModalWarn" in html
         )
         assert "Not a field on this note type" in html
+
+
+class TestANewerReleasesValueSurvivesThisPane:
+    """ADR-010, at the pane: opening a dialog must not narrow what a newer Omnia stored.
+
+    ``applyOptions`` used to seed each Advanced control with
+    ``clampInt(stored, 1, THIS_BUILD_MAX, default)``. A collection synced from a release whose
+    ceiling is higher would arrive with, say, ``max_concurrent_generations = 64``; this build
+    would display 16, that differs from what is stored, and the next Save writes 16 back. The
+    user loses a setting they made on another device by doing nothing but opening a dialog.
+    """
+
+    def test_a_stored_value_above_this_builds_ceiling_is_seeded_as_stored(self):
+        html = build_smart_notes_html(dark=False)
+
+        # The seed path takes the stored number itself; only the ABSENT-key branch is a literal.
+        assert "String(opts.max_concurrent_generations)" in html
+        assert f"clampInt(opts.max_concurrent_generations, 1, {MAX_WORKERS}" not in html
+        assert "String(opts.batch_notes_per_call)" in html
+        assert (
+            f"clampInt(opts.batch_notes_per_call, 1, {MAX_NOTES_PER_CALL}" not in html
+        )
+
+    def test_what_the_user_types_is_still_clamped(self):
+        """The other half: this build must not honour a number it cannot run.
+
+        Clamping on READ-BACK is right — that is a value this build's user just chose. Clamping
+        on SEED is what destroys someone else's.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert f"clampInt(optConcurrency.value, 1, {MAX_WORKERS}" in html
+        assert f"clampInt(optBatchNotes.value, 1, {MAX_NOTES_PER_CALL}" in html

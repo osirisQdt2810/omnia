@@ -394,7 +394,11 @@ class WriteGuard:
     def __init__(self, module: Any) -> None:
         # A rename in anki_compat must not silently shrink the guard: an allowlist entry that
         # no longer exists means some seam is now unguarded under a new name.
-        stale = [n for n in _COMPAT_SEAMS + _PURE_SEAMS if not hasattr(module, n)]
+        stale = [
+            n
+            for n in (*_COMPAT_SEAMS, *_PURE_SEAMS, *_MUTATING_SEAMS)
+            if not hasattr(module, n)
+        ]
         if stale:
             raise SystemExit(
                 f"anki_compat no longer has {stale} — the benchmark's seam lists are stale and "

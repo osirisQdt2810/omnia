@@ -404,7 +404,8 @@ class BatchGenerator:
         # regenerates fields it already filled (ignoring per-field overwrite).
         force_overwrite = self._settings.regenerate_when_batching
         workers = self._settings.workers()
-        # 1 unless OMNIA_SMART_NOTES_BATCHING is on — see SmartNotesSettings.notes_per_call.
+        # The env knob's width, or 1 when it is -1 (batching off) — see
+        # SmartNotesSettings.notes_per_call. It ships at 10, not off.
         notes_per_call = self._settings.notes_per_call()
         # One planner for the whole run: it carries the per-field output budget, which is only
         # worth learning if it survives from one chunk to the next.

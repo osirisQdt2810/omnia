@@ -55,7 +55,8 @@ field — and smart-notes' first-class input path is a web clipper, i.e. text a 
 is read by the model as part of the same conversation that is answering for its neighbours. The
 values are ``json.dumps``-escaped, so the envelope itself cannot be broken; what cannot be
 escaped is that a model reads them. Solo generation contains such a note to itself. This is a
-second reason the feature is off unless someone turns it on deliberately.
+second reason the feature has an off switch at all — ``OMNIA_SMART_NOTES_BATCHING = -1``
+restores solo generation — even though it ships on.
 
 Pure logic — no ``aqt``/``anki``. The one piece of shared mutable state (:class:`FieldBudget`)
 is written from a dispatch worker and therefore takes a lock.

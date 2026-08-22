@@ -102,13 +102,25 @@
     // here seeds a control whose key is absent, posts it, and writes it, which is exactly the
     // clobbering the absent-key rule exists to prevent.
     if (optConcurrency) {
-      optConcurrency.value = String(clampInt(opts.max_concurrent_generations, 1, 16, 8));
+      // A STORED value is shown as stored, never clamped to this build's range. Clamping it
+      // would let an older Omnia narrow a newer one's setting just by opening this pane: a
+      // stored 64 would display as 16, differ from stored, and be written back — destroying a
+      // value this build simply does not understand yet. That is the loss ADR-010 exists to
+      // prevent. Only the ABSENT-key fallback is this build's own number.
+      optConcurrency.value =
+        opts.max_concurrent_generations === undefined ||
+        opts.max_concurrent_generations === null
+          ? "8"
+          : String(opts.max_concurrent_generations);
     }
     if (optBatchNotes) {
       // 10, not 1, when the key is absent: it is the model's default (see
       // SmartNotesSettings.batch_notes_per_call), and seeding a 1 here would show "off" for a
       // collection that is in fact grouping — and write that 1 back on the next save.
-      optBatchNotes.value = String(clampInt(opts.batch_notes_per_call, 1, 20, 10));
+      optBatchNotes.value =
+        opts.batch_notes_per_call === undefined || opts.batch_notes_per_call === null
+          ? "10"
+          : String(opts.batch_notes_per_call);
     }
     renderIntegrations(opts);
   }
