@@ -265,6 +265,12 @@ select:disabled { opacity: 0.7; }
 }
 .sn-opt-row:hover { background: var(--head); }
 .sn-opt-row .sn-check { margin-top: 2px; }
+/* Numeric option input — the shared field rule only covers input[type="text"]. */
+.sn-input-num {
+  font-family: inherit; font-size: 13px; color: var(--fg);
+  background: var(--input-bg); border: 1px solid var(--input-border);
+  border-radius: 8px; padding: 4px 6px; outline: none; width: 62px; flex: 0 0 auto;
+}
 /* Integrations tab: the muted "Detected N cards from this integration." status line. */
 .sn-integ-status { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
 .sn-integ-row { margin-bottom: 10px; }

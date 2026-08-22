@@ -26,6 +26,11 @@ from omnia.gui.smart_notes.html import (
     row_to_payload,
     rows_for_note_type,
 )
+from omnia.plugins.smart_notes.config import (
+    MAX_NOTES_PER_CALL,
+    MAX_WORKERS,
+    SmartNotesSettings,
+)
 from omnia.plugins.smart_notes.integration.installer import (
     ClipperInstaller,
     InstallError,
@@ -37,6 +42,27 @@ from omnia.plugins.smart_notes.integration.integrations import (
 )
 
 logger = get_logger("smart_notes")
+
+# The range the Advanced pane's number input offers — the SAME ceilings the runner applies
+# (``SmartNotesSettings.workers`` / ``.notes_per_call``), imported rather than restated so the
+# dialog cannot start offering a number the runner would silently clamp. NOT a model constraint:
+# see SmartNotesSettings.max_concurrent_generations for why a persisted field must not carry one.
+_MAX_CONCURRENCY = MAX_WORKERS
+
+
+def _clamp_int(raw: Any, low: int, high: int, fallback: int) -> int:
+    """Coerce ``raw`` to an int inside ``[low, high]``, falling back when it is not a number.
+
+    The page is the untrusted side of a ``pycmd`` boundary and JavaScript will happily send
+    ``Infinity`` or ``null`` for a number input (ADR-011's post-mortem: ``Number("1e999")``).
+    An unbounded worker count here is an unbounded fan-out at the provider, so the value is
+    clamped on BOTH sides of the bridge, not just in the page.
+    """
+    try:
+        value = round(float(raw))
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return max(low, min(value, high))
 
 
 class ConfigController:
@@ -158,6 +184,7 @@ class ConfigController:
         self._ctx.store.save(
             settings.copy(
                 update={
+                    **self._performance_updates(opts, settings),
                     "note_types": merged,
                     "generate_at_review": bool(
                         opts.get("generate_at_review", settings.generate_at_review)
@@ -176,6 +203,9 @@ class ConfigController:
                             "discard_unfilled_clips", settings.discard_unfilled_clips
                         )
                     ),
+                    # The two performance knobs are handled by _performance_updates above, and
+                    # deliberately not here: naming a key in this dict marks it SET on the model,
+                    # which is exactly what decides whether SmartNotesSettings.dict serializes it.
                     # Merge so integration keys not sent by this page are preserved.
                     "auto_generate_integrations": {
                         **settings.auto_generate_integrations,
@@ -185,6 +215,64 @@ class ConfigController:
             )
         )
         return {"ok": True}
+
+    @staticmethod
+    def _performance_updates(
+        opts: dict[str, Any], settings: SmartNotesSettings
+    ) -> dict[str, int]:
+        """The performance keys this save actually CHANGES — usually none.
+
+        Three rules, and each one is a bug that happened.
+
+        An ABSENT key keeps the stored value verbatim — not clamped, not defaulted. A page that
+        predates one of these controls (or one that failed to seed it) would otherwise reset a
+        value set on another device on every save, and clamping the fallback would quietly narrow
+        a newer release's number.
+
+        A key whose value EQUALS the stored one is left out too, and that is not an
+        optimisation. Naming a key here marks it set on the model, and
+        :meth:`~omnia.plugins.smart_notes.config.SmartNotesSettings.dict` serializes exactly the
+        keys that are set — so including an unchanged value would make merely opening the dialog
+        and pressing Save write two keys that a pre-ADR-010 device rejects with a crash on every
+        note-add hook. Untouched stays unwritten.
+
+        A key whose posted value DIFFERS from the stored one is named, whatever it holds —
+        including this build's own default. That is the half that used to be missing: the old
+        prune dropped any value equal to the current default, so the day the default moved to 8,
+        a user who had deliberately set 8 lost it.
+
+        KNOWN LIMIT, stated because the rule above cannot express it. "Differs from stored" is a
+        proxy for "the user touched this", and the two part company in one case: a key that has
+        never been set, whose effective value is the default, cannot be PINNED to that same
+        default. Post 8 while 8 is both the default and unset and nothing is written, so a later
+        release moving the default to 4 carries the user with it. Closing that needs the page to
+        say whether the control was touched, which is a wire change; until then the workaround is
+        to set a different value, save, set it back, and save again.
+
+        Args:
+            opts: The ``options`` object the Advanced pane posted.
+            settings: The settings as loaded, i.e. what the collection currently stores.
+
+        Returns:
+            The subset of ``{"max_concurrent_generations", "batch_notes_per_call"}`` whose posted
+            value differs from the stored one, clamped to this build's ceiling.
+        """
+        # What the ENVIRONMENT allows is a separate ceiling applied at the point of use
+        # (SmartNotesSettings.notes_per_call), never written here — a machine's knob must not
+        # travel through sync.
+        ceilings = {
+            "max_concurrent_generations": _MAX_CONCURRENCY,
+            "batch_notes_per_call": MAX_NOTES_PER_CALL,
+        }
+        updates: dict[str, int] = {}
+        for key, ceiling in ceilings.items():
+            if key not in opts:
+                continue
+            stored = int(getattr(settings, key))
+            chosen = _clamp_int(opts[key], 1, ceiling, stored)
+            if chosen != stored:
+                updates[key] = chosen
+        return updates
 
     def on_cancel(self, _data: dict[str, Any]) -> None:
         # The shell owns the QDialog; reject() lives there, wired in at construction.
@@ -304,6 +392,8 @@ class ConfigController:
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
             "discard_unfilled_clips": settings.discard_unfilled_clips,
+            "max_concurrent_generations": settings.max_concurrent_generations,
+            "batch_notes_per_call": settings.batch_notes_per_call,
             "auto_generate_integrations": settings.auto_generate_integrations,
             "integration_status": self._integration_status(),
             # The registered integrations (key + display text), so the Integrations tab renders

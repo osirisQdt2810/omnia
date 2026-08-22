@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from conftest import FakeLLMProvider
 
 from omnia.core.lang.text import strip_markup
 from omnia.plugins.smart_notes.config import (
@@ -385,10 +386,16 @@ class TestClozeIsReversible:
         assert strip_markup(clozed) == strip_markup(sentence)
 
 
-class _CountingLLM:
-    """A fake LLM that records every call — the assertion target of the fall-through test."""
+class _CountingLLM(FakeLLMProvider):
+    """A fake LLM that records every call — the assertion target of the fall-through test.
+
+    Subclasses the real ``LLMProvider`` ABC (via the conftest fake) rather than duck-typing it:
+    the engine calls the whole interface, not just ``generate_text``, and a bare stub silently
+    stops being substitutable the moment the interface grows a method.
+    """
 
     def __init__(self) -> None:
+        super().__init__()
         self.prompts: list[str] = []
 
     def generate_text(self, prompt, *, system=None, temperature=0.7, max_tokens=None):

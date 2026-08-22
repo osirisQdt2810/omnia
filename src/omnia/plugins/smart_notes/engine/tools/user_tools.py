@@ -44,6 +44,18 @@ was replaced: one approval would then execute on every device the collection rea
 a user tool's code at any time other than the import that registers it and the pipeline turn it
 was configured for.
 
+**A user tool now runs concurrently with itself, and nothing can stop it misbehaving.** With
+bounded concurrency, up to ``max_concurrent_generations`` invocations of the same tool run at
+once, for different notes. The engine protects the tool's inputs (a frozen read-only field map,
+a fresh instance per resolve) and can protect nothing about its side effects — and the allowlist
+deliberately permits ``subprocess``, ``shutil``, ``tempfile`` and ``os``, so side effects are
+exactly what these tools have. A tool written against the old sequential engine that names a
+scratch file after the field rather than the note will race itself and put one note's audio in
+another note's field, with no error anywhere. The contract is stated in :class:`Tool`'s
+docstring and in the authoring system prompt (rule 8b); a user who hand-edits a tool file is
+the one case nothing enforces it for, which is why it is stated here too. Someone hitting this
+can set ``max_concurrent_generations`` to 1.
+
 **The import allowlist is a speed bump, not a boundary.** :class:`ImportGuard` refuses a module
 whose ``import`` statements reach outside a small allowlist, and flags a handful of builtin
 calls (``open``, ``eval``, ``__import__``, …). That catches the realistic failure here — a

@@ -2,12 +2,17 @@
  * @fileoverview Smart Notes config page — GENERATION-ORDER PREVIEW (loaded between 06-graph and
  * 07-init; a fragment of the shared page IIFE, so it uses graphData / baseSel / esc directly).
  *
- * The "▶ Preview gen order" button animates the exact order fields are generated in, from a seed
- * the user picks: the base Word is always "given"; Context (and any other input) are optional
- * checkboxes. It REPLAYS the engine route (mirrors engine/ordering.order_rules + generate_note's
- * block gate): HARD edges order AND block (a field waits for its hard prerequisites and is blocked
- * when one is missing), SOFT edges order best-effort (the prerequisite generates first so the
- * dependent is richer). Purely a visual simulation over graphData — it generates nothing.
+ * The "▶ Preview gen order" button animates the ORDER fields are generated in, from a seed the
+ * user picks: the base Word is always "given"; Context (and any other input) are optional
+ * checkboxes. It replays the engine's dependency route (mirrors engine/ordering.order_rules +
+ * the NoteRun block gate): HARD edges order AND block (a field waits for its hard prerequisites
+ * and is blocked when one is missing), SOFT edges order best-effort (the prerequisite generates
+ * first so the dependent is richer).
+ *
+ * It mirrors the order, NOT the timing. Generation runs a whole dependency LEVEL at a time (see
+ * engine/ordering.order_rule_levels), so independent fields really finish together, while this
+ * reveals them one after another for legibility. Purely a visual simulation over graphData — it
+ * generates nothing.
  */
 
 const gpBtn = document.getElementById("sn-genpreview-btn");

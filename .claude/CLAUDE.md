@@ -118,7 +118,8 @@ must not import `aqt`/`anki` at top level so they unit-test headless.
 3. Decorate the class with `@register("<name>")` from `core/registry.py`.
 4. Import the module in `src/omnia/plugins/__init__.py` so the decorator runs.
 5. Use the seams — ease pipeline / web injector / providers / config store — not raw Anki.
-6. Add `tests/plugins/test_<name>.py` (pure logic; stub Anki).
+6. Add `tests/plugins/<name>/test_<topic>.py` (pure logic; stub Anki) — one folder per
+   plugin; the file names drop the plugin prefix the folder already carries.
 7. Add a default config block under the plugin's namespace in `config.json`.
 
 ## Adding a new provider (LLM or TTS)
@@ -200,8 +201,8 @@ pip install -r requirements/requirements-dev.txt
 # Run tests (Anki stubbed; logic only)
 pytest tests/ -vv
 
-# A single test file
-pytest tests/plugins/test_overdue_guard.py -vv
+# A single test file (plugin tests live in tests/plugins/<plugin>/)
+pytest tests/plugins/overdue_guard/test_overdue_guard.py -vv
 
 # Lint / format / types (pre-commit runs these on staged files)
 pre-commit run            # staged

@@ -13,6 +13,7 @@ from omnia.core.config.models import (
     TTSSettings,
 )
 from omnia.core.providers import ProviderHub
+from omnia.core.providers.llm.base import LLMProvider, PromptParts
 from omnia.core.providers.usage import (
     BufferedUsageRecorder,
     CollectionUsageStore,
@@ -43,6 +44,44 @@ class _RaisingRecorder:
 
     def record(self, **kwargs) -> None:
         raise RuntimeError("boom")
+
+
+class _TracingLLM(FakeLLMProvider):
+    """Overrides EVERY public generation method and records which ones were entered."""
+
+    def __init__(self) -> None:
+        super().__init__(text="out", image=b"PNG")
+        self.entered: list[str] = []
+
+    def generate_text(self, prompt, *, system=None, temperature=None, max_tokens=None):
+        self.entered.append("generate_text")
+        return self._text
+
+    def generate_text_with_usage(
+        self, prompt, *, system=None, temperature=None, max_tokens=None
+    ):
+        self.entered.append("generate_text_with_usage")
+        return self._text, {"in": 1, "out": 1, "total": 2}
+
+    def generate_cached_text(
+        self, parts, *, system=None, temperature=None, max_tokens=None
+    ):
+        self.entered.append("generate_cached_text")
+        return self._text, {"in": 1, "out": 1, "total": 2}
+
+    def generate_json(
+        self, parts, *, schema, system=None, temperature=None, max_tokens=None
+    ):
+        self.entered.append("generate_json")
+        return self._text, {"in": 1, "out": 1, "total": 2}
+
+    def generate_image(self, prompt, *, size="1024x1024"):
+        self.entered.append("generate_image")
+        return self._image
+
+    def generate_image_with_usage(self, prompt, *, size="1024x1024"):
+        self.entered.append("generate_image_with_usage")
+        return self._image, None
 
 
 class _UsageLLM(FakeLLMProvider):
@@ -89,6 +128,57 @@ class TestRecordsRealTokens:
         call = rec.calls[0]
         assert call["in_tokens"] == 0 and call["out_tokens"] == 0
         assert call["in_chars"] == 1  # char fallback still recorded
+
+    def test_every_text_method_samples_at_the_recorded_default(self):
+        """A caller that names no temperature gets 0.7 — the value the wrapper has always sent.
+
+        The wrapper's literal default overrides the per-provider configured temperature, which
+        is a genuine (if narrow) bug: only a user who deliberately set another value is affected,
+        because the configured default is 0.7 as well. It is pinned rather than fixed here so
+        that no user's model output changes as a side effect of a throughput change; the fix is
+        its own change, with a release note. All three text methods must agree, or the same field
+        would sample differently depending on whether it was generated alone, from a cacheable
+        prompt, or inside a K-note chunk.
+        """
+        seen: dict = {}
+
+        class _Capturing(FakeLLMProvider):
+            def generate_text_with_usage(self, prompt, **kwargs):
+                seen.update(kwargs)
+                return "out", None
+
+            def generate_cached_text(self, parts, **kwargs):
+                seen.update(kwargs)
+                return "out", None
+
+            def generate_json(self, parts, *, schema, **kwargs):
+                seen.update(kwargs)
+                return "out", None
+
+        wrapper = RecordingLLMProvider(_Capturing(), _FakeRecorder(), model="m")
+
+        wrapper.generate_text("prompt")
+        assert seen["temperature"] == 0.7
+        seen.clear()
+        wrapper.generate_cached_text(PromptParts("head", "tail"))
+        assert seen["temperature"] == 0.7
+        seen.clear()
+        wrapper.generate_json(PromptParts("head", "tail"), schema={})
+        assert seen["temperature"] == 0.7
+
+    def test_an_explicit_temperature_is_still_forwarded(self):
+        seen: dict = {}
+
+        class _Capturing(FakeLLMProvider):
+            def generate_text_with_usage(self, prompt, **kwargs):
+                seen.update(kwargs)
+                return "out", None
+
+        RecordingLLMProvider(_Capturing(), _FakeRecorder(), model="m").generate_text(
+            "prompt", temperature=0.2
+        )
+
+        assert seen["temperature"] == 0.2
 
     def test_text_records_returned_usage_not_shared_last_usage(self):
         # Regression: recording must attribute THIS call's tokens (the return value), never the
@@ -482,7 +572,9 @@ class TestCollectionUsageStore:
 
     def test_degrades_to_empty_and_reports_not_persisted_without_a_collection(self):
         store = CollectionUsageStore(col_provider=lambda: None)
-        assert store.save({"text|g|m": _aggregate_row()}) is False  # no-op, reports False
+        assert (
+            store.save({"text|g|m": _aggregate_row()}) is False
+        )  # no-op, reports False
         assert store.load() == {}
 
     def test_buffered_recorder_round_trips_through_collection_store(self):
@@ -730,3 +822,108 @@ class TestFlushDefaultRecorder:
             flush_default_recorder()  # no flush_now attribute → no-op, no raise
         finally:
             set_default_recorder(previous)
+
+
+class TestRecordingProviderForwardsEveryPublicMethod:
+    """Every generation method on the interface must reach the WRAPPED provider's own version.
+
+    ``RecordingLLMProvider`` is a hand-written decorator, and a hand-written decorator loses
+    things silently: ``fetch_credit`` already vanishes through it (the Account dialog reaches for
+    it with ``getattr(..., None)``). The dangerous case is not a crash but a bypass — if a method
+    is left to the base's default, that default runs on the WRAPPER and delegates to the
+    wrapper's other methods, so a provider's own override of it is never entered. Nothing errors;
+    the request simply goes out in the wrong shape (a cache marker dropped, a JSON mode ignored).
+
+    This test enumerates the interface instead of remembering it, so growing ``LLMProvider``
+    fails here until the wrapper is taught the new method.
+    """
+
+    # One call per public method. A new interface method with no entry here fails the first
+    # test below — deliberately: adding a method is the moment to decide how it is forwarded.
+    _CALLS = {
+        "generate_text": lambda p: p.generate_text("hi"),
+        "generate_text_with_usage": lambda p: p.generate_text_with_usage("hi"),
+        "generate_cached_text": lambda p: p.generate_cached_text(
+            PromptParts("hi ", "there")
+        ),
+        "generate_json": lambda p: p.generate_json(
+            PromptParts("hi ", "there"), schema={"type": "object"}
+        ),
+        "generate_image": lambda p: p.generate_image("hi"),
+        "generate_image_with_usage": lambda p: p.generate_image_with_usage("hi"),
+    }
+
+    # Which method of the WRAPPED provider each call must land in. The plain ``generate_*``
+    # calls deliberately land in their ``*_with_usage`` twin: that is how the wrapper takes
+    # usage from the call's return value instead of the racy shared ``last_usage``. Everything
+    # else must land in its own name — anything landing somewhere else is a bypassed override.
+    _ENTRY_POINT = {
+        "generate_text": "generate_text_with_usage",
+        "generate_text_with_usage": "generate_text_with_usage",
+        "generate_cached_text": "generate_cached_text",
+        "generate_json": "generate_json",
+        "generate_image": "generate_image_with_usage",
+        "generate_image_with_usage": "generate_image_with_usage",
+    }
+
+    @staticmethod
+    def _public_methods() -> list[str]:
+        # ``from_config`` is excluded: it is the registry's construction entry point, not a
+        # per-call surface, and the hub calls it on the concrete class before wrapping.
+        return sorted(
+            name
+            for name in dir(LLMProvider)
+            if not name.startswith("_")
+            and name != "from_config"
+            and callable(getattr(LLMProvider, name, None))
+        )
+
+    def test_every_public_method_of_the_interface_is_covered_here(self):
+        assert set(self._public_methods()) == set(self._CALLS) == set(self._ENTRY_POINT)
+
+    def test_each_one_enters_the_wrapped_provider_exactly_once_at_its_declared_entry(
+        self,
+    ):
+        for name in self._public_methods():
+            spy = _TracingLLM()
+            wrapper = RecordingLLMProvider(spy, _FakeRecorder(), model="m")
+            self._CALLS[name](wrapper)
+            assert spy.entered == [self._ENTRY_POINT[name]], (
+                f"{name} on the wrapper entered the wrapped provider at {spy.entered} "
+                f"instead of {[self._ENTRY_POINT[name]]} — an override is being bypassed "
+                "(or the provider is being called twice)"
+            )
+
+    def test_each_one_records_exactly_one_usage_row(self):
+        for name in self._public_methods():
+            rec = _FakeRecorder()
+            self._CALLS[name](RecordingLLMProvider(_TracingLLM(), rec, model="m"))
+            assert len(rec.calls) == 1, f"{name} recorded {len(rec.calls)} rows"
+
+
+class TestRecordsCachedPrompts:
+    def test_a_cached_text_call_records_the_joined_prompt_and_its_tokens(self):
+        rec = _FakeRecorder()
+        provider = _ReturnUsageLLM(
+            {"in": 90, "out": 4, "total": 94, "cached": 64}, {}, text="out"
+        )
+        wrapper = RecordingLLMProvider(provider, rec, model="m")
+        text, usage = wrapper.generate_cached_text(PromptParts("Define ", "cat"))
+        assert text == "out"
+        # The usage comes back BY VALUE (the fake clobbers last_usage mid-call to prove it).
+        assert usage == {"in": 90, "out": 4, "total": 94, "cached": 64}
+        call = rec.calls[0]
+        assert call["in_chars"] == len("Define cat")
+        assert call["in_tokens"] == 90 and call["out_tokens"] == 4
+
+    def test_the_split_does_not_change_what_is_recorded(self):
+        # Recording must not be able to tell whether a prompt arrived split or whole; otherwise
+        # the Account dialog's numbers would move for a change that alters nothing on the wire.
+        whole, split = _FakeRecorder(), _FakeRecorder()
+        RecordingLLMProvider(FakeLLMProvider(), whole, model="m").generate_text(
+            "Define cat"
+        )
+        RecordingLLMProvider(FakeLLMProvider(), split, model="m").generate_cached_text(
+            PromptParts("Define ", "cat")
+        )
+        assert whole.calls == split.calls

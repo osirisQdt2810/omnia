@@ -92,6 +92,16 @@ class OpenAICompatibleLLMSettings(LLMModelSettings):
     text_model: str = "gpt-4o-mini"
     image_model: str = "gpt-image-1"
     embedding_model: str = "text-embedding-3-small"
+    # Send a prompt's cacheable prefix as a marked content PART instead of one plain string, so
+    # an Anthropic-family model behind OpenRouter caches it. Off by default because support is
+    # per MODEL, not per endpoint: a model that rejects the array fails generation outright,
+    # which is a far worse outcome than paying full price for the prefix.
+    prompt_cache_control: bool = False
+    # Ask for a schema-shaped answer via ``response_format``. Off by default for the same
+    # reason as above: support is per MODEL on an aggregator, and a model that rejects the
+    # envelope fails the call rather than ignoring it. Only K-note batching asks for JSON, and
+    # it parses defensively either way — this makes the shape more likely, never required.
+    json_output: bool = False
 
 
 class LLMSettings(PersistedModel):

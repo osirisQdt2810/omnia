@@ -127,6 +127,38 @@ class TestProviderHub:
         assert first is again  # same (provider, model) reuses the instance
         assert first is not other
 
+    def test_the_unpinned_call_is_cached_too(self):
+        """The DEFAULT path — a rule pinning neither provider nor model — must not rebuild.
+
+        Building a provider is not always free: gemini_vertex resolves a service-account token
+        source whose token cache starts EMPTY, so a rebuild means a fresh RS256 JWT sign and an
+        OAuth round trip. Uncached, that happened once per field of every note — and it
+        happened while the hub's cache lock was held, serialising every concurrent worker
+        behind one network call.
+        """
+        settings = LLMSettings(
+            provider="openai", openai=OpenAICompatibleLLMSettings(api_key="k")
+        )
+        hub = ProviderHub(settings, http=FakeHttpClient())
+
+        assert hub.llm() is hub.llm()
+
+    def test_the_unpinned_call_shares_the_entry_with_an_explicit_pin(self):
+        # Both resolve to the same provider with the same model, so they must be one instance —
+        # otherwise "cached by (provider, model)" quietly means two.
+        settings = LLMSettings(
+            provider="openai", openai=OpenAICompatibleLLMSettings(api_key="k")
+        )
+        hub = ProviderHub(settings, http=FakeHttpClient())
+
+        assert hub.llm() is hub.llm(provider="openai")
+
+    def test_a_hub_with_no_settings_still_caches(self):
+        hub = ProviderHub(http=FakeHttpClient())
+
+        with pytest.raises(ProviderError):
+            hub.llm()  # no provider configured — the factory's clear error, not a crash
+
     def test_tts_named_provider_builds_that_provider(self):
         # tts(provider="edge_tts") builds edge_tts even though the active provider is something
         # else (an Auto-detect voice's provider, or a per-field override).
@@ -140,6 +172,41 @@ class TestProviderHub:
         settings = TTSSettings(provider="edge_tts")
         provider = ProviderHub(None, settings, http=FakeHttpClient()).tts()
         assert provider.name == "edge_tts"
+
+    def test_tts_is_cached_by_provider(self):
+        """The TTS twin of the LLM cache, and for the same measured reason.
+
+        ``tts()`` is called once per audio FIELD of every note, and a google_cloud rebuild mints
+        a fresh service-account token source with an empty cache — an RS256 sign in pure Python
+        (GIL-bound, so N workers serialise on it) plus an OAuth round trip, per synthesis. The
+        LLM path fixed exactly this; the TTS sibling was left uncached.
+        """
+        hub = ProviderHub(None, TTSSettings(provider="edge_tts"), http=FakeHttpClient())
+
+        assert hub.tts() is hub.tts()
+        assert hub.tts() is hub.tts(provider="edge_tts")  # unpinned shares the entry
+        assert hub.tts(provider="google_translate") is not hub.tts()
+
+    def test_a_tts_config_reload_drops_the_cached_provider(self):
+        """A live voice/credential edit must be picked up without an Anki restart."""
+
+        class _Repo:
+            def __init__(self) -> None:
+                self.tts = TTSSettings(provider="edge_tts")
+
+            def llm_settings(self):
+                return None
+
+            def tts_settings(self):
+                return self.tts
+
+        repo = _Repo()
+        hub = ProviderHub(http=FakeHttpClient(), config=repo)
+        first = hub.tts()
+
+        repo.tts = TTSSettings(provider="edge_tts")  # a reload yields a NEW object
+
+        assert hub.tts() is not first
 
     def test_resolve_auto_voice_splits_the_mapping(self):
         settings = TTSSettings(

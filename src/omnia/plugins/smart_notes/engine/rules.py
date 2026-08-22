@@ -7,7 +7,7 @@ compiles a note type's enabled, generatable fields into self-contained
 (:func:`compile_note_type_rules`), decides which rules to skip for a given note
 (:func:`should_skip_rule`), derives the prompt / spoken text a rule needs
 (:func:`prompt_for`, :func:`tts_text`), and exposes the batch-planning helpers
-(:func:`dedupe_preserving_order`, :func:`chunk`).
+(:func:`dedupe_preserving_order`).
 """
 
 from __future__ import annotations
@@ -15,9 +15,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omnia.core.lang.text import strip_markup
+from omnia.core.providers.llm.base import PromptParts
 from omnia.plugins.smart_notes.engine.interpolation import (
     extract_field_refs,
     interpolate,
+    split_prompt,
 )
 
 if TYPE_CHECKING:
@@ -34,13 +36,24 @@ def rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
     """Return the field names a rule DEPENDS on (prompt refs, or a real source field).
 
     These are the DERIVED dependencies the graph, ordering, and blocking read. They are the
-    prompt's ``{{refs}}`` when a prompt is given; otherwise the rule's ``source_field`` — UNLESS
-    that source is purely the empty-prompt → base fallback (``source_is_base_fallback``), in
-    which case it is NOT a dependency and nothing is returned (so an empty-prompt field has no
-    derived incoming edge). Generation reads ``source_field`` separately (see
-    :func:`prompt_for` / :func:`tts_text`) and is unaffected.
+    prompt's ``{{refs}}`` when a prompt is given **and some tool in the chain actually reads the
+    prompt**; otherwise the rule's ``source_field`` — UNLESS that source is purely the
+    empty-prompt → base fallback (``source_is_base_fallback``), in which case it is NOT a
+    dependency and nothing is returned (so an empty-prompt field has no derived incoming edge).
+    Generation reads ``source_field`` separately (see :func:`prompt_for` / :func:`tts_text`) and
+    is unaffected.
+
+    **The chain decides, not the prompt.** A field whose tools all declare their own inputs
+    (``cloze_audio`` with a ``source_field``, say) never looks at the prompt, so a prompt left
+    over from an earlier configuration is dead text — and treating its refs as dependencies gave
+    that field a HARD edge onto a field the tool never reads, which blocks generation on every
+    note where that field happens to be empty, silently and forever. The settings table already
+    fades the Prompt cell for such a chain; before this, the UI said the prompt did not apply
+    and the engine went on depending on it.
     """
-    if rule.prompt:
+    from omnia.plugins.smart_notes.engine.tools.registry import chain_reads_prompt
+
+    if rule.prompt and chain_reads_prompt(rule.tools):
         return extract_field_refs(rule.prompt)
     if rule.source_field and not rule.source_is_base_fallback:
         return [rule.source_field]
@@ -70,6 +83,7 @@ def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
         effective kind.
     """
     # Imported lazily: the tools package imports the generators, which import this module.
+    # (:func:`rule_source_fields` does the same, for the same reason.)
     from omnia.plugins.smart_notes.engine.tools.registry import tool_referenced_fields
 
     override = {dep.field.strip().lower(): dep.kind for dep in rule.depends_on}
@@ -319,22 +333,24 @@ def dedupe_preserving_order(ids: list[int]) -> list[int]:
     return ordered
 
 
-def chunk(items: list[int], size: int) -> list[list[int]]:
-    """Split ``items`` into consecutive batches of at most ``size`` (``size`` >= 1).
-
-    The batch runner generates in chunks so it can update progress / honour a cancel between
-    chunks instead of hammering the provider with the whole selection at once.
-    """
-    if size < 1:
-        raise ValueError("chunk size must be >= 1")
-    return [items[start : start + size] for start in range(0, len(items), size)]
-
-
 def prompt_for(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:
     """The prompt for a text/image rule: the template if given, else the source field."""
     if rule.prompt:
         return interpolate(rule.prompt, fields)
     return fields.get(rule.source_field, "")
+
+
+def prompt_parts_for(rule: SmartNotesFieldRule, fields: dict[str, str]) -> PromptParts:
+    """:func:`prompt_for`, split into the head a prompt cache can reuse and the rest.
+
+    The same two branches as :func:`prompt_for`, and joining the result gives back exactly what
+    :func:`prompt_for` returns — a text rule's request is unchanged by the split. A rule with no
+    template has nothing repeated to cache (its whole prompt IS one field's value), so all of it
+    goes in the suffix.
+    """
+    if rule.prompt:
+        return split_prompt(rule.prompt, fields)
+    return PromptParts("", fields.get(rule.source_field, ""))
 
 
 def tts_text(rule: SmartNotesFieldRule, fields: dict[str, str]) -> str:

@@ -889,6 +889,7 @@ class NativeRuntimeManager:
 # Lazily-built process-wide manager rooted at ``user_files/native_envs``. Not constructed at
 # import (would pull in Anki paths); callers go through ``default_manager``.
 _default_manager: Optional[NativeRuntimeManager] = None
+_default_manager_guard = threading.Lock()
 
 
 def default_manager() -> NativeRuntimeManager:
@@ -896,12 +897,22 @@ def default_manager() -> NativeRuntimeManager:
 
     Lazily built on first call. ``addon_user_files_dir`` is imported here (not at module
     top) so this module stays ``aqt``-free and headless-importable.
+
+    Built under a lock, and the lock is load-bearing rather than tidy. Two generation workers
+    first-touching this at the same moment (a level with two piper/viettts fields) would
+    otherwise each construct a manager, and each manager owns its OWN ``_servers`` dict and
+    ``_servers_lock`` — the very lock that exists so two callers cannot double-spawn a
+    fixed-port sidecar. Split across two managers, ``ensure_running`` on one cannot see the
+    other's server: both spawn, the loser fails to bind :8298, and its process is tracked by a
+    manager the global no longer points at. Same shape, same reason, as
+    ``voice_models.default_voice_store``.
     """
     global _default_manager
-    if _default_manager is None:
-        from omnia import addon_user_files_dir
+    with _default_manager_guard:
+        if _default_manager is None:
+            from omnia import addon_user_files_dir
 
-        envs_dir = addon_user_files_dir() / "native_envs"
-        envs_dir.mkdir(parents=True, exist_ok=True)
-        _default_manager = NativeRuntimeManager(envs_dir)
-    return _default_manager
+            envs_dir = addon_user_files_dir() / "native_envs"
+            envs_dir.mkdir(parents=True, exist_ok=True)
+            _default_manager = NativeRuntimeManager(envs_dir)
+        return _default_manager

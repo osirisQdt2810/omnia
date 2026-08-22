@@ -23,6 +23,7 @@ import struct
 import wave
 
 import pytest
+from conftest import FakeLLMProvider
 
 from omnia.core.audio.wav import SAMPLE_WIDTH, WavClip
 from omnia.core.providers.errors import ProviderError
@@ -35,6 +36,7 @@ from omnia.plugins.smart_notes.config import (
 )
 from omnia.plugins.smart_notes.engine import compile_field_rule
 from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
+from omnia.plugins.smart_notes.engine.language import LanguageGuess
 from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
 from omnia.plugins.smart_notes.engine.tools import (
     ClozeAudioTool,
@@ -135,8 +137,12 @@ class _FakeSidecar:
             )
 
 
-class _FakeLLM:
-    """The paid path cloze_audio must never take (only the ``ai`` fall-through tool may)."""
+class _FakeLLM(FakeLLMProvider):
+    """The paid path cloze_audio must never take (only the ``ai`` fall-through tool may).
+
+    A real ``LLMProvider`` subclass, so the fall-through actually exercises the interface the
+    engine calls rather than the one method this test happens to remember.
+    """
 
     def generate_text(self, prompt, **kwargs):
         return f"gen:{prompt}"
@@ -152,7 +158,7 @@ class _Hub:
     def tts(self, *, provider: str = ""):
         return self._tts
 
-    def resolve_auto_voice(self, lang: str):
+    def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         return "fake", "fake-voice"
 
     def llm(self, **kwargs):
@@ -164,7 +170,7 @@ class _NoDetector:
     """Language detection is off in these tests (the rule pins a voice or a language)."""
 
     def detect(self, providers, text):
-        return None
+        return LanguageGuess()
 
 
 def _ctx(tts=None, *, audio=None) -> ToolContext:
@@ -446,7 +452,7 @@ class TestNeverSpeaksTheAnswer:
         # Voice resolution lives in shared code and raises an ordinary ProviderError; without
         # a guard around the WHOLE produce phase that would fall through and speak the answer.
         class _NoVoices(_Hub):
-            def resolve_auto_voice(self, lang: str):
+            def resolve_auto_voice(self, lang: str, *, reason: str = ""):
                 raise ProviderError("No Auto-detect voice set for language 'en'")
 
         rule = _rule(voice="", params={"source_field": "Sentence"})
@@ -830,6 +836,62 @@ class TestCodecSelection:
         clip = WavClip.from_bytes(outcome.result.data[len(b"MP3<") : -1])
         assert _decoded_text(clip) == "The catdown."
         assert clip.frame_count == len("The catsatdown.") * _FRAMES_PER_CHAR
+
+
+class TestAStalePromptIsNotADependency:
+    """A configured tool's inputs are its PARAMS; a leftover prompt must not add edges.
+
+    The bug this pins was measured on a real deck: a "Definition (cloze audio)" field ran
+    ``cloze_audio`` with ``source_field="Definition"``, and still carried a prompt from before
+    the chain was configured that referenced "Definition (cloze)". That ref became a derived
+    HARD prerequisite, so on the 1810 of 4000 notes where "Definition (cloze)" was empty the
+    audio field was BLOCKED — waiting on a field the tool never reads, with the settings table
+    meanwhile showing the audio row as configured and fine.
+    """
+
+    @staticmethod
+    def _rule(**kwargs):
+        from omnia.plugins.smart_notes.config import (
+            FieldToolConfig,
+            SmartNotesFieldConfig,
+        )
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        return compile_field_rule(
+            SmartNotesFieldConfig(
+                field="Definition (cloze audio)",
+                enabled=True,
+                type="tts",
+                tools=[FieldToolConfig(tool="cloze_audio", **kwargs)],
+                **{"prompt": "speak {{Definition (cloze)}}"},
+            ),
+            "Word",
+        )
+
+    def test_a_configured_source_field_replaces_the_prompt_refs(self):
+        from omnia.plugins.smart_notes.engine.rules import (
+            rule_prerequisites,
+            rule_source_fields,
+        )
+
+        rule = self._rule(params={"source_field": "Definition"})
+
+        assert rule_source_fields(rule) == []
+        # The only prerequisite is the field the TOOL reads — not the one the prompt mentions.
+        assert [name for name, _kind in rule_prerequisites(rule)] == ["Definition"]
+
+    def test_a_blank_source_field_still_depends_on_the_prompt_it_falls_back_to(self):
+        """The other half: with no param the prompt IS how the source is found.
+
+        Drop the params from the question and this edge disappears — and the tool then reads a
+        field the graph does not know about, which is the ordering hazard the whole derived-edge
+        machinery exists to prevent.
+        """
+        from omnia.plugins.smart_notes.engine.rules import rule_source_fields
+
+        rule = self._rule()
+
+        assert rule_source_fields(rule) == ["Definition (cloze)"]
 
 
 class TestFieldDefaults:

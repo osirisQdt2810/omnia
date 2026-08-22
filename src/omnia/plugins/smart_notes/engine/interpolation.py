@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from omnia.core.providers.llm.base import PromptParts
+
 # {{FieldName}} placeholders, but NOT Anki cloze deletions ({{c1::...}}).
 _FIELD_RE = re.compile(r"\{\{(?!c\d+::)([^{}]+?)\}\}")
 
@@ -97,3 +99,33 @@ def _has_unopened_close(prompt: str) -> bool:
 def interpolate(prompt: str, fields: dict[str, str]) -> str:
     """Substitute ``{{Field}}`` placeholders in ``prompt`` with values from ``fields``."""
     return _FIELD_RE.sub(lambda m: str(fields.get(m.group(1).strip(), "")), prompt)
+
+
+def split_prompt(prompt: str, fields: dict[str, str]) -> PromptParts:
+    """Interpolate ``prompt``, split at its FIRST ``{{ref}}``: literal head, then the rest.
+
+    Lossless — ``prefix + suffix`` is byte-for-byte what :func:`interpolate` returns — so this
+    cannot change a single generation's output. All it does is stop the template's leading
+    instructions from being buried behind a substituted value, which is the whole of what a
+    provider prefix cache needs: every note of a note type then sends the same head.
+
+    Deliberately conservative. Restructuring the prompt into "instructions with the refs left
+    uninterpolated" plus a values block would maximise the cacheable prefix, but it changes the
+    string the model sees, and therefore the output, for every existing user on every field. A
+    template that LEADS with ``{{Word}}`` gets an empty prefix and no benefit; that is the
+    accepted cost of never touching what the model reads.
+
+    Args:
+        prompt: The prompt template.
+        fields: The note's field values.
+
+    Returns:
+        The interpolated prompt, split into its cacheable head and the rest.
+    """
+    match = _FIELD_RE.search(prompt)
+    if match is None:
+        # No refs at all: the whole prompt is literal, so all of it is cacheable and there is
+        # nothing to interpolate.
+        return PromptParts(prompt, "")
+    head = prompt[: match.start()]
+    return PromptParts(head, interpolate(prompt[match.start() :], fields))

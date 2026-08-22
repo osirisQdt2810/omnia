@@ -39,7 +39,7 @@ from omnia.core.providers import (
     available_llm_providers,
     create_llm_provider,
 )
-from omnia.core.providers.llm.base import LLMProvider
+from omnia.core.providers.llm.base import LLMProvider, PromptParts
 
 
 # --- helpers ---------------------------------------------------------------------------
@@ -206,6 +206,87 @@ class TestGeminiImageGeneration:
             provider.generate_image("a red apple")
 
 
+class TestGeminiThinkingBudget:
+    """A tiny output cap must buy TEXT, not thoughts.
+
+    Gemini's reasoning models spend ``maxOutputTokens`` on internal thinking before emitting
+    anything, and the thoughts are not returned. ``detect_language`` asks for a two-letter code,
+    so it got ``finishReason="MAX_TOKENS"`` and no text at all — which is why smart-notes'
+    Auto-detect voice failed on every tts field while a pinned voice worked.
+    """
+
+    @staticmethod
+    def _provider(http):
+        return create_llm_provider(
+            {"provider": "gemini", "api_key": "k", "model": "gemini-3.6-flash"},
+            http=http,
+        )
+
+    @staticmethod
+    def _text(body):
+        return {"candidates": [{"content": {"parts": [{"text": "vi"}]}}]}
+
+    def test_a_tiny_cap_asks_the_model_not_to_think(self):
+        http = FakeHttpClient(responder=lambda *a: self._text(a))
+
+        self._provider(http).generate_text("xin chào", max_tokens=8)
+
+        _m, _url, body, _h = http.calls[-1]
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+
+    def test_a_prose_sized_cap_leaves_thinking_alone(self):
+        """The threshold is the point: ordinary generation must not change sampling behaviour."""
+        http = FakeHttpClient(responder=lambda *a: self._text(a))
+
+        self._provider(http).generate_text("write an essay", max_tokens=4096)
+
+        _m, _url, body, _h = http.calls[-1]
+        assert "thinkingConfig" not in body["generationConfig"]
+
+    def test_no_cap_at_all_leaves_thinking_alone(self):
+        http = FakeHttpClient(responder=lambda *a: self._text(a))
+
+        self._provider(http).generate_text("write an essay")
+
+        _m, _url, body, _h = http.calls[-1]
+        assert "thinkingConfig" not in body["generationConfig"]
+
+    def test_a_model_that_refuses_a_zero_budget_still_answers(self):
+        """Best effort: 2.5 Pro cannot disable thinking and 400s. That must not fail the call.
+
+        Without the retry the knob turns a working provider into a failing one for a caller who
+        never asked for it — the opposite of an optimisation.
+        """
+        seen: list = []
+
+        def responder(_method, _url, body, _headers):
+            seen.append("thinkingConfig" in body["generationConfig"])
+            if seen[-1]:
+                raise ProviderError(
+                    "HTTP 400: Budget 0 is invalid for thinking model", status_code=400
+                )
+            return {"candidates": [{"content": {"parts": [{"text": "vi"}]}}]}
+
+        http = FakeHttpClient(responder=responder)
+
+        assert self._provider(http).generate_text("xin chào", max_tokens=8) == "vi"
+        assert seen == [True, False]  # asked once, then asked again without the key
+
+    def test_an_unrelated_400_is_not_retried(self):
+        """Only a refusal OF THIS KEY is worth a second request; anything else is the caller's."""
+        calls: list = []
+
+        def responder(_method, _url, _body, _headers):
+            calls.append(1)
+            raise ProviderError("HTTP 400: bad api key", status_code=400)
+
+        http = FakeHttpClient(responder=responder)
+
+        with pytest.raises(ProviderError):
+            self._provider(http).generate_text("xin chào", max_tokens=8)
+        assert len(calls) == 1
+
+
 # --- 2. wiring, built from the REAL config (fake transport, offline) -------------------
 class TestLLMProviderWiring:
     """Per-provider request WIRING, built from the REAL configured model/credentials but with a
@@ -273,6 +354,19 @@ class LLMProviderContract:
         # The whole documented kwarg surface must be accepted: no system message, no token cap.
         out = call_or_xfail(provider.generate_text, "Say hi.", max_tokens=None)
         assert isinstance(out, str) and out.strip()
+
+    def test_generate_cached_text_returns_text_and_optional_usage(self, provider):
+        # Every provider must answer the split-prompt call, whether or not it does anything with
+        # the prefix: the base's concatenating default is what makes that true by construction,
+        # and this is where a provider that overrode it wrongly gets caught — against the real
+        # API for the credentialed subclasses, offline for the fake one.
+        text, usage = call_or_xfail(
+            provider.generate_cached_text,
+            PromptParts("Reply with exactly the single word: ", "pong"),
+            max_tokens=256,
+        )
+        assert isinstance(text, str) and text.strip()
+        assert usage is None or isinstance(usage, dict)
 
     def test_generate_image_if_supported(self, provider):
         try:

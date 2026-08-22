@@ -1,0 +1,112 @@
+[
+ {
+  "label": "1x10",
+  "repeat": 1,
+  "seconds": 167.059888333024,
+  "limiter_acquired": 53,
+  "limiter_peak": 1,
+  "limiter_wait": 0.0,
+  "fields_filled": 170,
+  "fields_expected": 190,
+  "notes_processed": 10,
+  "blocked": 10,
+  "field_failures": 0,
+  "unfilled": 10,
+  "contaminated_fields": 4,
+  "contaminated_notes": 4,
+  "scanned_fields": 100,
+  "examples": [
+   "'mental' \u00b7 Antonyms names ['physical']",
+   "'physical' \u00b7 Antonyms names ['mental']",
+   "'gesture' \u00b7 Synonyms (explained) names ['physical']",
+   "'toddler' \u00b7 Phrasal Verb names ['tantrum']"
+  ],
+  "counts": {
+   "solo_text": 12,
+   "batched": 10,
+   "detect": 0,
+   "tts": 30,
+   "errors": 0,
+   "rate_limited_calls": 0,
+   "http_requests": 33,
+   "http_attempts": 33,
+   "http_429": 0,
+   "http_5xx": 0,
+   "network_errors": 0
+  }
+ },
+ {
+  "label": "8x1",
+  "repeat": 1,
+  "seconds": 110.05754675000207,
+  "limiter_acquired": 130,
+  "limiter_peak": 8,
+  "limiter_wait": 0.0,
+  "fields_filled": 170,
+  "fields_expected": 190,
+  "notes_processed": 10,
+  "blocked": 10,
+  "field_failures": 0,
+  "unfilled": 10,
+  "contaminated_fields": 11,
+  "contaminated_notes": 7,
+  "scanned_fields": 100,
+  "examples": [
+   "'mental' \u00b7 Example 1 names ['physical']",
+   "'mental' \u00b7 Antonyms names ['physical']",
+   "'physical' \u00b7 Example 1 names ['mental']",
+   "'physical' \u00b7 Synonyms (explained) names ['mental']",
+   "'physical' \u00b7 Antonyms names ['mental']"
+  ],
+  "counts": {
+   "solo_text": 100,
+   "batched": 0,
+   "detect": 0,
+   "tts": 30,
+   "errors": 0,
+   "rate_limited_calls": 0,
+   "http_requests": 110,
+   "http_attempts": 110,
+   "http_429": 0,
+   "http_5xx": 0,
+   "network_errors": 0
+  }
+ },
+ {
+  "label": "8x20",
+  "repeat": 1,
+  "seconds": 100.04608700005338,
+  "limiter_acquired": 52,
+  "limiter_peak": 8,
+  "limiter_wait": 0.0,
+  "fields_filled": 170,
+  "fields_expected": 190,
+  "notes_processed": 10,
+  "blocked": 10,
+  "field_failures": 0,
+  "unfilled": 10,
+  "contaminated_fields": 5,
+  "contaminated_notes": 5,
+  "scanned_fields": 100,
+  "examples": [
+   "'mental' \u00b7 Antonyms names ['physical']",
+   "'physical' \u00b7 Antonyms names ['mental']",
+   "'gesture' \u00b7 Synonyms (explained) names ['physical']",
+   "'toddler' \u00b7 Phrasal Verb names ['tantrum']",
+   "'tantrum' \u00b7 Synonyms (explained) names ['physical']"
+  ],
+  "counts": {
+   "solo_text": 12,
+   "batched": 10,
+   "detect": 0,
+   "tts": 30,
+   "errors": 0,
+   "rate_limited_calls": 0,
+   "http_requests": 32,
+   "http_attempts": 32,
+   "http_429": 0,
+   "http_5xx": 0,
+   "network_errors": 0
+  }
+ }
+]

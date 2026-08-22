@@ -504,6 +504,18 @@ class ClozeAudioTool(Tool):
     params_model: ClassVar[Optional[type[BaseModel]]] = ClozeAudioParams
 
     @classmethod
+    def reads_prompt(cls, params: Mapping[str, object]) -> bool:
+        """Only when ``source_field`` is blank, where the prompt is how the source is found.
+
+        With the param set this tool speaks the field that param names — it uses a provider (it
+        synthesizes) and never reads the prompt, which is exactly why "does it read the prompt?"
+        cannot be answered with ``uses_provider``. A row like "Definition (cloze audio)" left
+        with a stale prompt otherwise inherits a HARD edge onto whatever that prompt happens to
+        mention, and blocks on every note where that field is empty.
+        """
+        return not str(params.get("source_field", "") or "").strip()
+
+    @classmethod
     def referenced_fields(cls, params: Mapping[str, object]) -> list[str]:
         """Return the fields the params NAME, so they become real dependency edges.
 

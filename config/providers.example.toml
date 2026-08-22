@@ -57,6 +57,16 @@ base_url = "https://openrouter.ai/api/v1"
 text_model = "openai/gpt-4o-mini"
 image_model = "gpt-image-1"
 embedding_model = "text-embedding-3-small"
+# Prompt caching: every note of a note type sends the same instruction head, so it is worth
+# caching. OpenAI-hosted models do that automatically and need nothing here. Anthropic-family
+# models need an explicit marker, which requires sending the message as a content ARRAY —
+# set this true ONLY for a model documented to accept it, since one that does not will fail
+# outright rather than fall back.
+prompt_cache_control = false
+# Ask for JSON matching a schema (`response_format`) when Omnia batches several notes into one
+# request. Same caveat as above: support is per model, and a model that rejects it fails the
+# call. Leaving this false is safe — the reply is parsed defensively regardless.
+json_output = false
 
 # Any other OpenAI-compatible endpoint (set base_url).
 [llm.openai_compatible]

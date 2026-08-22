@@ -438,6 +438,16 @@ class ClozeTool(Tool):
     params_model: ClassVar[Optional[type[BaseModel]]] = ClozeParams
 
     @classmethod
+    def reads_prompt(cls, params: Mapping[str, object]) -> bool:
+        """Only when ``sentence_field`` is blank, where the prompt IS how the sentence is found.
+
+        With the param set this tool does string surgery on two named fields and never looks at
+        the prompt, so a prompt left over from before the chain was configured must not keep
+        adding dependency edges (see :meth:`Tool.reads_prompt`).
+        """
+        return not str(params.get("sentence_field", "") or "").strip()
+
+    @classmethod
     def referenced_fields(cls, params: Mapping[str, object]) -> list[str]:
         """Return the fields the params NAME, so they become real dependency edges.
 

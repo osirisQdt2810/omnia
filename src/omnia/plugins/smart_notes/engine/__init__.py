@@ -6,6 +6,15 @@ than its submodules. No Anki imports — the whole engine unit-tests headless.
 
 from __future__ import annotations
 
+from omnia.plugins.smart_notes.engine.batching import (
+    SOLO_PLANNER,
+    FieldBatchRunner,
+    FieldWork,
+    SoloPlanner,
+    WavePlanner,
+    WaveTask,
+    run_wave,
+)
 from omnia.plugins.smart_notes.engine.consistency import (
     ConsistencyResult,
     NodeEdgeSet,
@@ -31,13 +40,14 @@ from omnia.plugins.smart_notes.engine.interpolation import (
     validate_brace_syntax,
 )
 from omnia.plugins.smart_notes.engine.markdown import convert_markdown_to_html
+from omnia.plugins.smart_notes.engine.note_run import NoteRun
 from omnia.plugins.smart_notes.engine.ordering import (
     SmartNotesCycleError,
+    order_rule_levels,
     order_rules,
 )
 from omnia.plugins.smart_notes.engine.rules import (
     applies_to_deck,
-    chunk,
     compile_field_rule,
     compile_note_type_rules,
     dedupe_preserving_order,
@@ -67,12 +77,15 @@ from omnia.plugins.smart_notes.engine.tools import (
 )
 
 __all__ = [
+    "SOLO_PLANNER",
     "BlockedField",
     "ConsistencyResult",
     "Empty",
     "FailedField",
+    "FieldBatchRunner",
     "FieldGraph",
     "FieldNode",
+    "FieldWork",
     "GenerationPipeline",
     "GenerationResult",
     "GenerationService",
@@ -82,10 +95,12 @@ __all__ = [
     "LanguageDetector",
     "NodeEdgeSet",
     "NotApplicable",
+    "NoteRun",
     "PipelineResult",
     "Produced",
     "ResolvedVoice",
     "SmartNotesCycleError",
+    "SoloPlanner",
     "TTSGenerator",
     "TextGenerator",
     "Tool",
@@ -94,18 +109,21 @@ __all__ = [
     "ToolContext",
     "ToolError",
     "ToolRequest",
+    "WavePlanner",
+    "WaveTask",
     "applies_to_deck",
-    "chunk",
     "compile_field_rule",
     "compile_note_type_rules",
     "convert_markdown_to_html",
     "dedupe_preserving_order",
     "extract_field_refs",
     "interpolate",
+    "order_rule_levels",
     "order_rules",
     "reconcile_field_deps",
     "register_tool",
     "resolve_tool",
+    "run_wave",
     "should_skip_rule",
     "tools_catalog",
     "validate_brace_syntax",

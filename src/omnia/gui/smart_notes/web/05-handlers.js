@@ -93,6 +93,35 @@
     if (optDiscardUnfilled) {
       optDiscardUnfilled.checked = opts.discard_unfilled_clips !== false;
     }
+    // Seeding matters as much as reading back: an unseeded control posts its own blank value
+    // on the next save and silently resets what another device set.
+    //
+    // The four fallbacks below (two here, two in collectOptions) MUST equal
+    // SmartNotesSettings.max_concurrent_generations / .batch_notes_per_call. They are pinned to
+    // the Python model by test_the_pane_fallbacks_match_the_python_defaults — a stale number
+    // here seeds a control whose key is absent, posts it, and writes it, which is exactly the
+    // clobbering the absent-key rule exists to prevent.
+    if (optConcurrency) {
+      // A STORED value is shown as stored, never clamped to this build's range. Clamping it
+      // would let an older Omnia narrow a newer one's setting just by opening this pane: a
+      // stored 64 would display as 16, differ from stored, and be written back — destroying a
+      // value this build simply does not understand yet. That is the loss ADR-010 exists to
+      // prevent. Only the ABSENT-key fallback is this build's own number.
+      optConcurrency.value =
+        opts.max_concurrent_generations === undefined ||
+        opts.max_concurrent_generations === null
+          ? "8"
+          : String(opts.max_concurrent_generations);
+    }
+    if (optBatchNotes) {
+      // 10, not 1, when the key is absent: it is the model's default (see
+      // SmartNotesSettings.batch_notes_per_call), and seeding a 1 here would show "off" for a
+      // collection that is in fact grouping — and write that 1 back on the next save.
+      optBatchNotes.value =
+        opts.batch_notes_per_call === undefined || opts.batch_notes_per_call === null
+          ? "10"
+          : String(opts.batch_notes_per_call);
+    }
     renderIntegrations(opts);
   }
 
@@ -274,13 +303,40 @@
         autoGenerateIntegrations[box.dataset.integKey] = box.checked;
       }
     }
-    return {
+    const opts = {
       generate_at_review: optGenReview.checked,
       regenerate_when_batching: optRegenBatch.checked,
       allow_empty_fields: optAllowEmpty.checked,
       discard_unfilled_clips: optDiscardUnfilled ? optDiscardUnfilled.checked : true,
       auto_generate_integrations: autoGenerateIntegrations
     };
+    // OMITTED, not defaulted, when the control is missing. The controller's contract is that an
+    // ABSENT key keeps the stored value verbatim — which is what a device whose Advanced pane
+    // failed to render needs, so it does not overwrite a number set on another device. Posting
+    // a hard-coded fallback here would send the key, bypass that branch, and do exactly the
+    // clobbering the branch was written to prevent.
+    if (optConcurrency) {
+      opts.max_concurrent_generations = clampInt(optConcurrency.value, 1, 16, 8);
+    }
+    if (optBatchNotes) {
+      opts.batch_notes_per_call = clampInt(optBatchNotes.value, 1, 20, 10);
+    }
+    return opts;
+  }
+
+  /**
+   * Coerce a numeric input to a whole number inside [lo, hi], or `dflt` when it is not one.
+   * Number("1e999") is Infinity and Number("") is 0 — either would reach the backend as a
+   * worker count, so the bound is applied here as well as in the controller.
+   * @param {*} raw
+   * @param {number} lo
+   * @param {number} hi
+   * @param {number} dflt
+   * @return {number}
+   */
+  function clampInt(raw, lo, hi, dflt) {
+    const n = Math.round(Number(raw));
+    return Number.isFinite(n) ? Math.min(Math.max(n, lo), hi) : dflt;
   }
 
   function closeOptions() {

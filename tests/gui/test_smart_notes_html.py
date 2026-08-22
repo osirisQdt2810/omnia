@@ -18,10 +18,13 @@ from omnia.gui.smart_notes.html import (
 )
 from omnia.plugins.smart_notes.authoring import AutoSmartField, apply_auto_smart
 from omnia.plugins.smart_notes.config import (
+    MAX_NOTES_PER_CALL,
+    MAX_WORKERS,
     FieldDep,
     FieldToolConfig,
     SmartNotesFieldConfig,
     SmartNotesNoteTypeConfig,
+    SmartNotesSettings,
 )
 
 
@@ -699,6 +702,136 @@ class TestBuildSmartNotesHtml:
         for col in ("Field", "Type", "Prompt", "Provider", "Model", "Overwrite"):
             assert col in html
 
+    def test_the_concurrency_control_is_wired_end_to_end(self):
+        """One assertion covers all four edited web files — the builder concatenates them.
+
+        The half that is invisible until a second device disagrees is the SEEDING: a control
+        that is read back on save but never seeded posts its own blank value and resets
+        whatever another device set.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert 'id="sn-opt-concurrency"' in html  # page.html: the control
+        assert (
+            'getElementById("sn-opt-concurrency")' in html
+        )  # 01-bridge.js: the handle
+        assert "optConcurrency.value =" in html  # 05-handlers.js: seeded
+        assert (
+            "String(opts.max_concurrent_generations)" in html
+        )  # ...from the stored value
+        # Read back INSIDE the `if (optConcurrency)` guard: the key must be omitted, not
+        # defaulted, when the control did not render — see collectOptions.
+        assert "opts.max_concurrent_generations = clampInt(" in html
+        assert "function clampInt(" in html  # bounded before it leaves the page
+
+    def test_an_absent_control_omits_its_key_instead_of_posting_a_default(self):
+        """The page must not send a number it did not read from a control.
+
+        The controller keeps the STORED value for an absent key, which is what a device whose
+        Advanced pane failed to render needs. A hard-coded fallback in the page sends the key,
+        bypasses that branch, and overwrites what another device set — so no literal fallback
+        may appear on either read-back line.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert "if (optConcurrency) {\n      opts.max_concurrent_generations" in html
+        assert "if (optBatchNotes) {\n      opts.batch_notes_per_call" in html
+        assert "max_concurrent_generations: optConcurrency" not in html
+        assert "batch_notes_per_call: optBatchNotes" not in html
+
+    def test_the_batch_size_control_is_wired_end_to_end(self):
+        """Same four-file wiring for the notes-per-request control (LAYER 3)."""
+        html = build_smart_notes_html(dark=False)
+
+        assert 'id="sn-opt-batch-notes"' in html  # page.html: the control
+        assert 'getElementById("sn-opt-batch-notes")' in html  # 01-bridge.js
+        assert "optBatchNotes.value =" in html  # 05-handlers.js: seeded
+        assert "String(opts.batch_notes_per_call)" in html  # ...from the stored value
+        assert "opts.batch_notes_per_call = clampInt(" in html  # …and read back
+        # The env knob caps this number and can switch grouping off entirely, so the pane must
+        # name it — a control the environment can silently override is worse than no control.
+        assert "OMNIA_SMART_NOTES_BATCHING" in html
+
+    def test_the_batch_size_control_claims_requests_and_claims_nothing_about_speed(
+        self,
+    ):
+        """The one description of LAYER 3 inside the product must match what was measured.
+
+        Three times now this tooltip has claimed something about SPEED and been wrong. It first
+        sold grouping as a cost AND speed win. It was then rewritten to say grouping is
+        "measurably SLOWER" above one worker — from a fake rig that charged a chunk per OUTPUT
+        ITEM, which makes K answers in one call cost exactly what K calls cost, so grouping could
+        not have measured any other way. It was then rewritten again to say grouping is faster
+        everywhere, from ONE live session; a second session against the same collection had K=20
+        tied with solo and K=10 2.2x slower, and each arm varied run to run as much as the arms
+        differed from each other. Both sessions' rows are committed in
+        ``tests/benchmarks/data/``, so the next person to touch this string can check it.
+
+        So the pane claims the half that reproduced — REQUESTS, 1300 to 769 and 820 at the shipped
+        K=10 —
+        and says explicitly that the time effect is unsettled. A superlative about speed, in
+        either direction, may not reappear here.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert "39% fewer of them (1300 \u2192 769 and 820 across the two runs)" in html
+        # A single mean here would be 794.5 — a fractional request, which is why the pane
+        # quotes both runs instead. Truncating it to 794 is what this line replaced.
+        assert "1300 \u2192 794)" not in html
+        assert "Whether it also saves TIME is not settled" in html
+        assert "do not count on fewer seconds either way" in html
+        # Every retired claim, in both directions.
+        assert "does NOT make a batch finish sooner" not in html
+        assert "Fewer requests, not less waiting" not in html
+        assert "roughly as fast, not dependably faster" not in html
+        assert "measurably SLOWER" not in html
+
+    def test_the_batch_size_tooltip_states_the_bleed_check_is_weak(self):
+        """A weak instrument reported as a clean result is how the last round went wrong.
+
+        The bleed column is a headword scan: it only sees one note's answer landing on another
+        when the right answer would have restated its own headword. Against a constructed
+        neighbour swap on the measured deck it caught 42% of the mis-attributions, and 0-12% on
+        Definition, Antonyms, Meaning (vi), part of speech and IPA. Wherever the pane leans on
+        that number it must say so, so "we measured no bleed" cannot be read as "there is none".
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert "that check is blunt" in html
+        assert "not detected rather than ruled out" in html
+
+    def test_the_pane_fallbacks_match_the_python_defaults(self):
+        """The four JS fallbacks are the Python model's defaults, or the pane rewrites a value.
+
+        ``applyOptions`` seeds each Advanced control from the posted options and falls back to a
+        literal when the key is ABSENT — which it is for every user who has never set it, because
+        :meth:`SmartNotesSettings.dict` prunes unset keys. ``collectOptions`` then posts what the
+        control holds. So a literal here that has drifted from the model default seeds the stale
+        number, posts it, and the controller writes it: exactly the "silently resets what another
+        device set" failure the comment above those lines warns about, with nothing red to catch
+        it. Both defaults have now moved twice, so pin them.
+        """
+        html = build_smart_notes_html(dark=False)
+        workers = SmartNotesSettings.__fields__["max_concurrent_generations"].default
+        notes_per_call = SmartNotesSettings.__fields__["batch_notes_per_call"].default
+
+        # The ABSENT-key fallbacks, which are the only place this build's own numbers belong.
+        # A STORED value is seeded as stored — clamping it would let this build narrow a newer
+        # release's setting merely by opening the pane (see applyOptions), so the seed path is
+        # deliberately NOT a clampInt call any more and asserting one here would re-forbid the
+        # fix.
+        assert f'? "{workers}"' in html, "the workers fallback is not the model default"
+        assert (
+            f'? "{notes_per_call}"' in html
+        ), "the notes-per-call fallback is not the model default"
+
+        # What the user TYPES is still clamped to what this build can honour, on read-back.
+        assert f"clampInt(optConcurrency.value, 1, {MAX_WORKERS}, {workers})" in html
+        assert (
+            f"clampInt(optBatchNotes.value, 1, {MAX_NOTES_PER_CALL}, "
+            f"{notes_per_call})" in html
+        )
+
     def test_auto_result_hook_exposed(self):
         # Auto-smart's off-thread result is pushed via this global hook.
         assert "window.__snAutoResult" in build_smart_notes_html(dark=False)
@@ -886,3 +1019,36 @@ class TestBuildSmartNotesHtml:
             "function promptRefIssues" in html and "function refreshModalWarn" in html
         )
         assert "Not a field on this note type" in html
+
+
+class TestANewerReleasesValueSurvivesThisPane:
+    """ADR-010, at the pane: opening a dialog must not narrow what a newer Omnia stored.
+
+    ``applyOptions`` used to seed each Advanced control with
+    ``clampInt(stored, 1, THIS_BUILD_MAX, default)``. A collection synced from a release whose
+    ceiling is higher would arrive with, say, ``max_concurrent_generations = 64``; this build
+    would display 16, that differs from what is stored, and the next Save writes 16 back. The
+    user loses a setting they made on another device by doing nothing but opening a dialog.
+    """
+
+    def test_a_stored_value_above_this_builds_ceiling_is_seeded_as_stored(self):
+        html = build_smart_notes_html(dark=False)
+
+        # The seed path takes the stored number itself; only the ABSENT-key branch is a literal.
+        assert "String(opts.max_concurrent_generations)" in html
+        assert f"clampInt(opts.max_concurrent_generations, 1, {MAX_WORKERS}" not in html
+        assert "String(opts.batch_notes_per_call)" in html
+        assert (
+            f"clampInt(opts.batch_notes_per_call, 1, {MAX_NOTES_PER_CALL}" not in html
+        )
+
+    def test_what_the_user_types_is_still_clamped(self):
+        """The other half: this build must not honour a number it cannot run.
+
+        Clamping on READ-BACK is right — that is a value this build's user just chose. Clamping
+        on SEED is what destroys someone else's.
+        """
+        html = build_smart_notes_html(dark=False)
+
+        assert f"clampInt(optConcurrency.value, 1, {MAX_WORKERS}" in html
+        assert f"clampInt(optBatchNotes.value, 1, {MAX_NOTES_PER_CALL}" in html

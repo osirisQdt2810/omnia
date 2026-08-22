@@ -21,6 +21,375 @@ Format for each entry:
 
 ---
 
+## 2026-08-22 — Generation defaults from a live benchmark: 8 workers, K stays 10
+
+**What:** `max_concurrent_generations` ships at **8** instead of 1;
+`OMNIA_SMART_NOTES_BATCHING` / `batch_notes_per_call` stay at **10** (they were briefly moved to
+20 and moved back); `OMNIA_MAX_CONCURRENT_REQUESTS` stays 0. A live benchmark
+(`tests/benchmarks/smart_notes_live.py`) and the raw rows of all three measurement sessions
+(`tests/benchmarks/data/`) are now part of the repo, so a default can be re-derived rather than
+taken on trust. The prune that hides these two keys from the synced blob is now on PROVENANCE
+(`__fields_set__`) rather than on equality with the current default. See ADR-018.
+
+**Why:** the previous defaults came from `smart_notes_throughput.py`, a fake rig whose latency
+model is a parameter rather than a measurement — it charges a chunk per OUTPUT ITEM, so K answers
+in one call cost exactly what K calls cost and grouping could only ever measure slower. That
+artefact had been quoted forward into a source comment, an ADR, this file and a user-facing
+tooltip that told people grouping was "measurably SLOWER". A live session then produced the
+opposite result and it, too, was briefly shipped — and **it did not reproduce**.
+
+**What reproduced, and what did not.** Both sessions ran the same harness against the same
+collection with the same settings and the same account.
+
+| comparison | 100-note session | 20-note session | verdict |
+|---|---|---|---|
+| 4 → 8 workers, K = 1 | 1851.8–1958.4 s → 1210.4–1297.8 s | 370.9–393.7 s → 206.3–221.5 s | **established** (ranges do not overlap, twice) |
+| requests, 8 workers | 1300 → 794.5 (K=10, −39%) → 574.5 (K=20, −56%) | 260 → 152.5 (−41%) → 106 (−59%) | **established** |
+| K on wall clock, 8 workers | 8x1 1254.1, 8x10 1162.5, 8x20 1049.5 | 8x1 213.9, 8x10 476.5 (2.2x slower), 8x20 215.2 (tie) | **UNPROVEN — do not claim faster OR slower** |
+
+Within-arm spread was as wide as the between-arm gap (8x20 varied 175.0–255.4 s in the second
+session). Two samples of a network-bound arm is not a measurement of it.
+
+**So K = 10 ships for the reason that never depended on the timing study**: a chunk asks for K
+answers inside one completion, the measured deck's binding field runs ~677 output tokens at its
+longest, and 8192/677 ≈ 12. And **8 workers, not 16** — the 429 column's zero is one generous
+Vertex project's quota rather than a property of the world (judgment), 16 is `MAX_WORKERS`
+(principle), and the one field 16x10 lost was an `edge_tts` WebSocket timeout in one of its two
+runs (n = 1, and on a different provider from the one this knob bounds).
+
+**Files:** `src/omnia/envs.py`, `src/omnia/plugins/smart_notes/config.py` (both defaults, the
+prune, the rationale comments), `src/omnia/gui/smart_notes/dialogs/controllers/config.py`
+(`_performance_updates` — a save records only a CHANGE), `src/omnia/gui/smart_notes/web/page.html`
+(the Advanced tooltip), `src/omnia/gui/smart_notes/web/05-handlers.js` (the four fallbacks),
+`engine/{batching,service}.py` docstrings; new `tests/benchmarks/data/` (three sessions' rows +
+README), `tests/benchmarks/smart_notes_live.py` (`WriteGuard`, bleed-recall calibration, token and
+answer-length columns, the not-HTTP-metered column); `tests/benchmarks/smart_notes_throughput.py`
+(a warning that its wall-clock column cannot decide a batching default); tests in
+`tests/gui/{test_smart_notes_html,test_smart_notes_dialog_deps}.py` and
+`tests/plugins/smart_notes/{test_batching,test_store}.py`.
+
+**How to verify:**
+`.venv/bin/python -m pytest tests/ -q -m "not llm and not tts and not integration"` →
+`2291 passed, 18 skipped, 105 deselected`. Re-derive any quoted table from the committed rows:
+
+```bash
+python3 - <<'EOF'
+import json, statistics
+rows = json.load(open("tests/benchmarks/data/live_100notes_2026-08-22.json"))
+by_arm = {}
+for r in rows:
+    by_arm.setdefault(r["label"], []).append(r["seconds"])
+for arm, secs in by_arm.items():
+    print(f"{arm:>6} {statistics.mean(secs):8.1f} s  ({min(secs):.1f}-{max(secs):.1f})")
+EOF
+```
+
+**Numbers this entry deliberately does not repeat**, because they were wrong the first time and
+the corrected values are the only ones that reconcile with the committed rows: the twelve
+100-note runs contain **four** retries (one each in 4x1 r1, 4x10 r1, 8x20 r2, 16x10 r1), all
+network errors and no 429s; their arm time sums to **15,241.8 s = 4 h 14 m**, not 3 h 07 m; fill
+was 1700 or 1701 in eleven runs and 1698 in 16x10 r1, so "1700 everywhere else" was not what the
+table showed.
+
+**Notes / rollback:** `max_concurrent_generations = 1` is the exact revert to pre-concurrency
+execution (no pool is created), and `OMNIA_SMART_NOTES_BATCHING=-1` still switches grouping off
+machine-wide. Residuals, all in ADR-018: 8 workers is a **load increase for every existing user**
+against a provider account whose 429 behaviour was measured on one generous key; the **bleed
+metric catches ~42%** of a constructed neighbour swap and is near-blind (0–12%) on `Definition`,
+`Antonyms`, `Meaning (vi)`, part of speech and IPA, so a flat bleed column means "not detected";
+about a **third of provider calls (`edge_tts`, WebSocket) never reach the 429 instrument**, so
+"zero 429s" is a statement about the HTTP providers only; **batched answers ran ~20% shorter**
+than solo ones at both K, which `fields_filled` scores as a success; and **pinning the shipped
+default from a blob that never carried the key takes two saves** (set another value, then set it
+back) because the controller records only a change.
+
+## 2026-08-21 — K-note batching for smart-notes text fields (LAYER 3)
+
+**What:** A batch run can ask for the SAME field on several notes in one provider call.
+`engine/batching.py` groups a wave's eligible fields by
+`(note type, field, provider, model, template)`, sends them as one request whose envelope quotes
+the user's template verbatim, and routes each answer back **by an explicit opaque id** — never by
+position. Anything unmatched falls back to that note's ordinary individual call.
+`LLMProvider.generate_json(parts, schema=…)` is the optional half: Gemini enforces the shape
+natively, the OpenAI family behind a new `[llm.<name>].json_output`, and every other provider
+makes an ordinary text call. **`OMNIA_SMART_NOTES_BATCHING` is K and decides**: `-1` is off (the
+pre-LAYER-3 code path), any value `>= 1` is the ceiling the synced
+`SmartNotesSettings.batch_notes_per_call` is clamped to, and the default is **10**. See ADR-017.
+
+**Why:** Ten of the measured note type's seventeen enabled fields are pure-AI text on one
+provider/model, and every note of the type uses the same prompt template — so fifty notes spent
+500 completions asking the same ten questions. The win is the REQUEST COUNT (see the honest
+numbers below); it is not a speed feature.
+
+**Why K = 10, and why on by default.** The binding field on the measured deck is
+"Synonyms (explained)" at ~385 output tokens p95 and ~677 at its longest. A chunk asks for K
+answers inside ONE completion, so K·677 must fit the model's output cap: against Gemini Flash's
+8192 that is 8192/677 ≈ 12 in the worst case, and 10 stays under it even when every answer in
+the chunk is the longest ever seen. `FieldBudget` shrinks K further, per field, from what that
+field's answers actually cost. Default ON because it pairs with
+`max_concurrent_generations = 1`: at one worker there is no parallelism for a chunk to
+serialise, so the −64% request saving costs nothing. **That interaction is the whole
+justification — raise the worker count and K should come down.**
+
+> **CORRECTED (2026-08-22) — see the 2026-08-22 entry at the top and ADR-018.** The output-budget
+> half of this paragraph is right and is now the WHOLE justification for K = 10. The pairing half
+> is not: `max_concurrent_generations` ships at 8, and "raise the worker count and K should come
+> down" was derived from a fake rig's latency model that a real endpoint did not confirm — and
+> that a second live session contradicted in the other direction. **K's effect on wall clock is
+> unproven either way**; K = 10 stands on 8192/677 ≈ 12 alone.
+
+**Files:** new `plugins/smart_notes/engine/batching.py` (`FieldWork`, `WaveTask`/`SoloTask`/
+`ChunkTask`, `SoloPlanner`/`FieldBatchRunner`, `FieldBudget`, `parse_batch_items`, `match_items`,
+`collapsed_indexes`); modified `engine/service.py` (`works_for` replaces `units_for`; `batch_planner`),
+`integration/batch.py`, `plugins/smart_notes/config.py` (`notes_per_call()` — the single read
+site of both knobs), `envs.py` (the flag),
+`core/providers/llm/{base,gemini,openai_compatible}.py`, `core/providers/usage.py`,
+`core/config/models.py`, `config/providers.example.toml`,
+`gui/smart_notes/dialogs/controllers/config.py` and the Advanced-pane web files; new
+`tests/plugins/smart_notes/test_batching.py`; `tests/benchmarks/{fakes,smart_notes_throughput}.py`.
+
+**How to verify:**
+`.venv/bin/python -m pytest tests/ -q -m "not llm and not tts and not integration"` →
+`2272 passed, 18 skipped, 105 deselected`. Then the
+benchmark — fake provider, simulated latency, never real quota.
+
+`.venv/bin/python tests/benchmarks/smart_notes_throughput.py --notes 50 --latency 0.05 --workers 3 8`, the rows
+that matter for L3 (full output below in the LAYER 1 entry):
+
+```
+| configuration                      | wall (s) | speed-up | provider calls | fields | identical |
+|------------------------------------|---------:|---------:|---------------:|-------:|----------:|
+| baseline (sequential)              |    39.70 |    1.00x |            700 |    850 |     50/50 |
+| +L1+L2 (N=3, provider WITH cache)  |    13.79 |    2.88x |            700 |    850 |     50/50 |
+| +L1+L2+L3 (N=3, K=10, output=0%)   |     5.31 |    7.48x |            250 |    850 |     50/50 |
+| +L1+L2+L3 (N=3, K=10, output=50%)  |    10.34 |    3.84x |            250 |    850 |     50/50 |
+| +L1+L2+L3 (N=3, K=10, output=100%) |    15.94 |    2.49x |            250 |    850 |     50/50 |
+| +L1+L2 (N=8, provider WITH cache)  |     5.38 |    7.39x |            700 |    850 |     50/50 |
+| +L1+L2+L3 (N=8, K=10, output=0%)   |     2.74 |   14.51x |            250 |    850 |     50/50 |
+| +L1+L2+L3 (N=8, K=10, output=50%)  |     7.20 |    5.51x |            250 |    850 |     50/50 |
+| +L1+L2+L3 (N=8, K=10, output=100%) |    12.82 |    3.10x |            250 |    850 |     50/50 |
+```
+
+**Read that table honestly.** `output=` is the fraction of a solo call's latency the fake charges
+for GENERATING its one answer; a K-item chunk pays K times that part, because a provider does.
+Compare each L3 row against the `+L1+L2` row at the SAME worker count — the speed-up column is
+against the sequential baseline and flatters everything. At `output=0%` — the model the first
+version of this benchmark used, where output is free — L3 is 2.6× at N=3 and 2.0× at N=8. At
+50%, the honest middle, it is 1.33× at N=3 and **0.75× at N=8, i.e. slower than not batching**.
+At 100% it loses at both (0.87× and 0.42×). A chunk serialises K answers' worth of generation
+into one worker; a pool that wide would have generated them concurrently. **This is why the
+shipped default pairs K = 10 with ONE worker: at N=1 there is no parallelism for the chunk to
+serialise, so the request saving costs nothing. Raising the worker count should lower K.**
+
+**So: LAYER 3 buys REQUESTS, not seconds. 700 → 250 calls (−64%), every time, at every setting.**
+That number depends on no latency model. Turn it on to stay under a rate limit or to cut
+per-request overhead; do not turn it on to make a batch finish sooner, and do not turn it on at
+a high worker count at all.
+
+> **RETRACTED IN PART (2026-08-22) — see ADR-018.** The half that survives is the one depending on
+> no latency model: **LAYER 3 buys REQUESTS.** Everything above about SECONDS does not. `output=`
+> is an assumption about how a provider splits a call between fixed overhead and generating
+> tokens; nothing in this repo measures it, and at `output=0%` the same rig has batching winning
+> everywhere. Against the real endpoint one session had grouping faster at every worker count and
+> a second had K=20 tied with ungrouped and K=10 2.2x slower, with each arm's own run-to-run
+> spread as wide as the gap between arms (rows in `tests/benchmarks/data/`). So: do not read
+> "0.75× at N=8" as a property of the feature, do not read the live session's opposite as one
+> either, and note that the shipped default no longer pairs K with one worker — it is 8 workers
+> and K = 10, the latter on the output budget alone.
+
+Input tokens are not a free win either. On the long template the envelope amortises
+(211,082 → 92,442 prompt chars) but the prefix-cache hits drop 490 → 40; on a one-line template
+(`--template short`) the envelope's own boilerplate is bigger than what it replaces and the total
+goes UP, 33,664 → 73,424 chars.
+
+Hostile providers (`--corrupt`, 50 notes, N=3, output=50%): **850 fields and 50/50 identical
+notes in all five modes**, at roughly 300 calls (`drop-one`, `duplicate-id`), ~840 (`collapse`)
+and ~940 (`renumber`, `truncate` — worse than the 700-call baseline). Approximate deliberately:
+wave composition depends on thread timing, so the call column moves run to run (`renumber` was
+940 on most runs and 890 under instrumentation). The exact part is the fields and the identity.
+
+**Notes / rollback:** `OMNIA_SMART_NOTES_BATCHING=-1` is the rollback, and off is the
+pre-batching CODE PATH, not the batching path at width one — `batch_planner(1)` returns
+`SOLO_PLANNER`. Residuals, all in ADR-017: **context bleed** (a model answering ten items at
+once can let one note's wording drift into another's) is a quality risk no parser can detect —
+its degenerate cases are caught by `collapsed_indexes`, which discards any answer string shared
+by two or more items whose own inputs differ (PARTIAL collapse included: an earlier whole-chunk
+test saw nothing wrong with a reply that copied item 1's answer onto items 2-4 and answered item
+5 properly), while the gradual case — a slow drift in wording — remains undetectable; **batching
+widens one poisoned note's blast radius from 1 to K**, which matters because the web clipper is
+a first-class input path;
+the Account dialog's `calls` column drops by ~K (tokens stay whole); per-note fallbacks run
+sequentially inside the worker that owned the chunk; and `FieldBudget` is the first `engine/`
+state written from a worker, so `engine/` imports `threading` (never `aqt`/`anki`/
+`concurrent.futures`). A chunk also sends an EXPLICIT `max_tokens` of `per-item estimate × K`
+where the solo path sends none — deliberate, because K answers share one completion and the cap
+is what makes truncation deterministic rather than a property of the vendor's default; an
+unusable reply both halves K and doubles the per-item estimate, or the half-size retry would ask
+for exactly the room that just failed.
+
+---
+
+## 2026-08-21 — Prompt caching for smart-notes text generation (LAYER 2)
+
+**What:** `LLMProvider` grew `generate_cached_text(parts: PromptParts, …) -> (text, usage)`, whose
+base implementation concatenates the two parts and delegates — i.e. today's exact call. A text
+rule's prompt is now SPLIT at its first `{{ref}}` (`split_prompt` / `prompt_parts_for`) so the
+template's instruction head, which is identical for every note of a note type, is offered to the
+provider as a cacheable prefix. Gemini and the OpenAI family report how much of the input their
+cache served (`usage["cached"]`); OpenRouter can be told to mark the prefix explicitly via a new
+`[llm.<name>].prompt_cache_control`, default off. See ADR-016 (LAYER 2 section).
+
+**Why:** Every note of a note type shares one prompt TEMPLATE and differs only in the
+interpolated values, but `prompt_for` interpolated before the provider ever saw the string — so
+the instructions and one note's values arrived as a single blob with nothing for any prefix cache
+to match on.
+
+**Files:** modified `core/providers/llm/base.py` (`PromptParts`, `supports_prompt_cache`,
+`generate_cached_text`, and `last_usage` documented as closed to new code),
+`core/providers/llm/gemini.py` and `core/providers/llm/openai_compatible.py`,
+`core/providers/usage.py`, `core/config/models.py` + `config/providers.example.toml`,
+`plugins/smart_notes/engine/{interpolation,rules,generators}.py`; new
+`tests/plugins/smart_notes/test_prompt_cache.py`, `tests/providers/test_llm_prompt_cache.py`.
+
+**How to verify:**
+`.venv/bin/python -m pytest tests/ -q -m "not llm and not tts and not integration"` →
+`2272 passed, 18 skipped, 105 deselected`. Then the benchmark's input-accounting table. L2 must
+move the input accounting and NOTHING else — same 700 calls, same 850 fields, 50/50 identical
+(row labels verbatim from the run; `--template short` is a separate invocation):
+
+```
+| configuration                                       | prompt chars | repeated prefix | share | hits | misses |
+|-----------------------------------------------------|-------------:|----------------:|------:|-----:|-------:|
+| +L1 (N=3, provider WITHOUT a prefix cache)           |      211,082 |               0 |  0.0% |    0 |      0 |
+| +L1+L2 (N=3, provider WITH a prefix cache)           |      211,082 |         184,436 | 87.4% |  490 |     10 |
+| ... with a one-line template (--template short)      |       33,664 |          11,466 | 34.1% |  490 |     10 |
+```
+
+**The row labels are half the correction, and they are now the labels the benchmark PRINTS.**
+They used to read a bare `+L1` and `+L1+L2`, which invited "before L2 nothing repeated, after L2
+87.4% repeats"; the entry then quoted corrected labels that existed nowhere in the output, so
+reproducing it produced the reading the entry said was wrong. Both rows run identical engine code
+and send identical bytes; the split is lossless and has no user switch, so the A/B is between a
+provider that has a prefix cache and one that does not — and `_measure` names them that way.
+
+**And 87.4% is a property of the template, not of anyone's deck.** The share is
+`prefix / (prefix + value)`, where the prefix is what precedes the first `{{ref}}` — **378
+characters** here, not the 386 of the whole interpolated template, a conflation this entry and
+both ADRs used to repeat. It is 34.1% with a one-line template; a template that LEADS with a
+`{{ref}}` gets zero. The real deck's prompts were never sampled, so no figure here is a
+measurement of them — `--template short|long` exists so the number is read as the function it is,
+and the benchmark's own advice line now changes with the template instead of telling a reader
+running `--template short` to re-run with `--template short`.
+
+**Notes / rollback:** The benchmark counts CHARACTERS, not tokens — the fake has no tokenizer, so
+a token column would be a number with no provenance; chars/4 is printed as a labelled estimate.
+The repeated-prefix figure is an optimistic bound (the ledger has no TTL and no minimum cacheable
+size). Rollback is one line in `TextGenerator.generate`. Residuals: a template that LEADS with
+`{{ref}}` gets no benefit; `prompt_cache_control` must stay off for any model not documented to
+accept a content array; the authoring paths and the language detector still use `generate_text`
+deliberately.
+
+---
+
+## 2026-08-21 — Bounded concurrency for smart-notes generation (LAYER 1)
+
+**What:** Generation is no longer forced to be sequential. Three things landed together: a
+process-wide `ProviderLimiter` spent at the HTTP request boundary (`ThrottledHttpClient` wraps
+`DEFAULT_HTTP_CLIENT`); a `Dispatch` seam in `engine/` whose default is still one-at-a-time in
+the calling thread, with the `ThreadPoolExecutor`-backed `PooledDispatch` in `integration/`; and
+a `NoteRun` that walks one note a dependency LEVEL at a time, which the batch runner drives for
+several notes at once (cohort → round → wave). One setting, `max_concurrent_generations`,
+**default 1 — the pre-concurrency behaviour, with no pool created at all**. See ADR-016.
+
+> **SUPERSEDED (2026-08-22): the default is 8** — see the 2026-08-22 entry at the top and
+> ADR-018. `= 1` is still the exact revert; it is no longer what a user gets without asking.
+
+**Why:** On the note type this was measured against (35 fields, 17 with generation on, 8435
+notes) the dependency graph puts those 17 fields in only 5 levels of widths 2/4/6/4/1 — fields
+inside a level are independent by construction — yet every one of the 17 was a separate serial
+round trip, and no two notes ever overlapped. The sequential floor is 5 round trips per note, not
+17. Sequential execution was also the only thing throttling the provider, so removing it required
+a real bound in the same change.
+
+**Files:** new `src/omnia/core/network/limiter.py`,
+`src/omnia/core/concurrency/{dispatch,pool}.py` (the seam and the pool — in `core`, because
+neither holds a line of smart-notes),
+`src/omnia/plugins/smart_notes/engine/note_run.py`,
+`tests/{core/test_provider_limiter,plugins/smart_notes/test_levels,plugins/smart_notes/test_concurrency}.py`,
+`tests/benchmarks/{smart_notes_throughput,fakes}.py`; modified `core/network/http.py`
+(`ThrottledHttpClient`, the `_open` seam), `core/network/__init__.py` (lazy re-exports, so
+importing the limiter no longer drags in every provider), `core/providers/__init__.py` (the unpinned `llm()` AND
+`tts()` paths are cached), `core/providers/tts/edge_tts.py` (an explicit permit),
+`core/runtime/native_runtime.py` (`default_manager` under a lock), `core/providers/usage.py`,
+`core/anki_compat.py`, `engine/{ordering,service}.py`, `engine/tools/{base,pipeline}.py`,
+`integration/batch.py`, `plugins/smart_notes/config.py`, and the Advanced pane.
+
+**How to verify:**
+`.venv/bin/python -m pytest tests/ -q -m "not llm and not tts and not integration"` →
+`2272 passed, 18 skipped, 105 deselected`.
+
+```
+$ .venv/bin/python tests/benchmarks/smart_notes_throughput.py --notes 50 --latency 0.05 --workers 3 8
+workload: 50 notes x 17 fields (5 levels, widths 2/4/6/4/1), 50 ms per SOLO provider call, long template (386 chars, 378-char cacheable prefix)
+
+| configuration | wall clock (s) | speed-up | provider calls | observed peak | limiter peak | limiter wait (s) | 429s | notes written | fields written | blocked | field errors | identical to baseline |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline (sequential) | 39.70 | 1.00x | 700 | 1 | 1 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1 (N=3, provider WITHOUT a prefix cache) | 13.76 | 2.89x | 700 | 3 | 3 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1 (N=8, provider WITHOUT a prefix cache) | 5.37 | 7.39x | 700 | 8 | 8 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2 (N=3, provider WITH a prefix cache) | 13.79 | 2.88x | 700 | 3 | 3 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2 (N=8, provider WITH a prefix cache) | 5.38 | 7.39x | 700 | 8 | 8 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2+L3 (N=3, K=10, output=0%) | 5.31 | 7.48x | 250 | 3 | 3 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2+L3 (N=3, K=10, output=50%) | 10.34 | 3.84x | 250 | 3 | 3 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2+L3 (N=3, K=10, output=100%) | 15.94 | 2.49x | 250 | 3 | 3 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2+L3 (N=8, K=10, output=0%) | 2.74 | 14.51x | 250 | 8 | 8 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2+L3 (N=8, K=10, output=50%) | 7.20 | 5.51x | 250 | 8 | 8 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+| +L1+L2+L3 (N=8, K=10, output=100%) | 12.82 | 3.10x | 250 | 8 | 8 | 0.00 | 0 | 50 | 850 | 0 | 0 | 50/50 |
+```
+
+(Verbatim; the two further tables the same command prints are in the L2 and L3 entries.)
+
+**The limiter, measured.** It used to be sized to `workers + 1`, so it could never block — the
+pool width was doing all the bounding, and the "peak in flight" column printed the fake
+transport's counter rather than the limiter's. Capacity is now `workers`, restored on exit, and
+`OMNIA_MAX_CONCURRENT_REQUESTS` can narrow it below the pool.
+
+**One workload, stated once, and ADR-016 quotes these same four rows.** Every run below is
+`tests/benchmarks/smart_notes_throughput.py --notes 50 --latency 0.01 --workers 8
+--output-share 0.5`, plus the flags in the row's own name; each figure is that run's
+`+L1 (N=8, …)` line, and the baseline is its sequential row.
+
+```
+| run                                          | wall (s) | 429s | limiter peak | limiter wait (s) | fields |
+|----------------------------------------------|---------:|-----:|-------------:|-----------------:|-------:|
+| baseline (sequential)                         |    10.02 |    0 |            1 |             0.00 |    850 |
+| N=8, provider 429s above 4, NO request bound  |    33.88 |   91 |            8 |             0.00 |    850 |
+| N=8, provider 429s above 4, --request-limit 4 |     2.64 |    0 |            4 |             7.89 |    850 |
+| N=8, no rate limit,         --request-limit 3 |     3.55 |    0 |            3 |            13.09 |    850 |
+```
+
+That is the limiter/retry division of labour with BOTH mechanisms in the rig (the fake transport
+now overrides `UrllibHttpClient._open`, so the real `RetryPolicy` runs above it; the previous rig
+replaced the whole client and had no retry at all). Retry keeps the run CORRECT under a
+systematic 429 — 850/850 fields, 50/50 identical, even at 91 errors — and cannot keep it fast:
+backoff makes N=8 finish **3.4× slower than sequential**. The bound is what prevents the storm.
+(Wall-clock figures are machine- and load-dependent; the shape — a rate-limited unbounded run
+losing to sequential, and the bounded run beating both — reproduces, the third decimal does not.)
+
+**Notes / rollback:** Rollback is the shipped default. Known residuals, all in ADR-016: user
+tools may `import urllib` directly and cannot be bounded (`edge_tts` now takes an explicit
+permit, so it no longer escapes); a user tool that READS a field it does not DECLARE now races
+its de-facto producer; and a user tool's `run` may execute concurrently with itself, which is
+stated in `Tool`'s docstring, in `user_tools`' module docstring and as rule 8b of the authoring
+prompt. **No behaviour change rides along in `core/`, and two that had been are now reverted on
+purpose.** `RecordingLLMProvider` still forces `temperature = 0.7` (honouring the user's
+configured per-provider temperature instead is a real fix and a real change in generated text —
+it ships on its own, with a release note), and a POST still retries an ambiguous network error
+the FULL budget, exactly as before this work; bounding it to one retry to cap a possible
+double-charge was written, measured against what it costs (a field the third attempt would have
+generated) and reverted. Both are pinned by tests that state the intent, so reversing either is
+a deliberate act rather than a tidy-up.
+
 ## 2026-08-16 — The UI smoke becomes a real test harness, and moves out of `scripts/`
 
 **What:** `scripts/ui_smoke.py` is now `tests/smoke/run_smoke.py`, and it asserts behaviour

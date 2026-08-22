@@ -134,6 +134,46 @@ def tool_referenced_fields(specs: Iterable[CompiledToolSpec]) -> list[str]:
     return referenced
 
 
+def chain_reads_prompt(specs: Iterable[CompiledToolSpec]) -> bool:
+    """Whether any tool in a compiled chain reads the field's PROMPT.
+
+    The question :func:`~omnia.plugins.smart_notes.engine.rules.rule_source_fields` asks before
+    treating the prompt's ``{{refs}}`` as dependency edges. A chain of tools that all declare
+    their own inputs (``cloze``'s ``sentence_field``, ``cloze_audio``'s ``source_field``) never
+    looks at the prompt, so a prompt left behind from an earlier configuration must not keep
+    ordering — or worse, BLOCKING — that field on refs nothing will read. Asked WITH each tool's
+    params, because those same tools DO read the prompt when their param is blank.
+
+    True for an empty chain (which compiles to the single ``ai`` tool) and true for a tool this
+    build cannot resolve: an unknown chain cannot be judged, and dropping a real edge is the
+    worse of the two mistakes — it lets a field generate before its input exists, which is wrong
+    content rather than a wasted wait.
+
+    Args:
+        specs: The rule's compiled tool chain, in run order.
+
+    Returns:
+        True when at least one tool in the chain reads the prompt.
+    """
+    chain = list(specs)
+    if not chain:
+        return True
+    for spec in chain:
+        cls = get_tool(spec.name)
+        if cls is None:
+            return True
+        try:
+            if bool(cls.reads_prompt(spec.params)):
+                return True
+        except Exception:  # a malformed class must not decide the graph on our behalf
+            logger.exception(
+                "smart_notes: tool %r could not report whether it reads the prompt",
+                spec.name,
+            )
+            return True
+    return False
+
+
 def tool_kinds(cls: type[Tool]) -> frozenset[str]:
     """Return ``cls.kinds`` defensively, as an empty set when the class is malformed.
 

@@ -212,8 +212,14 @@ def main_web_eval(js: str) -> None:
 # --- collection writes (call on the main thread / inside on_success) ---
 # EXCEPTION: add_media_file is also called from a QueryOp's background thread, by
 # smart_notes' generation, so a tool reading a media field sees the reference the note will
-# hold rather than a blank. Anki hands the collection to a QueryOp's worker by design and the
-# backend serialises the write; the rest of the calls below still belong on the main thread.----------------
+# hold rather than a blank. What makes that safe is NOT the backend: it is that
+# TaskManager._collection_executor is a ThreadPoolExecutor(max_workers=1), so every QueryOp
+# body — and therefore every media write from one — runs on that ONE thread.
+# This is not a licence to call add_media_file from a worker pool. smart_notes' concurrent
+# generation keeps the invariant explicitly: pool workers only run a field's tool chain, and
+# every materialize() (hence every add_media_file) happens on the QueryOp's own driver thread,
+# at commit. The rest of the calls below still belong on the main thread.
+# ----------------
 def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str:
     """Write ``data`` as ``filename`` into the collection media folder; return the real name."""
     if col is None:

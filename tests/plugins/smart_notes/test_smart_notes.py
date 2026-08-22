@@ -48,7 +48,6 @@ from omnia.plugins.smart_notes.engine import (
     GenerationService,
     SmartNotesCycleError,
     applies_to_deck,
-    chunk,
     compile_note_type_rules,
     convert_markdown_to_html,
     dedupe_preserving_order,
@@ -271,13 +270,6 @@ class TestCompileNoteTypeRules:
 class TestBatchPlanningHelpers:
     def test_dedupe_preserves_first_seen_order(self):
         assert dedupe_preserving_order([3, 1, 3, 2, 1]) == [3, 1, 2]
-
-    def test_chunk_splits_into_max_size_batches(self):
-        assert chunk([1, 2, 3, 4, 5], 2) == [[1, 2], [3, 4], [5]]
-
-    def test_chunk_rejects_non_positive_size(self):
-        with pytest.raises(ValueError):
-            chunk([1, 2], 0)
 
 
 def _route(method, url, body, headers):
@@ -1490,7 +1482,7 @@ class _StubHub:
         self.tts_providers.append(provider)
         return self._tts
 
-    def resolve_auto_voice(self, lang: str):
+    def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         if lang not in self._auto_voices:
             raise ProviderError(f"No Auto-detect voice set for language {lang!r}")
         return self._auto_voices[lang]

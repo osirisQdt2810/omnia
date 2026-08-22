@@ -648,5 +648,7 @@ class TestAutoSmartReconcileReclassifies:
             list(field.depends_on),
         )
         by_field = {d.field: d for d in reconciled}
-        assert by_field["Reading"].kind == "hard"  # re-coloured to the fresh classification
+        assert (
+            by_field["Reading"].kind == "hard"
+        )  # re-coloured to the fresh classification
         assert by_field["Kanji"].kind == "hard" and by_field["Kanji"].auto is True

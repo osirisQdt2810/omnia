@@ -6,26 +6,44 @@ rule's ordered tool chain until one produces (a field with no configured chain c
 single ``"ai"`` tool — the provider-backed path — so behaviour is unchanged);
 :meth:`GenerationService.generate_note` compiles a
 :class:`~omnia.plugins.smart_notes.config.SmartNotesNoteTypeConfig` into rules
-(:func:`~omnia.plugins.smart_notes.engine.rules.compile_note_type_rules`) and runs them in
-dependency order (:func:`~omnia.plugins.smart_notes.engine.ordering.order_rules`), chaining
-each text result into the field map so a downstream rule sees the freshly generated value.
+(:func:`~omnia.plugins.smart_notes.engine.rules.compile_note_type_rules`) and walks them one
+dependency LEVEL at a time (:func:`~omnia.plugins.smart_notes.engine.ordering.order_rule_levels`),
+chaining each text result into the field map so a downstream rule sees the freshly generated
+value. The note-level state and policy live in
+:class:`~omnia.plugins.smart_notes.engine.note_run.NoteRun`; this class owns only "build the
+rules, make the work units, hand them to a dispatch".
+
+That last split is the whole point of the two seams here. The engine says WHICH fields may run
+together; the injected :class:`~omnia.core.concurrency.dispatch.Dispatch` says how
+they are actually run — and defaults to sequential, so the engine stays deterministic and no
+existing caller changes behaviour. A batch runner that wants many notes in flight builds the
+:class:`NoteRun` objects itself (:meth:`make_run`) and pools their levels together
+(:meth:`works_for`), reusing this exact per-note semantics instead of mirroring it.
+
 The injected :class:`~omnia.core.providers.ProviderHub` keeps it testable with a fake hub (DIP).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Optional
 
+from omnia.core.concurrency.dispatch import SEQUENTIAL_DISPATCH, Dispatch
 from omnia.core.logging import get_logger
-from omnia.plugins.smart_notes.engine.generators import LanguageDetector
-from omnia.plugins.smart_notes.engine.ordering import order_rules
-from omnia.plugins.smart_notes.engine.rules import (
-    compile_note_type_rules,
-    rule_prerequisites,
-    should_skip_rule,
+from omnia.plugins.smart_notes.engine.batching import (
+    SOLO_PLANNER,
+    FieldBatchRunner,
+    FieldWork,
+    WavePlanner,
 )
+from omnia.plugins.smart_notes.engine.generators import LanguageDetector
+from omnia.plugins.smart_notes.engine.note_run import (
+    BlockedField,
+    FailedField,
+    NoteRun,
+)
+from omnia.plugins.smart_notes.engine.rules import compile_note_type_rules
 from omnia.plugins.smart_notes.engine.tools import (
     GenerationPipeline,
     ToolChainError,
@@ -43,54 +61,9 @@ if TYPE_CHECKING:
 
 logger = get_logger("smart_notes")
 
-
-@dataclass(frozen=True)
-class BlockedField:
-    """A field that was NOT generated because a HARD prerequisite was empty/failed.
-
-    ``missing`` lists the prerequisite field names (display case) that were blank or had
-    themselves been blocked/failed. Blocking is transitive: a blocked field puts no value in
-    the working map, so its own hard dependents block in turn.
-    """
-
-    target_field: str
-    missing: list[str]
-
-
-@dataclass(frozen=True)
-class FailedField:
-    """A field whose whole tool chain ran without producing anything, and was isolated.
-
-    Recording it (instead of letting the exception abort the whole note) lets sibling fields
-    that already succeeded still be written; ``error`` is the chain's attempt summary — for the
-    legacy single-``ai`` chain, the provider exception's own message — for surfacing a
-    count/diagnostic to the user. Like a blocked field, it produces no value, so its own hard
-    dependents block transitively.
-
-    ``kind`` splits the two ways a chain ends empty-handed:
-
-    * ``"error"`` — at least one tool BROKE (provider/network failure, bad params). This is the
-      only kind a pre-tools config can produce, since the ``ai`` tool either produces or raises.
-    * ``"unproductive"`` — every tool simply declined (``not_applicable``) or came up empty:
-      nothing is wrong, there was just nothing to make here.
-    """
-
-    field: str
-    error: str
-    kind: str = "error"
-
-
-def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
-    """Return the field names ``rule`` HARD-depends on (the gate's blocking prerequisites).
-
-    Reads the rule's prerequisites through the single source of truth
-    (:func:`~omnia.plugins.smart_notes.engine.rules.rule_prerequisites`) and keeps only the
-    ``"hard"`` ones — soft prerequisites order generation but never block. The explicit
-    kind-override (e.g. a derived source recoloured ``"soft"``) is already applied there, so a
-    softened source is correctly excluded here. Names keep their original case (for the
-    ``missing`` report); matching is the caller's job.
-    """
-    return [field for field, kind in rule_prerequisites(rule) if kind == "hard"]
+# Re-exported: BlockedField/FailedField moved next to the NoteRun that produces them, but every
+# caller (and ``engine/__init__``) imports them from here.
+__all__ = ["BlockedField", "FailedField", "GenerationService"]
 
 
 class GenerationService:
@@ -153,6 +126,72 @@ class GenerationService:
             raise chain_error from chain_error.cause
         return outcome.produced
 
+    def make_run(
+        self,
+        config: SmartNotesNoteTypeConfig,
+        fields: dict[str, str],
+        *,
+        allow_empty_fields: bool = False,
+        force_overwrite: bool = False,
+        materialize: Optional[
+            Callable[[SmartNotesFieldRule, GenerationResult], str]
+        ] = None,
+        note_id: int = 0,
+    ) -> NoteRun:
+        """Compile ``config`` into rules and return the :class:`NoteRun` that walks them.
+
+        The seam a caller uses when it wants to interleave several notes: it holds many runs,
+        advances each one level at a time, and pools the levels together. :meth:`generate_note`
+        is the same thing for exactly one note.
+
+        Raises:
+            SmartNotesCycleError: If the fields reference each other in a cycle.
+        """
+        return NoteRun(
+            compile_note_type_rules(config),
+            fields,
+            note_id=note_id,
+            allow_empty_fields=allow_empty_fields,
+            force_overwrite=force_overwrite,
+            materialize=materialize,
+        )
+
+    def works_for(self, run: NoteRun) -> list[FieldWork]:
+        """Advance ``run`` to its next level and return that level's work, one item per field.
+
+        A :class:`~omnia.plugins.smart_notes.engine.batching.FieldWork` carries the rule, the
+        level's FROZEN field snapshot, and a ``solo`` thunk over that one field's tool chain.
+        Nothing a unit touches is written by a sibling unit, which is what makes it safe to hand
+        the whole list to a pool. The caller must pass the outcomes back to ``run.commit`` in
+        the same order.
+
+        Descriptors rather than bare thunks because a caller that batches several notes into one
+        request has to SEE the rule and its inputs to group them — and must still be able to run
+        any one of them alone when the grouped call cannot answer for it.
+        """
+        level = run.next_dispatch()
+        snapshot = run.snapshot
+        return [
+            FieldWork(
+                rule=rule,
+                fields=snapshot,
+                note_id=run.note_id,
+                solo=partial(self._pipeline.run, rule, snapshot, note_id=run.note_id),
+            )
+            for rule in level
+        ]
+
+    def batch_planner(self, *, notes_per_call: int) -> WavePlanner:
+        """Return the planner a batch run's waves go through.
+
+        ``notes_per_call <= 1`` — which the shipped default of 10 is NOT — returns the SOLO
+        planner, so "batching off" is the pre-batching code path rather than the batching code
+        path configured to a width of one: no envelope, no ids, no parsing, nothing to get wrong.
+        """
+        if notes_per_call <= 1:
+            return SOLO_PLANNER
+        return FieldBatchRunner(self._ctx.providers, notes_per_call=notes_per_call)
+
     def generate_note(
         self,
         config: SmartNotesNoteTypeConfig,
@@ -163,6 +202,8 @@ class GenerationService:
         materialize: Optional[
             Callable[[SmartNotesFieldRule, GenerationResult], str]
         ] = None,
+        note_id: int = 0,
+        dispatch: Dispatch = SEQUENTIAL_DISPATCH,
     ) -> tuple[
         list[tuple[SmartNotesFieldRule, GenerationResult]],
         list[BlockedField],
@@ -171,12 +212,15 @@ class GenerationService:
         """Generate a note type's enabled fields, in dependency order, with chaining.
 
         The note type's generatable fields are compiled into rules
-        (:func:`~omnia.plugins.smart_notes.engine.rules.compile_note_type_rules`),
-        topologically ordered
-        (:func:`~omnia.plugins.smart_notes.engine.ordering.order_rules`) so a field that
+        (:func:`~omnia.plugins.smart_notes.engine.rules.compile_note_type_rules`) and grouped
+        into dependency LEVELS
+        (:func:`~omnia.plugins.smart_notes.engine.ordering.order_rule_levels`) so a field that
         references another generated field runs after it, and each text result is written back
         into a working copy of ``fields`` so the dependent field interpolates the freshly
-        generated value. The base field is never generated.
+        generated value. The base field is never generated. Whatever ``dispatch`` does with a
+        level, the returned lists come back in
+        :func:`~omnia.plugins.smart_notes.engine.ordering.order_rules`' order — the same order
+        the one-rule-at-a-time engine produced.
 
         Before each rule runs, its HARD prerequisites (derived prompt refs/source field, minus
         any the field marked ``"soft"`` in ``depends_on``, plus explicit hard deps) are checked
@@ -193,6 +237,12 @@ class GenerationService:
             allow_empty_fields: Generate even when all referenced source fields are blank.
             force_overwrite: Regenerate every field even if its target is already non-empty
                 (the batch "regenerate when batching" path), ignoring per-field ``overwrite``.
+            materialize: Turns a media result into the string the note will hold; called on
+                THIS thread, never on a dispatch worker.
+            note_id: The note being generated, carried into every log line so a run with
+                several notes in flight stays attributable.
+            dispatch: How one level's fields are run. The default runs them one at a time in
+                this thread, which is what every caller did before concurrency existed.
 
         A single field whose tool chain produces nothing (a TTS field with no Auto-detect voice,
         a provider/network error, or — with a deterministic chain — every tool declining) is
@@ -205,83 +255,23 @@ class GenerationService:
 
         Returns:
             A tuple ``(results, blocked, failed)`` where ``results`` is the ``(rule, result)``
-            pairs for the fields that actually generated (in run order), ``blocked`` lists the
-            fields skipped for a missing hard prerequisite, and ``failed`` lists the fields
-            whose tool chain produced nothing.
+            pairs for the fields that actually generated, ``blocked`` lists the fields skipped
+            for a missing hard prerequisite, and ``failed`` lists the fields whose tool chain
+            produced nothing — all three in ``order_rules`` order.
 
         Raises:
             SmartNotesCycleError: If the fields reference each other in a cycle. (A single field's
                 provider/network failure is NOT raised — it is recorded in ``failed``.)
         """
-        rules = compile_note_type_rules(config)
-        if force_overwrite:
-            rules = [rule.copy(update={"overwrite": True}) for rule in rules]
-        working = dict(fields)
-        results: list[tuple[SmartNotesFieldRule, GenerationResult]] = []
-        blocked: list[BlockedField] = []
-        failed: list[FailedField] = []
-        # Lower-cased target names that generated a non-error result this run. Media results
-        # ARE chained now (as their reference) when a materializer is supplied, but a caller
-        # that supplies none still leaves them out of ``working``; ``produced`` records the
-        # success either way, so a hard prerequisite on a media field stays satisfied.
-        produced: set[str] = set()
-        for rule in order_rules(rules):
-            missing = self._missing_hard_prerequisites(rule, working, produced)
-            if missing:
-                blocked.append(BlockedField(rule.target_field, missing))
-                continue  # writes no value → hard dependents block transitively
-            if should_skip_rule(rule, working, allow_empty_fields=allow_empty_fields):
-                continue
-            outcome = self._pipeline.run(rule, working)
-            if outcome.produced is None:
-                # The chain is exhausted: one field's failure must not abort the note. (The
-                # pipeline already logged any tool that raised, with its traceback.)
-                failed.append(
-                    FailedField(
-                        rule.target_field,
-                        outcome.summary,
-                        "error" if outcome.errored else "unproductive",
-                    )
-                )
-                # Not added to results/produced/working, so its hard dependents block
-                # transitively (same as a blocked field).
-                continue
-            result = outcome.produced
-            results.append((rule, result))
-            produced.add(rule.target_field.strip().lower())
-            if result.kind == "text" and result.text is not None:
-                working[rule.target_field] = result.text
-            elif result.kind in ("image", "tts") and materialize is not None:
-                # Media belongs in the working map too — as the REFERENCE the note will hold,
-                # not as bytes. Without it a field reading an audio field sees blank, and
-                # should_skip_rule drops that field before its tools are ever consulted: no
-                # output, no error, nothing to explain it. That is exactly what a tool
-                # extracting a filename out of [sound:…] needs to read.
-                working[rule.target_field] = materialize(rule, result)
-        return results, blocked, failed
-
-    @staticmethod
-    def _missing_hard_prerequisites(
-        rule: SmartNotesFieldRule, working: dict[str, str], produced: set[str]
-    ) -> list[str]:
-        """Return the rule's hard prerequisites that are unmet (case-insensitive).
-
-        A prerequisite is satisfied when it holds a non-blank value in ``working`` (an input
-        field or a chained text result) OR its producing rule generated successfully this run
-        (``produced`` — covers image/tts fields, whose embed refs are not chained into
-        ``working``). It is "missing" only when it is genuinely blank AND was not produced — the
-        case where it was itself blocked or its generation yielded an empty value, which
-        propagates the block transitively. Returns the missing prerequisites' display names
-        (empty list = all met).
-        """
-        present = {
-            name.strip().lower()
-            for name, value in working.items()
-            if str(value).strip()
-        }
-        present |= produced
-        return [
-            prereq
-            for prereq in _hard_prerequisites(rule)
-            if prereq.strip().lower() not in present
-        ]
+        run = self.make_run(
+            config,
+            fields,
+            allow_empty_fields=allow_empty_fields,
+            force_overwrite=force_overwrite,
+            materialize=materialize,
+            note_id=note_id,
+        )
+        while not run.done:
+            works = self.works_for(run)
+            run.commit(dispatch.run([work.solo for work in works]) if works else [])
+        return run.finish()
