@@ -76,6 +76,22 @@ def accuracy_ratio(good: int, bad: int, missed: int) -> float:
 
 ## Docstrings (Google Style)
 Required on every public function/method, every class, and every module (top-of-file).
+
+**`Args:` / `Returns:` are optional when they add nothing to the typed signature.** A section
+that says `card: The card.` for `card: Card` is a section that costs a reader time and gives
+them nothing; delete it and keep the summary line. Write them whenever there IS something the
+signature cannot carry: a unit, a range, a caller contract, what `None` means, which of two
+plausible readings is the right one. 106 of this repo's 1375 docstrings are currently the
+first kind (one summary line plus sections restating types) — that, and only that, is the
+ceremony being cut here.
+
+**Length is not the enemy, and a docstring longer than its function is not a smell.** This is
+a deliberate rejection of ponytail's output rule ("if the explanation is longer than the code,
+delete the explanation"), which the ladder in Part 3 otherwise adopts. Measured before
+deciding: 4508 of this repo's docstring lines are prose rather than section boilerplate, and
+the ones that have actually prevented regressions here are all longer than the code they sit
+above — because what they record is *why the obvious version is wrong*, which is exactly the
+thing a reader cannot recover from the code. Cut ceremony; never cut a reason.
 ```python
 def forced_ease(card: Card, requested: int) -> int | None:
     """Return the ease an overdue card should be graded at.
@@ -130,6 +146,11 @@ def forced_ease(card: Card, requested: int) -> int | None:
 ## Comments
 - Comments explain **why**, not **what**. No commented-out code (Git remembers).
 - TODO format: `# TODO(username): description`.
+- A **deliberate simplification with a known ceiling** is not a TODO and does not use that
+  format. Mark it `# ponytail: <what it cannot do> -- <what to do when that day comes>`. A
+  TODO is work someone forgot to finish; this is work someone decided not to do, with the
+  decision and its limit recorded where the limit lives. `/ponytail-debt` harvests them into
+  a ledger if the plugin is installed, but the convention stands without it.
 
 ## Git Commit
 - Conventional Commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`.
@@ -241,6 +262,41 @@ how the agent should work, not how code is shaped.
 - If multiple interpretations exist, surface them. Push back when a simpler path exists.
 
 ## 2. Simplicity first
+
+**The ladder.** Before writing code, stop at the first rung that holds. Adapted from
+[ponytail](https://github.com/DietrichGebert/ponytail) (MIT), whose measured win came almost
+entirely from rungs 2-5:
+
+```
+1. Does this need to exist?      -> no: skip it (YAGNI)
+2. Already in this codebase?     -> reuse it, don't rewrite
+3. Stdlib does it?               -> use it
+4. Native platform feature?      -> use it (Anki/Qt/the browser already has it)
+5. Vendored dependency does it?  -> use it
+6. One line?                     -> one line
+7. Only then: the minimum that works
+```
+
+Rung 2 is the one this repo cares about most: it *is* the four shared seams. A feature that
+re-implements ease rewriting, JS injection, provider dispatch or config access has skipped
+rung 2, and that is the single failure this architecture exists to prevent. Rung 4 in an Anki
+add-on means Anki's own API and Qt's own widgets before anything hand-rolled.
+
+The ladder runs **after** you understand the problem, not instead of it. Read the code the
+change touches and trace the real flow before picking a rung — a small diff you do not
+understand is laziness dressed up as efficiency.
+
+Never on the chopping block, whatever rung you land on: understanding the problem, input
+validation at trust boundaries, error handling that prevents data loss, security,
+accessibility, cross-platform correctness, and anything the user explicitly asked to keep.
+
+The ladder above is the whole adoption — it is text, and it belongs in this file where every
+contributor and agent already reads it. Installing the ponytail PLUGIN is optional and adds
+only its commands; `/ponytail-review` (over a diff) and `/ponytail-audit` (over the repo) are
+worth having as on-demand checks. Run it at `off` or `lite`. Do **not** run `full` or `ultra`
+here: those levels also enforce the output rule this repo rejects under *Docstrings*, and a
+session-start hook cannot tell which of the two halves of ponytail you meant to adopt.
+
 - The minimum code that solves the problem. No features beyond what was asked.
 - No abstraction for single-use code; an abstraction is earned by ≥2 real call sites.
 - No "flexibility"/config that wasn't requested. No error handling for impossible cases.
