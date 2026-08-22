@@ -44,7 +44,7 @@ collection with the same settings and the same account.
 | comparison | 100-note session | 20-note session | verdict |
 |---|---|---|---|
 | 4 → 8 workers, K = 1 | 1851.8–1958.4 s → 1210.4–1297.8 s | 370.9–393.7 s → 206.3–221.5 s | **established** (ranges do not overlap, twice) |
-| requests, 8 workers | 1300 → 794 (K=10, −39%) → 574 (K=20, −56%) | 260 → 152.5 (−41%) → 106 (−59%) | **established** |
+| requests, 8 workers | 1300 → 794.5 (K=10, −39%) → 574.5 (K=20, −56%) | 260 → 152.5 (−41%) → 106 (−59%) | **established** |
 | K on wall clock, 8 workers | 8x1 1254.1, 8x10 1162.5, 8x20 1049.5 | 8x1 213.9, 8x10 476.5 (2.2x slower), 8x20 215.2 (tie) | **UNPROVEN — do not claim faster OR slower** |
 
 Within-arm spread was as wide as the between-arm gap (8x20 varied 175.0–255.4 s in the second
@@ -70,7 +70,7 @@ answer-length columns, the not-HTTP-metered column); `tests/benchmarks/smart_not
 
 **How to verify:**
 `.venv/bin/python -m pytest tests/ -q -m "not llm and not tts and not integration"` →
-`2281 passed, 18 skipped, 105 deselected`. Re-derive any quoted table from the committed rows:
+`2291 passed, 18 skipped, 105 deselected`. Re-derive any quoted table from the committed rows:
 
 ```bash
 python3 - <<'EOF'

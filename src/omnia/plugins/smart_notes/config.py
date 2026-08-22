@@ -358,8 +358,8 @@ class SmartNotesSettings(PersistedModel):
     #   4x1      1905.1 s  (1852–1958)     5.6%     1300      0   89.47%      140.5
     #   8x1      1254.1 s  (1210–1298)     7.0%     1300      0   89.47%      143.5
     #   4x10     1501.5 s  (1394–1609)    14.3%      808      0   89.50%      133.0
-    #   8x10     1162.5 s  (1110–1215)     9.0%      794      0   89.50%      138.5
-    #   8x20     1049.5 s   (998–1101)     9.8%      574      0   89.50%      131.0
+    #   8x10     1162.5 s  (1110–1215)     9.0%    794.5      0   89.50%      138.5
+    #   8x20     1049.5 s   (998–1101)     9.8%    574.5      0   89.50%      131.0
     #   16x10     748.2 s   (685–812)     16.9%      877      0   89.42%      145.5
     #
     # Read the last column with its instrument's sensitivity attached: "bleed" is a headword
@@ -391,7 +391,7 @@ class SmartNotesSettings(PersistedModel):
     # Microsoft's keyless TTS endpoint, not on the LLM whose concurrency this knob bounds, and
     # 16x10 rep 2 filled 1700 — so it is a tiebreaker, not evidence. Note also that 16 was only
     # ever run at K = 10, whose cohort is ``max(16, 10) = 16`` and therefore splits 10 + 6 with
-    # singleton leftovers falling back to solo (877 calls against 8x10's 794): the 16-worker arm
+    # singleton leftovers falling back to solo (877 calls against 8x10's 794.5): the 16-worker arm
     # was never measured at a K that divides its cohort cleanly.
     #
     # It was 1 — the pre-concurrency behaviour. That exact pairing (1 worker, K = 10) appears in
@@ -409,7 +409,7 @@ class SmartNotesSettings(PersistedModel):
     # ``envs.OMNIA_SMART_NOTES_BATCHING``.
     #
     # WHAT BATCHING BUYS IS REQUESTS, AND ONLY REQUESTS. That half is measured and it reproduces:
-    # at 8 workers over 100 notes, K = 10 sent 794 provider calls and K = 20 sent 574, against
+    # at 8 workers over 100 notes, K = 10 sent 794.5 provider calls and K = 20 sent 574.5, against
     # 1300 ungrouped (−39% and −56%); the second session's 20-note runs came out at −41% and
     # −59%.
     #

@@ -48,7 +48,7 @@ The 10-note session measured the pre-concurrency default itself: `1x10` 167.1 s 
 100-note rows, so it is quoted from here and from nowhere else.
 
 **Established: batching cuts requests.** At 8 workers over 100 notes: 1300 provider calls
-ungrouped, 794 at K=10 (-39%), 574 at K=20 (-56%). The 20-note session reproduces the same
+ungrouped, 794.5 at K=10 (-39%), 574.5 at K=20 (-56%). The 20-note session reproduces the same
 proportions: 260 ungrouped, a mean of 152.5 at K=10 (-41%) and 106 at K=20 (-59%).
 
 **NOT established: what batching does to wall clock.** The two sessions disagree, and neither

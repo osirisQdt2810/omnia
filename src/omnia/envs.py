@@ -103,7 +103,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # floor that holds without the adaptive layer is worth having.
     #
     # WHAT BATCHING BUYS IS REQUESTS. That is measured and it reproduces: at 8 workers over 100
-    # real notes, K=10 sent 794 provider calls and K=20 sent 574, against 1300 ungrouped (-39%
+    # real notes, K=10 sent 794.5 provider calls and K=20 sent 574.5, against 1300 ungrouped (-39%
     # and -56%); the second session's 20-note runs came out at -41% and -59%. The harness is
     # tests/benchmarks/smart_notes_live.py and the rows both sessions produced are committed
     # beside it in tests/benchmarks/data/ — see that directory's README for what each session

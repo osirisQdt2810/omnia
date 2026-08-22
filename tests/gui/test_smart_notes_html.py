@@ -767,13 +767,17 @@ class TestBuildSmartNotesHtml:
         differed from each other. Both sessions' rows are committed in
         ``tests/benchmarks/data/``, so the next person to touch this string can check it.
 
-        So the pane claims the half that reproduced — REQUESTS, 1300 to 794 at the shipped K=10 —
+        So the pane claims the half that reproduced — REQUESTS, 1300 to 769 and 820 at the shipped
+        K=10 —
         and says explicitly that the time effect is unsettled. A superlative about speed, in
         either direction, may not reappear here.
         """
         html = build_smart_notes_html(dark=False)
 
-        assert "39% fewer of them (1300 \u2192 794)" in html
+        assert "39% fewer of them (1300 \u2192 769 and 820 across the two runs)" in html
+        # A single mean here would be 794.5 — a fractional request, which is why the pane
+        # quotes both runs instead. Truncating it to 794 is what this line replaced.
+        assert "1300 \u2192 794)" not in html
         assert "Whether it also saves TIME is not settled" in html
         assert "do not count on fewer seconds either way" in html
         # Every retired claim, in both directions.

@@ -1296,6 +1296,12 @@ load is no better: it would rewrite the other device's value on the next save. T
 pruned from `dict()` while it equals the default, so a user who never opens Advanced keeps
 writing a blob byte-identical to today's.
 
+> **Superseded by ADR-018.** The prune sentence above is no longer true: pruning on *equality
+> with the default* meant that moving a default onto a value silently deleted the stored choice
+> of every user who had deliberately set exactly that value — and ADR-018 moves two defaults.
+> The prune is now on PROVENANCE (`__fields_set__`). The byte-identical-blob promise for a user
+> who never opens Advanced is unchanged; only the mechanism that keeps it is.
+
 ### Consequences
 - (+) Measured on the real workload shape (50 notes × 17 fields, 5 levels, 50 ms per call):
   38.2 s sequential → 13.0 s at N=3 (2.9×) → 5.1 s at N=8 (7.6×), with identical output, identical
@@ -1636,7 +1642,7 @@ ids or parsing.
 >    an artefact of the rig. It was then briefly replaced by the opposite claim (grouping is
 >    faster everywhere, from one live session at K = 20); that did not reproduce either. **The
 >    effect of K on wall clock is UNPROVEN in both directions** and no default may rest on it.
->    What IS measured, and reproduces, is the request saving: 1300 → 794 at K = 10 and → 574 at
+>    What IS measured, and reproduces, is the request saving: 1300 → 794.5 at K = 10 and → 574.5 at
 >    K = 20, at 8 workers over 100 real notes.
 > 2. **`max_concurrent_generations` no longer ships at 1; it ships at 8**, on evidence that does
 >    reproduce (see ADR-018). So the sentence "shipping K = 10 ON is coherent only because
@@ -1810,7 +1816,7 @@ Applied to the three knobs:
   was 0.0 s. There is no measured load at which it needs to bind below the pool.
 
 **What batching buys is REQUESTS, and that half does reproduce**: 1300 provider calls ungrouped,
-794 at K = 10 (−39%) and 574 at K = 20 (−56%), at 8 workers over 100 notes; the second session's
+794.5 at K = 10 (−39%) and 574.5 at K = 20 (−56%), at 8 workers over 100 notes; the second session's
 20-note runs came out at −41% and −59%. It is the only batching number the shipped comments and the UI may quote.
 
 **The evidence is committed.** `tests/benchmarks/smart_notes_live.py` and the raw rows of all
@@ -1867,7 +1873,11 @@ stays attached to "the user never touched it".
 - (+) **Two opposite overstatements are retired at once.** The fake rig's "batching is slower" and
   the first live session's "batching is faster" are both marked unproven in `envs.py`,
   `config.py`, ADR-016, ADR-017, `FEATURE_LOG.md`, the Advanced tooltip and the tests that pin
-  it. The pane's test now forbids a superlative about speed in EITHER direction.
+  it. The pane's test pins the half that reproduced (the request figure), pins the sentence
+  saying the time effect is unsettled, and names each retired claim so it cannot come back
+  by that wording. It does NOT ban the words "sooner" and "slower" outright: the tooltip
+  needs them to report honestly that two sessions disagreed, and a ban would forbid the
+  true sentence along with the false ones.
 - (−) **The K question is left open, and the cost of settling it is real.** Answering it needs
   more repeats per arm than two, ideally across sessions and hours, on an endpoint whose
   time-to-first-token is not stable within a session — several more hours of paid Vertex spend.

@@ -236,9 +236,18 @@ class ConfigController:
         and pressing Save write two keys that a pre-ADR-010 device rejects with a crash on every
         note-add hook. Untouched stays unwritten.
 
-        A key the user really did change IS named, whatever it holds — including this build's own
-        default. That is the half that used to be missing: the old prune dropped any value equal
-        to the current default, so the day the default moved to 8 nobody could pin 8.
+        A key whose posted value DIFFERS from the stored one is named, whatever it holds —
+        including this build's own default. That is the half that used to be missing: the old
+        prune dropped any value equal to the current default, so the day the default moved to 8,
+        a user who had deliberately set 8 lost it.
+
+        KNOWN LIMIT, stated because the rule above cannot express it. "Differs from stored" is a
+        proxy for "the user touched this", and the two part company in one case: a key that has
+        never been set, whose effective value is the default, cannot be PINNED to that same
+        default. Post 8 while 8 is both the default and unset and nothing is written, so a later
+        release moving the default to 4 carries the user with it. Closing that needs the page to
+        say whether the control was touched, which is a wire change; until then the workaround is
+        to set a different value, save, set it back, and save again.
 
         Args:
             opts: The ``options`` object the Advanced pane posted.
