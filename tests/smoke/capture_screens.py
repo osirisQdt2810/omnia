@@ -20,7 +20,15 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))
+sys.path.insert(0, str(_HERE.parent.parent / "scripts"))
+
+from common import enable_utf8_output  # noqa: E402  (path set above)
+
+# This script prints paths and sizes, and Windows consoles default to cp1252 -- one em dash in
+# a filename is enough to kill the run. Same guard every other printing entry point arms.
+enable_utf8_output()
 
 import run_smoke as smoke_mod  # noqa: E402  (path set above)
 
