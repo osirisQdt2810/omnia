@@ -37,6 +37,8 @@ your keys — nothing else.
 
 ## Smart Notes
 
+![The Smart Notes field table](images/smart-notes-fields.png)
+
 Point it at a note type, say which field feeds which, and it fills the rest: definitions,
 example sentences, synonyms, translations, IPA, images, and spoken audio.
 
@@ -54,6 +56,16 @@ This is what separates Omnia from a plain "call ChatGPT" add-on. Every generated
 
 A field configured `cloze → ai` costs **nothing** when the word really is in the sentence, and
 only reaches the provider when it is not.
+
+### Draw how your fields feed each other
+
+![The dependency graph](images/smart-notes-graph.png)
+
+The example sentence needs the word; the cloze needs the example; the audio needs the cloze.
+The **Dependencies** tab turns that into something you draw: drag from a field's border onto
+another to connect them, click an edge to toggle it between required (red) and optional
+(green), and Omnia works out the order and generates in waves. **Preview gen order** shows you
+exactly what will run, and when, before anything is generated.
 
 ### Setting up a provider
 

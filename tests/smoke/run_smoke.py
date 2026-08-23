@@ -832,4 +832,8 @@ def main() -> int:
     return runner.report()
 
 
-sys.exit(main())
+# Guarded so the module can be IMPORTED for its stand-in and dialog-building helpers (the
+# screenshot capture reuses them) without running the whole smoke as a side effect. Running the
+# file directly is unchanged.
+if __name__ == "__main__":
+    sys.exit(main())
