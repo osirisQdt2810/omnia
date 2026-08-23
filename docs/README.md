@@ -6,6 +6,9 @@ you want, and the rest stays inert — no extra menus, no clutter.
 > Anki 25.09+ / 26.x · Windows, macOS and Linux · MIT licensed ·
 > [source](https://github.com/osirisQdt2810/omnia) ·
 > [report a bug](https://github.com/osirisQdt2810/omnia/issues)
+>
+> This page lives in the repository at `docs/`, so it is versioned with the code it documents
+> and needs no separate site to keep in sync.
 
 ---
 
