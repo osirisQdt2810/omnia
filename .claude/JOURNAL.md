@@ -24,6 +24,61 @@ Format for each entry:
 
 ---
 
+## 2026-08-24 (Sunday)
+
+### Done today
+- **Omnia driven live inside a real Anki 26.8.1 on Windows 11**, across all four ways it can be
+  installed, each in its own throwaway `ANKI_BASE` so the builds never collide and the user's own
+  collection is never written to. The same **75 checks** pass on every one: dev symlink install,
+  AnkiWeb (`726991726`), `.ankiaddon` install-from-file, and a fresh `git clone` of `main`.
+  The harness is out-of-tree (`D:\anki-livetest\`), not in the repo.
+- **Two real bugs, both found only by running it**, each on its own branch:
+  - `fix/windows-install-links` — `install_addon.py` aborted with **WinError 1314** on a stock
+    Windows box (symlinks need Developer Mode or elevation), so the README's documented developer
+    install could not be completed at all. Now falls back per item: a **junction** for a directory
+    (as live as a symlink, no privilege) and a copy for the three top-level files.
+  - `fix/lookup-service-client-disconnect` — a clipper that hangs up mid-response made
+    `wfile.write` raise out of `do_GET`; `socketserver` printed the traceback to stderr and **Anki
+    turned it into its error dialog**, interrupting review for an ordinary disconnect.
+- **`scripts/sync_to_anki.py`** — one command from a fresh clone to a working add-on
+  (`--dev` also creates `.venv` and installs the tooling). README's install section rewritten
+  around the three versions a user can actually have, each with its folder and update story.
+- **The AnkiWeb build is byte-identical to `main`** — 193/193 files match once CRLF is
+  normalised, so the published add-on is not behind the repo.
+
+### Gotchas worth remembering
+- **`shutil.rmtree` REFUSES a junction** ("Cannot call rmtree on a symbolic link") rather than
+  walking into it. The hazard of mistaking a junction for a directory is therefore a *broken
+  re-run*, not a deleted source tree — worth stating correctly, because the scary version is the
+  one that first comes to mind. CPython reports a junction as `is_symlink() == False` and
+  `is_dir() == True`; `os.readlink` succeeding is the portable way to recognise one.
+- **A fresh `ANKI_BASE` opens the modal first-run Language chooser**, which blocks
+  `profile_did_open` forever, so an automated run never starts. Seed the `_global` meta row
+  (`defaultLang`, `firstRun=False`) into `prefs21.db` first. Never copy the real base's *profile*
+  rows to do it — those carry AnkiWeb sync credentials.
+- **Anything a probe does on the Qt main thread cannot wait on `word_lookup`**: the service
+  marshals its collection read onto that same thread, so a blocking request deadlocks by
+  construction. Ask from a worker thread and pump `processEvents()` while waiting.
+- **Qt can only grab a whole screen**, which catches whatever is in front and misses a second
+  monitor. `PrintWindow(PW_RENDERFULLCONTENT)` captures the window even when occluded — crop it
+  to `DWMWA_EXTENDED_FRAME_BOUNDS` or Windows' ~7px invisible border shifts the image and clips
+  the right edge (which reads convincingly as a UI bug).
+- **`omnia.log` rotates rather than truncating**, so a "no ERROR lines" check happily fails a
+  clean run on the previous run's error. Delete it before each pass.
+- **`export A=$X B=$A` does not give B the new A** in one command — the second assignment sees
+  the old value. It silently sent a whole test run back to the unwritable temp dir.
+- This machine's `%TEMP%\pytest-of-PC` and `.pytest_cache` are owned by Administrators, so a
+  plain `pytest tests/` reports **341 errors that have nothing to do with Omnia**. Point `TMP`,
+  `TEMP` and `TMPDIR` at a writable dir (or delete those two from an elevated shell).
+
+### Next up
+- Merge the two PRs (pushed, not merged).
+- `src/omnia/manifest.json` still declares `min_point_version: 50` while the README and the
+  AnkiWeb listing both say 25.09+. An `.ankiaddon` install therefore accepts an Anki far older
+  than the code supports; the AnkiWeb route is the only one enforcing 250900.
+
+---
+
 ## 2026-08-14 (Friday)
 
 ### Done today
