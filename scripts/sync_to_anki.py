@@ -176,6 +176,23 @@ def fetch_submodules() -> bool:
     )
 
 
+# How to recognise a running Anki on a POSIX box, in the order they are tried.
+#
+# NOT ``pgrep -f anki``: ``-f`` matches the whole command line, and this script is called
+# ``sync_to_anki.py`` from a repo path that usually contains "anki" — so it always matched
+# ITSELF and told every macOS/Linux user to quit an Anki that was not running.
+#
+# Two patterns because there are two builds. The classic app bundle runs a binary actually
+# named ``anki`` (``-x`` is an exact name match, which the script cannot satisfy). The launcher
+# build runs ``…/AnkiProgramFiles/.venv/bin/python -c "import aqt…"``, whose process name is
+# just ``python`` — only the command line identifies it, and that string cannot appear in this
+# script's own.
+_POSIX_ANKI_PROBES = (
+    ["pgrep", "-x", "anki"],
+    ["pgrep", "-f", "AnkiProgramFiles"],
+)
+
+
 def anki_is_running() -> bool:
     """Best-effort check so the final message can say 'restart' rather than 'start'."""
     try:
@@ -187,10 +204,13 @@ def anki_is_running() -> bool:
                 check=False,
             ).stdout.lower()
             return "anki.exe" in out
-        out = subprocess.run(
-            ["pgrep", "-f", "anki"], capture_output=True, text=True, check=False
-        ).stdout
-        return bool(out.strip())
+        for probe in _POSIX_ANKI_PROBES:
+            out = subprocess.run(
+                probe, capture_output=True, text=True, check=False
+            ).stdout
+            if out.strip():
+                return True
+        return False
     except OSError:
         return False
 
