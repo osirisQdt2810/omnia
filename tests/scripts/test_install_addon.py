@@ -6,10 +6,12 @@ should be performing. Two parts are still worth pinning:
 * **Where** it installs is pure logic, and getting it wrong is silent — the script reports
   success while the add-on lands in a folder the running Anki never reads, which looks exactly
   like "my code change did nothing".
-* **How** each item is placed, because the Windows fallback path breaks the script's own
-  idempotence if it is wrong: a junction mistaken for a real directory is handed to
-  ``shutil.rmtree``, which refuses it outright, so the install works once and fails on every
-  re-run.
+* **How** each item is placed and, above all, **removed**, because that is where the script's
+  own idempotence lives and the two platforms disagree about it. A link has to be dropped by
+  the call that fits what the entry IS — POSIX ``rmdir`` refuses a symlink, Windows ``unlink``
+  refuses a directory symlink, and ``shutil.rmtree`` refuses a reparse point — so a wrong
+  branch here leaves an install that works exactly once and fails on every re-run, on whichever
+  platform the author did not happen to be using.
 """
 
 from __future__ import annotations
@@ -92,14 +94,6 @@ class TestAnkiBaseDir:
         assert install_addon.anki_addons_dir() == Path("/tmp/base/addons21")
 
 
-@pytest.fixture(autouse=True)
-def _clean_fallback_log():
-    """``_FALLBACKS`` is module state the run prints at the end; don't leak it between tests."""
-    install_addon._FALLBACKS.clear()
-    yield
-    install_addon._FALLBACKS.clear()
-
-
 def _refuse_symlink(*_args, **_kwargs):
     """Stand in for Windows without Developer Mode, which is where the fallback matters."""
     raise OSError(1314, "A required privilege is not held by the client")
@@ -120,10 +114,10 @@ class TestPlacingAnItemWhenTheOsRefusesASymlink:
         source = tmp_path / "core"
         source.mkdir()
 
-        install_addon._place(source, tmp_path / "placed", copy=False)
+        note = install_addon._place(source, tmp_path / "placed", copy=False)
 
         assert junctions == [(source, tmp_path / "placed")]
-        assert any("junction" in note for note in install_addon._FALLBACKS)
+        assert "junction" in note
 
     def test_a_file_is_copied_because_a_junction_cannot_cover_one(
         self, tmp_path, monkeypatch
@@ -133,10 +127,57 @@ class TestPlacingAnItemWhenTheOsRefusesASymlink:
         source = tmp_path / "envs.py"
         source.write_text("KNOB = 1\n", encoding="utf-8")
 
-        install_addon._place(source, tmp_path / "placed.py", copy=False)
+        note = install_addon._place(source, tmp_path / "placed.py", copy=False)
 
         assert (tmp_path / "placed.py").read_text(encoding="utf-8") == "KNOB = 1\n"
-        assert any("copied" in note for note in install_addon._FALLBACKS)
+        assert "copied" in note
+
+    def test_a_symlink_that_works_reports_no_fallback(self, tmp_path):
+        """The note is what the run prints; a normal install must have nothing to report."""
+        source = tmp_path / "core"
+        source.mkdir()
+        placed = []
+        # Substituting the call keeps this assertion about the RETURN CONTRACT rather than
+        # about whether this particular machine can make a symlink.
+        original = Path.symlink_to
+
+        def _record(self, target, target_is_directory=False):
+            placed.append((self, target))
+
+        Path.symlink_to = _record
+        try:
+            note = install_addon._place(source, tmp_path / "placed", copy=False)
+        finally:
+            Path.symlink_to = original
+
+        assert note is None
+        assert placed == [(tmp_path / "placed", source)]
+
+    def test_a_destination_that_already_exists_is_not_a_missing_privilege(
+        self, tmp_path, monkeypatch
+    ):
+        """FileExistsError means the caller failed to clear a prior assembly. Treating it as
+        "the OS refused a symlink" would hide that behind a junction attempt whose real error
+        is a CalledProcessError from cmd."""
+        monkeypatch.setattr(install_addon.sys, "platform", "win32")
+        monkeypatch.setattr(
+            install_addon,
+            "_create_junction",
+            lambda s, d: pytest.fail(
+                "must not attempt a junction for an existing dest"
+            ),
+        )
+        source = tmp_path / "core"
+        source.mkdir()
+        (tmp_path / "placed").mkdir()
+
+        def _exists(*_args, **_kwargs):
+            raise FileExistsError(17, "File exists")
+
+        monkeypatch.setattr(Path, "symlink_to", _exists)
+
+        with pytest.raises(FileExistsError):
+            install_addon._place(source, tmp_path / "placed", copy=False)
 
     def test_elsewhere_the_error_still_propagates(self, tmp_path, monkeypatch):
         """Only Windows lacks the privilege; anywhere else a refused symlink is a real fault
@@ -148,6 +189,159 @@ class TestPlacingAnItemWhenTheOsRefusesASymlink:
 
         with pytest.raises(OSError):
             install_addon._place(source, tmp_path / "placed", copy=False)
+
+
+class TestRemoveLinkPicksTheCallThatFitsTheLink:
+    """Which call removes a link depends on what the entry IS, and the two platforms disagree:
+    POSIX ``rmdir`` refuses a symlink (``ENOTDIR``) while Windows ``unlink`` refuses a directory
+    symlink. Branching on ``is_dir()`` answers neither question — it FOLLOWS the link — which is
+    how a Windows-only fix broke every macOS/Linux re-install. Monkeypatched so the branch is
+    pinned on any machine, including one that cannot create a symlink at all.
+    """
+
+    def _spy(self, monkeypatch, *, platform, is_symlink, is_dir):
+        calls = []
+        monkeypatch.setattr(install_addon.sys, "platform", platform)
+        monkeypatch.setattr(
+            install_addon.os, "rmdir", lambda p: calls.append(("rmdir", p))
+        )
+        monkeypatch.setattr(Path, "is_symlink", lambda _self: is_symlink)
+        monkeypatch.setattr(Path, "is_dir", lambda _self: is_dir)
+        monkeypatch.setattr(
+            Path, "unlink", lambda _self, **_kw: calls.append(("unlink", _self))
+        )
+        return calls
+
+    def test_a_posix_symlink_to_a_directory_is_unlinked(self, monkeypatch):
+        """The regression: rmdir here raises ENOTDIR and aborts the whole re-install."""
+        calls = self._spy(monkeypatch, platform="linux", is_symlink=True, is_dir=True)
+
+        install_addon._remove_link(Path("addon/core"))
+
+        assert calls == [("unlink", Path("addon/core"))]
+
+    def test_a_posix_symlink_to_a_file_is_unlinked(self, monkeypatch):
+        calls = self._spy(monkeypatch, platform="darwin", is_symlink=True, is_dir=False)
+
+        install_addon._remove_link(Path("addon/envs.py"))
+
+        assert calls == [("unlink", Path("addon/envs.py"))]
+
+    def test_a_windows_junction_is_rmdir_since_it_is_not_a_symlink(self, monkeypatch):
+        calls = self._spy(monkeypatch, platform="win32", is_symlink=False, is_dir=True)
+
+        install_addon._remove_link(Path("addon/core"))
+
+        assert calls == [("rmdir", Path("addon/core"))]
+
+    def test_a_windows_directory_symlink_is_rmdir_since_unlink_refuses_it(
+        self, monkeypatch
+    ):
+        calls = self._spy(monkeypatch, platform="win32", is_symlink=True, is_dir=True)
+
+        install_addon._remove_link(Path("addon/core"))
+
+        assert calls == [("rmdir", Path("addon/core"))]
+
+    def test_a_windows_file_symlink_is_unlinked(self, monkeypatch):
+        calls = self._spy(monkeypatch, platform="win32", is_symlink=True, is_dir=False)
+
+        install_addon._remove_link(Path("addon/envs.py"))
+
+        assert calls == [("unlink", Path("addon/envs.py"))]
+
+
+@pytest.fixture
+def real_symlinks(tmp_path):
+    """Skip where the OS will not make a symlink (Windows without Developer Mode).
+
+    The monkeypatched class above pins the branch everywhere; these tests prove the real call
+    against the real filesystem, on the platforms that can.
+    """
+    probe = tmp_path / "_probe_target"
+    probe.mkdir()
+    try:
+        (tmp_path / "_probe_link").symlink_to(probe, target_is_directory=True)
+    except OSError:
+        pytest.skip(
+            "this machine cannot create symlinks (Windows without Developer Mode)"
+        )
+    return True
+
+
+@pytest.mark.usefixtures("real_symlinks")
+class TestClearingAPriorSymlinkAssembly:
+    """The re-run path against real symlinks: clearing must drop the LINK and leave the repo's
+    own files where they are."""
+
+    def test_a_symlinked_item_is_removed_and_its_target_survives(self, tmp_path):
+        source = tmp_path / "repo" / "core"
+        source.mkdir(parents=True)
+        (source / "registry.py").write_text("KEEP ME\n", encoding="utf-8")
+        target = tmp_path / "addon"
+        target.mkdir()
+        (target / "core").symlink_to(source, target_is_directory=True)
+
+        install_addon._clear_prior_assembly(target)
+
+        assert not (target / "core").exists()
+        assert (source / "registry.py").read_text(encoding="utf-8") == "KEEP ME\n"
+
+    def test_a_symlinked_FILE_is_removed_and_its_target_survives(self, tmp_path):
+        source = tmp_path / "repo" / "envs.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("KNOB = 1\n", encoding="utf-8")
+        target = tmp_path / "addon"
+        target.mkdir()
+        (target / "envs.py").symlink_to(source)
+
+        install_addon._clear_prior_assembly(target)
+
+        assert not (target / "envs.py").exists()
+        assert source.read_text(encoding="utf-8") == "KNOB = 1\n"
+
+    def test_a_whole_folder_symlink_is_unlinked(self, tmp_path):
+        """The old ``install_dev`` layout: the add-on folder ITSELF was one symlink. Same
+        helper, same trap, and this is the upgrade path onto the per-item assembly."""
+        source = tmp_path / "repo" / "omnia"
+        source.mkdir(parents=True)
+        (source / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+        target = tmp_path / "addons21" / "omnia"
+        target.parent.mkdir(parents=True)
+        target.symlink_to(source, target_is_directory=True)
+
+        install_addon._clear_prior_assembly(target)
+
+        assert not target.exists()
+        assert (source / "__init__.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+class TestClearingKeepsWhatTheUserOwns:
+    def test_the_runtime_dirs_are_left_alone(self, tmp_path):
+        """``user_files`` holds the user's config, secrets and downloaded voices; a re-run
+        clears only the source/sibling links."""
+        target = tmp_path / "addon"
+        (target / "user_files" / "config").mkdir(parents=True)
+        (target / "user_files" / "config" / "providers.toml").write_text(
+            "[llm]\n", encoding="utf-8"
+        )
+
+        install_addon._clear_prior_assembly(target)
+
+        assert (target / "user_files" / "config" / "providers.toml").read_text(
+            encoding="utf-8"
+        ) == "[llm]\n"
+
+    def test_a_prior_copy_install_is_replaced(self, tmp_path):
+        """A ``--copy`` run leaves REAL directories where links normally go; those must be
+        cleared, or the next run's symlink hits FileExistsError."""
+        target = tmp_path / "addon"
+        (target / "core").mkdir(parents=True)
+        (target / "core" / "registry.py").write_text("stale\n", encoding="utf-8")
+
+        install_addon._clear_prior_assembly(target)
+
+        assert not (target / "core").exists()
 
 
 @pytest.mark.skipif(

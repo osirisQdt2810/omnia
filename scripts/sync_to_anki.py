@@ -89,6 +89,15 @@ def ensure_vendor() -> bool:
     )
 
 
+def _starts_with(path: Path, prefix: bytes) -> bool:
+    """True if ``path`` begins with ``prefix``, reading only that many bytes."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(prefix)) == prefix
+    except OSError:
+        return False
+
+
 def report_voice_models() -> None:
     """Say whether the piper weights are real files or LFS pointers — never fail on it."""
     piper = REPO_ROOT / "models" / "piper"
@@ -96,7 +105,9 @@ def report_voice_models() -> None:
     if not weights:
         print("--  models/piper: no .onnx weights (fetched on first use)")
         return
-    pointers = [w for w in weights if w.read_bytes()[:23] == LFS_POINTER_PREFIX]
+    # Read only the prefix: a real weight is ~60 MB, and slurping each one to look at 23 bytes
+    # would make a status line cost more memory than the whole install.
+    pointers = [w for w in weights if _starts_with(w, LFS_POINTER_PREFIX)]
     if pointers:
         print(
             f"--  models/piper: {len(pointers)}/{len(weights)} weights are Git LFS pointers.\n"

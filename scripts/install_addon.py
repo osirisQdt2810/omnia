@@ -42,6 +42,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from common import enable_utf8_output
 
@@ -91,11 +92,6 @@ def anki_addons_dir() -> Path:
     return anki_base_dir() / "addons21"
 
 
-# What each item fell back to when the OS refused a symlink, reported at the end of a run so
-# a Windows dev knows which items are live-linked and which are snapshots.
-_FALLBACKS: list[str] = []
-
-
 def _is_link(path: Path) -> bool:
     """True if ``path`` is a symlink OR a Windows junction — both are unlinked, not walked.
 
@@ -116,11 +112,20 @@ def _is_link(path: Path) -> bool:
 
 
 def _remove_link(path: Path) -> None:
-    """Remove a link entry without following it — ``rmdir`` for a dir link, ``unlink`` else."""
-    if path.is_dir():
-        os.rmdir(path)  # a dir symlink / junction: drops the entry, keeps the target
+    """Remove a link entry without following it, leaving its target untouched.
+
+    Which call does that depends on what the entry IS, not on what it points at — and
+    ``Path.is_dir()`` answers the second question, because it follows the link. Branching on it
+    sends a POSIX symlink-to-a-directory into ``os.rmdir``, which refuses a symlink outright
+    (``ENOTDIR``) and breaks every re-run of the install on the platform where the dev loop
+    mostly runs.
+    """
+    if not path.is_symlink():
+        os.rmdir(path)  # a Windows junction: a directory entry, so rmdir drops the link
+    elif sys.platform.startswith("win") and path.is_dir():
+        os.rmdir(path)  # a Windows directory symlink: unlink refuses it
     else:
-        path.unlink()
+        path.unlink()  # a POSIX symlink, dir or file: rmdir would raise ENOTDIR
 
 
 def _clear_prior_assembly(target: Path) -> None:
@@ -165,8 +170,8 @@ def _create_junction(src: Path, dest: Path) -> None:
         )
 
 
-def _place(src: Path, dest: Path, *, copy: bool) -> None:
-    """Symlink (or copy) ``src`` to ``dest``.
+def _place(src: Path, dest: Path, *, copy: bool) -> Optional[str]:
+    """Symlink (or copy) ``src`` to ``dest``; return a note if it had to fall back.
 
     On Windows, creating a symlink needs either Developer Mode or an elevated shell; without
     one, ``os.symlink`` raises ``OSError`` (WinError 1314) and the whole install used to abort.
@@ -176,30 +181,41 @@ def _place(src: Path, dest: Path, *, copy: bool) -> None:
     directory-only). Copied files are re-copied on every run, so a re-run after editing one is
     all that is needed.
 
+    The note is RETURNED rather than accumulated in a module global: ``install`` is importable
+    and gets called more than once per process (``sync_to_anki`` is one caller), and a global
+    that a raising ``install`` never clears would report the previous run's fallbacks as this
+    run's.
+
     Args:
         src: The source file or directory.
         dest: The destination path to create.
         copy: Copy instead of symlinking.
+
+    Returns:
+        A one-line description of the fallback used, or None when the symlink (or the
+        requested copy) succeeded outright.
     """
     if copy:
         if src.is_dir():
             shutil.copytree(src, dest)
         else:
             shutil.copy2(src, dest)
-        return
+        return None
     try:
         dest.symlink_to(src, target_is_directory=src.is_dir())
+    except FileExistsError:
+        # NOT a missing privilege: the caller failed to clear a prior assembly. Falling back
+        # here would hide that behind a junction attempt and a CalledProcessError from cmd.
+        raise
     except OSError:
         if not sys.platform.startswith("win"):
             raise
         if src.is_dir():
             _create_junction(src, dest)
-            _FALLBACKS.append(f"{dest.name}/ -> junction (live, same as a symlink)")
-        else:
-            shutil.copy2(src, dest)
-            _FALLBACKS.append(
-                f"{dest.name} -> copied (re-run this script after editing it)"
-            )
+            return f"{dest.name}/ -> junction (live, same as a symlink)"
+        shutil.copy2(src, dest)
+        return f"{dest.name} -> copied (re-run this script after editing it)"
+    return None
 
 
 def _seed_runtime(target: Path) -> None:
@@ -239,33 +255,40 @@ def install(copy: bool = False, target: Path | None = None) -> Path:
     _clear_prior_assembly(target)
     target.mkdir(parents=True, exist_ok=True)
 
+    # What each item fell back to when the OS refused a symlink, reported at the end of the run
+    # so a Windows dev knows which items are live-linked and which are snapshots.
+    fallbacks: list[str] = []
+
     for name in SOURCE_ITEMS:
         src = ADDON_DIR / name
         if not src.exists():
             raise SystemExit(f"Missing required source item: {src}")
-        _place(src, target / name, copy=copy)
+        note = _place(src, target / name, copy=copy)
+        if note:
+            fallbacks.append(note)
 
     for name, src in SIBLING_LINKS.items():
         if not src.exists():
             print(f"WARNING: optional data dir not found, skipping: {src}")
             continue
-        _place(src, target / name, copy=copy)
+        note = _place(src, target / name, copy=copy)
+        if note:
+            fallbacks.append(note)
 
     for name in RUNTIME_DIRS:
         (target / name).mkdir(parents=True, exist_ok=True)
 
     _seed_runtime(target)
 
-    verb = "Copied" if copy else ("Assembled" if _FALLBACKS else "Symlinked")
+    verb = "Copied" if copy else ("Assembled" if fallbacks else "Symlinked")
     print(f"{verb} the add-on into {target}")
-    if _FALLBACKS:
+    if fallbacks:
         print(
             "\nThis OS refused symlinks (Windows needs Developer Mode or an elevated shell),\n"
             "so these items were placed another way:"
         )
-        for note in _FALLBACKS:
+        for note in fallbacks:
             print(f"  - {note}")
-        _FALLBACKS.clear()
     print("Restart Anki, then open Tools → Omnia.")
     return target
 
