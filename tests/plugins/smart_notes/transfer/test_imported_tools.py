@@ -94,6 +94,10 @@ def _source_collection(col):
 
 
 class TestImportingAChainThatUsesACarriedTool:
+    """With the tool APPROVED — the ordinary case of moving your own setup between your own
+    machines. What happens without approval is TestACarriedToolIsNotRunWithoutConsent.
+    """
+
     def test_the_tool_is_loaded_before_the_remap_reads_it(self, registered_on_load):
         col = FakeCollection()
         bundle = _source_collection(col)
@@ -108,6 +112,7 @@ class TestImportingAChainThatUsesACarriedTool:
             target_name="Vocab",
             renames=renames,
             tool_loader=registered_on_load,
+            approved_tools=[TOOL],
         )
         result = apply_bundle(target, bundle, plan, tool_loader=registered_on_load)
 
@@ -136,6 +141,7 @@ class TestImportingAChainThatUsesACarriedTool:
             target_name="Vocab",
             renames={"Word": "Term", "Sentence": "Example", "Meaning": "Gloss"},
             tool_loader=registered_on_load,
+            approved_tools=[TOOL],
         )
         apply_bundle(target, bundle, plan, tool_loader=registered_on_load)
 
@@ -149,7 +155,9 @@ class TestImportingAChainThatUsesACarriedTool:
         target = FakeCollection()
         target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
 
-        plan = plan_import(target, bundle, tool_loader=registered_on_load)
+        plan = plan_import(
+            target, bundle, tool_loader=registered_on_load, approved_tools=[TOOL]
+        )
         result = apply_bundle(target, bundle, plan, tool_loader=registered_on_load)
 
         # ``UserToolSource.render`` prepends the tool's metadata header, so the file is
@@ -166,7 +174,9 @@ class TestImportingAChainThatUsesACarriedTool:
         target = FakeCollection()
         target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
 
-        plan = plan_import(target, bundle, tool_loader=registered_on_load)
+        plan = plan_import(
+            target, bundle, tool_loader=registered_on_load, approved_tools=[TOOL]
+        )
         apply_bundle(target, bundle, plan, tool_loader=registered_on_load)
 
         assert registered_on_load.store.files[SLUG] == "# MY version"
@@ -181,8 +191,75 @@ class TestImportingAChainThatUsesACarriedTool:
         target = FakeCollection()
         target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
 
-        plan = plan_import(target, bundle, tool_loader=loader)
+        plan = plan_import(target, bundle, tool_loader=loader, approved_tools=[TOOL])
         result = apply_bundle(target, bundle, plan, tool_loader=loader)
 
         assert any(SLUG in failure for failure in result.tools_failed)
         assert registry is not None  # the import completed rather than raising
+
+
+class TestACarriedToolIsNotRunWithoutConsent:
+    """Installing a carried tool EXECUTES its module body. A bundle can come from another
+    person — the PR's own use case — so importing one must never run code the reader has not
+    looked at. The add-on's stated safety boundary for user tools is the read-and-run review
+    (see ``risky_operations``), not the import allowlist, which had to permit ``os`` and
+    ``subprocess``."""
+
+    def _bundle_with_tool(self, col):
+        return _source_collection(col)
+
+    def test_an_unapproved_tool_is_neither_written_nor_loaded(self):
+        col = FakeCollection()
+        bundle = self._bundle_with_tool(col)
+        loader = FakeToolLoader(FakeToolStore())
+        target = FakeCollection()
+        target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
+
+        plan = plan_import(target, bundle, tool_loader=loader)
+        result = apply_bundle(target, bundle, plan, tool_loader=loader)
+
+        assert plan.tools_to_install == []
+        assert plan.unapproved_tools == [TOOL]
+        assert loader.store.files == {}  # nothing written
+        assert loader.loaded == []  # and nothing executed
+        assert result.tools_written == []
+
+    def test_the_user_is_told_why(self):
+        col = FakeCollection()
+        bundle = self._bundle_with_tool(col)
+        target = FakeCollection()
+        target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
+
+        plan = plan_import(target, bundle, tool_loader=FakeToolLoader(FakeToolStore()))
+
+        assert any("read them" in warning for warning in plan.warnings)
+
+    def test_an_approved_tool_is_installed(self):
+        col = FakeCollection()
+        bundle = self._bundle_with_tool(col)
+        loader = FakeToolLoader(FakeToolStore())
+        target = FakeCollection()
+        target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
+
+        plan = plan_import(target, bundle, tool_loader=loader, approved_tools=[TOOL])
+        result = apply_bundle(target, bundle, plan, tool_loader=loader)
+
+        assert plan.tools_to_install == [TOOL]
+        assert plan.unapproved_tools == []
+        assert loader.loaded == [SLUG]
+        assert result.tools_written == [TOOL]
+
+    def test_approving_a_tool_the_bundle_does_not_carry_installs_nothing(self):
+        """Approval names a tool; it cannot conjure a source that is not in the file."""
+        col = FakeCollection()
+        bundle = self._bundle_with_tool(col)
+        loader = FakeToolLoader(FakeToolStore())
+        target = FakeCollection()
+        target.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
+
+        plan = plan_import(
+            target, bundle, tool_loader=loader, approved_tools=["user:not_in_here"]
+        )
+
+        assert plan.tools_to_install == []
+        assert plan.unapproved_tools == [TOOL]

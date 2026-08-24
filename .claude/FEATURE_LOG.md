@@ -53,18 +53,27 @@ The smoke script does NOT go through `aqt.run()` — Anki's single-instance key 
 `anki{checksum(username)}`, the USER and not the base folder, so a second Anki cannot run beside
 your own. See `run_smoke.py` for the per-platform interpreter invocation.
 
+**Safety:** a bundle can come from another person, and a carried ``user:`` tool is Python
+that Omnia executes. Importing therefore installs NOTHING by default: the modal lists each
+carried tool with ``risky_operations`` and its full source behind a toggle, and only ticked
+tools are written and loaded. This is the same read-and-run review the Tools tab requires,
+and it is the add-on's only real boundary — the import allowlist stopped being one when it
+had to permit ``os`` and ``subprocess``. An unticked tool is reported, and the chains using
+it simply do not run, which is the already-handled `missing tool` path.
+
 **Notes / rollback:** the hard part is that a field name is written down in SIX places — the
 rule, `base_field`, `depends_on`, `node_positions`, the prompt's `{{refs}}` and a tool's params
 — and a rename reaching five of them yields a config that still loads, still renders, and is
 quietly wrong. Tool params have no fixed key to rewrite (`sentence_field`, `source_field`,
 `word_field`, whatever a user tool invented), so `remap` asks each tool through
 `Tool.referenced_fields`, the same contract the dependency graph uses; a tool that declares
-nothing is REPORTED rather than guessed at. Two review rounds each found a real defect in that
-area: an imported `user:` tool was written to disk but never REGISTERED, so `get_tool` returned
+nothing is REPORTED rather than guessed at. Three review rounds each found a real defect, all in the same
+region: an imported `user:` tool was written to disk but never REGISTERED, so `get_tool` returned
 None and the remap left its params on the old names (fixed by write-then-load before the remap);
-and a declared param naming a field with no counterpart was silently kept (now
-`dropped_tool_params`). Rollback is removing the two buttons — the format is a file, nothing
-migrates.
+a declared param naming a field with no counterpart was silently kept (now
+`dropped_tool_params`); and the install itself executed a stranger's code unattended (now the
+per-tool approval above). Rollback is removing the two buttons — the format is a file,
+nothing migrates.
 
 ---
 

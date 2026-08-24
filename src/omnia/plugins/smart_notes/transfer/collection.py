@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import platform
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Optional
@@ -63,6 +63,9 @@ class ImportPlan:
     creates_note_type: bool = False
     replaces_config: bool = False
     tools_to_install: list[str] = dataclass_field(default_factory=list)
+    #: Tools the bundle carries that the user has NOT approved to run here. Installing one
+    #: means executing its module body, so they are listed rather than run.
+    unapproved_tools: list[str] = dataclass_field(default_factory=list)
     missing_tools: list[str] = dataclass_field(default_factory=list)
     missing_decks: list[str] = dataclass_field(default_factory=list)
     warnings: list[str] = dataclass_field(default_factory=list)
@@ -197,6 +200,7 @@ def plan_import(
     target_name: str = "",
     renames: Optional[Mapping[str, str]] = None,
     tool_loader: Any = None,
+    approved_tools: Optional[Iterable[str]] = None,
 ) -> ImportPlan:
     """Work out what importing ``bundle`` into ``col`` would do, without doing any of it.
 
@@ -211,6 +215,10 @@ def plan_import(
             :func:`~omnia.plugins.smart_notes.transfer.remap.suggest_renames` for the
             unambiguous pairings and leaves the rest for the user.
         tool_loader: The user-tool loader (its ``store`` says what is already installed).
+        approved_tools: The ``user:`` tool names the user has read and agreed to run here.
+            Installing a carried tool EXECUTES its module body, so the default (``None``)
+            approves nothing and every carried tool is listed for review instead. A caller
+            that has obtained consent passes the names it obtained it for.
 
     Returns:
         The plan.
@@ -296,10 +304,19 @@ def plan_import(
 
     store = getattr(tool_loader, "store", None)
     installed = set(store.slugs()) if store is not None else set()
+    approved = set(approved_tools or ())
     for tool_name in bundle.required_user_tools():
         slug = tool_name[len(USER_TOOL_PREFIX) :]
-        if tool_name in bundle.user_tools and slug not in installed:
+        if tool_name not in bundle.user_tools or slug in installed:
+            continue
+        # Installing a carried tool runs it. The add-on's safety boundary for user tools is
+        # the read-and-run review (see ``risky_operations``), not the import allowlist — which
+        # had to permit ``os`` and ``subprocess`` — so a bundle from someone else must not be
+        # able to execute anything the reader has not looked at.
+        if tool_name in approved:
             plan.tools_to_install.append(tool_name)
+        else:
+            plan.unapproved_tools.append(tool_name)
 
     for name in bundle.deck_names:
         if col.decks.by_name(name) is None:
@@ -310,10 +327,21 @@ def plan_import(
             "These configured fields have no counterpart here and their rules will be dropped: "
             + ", ".join(plan.unmapped_source_fields)
         )
+    if plan.mode == MODE_OVERWRITE and plan.unused_target_fields:
+        plan.warnings.append(
+            "These fields of the note type receive nothing from the file and keep whatever "
+            "they are configured with here: " + ", ".join(plan.unused_target_fields)
+        )
     if plan.missing_tools:
         plan.warnings.append(
             "The bundle references user tools whose source it does not carry: "
             + ", ".join(plan.missing_tools)
+        )
+    if plan.unapproved_tools:
+        plan.warnings.append(
+            "These user tools travel with the file but will NOT be installed until you "
+            "have read them and said so — installing one runs it: "
+            + ", ".join(plan.unapproved_tools)
         )
     if plan.missing_decks:
         plan.warnings.append(

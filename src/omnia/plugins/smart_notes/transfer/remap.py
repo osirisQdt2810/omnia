@@ -266,8 +266,9 @@ def remap_note_type_config(
 def identity_renames(config: SmartNotesNoteTypeConfig) -> dict[str, str]:
     """The no-op mapping for ``config`` — every field name onto itself.
 
-    The starting point a UI presents for an overwrite: the user only has to correct the rows
-    where the two note types actually disagree.
+    Used by the tests as the control case (an identity remap must change nothing), and
+    available to a caller that wants to start from "same names" rather than from
+    :func:`suggest_renames`. The dialog uses the latter.
     """
     names = [rule.field for rule in config.fields]
     if config.base_field:

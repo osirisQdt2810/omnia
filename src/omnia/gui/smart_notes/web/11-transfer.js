@@ -21,6 +21,8 @@
   const importMapRows = document.getElementById("sn-import-map-rows");
   const importMapNote = document.getElementById("sn-import-map-note");
   const importResult = document.getElementById("sn-import-result");
+  const importTools = document.getElementById("sn-import-tools");
+  const importToolsList = document.getElementById("sn-import-tools-list");
 
   // What the last "read the file" call told us. Null when no import is in flight.
   let pendingImport = null;
@@ -107,6 +109,8 @@
     importGo.disabled = false;
     importGo.textContent = "Import";
 
+    buildToolApprovals(info.carried_tools || []);
+
     if (info.collides) {
       importCollision.hidden = false;
       importNewName.value = uniqueName(info.note_type, info.note_type_names || []);
@@ -116,6 +120,61 @@
       importCollision.hidden = true;
     }
     importModal.hidden = false;
+  }
+
+  function buildToolApprovals(tools) {
+    // Installing a carried tool RUNS it. Show the source and what it reaches for, and install
+    // only what the reader ticks — the same read-and-run review the Tools tab asks for.
+    const needing = tools.filter(function (t) { return !t.already_installed; });
+    importToolsList.innerHTML = "";
+    importTools.hidden = needing.length === 0;
+    needing.forEach(function (tool, index) {
+      const wrap = document.createElement("div");
+      wrap.className = "sn-import-tool";
+
+      const row = document.createElement("label");
+      row.className = "sn-import-tool-row";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.className = "sn-import-tool-approve";
+      box.setAttribute("data-tool", tool.name);
+      const text = document.createElement("span");
+      text.innerHTML =
+        "<span class='sn-import-tool-name'>" + escapeHtml(tool.name) + "</span> — " +
+        "I have read this code and want it to run here" +
+        (tool.risks && tool.risks.length
+          ? "<div class='sn-import-tool-risks'>Reaches for: " +
+            escapeHtml(tool.risks.join("; ")) + "</div>"
+          : "<div class='sn-import-tool-risks'>Only transforms text.</div>");
+      row.appendChild(box);
+      row.appendChild(text);
+      wrap.appendChild(row);
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "sn-import-tool-toggle";
+      toggle.textContent = "Show the code";
+      const code = document.createElement("pre");
+      code.className = "sn-import-tool-code";
+      code.hidden = true;
+      code.textContent = tool.code || "";
+      toggle.addEventListener("click", function () {
+        code.hidden = !code.hidden;
+        toggle.textContent = code.hidden ? "Show the code" : "Hide the code";
+      });
+      wrap.appendChild(toggle);
+      wrap.appendChild(code);
+      importToolsList.appendChild(wrap);
+      if (index === 0) code.hidden = true;
+    });
+  }
+
+  function approvedTools() {
+    const names = [];
+    document.querySelectorAll(".sn-import-tool-approve").forEach(function (box) {
+      if (box.checked) names.push(box.getAttribute("data-tool"));
+    });
+    return names;
   }
 
   function uniqueName(base, taken) {
@@ -216,7 +275,7 @@
   if (importGo) {
     importGo.addEventListener("click", function () {
       if (!pendingImport) return closeImport();
-      const payload = {};
+      const payload = {approved_tools: approvedTools()};
       if (!pendingImport.collides) {
         payload.mode = "create";
       } else if (importMode() === "clone") {
@@ -265,6 +324,13 @@
     );
     if (out.tools && out.tools.length) {
       lines.push("Installed user tool(s): " + escapeHtml(out.tools.join(", ")));
+    }
+    if (out.unapproved_tools && out.unapproved_tools.length) {
+      lines.push(
+        "Not installed, because they were not ticked: " +
+        escapeHtml(out.unapproved_tools.join(", ")) +
+        ". Chains using them will not run until you add them yourself."
+      );
     }
     if (out.tools_failed && out.tools_failed.length) {
       // The import applied, but a chain using this tool will not run — which the user has to

@@ -257,16 +257,17 @@ def main() -> int:
     page = Page(dialog)
 
     try:
-        runner.check(
-            "gui.both_buttons_render",
-            lambda: _buttons_render(page),
-        )
+        runner.check("gui.both_buttons_render", lambda: _buttons_render(page))
         runner.check("gui.select_the_source_note_type", lambda: _select(page, SOURCE))
         runner.check("export.button_writes_a_file", lambda: _export(page, bundle_path))
         runner.check("export.file_is_a_valid_bundle", lambda: _bundle_ok(bundle_path))
         runner.check("export.footer_reports_success", lambda: _footer(page))
         runner.check(
             "import.button_opens_the_collision_modal", lambda: _open_import(page)
+        )
+        runner.check(
+            "import.a_carried_tool_needs_explicit_approval",
+            lambda: _tool_approval(page),
         )
         runner.check("import.clone_creates_a_second_note_type", lambda: _clone(page))
         runner.check(
@@ -368,6 +369,27 @@ def _open_import(page: Page) -> str:
     require(state["collision"], "a same-named note type exists — the modal must say so")
     require(state["rows"] == len(SOURCE_FIELDS), f"{state['rows']} mapping rows")
     return f"collision shown, {state['rows']} mapping rows, suggested name={state['name']!r}"
+
+
+def _tool_approval(page: Page) -> str:
+    """A bundle carrying tool code must not run it unasked.
+
+    The seeded config uses no user tool, so the approval block must be ABSENT here — which is
+    the assertion that the section is driven by what the file carries rather than always shown.
+    A bundle that does carry one is covered headlessly in
+    ``tests/plugins/smart_notes/transfer/test_imported_tools.py``.
+    """
+    state = page.json(
+        "JSON.stringify({block: !!document.getElementById('sn-import-tools'),"
+        " shown: !document.getElementById('sn-import-tools').hidden,"
+        " boxes: document.querySelectorAll('.sn-import-tool-approve').length})"
+    )
+    require(state["block"], "the page has no tool-approval section at all")
+    require(not state["shown"], "no tool is carried, so the section must stay hidden")
+    require(state["boxes"] == 0, f"{state['boxes']} approval checkboxes for no tools")
+    return (
+        "approval section present and correctly hidden for a bundle carrying no tools"
+    )
 
 
 def _clone(page: Page) -> str:

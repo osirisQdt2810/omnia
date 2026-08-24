@@ -12,7 +12,6 @@ that second call, because an import can rewrite prompts and drop rules.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -20,8 +19,10 @@ from omnia import addon_user_files_dir
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
+    USER_TOOL_PREFIX,
     UserToolLoader,
     UserToolStore,
+    risky_operations,
 )
 from omnia.plugins.smart_notes.transfer.bundle import BundleError, parse_bundle
 from omnia.plugins.smart_notes.transfer.collection import (
@@ -65,6 +66,7 @@ class TransferController:
             "export_note_type": self.on_export,
             "read_import_file": self.on_read_import_file,
             "apply_import": self.on_apply_import,
+            "cancel_import": self.on_cancel_import,
         }
 
     # -- shared -------------------------------------------------------------------------
@@ -122,6 +124,16 @@ class TransferController:
             "missing_tools": missing,
         }
 
+    def on_cancel_import(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Drop the parsed bundle when the user closes the modal.
+
+        Harmless to keep — the page gates on its own state — but a bundle carries tool
+        SOURCE, and holding someone else's code in memory for the dialog's lifetime is not
+        something to do by omission.
+        """
+        self._pending = None
+        return {"ok": True}
+
     # -- import, step 1: read the file and describe what would happen ---------------------
     def on_read_import_file(self, _data: dict[str, Any]) -> dict[str, Any]:
         """Let the user pick a bundle, then report what importing it would do."""
@@ -156,9 +168,37 @@ class TransferController:
             "rules": len(bundle.smart_notes.fields),
             "enabled": sum(1 for rule in bundle.smart_notes.fields if rule.enabled),
             "user_tools": sorted(bundle.user_tools),
+            "carried_tools": self._carried_tools(bundle),
             "missing_tools": bundle.missing_user_tools(),
             "note_type_names": sorted(anki_compat.note_type_names(col)),
         }
+
+    def _carried_tools(self, bundle: Any) -> list[dict[str, Any]]:
+        """Describe each ``user:`` tool the bundle carries, for the approval list.
+
+        The page shows the SOURCE and what it reaches for, because installing one runs it and
+        the add-on's safety boundary for user tools is that read-and-run review — the import
+        allowlist stopped being it once it had to permit ``os`` and ``subprocess``.
+        """
+        installed = set(self._tool_loader().store.slugs())
+        described: list[dict[str, Any]] = []
+        for name in bundle.required_user_tools():
+            code = bundle.user_tools.get(name)
+            if code is None:
+                continue
+            slug = name[len(USER_TOOL_PREFIX) :]
+            described.append(
+                {
+                    "name": name,
+                    "slug": slug,
+                    "code": code,
+                    "risks": risky_operations(code),
+                    # An already-installed slug is never overwritten, so there is nothing to
+                    # approve: what runs is the copy this machine's owner already reviewed.
+                    "already_installed": slug in installed,
+                }
+            )
+        return described
 
     # -- import, step 2: carry out the decision ------------------------------------------
     def on_apply_import(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -181,6 +221,7 @@ class TransferController:
             else {str(k): str(v) for k, v in dict(raw_renames).items() if v}
         )
 
+        approved = [str(name) for name in (data.get("approved_tools") or [])]
         col = self._collection()
         loader = self._tool_loader()
         try:
@@ -191,6 +232,7 @@ class TransferController:
                 target_name=target,
                 renames=renames,
                 tool_loader=loader,
+                approved_tools=approved,
             )
             result = apply_bundle(col, bundle, plan, tool_loader=loader)
         except TransferError as exc:
@@ -209,6 +251,7 @@ class TransferController:
             "tools": result.tools_written,
             "tools_failed": result.tools_failed,
             "warnings": plan.warnings,
+            "unapproved_tools": plan.unapproved_tools,
             "dropped_fields": list(report.dropped_fields) if report else [],
             "dropped_dependencies": list(report.dropped_dependencies) if report else [],
             "unchecked_tool_params": (
@@ -247,8 +290,3 @@ def _safe_filename(name: str) -> str:
     """Make ``name`` safe as a file name on every platform Omnia ships to."""
     cleaned = "".join("-" if ch in '<>:"/\\|?*' else ch for ch in name).strip(" .")
     return cleaned or "note-type"
-
-
-def payload(value: Any) -> str:
-    """JSON for embedding in a ``eval_js`` call (kept here so the ops read the same way)."""
-    return json.dumps(value)

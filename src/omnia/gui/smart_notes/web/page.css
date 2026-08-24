@@ -1084,3 +1084,27 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   background: var(--sn-soft, rgba(127, 127, 127, 0.1));
   font-size: 12px; line-height: 1.7;
 }
+
+/* --- Tool code carried by an imported file -------------------------------------------
+   Shown in full, not summarised: installing one of these RUNS it, and the read-and-run
+   review is the safety boundary (the import allowlist has to permit os and subprocess). */
+.sn-import-tools {
+  margin-top: 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--sn-danger, #c0392b);
+}
+.sn-import-tools-head { font-weight: 700; font-size: 13px; }
+.sn-import-tool { margin-top: 10px; }
+.sn-import-tool-row { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; }
+.sn-import-tool-row input { margin-top: 3px; }
+.sn-import-tool-name { font-weight: 600; }
+.sn-import-tool-risks { color: var(--sn-danger, #c0392b); font-size: 12px; margin: 2px 0; }
+.sn-import-tool-code {
+  max-height: 220px; overflow: auto; margin: 6px 0 0 24px; padding: 8px 10px;
+  border-radius: 6px; background: var(--sn-soft, rgba(127, 127, 127, 0.12));
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+  white-space: pre; tab-size: 4;
+}
+.sn-import-tool-toggle {
+  margin-left: 24px; font-size: 12px; background: none; border: none; padding: 0;
+  color: var(--sn-accent, #6c5ce7); cursor: pointer; text-decoration: underline;
+}
