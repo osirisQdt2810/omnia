@@ -142,6 +142,29 @@ class TestFieldsWithNoCounterpart:
         assert report.dropped_fields == ["Example"]
         assert report.has_warnings
 
+    def test_an_edge_spelled_in_another_case_is_renamed_not_dropped(self):
+        """A ``depends_on`` entry comes from a prompt ref — ``FieldDep(field=ref.strip())`` —
+        so ``{{sentence}}`` in the prompt of a rule on ``Sentence`` stores the edge lowercase.
+        The graph compares folded, so those are one field to everything else; matching only
+        the exact string would drop the edge on a rename that should have carried it.
+        """
+        config = _config(
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    depends_on=[FieldDep(field="sentence", kind="hard", auto=True)],
+                )
+            ],
+            base_field="Word",
+        )
+
+        out, report = remap_note_type_config(
+            config, {"Word": "Term", "Definition": "Meaning", "Sentence": "Example"}
+        )
+
+        assert [dep.field for dep in out.fields[0].depends_on] == ["Example"]
+        assert report.dropped_dependencies == []
+
     def test_an_edge_onto_a_dropped_field_goes_with_it(self):
         out, report = remap_note_type_config(
             _config(), {"Word": "Term", "Definition": "Meaning"}

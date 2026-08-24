@@ -271,7 +271,14 @@
   document.querySelectorAll("input[name=sn-import-mode]").forEach(function (radio) {
     radio.addEventListener("change", syncCollisionUi);
   });
-  if (importNewName) importNewName.addEventListener("input", refreshPreview);
+  // Typing a clone name is the one control that fires per keystroke, and each preview is a
+  // pycmd round trip that re-reads the collection config. The others change once per click.
+  let previewTimer = null;
+  function refreshPreviewSoon() {
+    if (previewTimer) clearTimeout(previewTimer);
+    previewTimer = setTimeout(refreshPreview, 250);
+  }
+  if (importNewName) importNewName.addEventListener("input", refreshPreviewSoon);
 
   /** The payload the Import button would send, with no validation of its own. */
   function currentPayload() {

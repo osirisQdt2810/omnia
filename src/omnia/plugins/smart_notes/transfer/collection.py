@@ -62,6 +62,10 @@ class ImportPlan:
     renames: dict[str, str] = dataclass_field(default_factory=dict)
     unmapped_source_fields: list[str] = dataclass_field(default_factory=list)
     unused_target_fields: list[str] = dataclass_field(default_factory=list)
+    #: Target fields whose EXISTING rule the overwrite carries forward, because the file
+    #: configures nothing for them. A subset of ``unused_target_fields``, which also holds
+    #: fields that have no rule at all — including the base field.
+    kept_local_fields: list[str] = dataclass_field(default_factory=list)
     creates_note_type: bool = False
     replaces_config: bool = False
     tools_to_install: list[str] = dataclass_field(default_factory=list)
@@ -288,6 +292,8 @@ def plan_import(
             + ", ".join(sorted(collapsed))
         )
 
+    local = _settings(col).note_type_config(wanted)
+    incoming_fields = {mapping.get(rule.field) for rule in bundle.smart_notes.fields}
     plan = ImportPlan(
         mode=mode,
         target_note_type=wanted,
@@ -296,8 +302,16 @@ def plan_import(
         unused_target_fields=[
             n for n in target_fields if n not in set(mapping.values())
         ],
+        # Only the fields whose rules the merge actually carries forward. The wider
+        # "receives nothing from the file" set includes fields with no rule at all — saying
+        # their rules are kept is noise at best and, for the base field, wrong.
+        kept_local_fields=(
+            [rule.field for rule in local.fields if rule.field not in incoming_fields]
+            if local is not None and mode == MODE_OVERWRITE
+            else []
+        ),
         creates_note_type=mode in (MODE_CREATE, MODE_CLONE),
-        replaces_config=_settings(col).note_type_config(wanted) is not None,
+        replaces_config=local is not None,
         missing_tools=bundle.missing_user_tools(),
     )
 
@@ -326,11 +340,13 @@ def plan_import(
             "These configured fields have no counterpart here and their rules will be dropped: "
             + ", ".join(plan.unmapped_source_fields)
         )
-    if plan.mode == MODE_OVERWRITE and plan.unused_target_fields:
+    if plan.kept_local_fields:
         plan.warnings.append(
-            "These fields receive nothing from the file; the rules they already have here "
-            "are kept as they are: " + ", ".join(plan.unused_target_fields)
+            "These fields are not configured by the file, so the rules they already have "
+            "here are kept as they are: " + ", ".join(plan.kept_local_fields)
         )
+    if plan.mode == MODE_OVERWRITE and local is not None:
+        plan.warnings.extend(_envelope_warnings(col, bundle, mapping, local))
     if plan.missing_tools:
         plan.warnings.append(
             "The bundle references user tools whose source it does not carry: "
@@ -343,10 +359,14 @@ def plan_import(
             + ", ".join(plan.unapproved_tools)
         )
     if plan.missing_decks:
+        fallback = (
+            "this note type keeps the deck restriction it already has"
+            if plan.mode == MODE_OVERWRITE and local is not None and local.decks
+            else "the configuration applies to all decks"
+        )
         plan.warnings.append(
             "These decks do not exist here and will be left out of the deck restriction "
-            "(if none of them resolve, the configuration applies to all decks): "
-            + ", ".join(plan.missing_decks)
+            f"(if none of them resolve, {fallback}): " + ", ".join(plan.missing_decks)
         )
     if plan.mode == MODE_OVERWRITE and plan.replaces_config:
         plan.warnings.append(
@@ -395,7 +415,7 @@ def apply_bundle(
     )
     config = config.copy(update={"decks": _deck_ids(col, bundle.deck_names)})
     if plan.mode == MODE_OVERWRITE:
-        config = _keeping_local_rules(col, config, plan.target_note_type)
+        config = _merged_with_local(col, config, plan.target_note_type)
     _write_config_entry(col, config)
 
     return ImportResult(
@@ -408,20 +428,71 @@ def apply_bundle(
     )
 
 
-def _keeping_local_rules(
+def _envelope_warnings(
+    col: Any,
+    bundle: NoteTypeBundle,
+    mapping: Mapping[str, str],
+    local: SmartNotesNoteTypeConfig,
+) -> list[str]:
+    """Say what an overwrite does to the base field and the deck scope.
+
+    Neither is a rule, so neither shows up in the mapping table the user is reading — and both
+    change what generates. See :func:`_merged_with_local` for what actually happens to them.
+    """
+    warnings: list[str] = []
+    incoming_base = bundle.smart_notes.base_field
+    mapped_base = mapping.get(incoming_base, "") if incoming_base else ""
+    if incoming_base and not mapped_base and local.base_field:
+        warnings.append(
+            f"The file's base field ({incoming_base!r}) has no counterpart here, so "
+            f"{local.base_field!r} stays the base field."
+        )
+    elif mapped_base and local.base_field and mapped_base != local.base_field:
+        warnings.append(
+            f"The base field changes from {local.base_field!r} to {mapped_base!r} — every "
+            "rule with no prompt of its own generates from it."
+        )
+
+    if local.decks and not _deck_ids(col, bundle.deck_names):
+        names = [name for name in (col.decks.name(i) for i in local.decks) if name]
+        warnings.append(
+            "The file carries no deck restriction that applies here, so this note type keeps "
+            "its own" + (f" ({', '.join(names)})." if names else ".")
+        )
+    return warnings
+
+
+def _merged_with_local(
     col: Any, config: SmartNotesNoteTypeConfig, note_type: str
 ) -> SmartNotesNoteTypeConfig:
-    """Return ``config`` with the target's own rules for fields the import does not configure.
+    """Return ``config`` with everything the imported file did not speak to left as it was.
 
     Overwrite means "put the file's setup onto this note type" — not "delete the parts the
-    file has nothing to say about". A user importing a colleague's vocabulary setup onto a
-    note type that also has a local Audio rule expects to still have that Audio rule; the
-    alternative destroys work the mapping table never mentioned, which is the one thing an
-    import must not do quietly.
+    file has nothing to say about". That has to cover the WHOLE config, not just the rules:
+    the first version of this merged ``fields`` alone, so a bundle whose base field had no
+    counterpart here cleared the local one, and every kept rule with an empty prompt then
+    compiled with ``source_field=""`` and generated from nothing. Kept but inert is worse than
+    dropped, because nothing says it happened.
 
-    Kept rules go after the imported ones, in the order the target had them. Their edges stay
-    valid: overwrite does not touch the note type's fields, so everything they name still
-    exists.
+    Per key, and each for its own reason:
+
+    ``fields``
+        The file's rules, then the local rules for fields it does not configure, in the order
+        the target had them. Their edges stay valid — overwrite does not touch the note type's
+        fields, so everything they name still exists.
+    ``base_field``
+        The file's, unless the mapping gave it no counterpart here (then it is ``""``), in
+        which case the local one stays. A config with no base field generates nothing.
+    ``decks``
+        The file's, unless it names none that resolve here. ``[]`` does not mean "no
+        restriction was carried", it means **all decks** — so taking the file's empty list
+        would silently switch generation on in decks the user had deliberately excluded.
+    ``node_positions``
+        Both, the file's winning. They are per field name, so the kept rules keep their place
+        on the graph canvas instead of the layout jumping.
+    anything else
+        Local values survive when the file has no key for them, which is what keeps a config
+        written by a NEWER Omnia intact through an import from an older one (ADR-010).
 
     Args:
         col: The collection to read the target's current configuration from.
@@ -429,16 +500,23 @@ def _keeping_local_rules(
         note_type: The target note type's name.
 
     Returns:
-        ``config``, or a copy of it with the surviving local rules appended.
+        ``config``, or the merge of it over what is already there.
     """
     existing = _settings(col).note_type_config(note_type)
     if existing is None:
         return config
     imported = {rule.field for rule in config.fields}
-    kept = [rule for rule in existing.fields if rule.field not in imported]
-    if not kept:
-        return config
-    return config.copy(update={"fields": list(config.fields) + kept})
+    merged = {**existing.dict(), **config.dict()}
+    merged.update(
+        fields=[
+            *config.fields,
+            *[rule for rule in existing.fields if rule.field not in imported],
+        ],
+        base_field=config.base_field or existing.base_field,
+        decks=config.decks or existing.decks,
+        node_positions={**existing.node_positions, **config.node_positions},
+    )
+    return SmartNotesNoteTypeConfig(**merged)
 
 
 def _install_tool(tool_loader: Any, tool_name: str, source_text: str) -> Optional[str]:

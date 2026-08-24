@@ -494,3 +494,170 @@ class TestWhatOverwriteDoesToTheTargetsOwnSetup:
         _plan, rules = self._apply(col, self._incoming(), {"Meaning": "Meaning"})
 
         assert rules == {"Meaning": "imported meaning"}
+
+
+class TestWhatOverwriteDoesToTheRestOfTheConfig:
+    """The rules are not the whole configuration. ``base_field``, ``decks`` and
+    ``node_positions`` are not rows in the mapping table the user is reading, and all three
+    change what generates — so an overwrite that takes them wholesale from the file destroys
+    settings nobody was asked about, and the first version of the merge did exactly that.
+    """
+
+    def _local(self):
+        """``Vocab``: base ``Word``, a prompt-less TTS rule on ``Audio``, scoped to Japanese."""
+        col = FakeCollection()
+        col.models.add_note_type("Vocab", ["Word", "Reading", "Audio"])
+        col.decks.add("Japanese", 42)
+        col.set_config(
+            SMART_NOTES_KEY,
+            {
+                "note_types": [
+                    SmartNotesNoteTypeConfig(
+                        note_type="Vocab",
+                        base_field="Word",
+                        decks=[42],
+                        node_positions={"Audio": [10.0, 20.0]},
+                        fields=[
+                            SmartNotesFieldConfig(
+                                field="Audio", enabled=True, prompt=""
+                            )
+                        ],
+                    ).dict()
+                ]
+            },
+        )
+        return col
+
+    def _incoming(self):
+        """A colleague's ``Vocab``: base ``Term`` (no counterpart here), no deck restriction."""
+        source = FakeCollection()
+        source.models.add_note_type("Vocab", ["Term", "Reading"])
+        source.set_config(
+            SMART_NOTES_KEY,
+            {
+                "note_types": [
+                    SmartNotesNoteTypeConfig(
+                        note_type="Vocab",
+                        base_field="Term",
+                        fields=[
+                            SmartNotesFieldConfig(
+                                field="Reading", enabled=True, prompt="Read {{Term}}"
+                            )
+                        ],
+                    ).dict()
+                ]
+            },
+        )
+        return build_bundle(source, "Vocab")
+
+    def _apply(self):
+        col = self._local()
+        bundle = self._incoming()
+        # ``Term`` has no counterpart here, so that row stays on "— not imported —".
+        plan = plan_import(
+            col,
+            bundle,
+            mode=MODE_OVERWRITE,
+            target_name="Vocab",
+            renames={"Reading": "Reading"},
+        )
+        apply_bundle(col, bundle, plan)
+        entry = col.get_config(SMART_NOTES_KEY)["note_types"][0]
+        return plan, SmartNotesNoteTypeConfig(**entry)
+
+    def test_an_unmapped_incoming_base_field_leaves_the_local_one_alone(self):
+        """A cleared base field is the nastiest outcome of the three: every prompt-less rule
+        then compiles with ``source_field=""`` and generates from nothing — kept, but inert,
+        with nothing on screen saying so.
+        """
+        _plan, out = self._apply()
+
+        assert out.base_field == "Word"
+
+    def test_the_deck_restriction_is_not_silently_widened(self):
+        """``decks=[]`` does not mean "no restriction carried" — it means ALL decks. Taking
+        the file's empty list switches generation, and the spend that goes with it, on in
+        decks the user deliberately excluded.
+        """
+        _plan, out = self._apply()
+
+        assert out.decks == [42]
+
+    def test_a_kept_rule_keeps_its_place_on_the_graph(self):
+        _plan, out = self._apply()
+
+        assert out.node_positions.get("Audio") == [10.0, 20.0]
+
+    def test_the_mapped_rule_still_comes_from_the_file(self):
+        _plan, out = self._apply()
+
+        rules = {rule.field: rule.prompt for rule in out.fields}
+        assert rules["Reading"] == "Read {{Term}}"
+        assert rules["Audio"] == ""
+
+    def test_the_user_is_told_the_base_field_is_staying(self):
+        plan, _out = self._apply()
+
+        assert any(
+            "'Term'" in w and "'Word' stays the base field" in w for w in plan.warnings
+        )
+
+    def test_the_user_is_told_the_deck_restriction_is_staying(self):
+        plan, _out = self._apply()
+
+        assert any("keeps its own (Japanese)" in w for w in plan.warnings)
+
+    def test_a_mapped_base_field_does_replace_the_local_one(self):
+        """The other half: when the file's base field HAS a counterpart, it wins — and the
+        user is told, because every prompt-less rule now generates from a different field.
+        """
+        col = self._local()
+        bundle = self._incoming()
+
+        plan = plan_import(
+            col,
+            bundle,
+            mode=MODE_OVERWRITE,
+            target_name="Vocab",
+            renames={"Term": "Reading", "Reading": "Audio"},
+        )
+        apply_bundle(col, bundle, plan)
+
+        entry = col.get_config(SMART_NOTES_KEY)["note_types"][0]
+        assert SmartNotesNoteTypeConfig(**entry).base_field == "Reading"
+        assert any(
+            "base field changes from 'Word' to 'Reading'" in w for w in plan.warnings
+        )
+
+    def test_the_kept_fields_warning_names_rules_not_bare_fields(self):
+        """``unused_target_fields`` includes fields with no rule at all — the base field among
+        them. Telling the user their rules are kept is noise there, and wrong for the base.
+        """
+        plan, _out = self._apply()
+
+        assert plan.kept_local_fields == ["Audio"]
+        assert "Word" in plan.unused_target_fields
+        kept = [w for w in plan.warnings if "are kept as they are" in w]
+        assert kept and "Word" not in kept[0]
+
+    def test_a_key_only_a_newer_omnia_knows_survives_the_import(self):
+        """ADR-010: unknown keys round-trip. An import from an older Omnia must not strip the
+        local entry's newer ones — same rule as the rest of the merge, one level up.
+        """
+        col = self._local()
+        blob = col.get_config(SMART_NOTES_KEY)
+        blob["note_types"][0]["future_flag"] = {"kept": True}
+        col.set_config(SMART_NOTES_KEY, blob)
+        bundle = self._incoming()
+
+        plan = plan_import(
+            col,
+            bundle,
+            mode=MODE_OVERWRITE,
+            target_name="Vocab",
+            renames={"Reading": "Reading"},
+        )
+        apply_bundle(col, bundle, plan)
+
+        entry = col.get_config(SMART_NOTES_KEY)["note_types"][0]
+        assert entry.get("future_flag") == {"kept": True}

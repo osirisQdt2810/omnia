@@ -185,8 +185,25 @@ def remap_note_type_config(
         source_names.add(config.base_field)
     known = frozenset(source_names)
 
+    # Exact first, then FOLDED — the same rule the tool params use, for the same reason. A
+    # ``depends_on`` entry is built from a prompt ref (``FieldDep(field=ref.strip())``), so a
+    # rule whose prompt says ``{{sentence}}`` while the field is ``Sentence`` carries an edge
+    # spelled differently from the mapping's key. Exact-match-only DROPS that edge instead of
+    # renaming it; the graph itself compares folded, so the two are one field to everything
+    # else. Names that fold together ambiguously are left to the exact match alone.
+    folded_counts: dict[str, int] = {}
+    for old in renames:
+        folded_counts[_fold(old)] = folded_counts.get(_fold(old), 0) + 1
+    folded_renames = {
+        _fold(old): new
+        for old, new in renames.items()
+        if folded_counts[_fold(old)] == 1
+    }
+
     def target_of(name: str) -> str | None:
-        return renames.get(name)
+        if name in renames:
+            return renames[name]
+        return folded_renames.get(_fold(name))
 
     kept: list[SmartNotesFieldConfig] = []
     for rule in config.fields:
