@@ -65,46 +65,86 @@ reaches the provider when it is not.
 Omnia runs **inside Anki** (25.09+ / 26.x, which bundles Python 3.13 + PyQt6). It is **not**
 a server — there is nothing to run separately.
 
-### A. End user — install the packaged add-on (macOS & Windows)
-1. Get `omnia.ankiaddon` (from a release, or build it yourself — see *Develop* below:
-   `python scripts/build_addon.py` writes it to `dist/`).
-2. In Anki: **Tools → Add-ons → Install from file…** and pick `omnia.ankiaddon`.
-3. **Restart Anki.** You now have a **Tools → Omnia** menu.
+There are three versions you can install, and they differ only in *where the code comes from*.
+Pick one — installing two at once means two copies of every feature fighting over the same
+seams:
 
-That is the whole install. Everything else (which plugins are on, their settings) is done in
-the GUI and stored in your collection — see *Where your settings & data live* below. There is
-no config file to edit **unless** you use the AI features, which need `providers.toml` (next
-section).
+| Version | Who it is for | How you install it | Updates |
+|---|---|---|---|
+| **A · AnkiWeb** — code `726991726` | everyone | paste the code into Anki | Anki updates it for you |
+| **B · `.ankiaddon` file** | a specific build; offline or air-gapped installs | *Install from file…* | manual, by installing the next file |
+| **C · a clone of this repo** | developers, and anyone who wants to edit the code | `python scripts/sync_to_anki.py` | `git pull` + re-run that one command |
 
-> The package is deliberately small (~1 MB): the offline **piper** TTS voice models (~60 MB
-> each) are **not** bundled, so you don't re-download them on every add-on update. The first
-> time you actually synthesize with a piper voice, Omnia fetches it into `user_files/` once per
-> machine and reuses it forever after. When you triggered the generation yourself (the editor
-> button, a Studio preview, a voice test) the fetch reports its progress in Anki's progress
-> dialog and its **Cancel** button stops it; review-time pre-generation runs silently in the
-> background by design, so there it is invisible. Every other TTS provider needs no download at
-> all. Note that piper *also* needs its opt-in native runtime (**Smart Notes → Options →
-> Advanced**) — Omnia checks that first, so it never downloads a voice it could not have used.
+All three end in the same place: **Tools → Omnia**. Which plugins are on and how they are
+configured is done entirely in that GUI and stored in your collection — see *Where your
+settings & data live* below. There is no config file to edit **unless** you use the AI
+features, which need `providers.toml` (next section).
 
-> Installing on another machine? Just repeat A on that machine. Your **plugin settings sync
+> Whichever route you take, the download is deliberately small (~1 MB): the offline **piper**
+> TTS voice models (~60 MB each) are **not** bundled, so you don't re-download them on every
+> add-on update. The first time you actually synthesize with a piper voice, Omnia fetches it
+> into `user_files/` once per machine and reuses it forever after. When you triggered the
+> generation yourself (the editor button, a Studio preview, a voice test) the fetch reports its
+> progress in Anki's progress dialog and its **Cancel** button stops it; review-time
+> pre-generation runs silently in the background by design, so there it is invisible. Every
+> other TTS provider needs no download at all. Note that piper *also* needs its opt-in native
+> runtime (**Smart Notes → Options → Advanced**) — Omnia checks that first, so it never
+> downloads a voice it could not have used.
+
+> Installing on another machine? Just repeat the same route there. Your **plugin settings sync
 > automatically** with the rest of your collection through AnkiWeb (they live in the collection,
 > not in a local file). The only per-machine step is re-creating `providers.toml` with your API
 > keys, because secrets are deliberately **not** synced (see below).
 
-### B. Developer — run from source into your local Anki
-```bash
-git clone --recurse-submodules <this-repo-url>      # --recurse-submodules pulls the clippers
-cd omnia
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements/requirements-dev.txt
-pre-commit install
+### A · From AnkiWeb (the normal install)
+1. In Anki: **Tools → Add-ons → Get Add-ons…**
+2. Paste the code **`726991726`** and confirm.
+3. **Restart Anki.**
 
-git lfs pull                       # optional: the piper voice weights (else they download on use)
-python scripts/install_addon.py    # assemble src/omnia + vendor/ + models/ + config/ into addons21/
+Anki puts it in `addons21/726991726` and checks for updates on its own, so this is the version
+to use unless you have a reason not to.
+
+### B · From an `.ankiaddon` file
+1. Get the file — build it from a checkout with `python scripts/build_addon.py`, which writes
+   `dist/omnia.ankiaddon`.
+2. In Anki: **Tools → Add-ons → Install from file…** and pick it.
+3. **Restart Anki.**
+
+This installs into `addons21/omnia` (the name in `manifest.json`), not the numeric folder, so
+it never collides with an AnkiWeb copy — which also means Anki will not update it. Use it for
+an offline machine, or to try a build before it is published.
+
+### C · From a clone of this repo (developers)
+```bash
+git clone --recurse-submodules https://github.com/osirisQdt2810/omnia.git
+cd omnia
+python scripts/sync_to_anki.py       # the whole install, one command
 ```
-Restart Anki; edits to the source are picked up on the next Anki start (re-run
-`install_addon.py` if the assembled layout changed). `pytest tests/ -vv` runs the logic tests
-headless (Anki is stubbed).
+Then **restart Anki**. That is it — `sync_to_anki.py` checks your interpreter and the vendored
+deps, reports whether the piper voice weights came down as real files or Git LFS pointers
+(either is fine), and assembles `src/omnia` + `vendor/` + `models/` + `config/` into
+`addons21/omnia`. Re-run it any time; it never touches `user_files/` (your config, secrets, and
+downloaded voices).
+
+The assembled folder is made of **links**, so editing `core/`, `gui/` or `plugins/` in the repo
+changes what Anki loads on its next start — no reinstall. Only the three top-level files
+(`__init__.py`, `envs.py`, `manifest.json`) need a re-run after you edit them, and only on
+Windows (see below).
+
+```bash
+python scripts/sync_to_anki.py --dev          # also create .venv + install pytest/ruff/black/mypy
+python scripts/sync_to_anki.py --copy         # a snapshot instead of links (re-run after edits)
+python scripts/sync_to_anki.py --submodules   # also fetch the companion clippers
+```
+
+> **Windows:** no Developer Mode, no admin shell, nothing to enable. Creating a *symlink* on
+> Windows needs one of those, so where the OS refuses, each directory is placed as a **junction**
+> instead (just as live as a symlink) and the three top-level files are copied. The run prints
+> exactly which items are links and which are snapshots.
+
+> Installing into a **second, throwaway Anki** (a scratch collection you don't mind writing to)?
+> Set `ANKI_BASE` to that base folder for both Anki and the script, and they will agree on where
+> the add-on goes: `ANKI_BASE=/tmp/anki-test python scripts/sync_to_anki.py`.
 
 ---
 
@@ -176,14 +216,16 @@ tab. If you cloned without `--recurse-submodules`, run `git submodule update --i
 
 ## Develop
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements/requirements-dev.txt
-pre-commit install
+python scripts/sync_to_anki.py --dev          # .venv + tooling + hooks + install into Anki
 
-pytest tests/ -vv                 # logic tests (Anki is stubbed)
-python scripts/install_addon.py   # assemble into local Anki for manual testing
-python scripts/build_addon.py     # -> dist/omnia.ankiaddon (excludes the *.onnx voice weights)
+source .venv/bin/activate                     # Windows: .venv\Scripts\activate
+pytest tests/ -vv                             # logic tests (Anki is stubbed)
+python scripts/sync_to_anki.py                # re-assemble after changing the layout
+python scripts/build_addon.py                 # -> dist/omnia.ankiaddon (no *.onnx weights)
 ```
+
+`sync_to_anki.py` is the front door — it calls `install_addon.py`, which does the assembling
+and can still be run directly if that is all you want.
 
 The add-on runs inside Anki's bundled Python (3.13, latest Anki) with PyQt6 — no server, no external
 services. Third-party runtime deps (if any) are vendored, pure-Python, cross-platform.

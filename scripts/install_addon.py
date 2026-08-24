@@ -24,9 +24,14 @@ add-on's ``__init__.py`` resolves its directory — not the file — so the runt
 needs (``vendor``, ``models``, ``config`` templates, ``user_files``) live next to it in the
 assembled folder rather than back in ``src/omnia``.
 
+Where the OS refuses a symlink — Windows without Developer Mode or an elevated shell — each
+item falls back on its own: a directory becomes a **junction** (no privilege needed, and just
+as live as a symlink) and the few top-level files are **copied**, so a stock Windows box gets
+a working install and the run prints which items are snapshots rather than links.
+
 Usage:
-    python scripts/install_addon.py            # symlink-assemble (default)
-    python scripts/install_addon.py --copy     # copy instead of symlink (Windows fallback)
+    python scripts/install_addon.py            # link-assemble (default)
+    python scripts/install_addon.py --copy     # copy everything (a snapshot, not a live view)
 """
 
 from __future__ import annotations
@@ -34,8 +39,10 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from common import enable_utf8_output
 
@@ -85,6 +92,42 @@ def anki_addons_dir() -> Path:
     return anki_base_dir() / "addons21"
 
 
+def _is_link(path: Path) -> bool:
+    """True if ``path`` is a symlink OR a Windows junction — both are unlinked, not walked.
+
+    ``Path.is_symlink()`` alone is not enough: a junction is a reparse point CPython reports as
+    ``is_symlink() == False`` and ``is_dir() == True``, so the clear-out below would take it for
+    a real directory and hand it to :func:`shutil.rmtree` — which refuses ("Cannot call rmtree
+    on a symbolic link") and aborts the run. The install would then be a one-shot: fine the
+    first time, broken on every re-run. ``os.readlink`` succeeds on a junction (3.8+), which is
+    the portable way to ask.
+    """
+    if path.is_symlink():
+        return True
+    try:
+        os.readlink(path)
+    except OSError:
+        return False
+    return True
+
+
+def _remove_link(path: Path) -> None:
+    """Remove a link entry without following it, leaving its target untouched.
+
+    Which call does that depends on what the entry IS, not on what it points at — and
+    ``Path.is_dir()`` answers the second question, because it follows the link. Branching on it
+    sends a POSIX symlink-to-a-directory into ``os.rmdir``, which refuses a symlink outright
+    (``ENOTDIR``) and breaks every re-run of the install on the platform where the dev loop
+    mostly runs.
+    """
+    if not path.is_symlink():
+        os.rmdir(path)  # a Windows junction: a directory entry, so rmdir drops the link
+    elif sys.platform.startswith("win") and path.is_dir():
+        os.rmdir(path)  # a Windows directory symlink: unlink refuses it
+    else:
+        path.unlink()  # a POSIX symlink, dir or file: rmdir would raise ENOTDIR
+
+
 def _clear_prior_assembly(target: Path) -> None:
     """Remove a prior whole-folder symlink or assembled dir, preserving runtime data.
 
@@ -96,15 +139,15 @@ def _clear_prior_assembly(target: Path) -> None:
     Args:
         target: The add-on folder to clear before reassembly.
     """
-    if target.is_symlink():
-        target.unlink()
+    if _is_link(target):
+        _remove_link(target)
         return
     if not target.is_dir():
         return
     for name in (*SOURCE_ITEMS, *SIBLING_LINKS):
         item = target / name
-        if item.is_symlink():
-            item.unlink()
+        if _is_link(item):
+            _remove_link(item)
         elif item.is_dir():
             # A prior --copy run left a real dir; remove it so the link/copy is fresh.
             shutil.rmtree(item)
@@ -112,21 +155,67 @@ def _clear_prior_assembly(target: Path) -> None:
             item.unlink()
 
 
-def _place(src: Path, dest: Path, *, copy: bool) -> None:
-    """Symlink (or copy) ``src`` to ``dest``.
+def _create_junction(src: Path, dest: Path) -> None:
+    """Create a Windows directory junction ``dest`` -> ``src`` (needs no special privilege)."""
+    try:
+        import _winapi
+
+        _winapi.CreateJunction(str(src), str(dest))
+    except (ImportError, AttributeError, OSError):
+        # Fall back to the shell built-in, which does the same thing.
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(dest), str(src)],
+            check=True,
+            capture_output=True,
+        )
+
+
+def _place(src: Path, dest: Path, *, copy: bool) -> Optional[str]:
+    """Symlink (or copy) ``src`` to ``dest``; return a note if it had to fall back.
+
+    On Windows, creating a symlink needs either Developer Mode or an elevated shell; without
+    one, ``os.symlink`` raises ``OSError`` (WinError 1314) and the whole install used to abort.
+    It falls back instead — a **junction** for a directory (no privilege required, and still a
+    live view of the repo, so ``core``/``gui``/``plugins`` edits are picked up exactly as a
+    symlink would) and a **copy** for the handful of top-level files (junctions are
+    directory-only). Copied files are re-copied on every run, so a re-run after editing one is
+    all that is needed.
+
+    The note is RETURNED rather than accumulated in a module global: ``install`` is importable
+    and gets called more than once per process (``sync_to_anki`` is one caller), and a global
+    that a raising ``install`` never clears would report the previous run's fallbacks as this
+    run's.
 
     Args:
         src: The source file or directory.
         dest: The destination path to create.
         copy: Copy instead of symlinking.
+
+    Returns:
+        A one-line description of the fallback used, or None when the symlink (or the
+        requested copy) succeeded outright.
     """
     if copy:
         if src.is_dir():
             shutil.copytree(src, dest)
         else:
             shutil.copy2(src, dest)
-    else:
+        return None
+    try:
         dest.symlink_to(src, target_is_directory=src.is_dir())
+    except FileExistsError:
+        # NOT a missing privilege: the caller failed to clear a prior assembly. Falling back
+        # here would hide that behind a junction attempt and a CalledProcessError from cmd.
+        raise
+    except OSError:
+        if not sys.platform.startswith("win"):
+            raise
+        if src.is_dir():
+            _create_junction(src, dest)
+            return f"{dest.name}/ -> junction (live, same as a symlink)"
+        shutil.copy2(src, dest)
+        return f"{dest.name} -> copied (re-run this script after editing it)"
+    return None
 
 
 def _seed_runtime(target: Path) -> None:
@@ -166,25 +255,40 @@ def install(copy: bool = False, target: Path | None = None) -> Path:
     _clear_prior_assembly(target)
     target.mkdir(parents=True, exist_ok=True)
 
+    # What each item fell back to when the OS refused a symlink, reported at the end of the run
+    # so a Windows dev knows which items are live-linked and which are snapshots.
+    fallbacks: list[str] = []
+
     for name in SOURCE_ITEMS:
         src = ADDON_DIR / name
         if not src.exists():
             raise SystemExit(f"Missing required source item: {src}")
-        _place(src, target / name, copy=copy)
+        note = _place(src, target / name, copy=copy)
+        if note:
+            fallbacks.append(note)
 
     for name, src in SIBLING_LINKS.items():
         if not src.exists():
             print(f"WARNING: optional data dir not found, skipping: {src}")
             continue
-        _place(src, target / name, copy=copy)
+        note = _place(src, target / name, copy=copy)
+        if note:
+            fallbacks.append(note)
 
     for name in RUNTIME_DIRS:
         (target / name).mkdir(parents=True, exist_ok=True)
 
     _seed_runtime(target)
 
-    verb = "Copied" if copy else "Symlinked"
+    verb = "Copied" if copy else ("Assembled" if fallbacks else "Symlinked")
     print(f"{verb} the add-on into {target}")
+    if fallbacks:
+        print(
+            "\nThis OS refused symlinks (Windows needs Developer Mode or an elevated shell),\n"
+            "so these items were placed another way:"
+        )
+        for note in fallbacks:
+            print(f"  - {note}")
     print("Restart Anki, then open Tools → Omnia.")
     return target
 
