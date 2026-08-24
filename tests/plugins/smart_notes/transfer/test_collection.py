@@ -359,3 +359,38 @@ class TestApplyingABundle:
 
         entries = col.get_config(SMART_NOTES_KEY)["note_types"]
         assert [e["note_type"] for e in entries] == ["Vocab"]
+
+
+class TestTheMappingComesFromAnUntrustedPage:
+    def test_an_explicitly_empty_mapping_is_honoured_not_re_derived(self):
+        """Setting every row to "— not imported —" sends {}. Falling back to the suggestion
+        there would import everything the user just declined."""
+        col = FakeCollection()
+        _seed(col)
+
+        plan = plan_import(col, _bundle(col), mode=MODE_OVERWRITE, renames={})
+
+        assert plan.renames == {}
+        assert sorted(plan.unmapped_source_fields) == sorted(SOURCE_FIELDS)
+
+    def test_no_mapping_at_all_still_suggests_one(self):
+        col = FakeCollection()
+        _seed(col)
+
+        plan = plan_import(col, _bundle(col), mode=MODE_OVERWRITE)
+
+        assert plan.renames == {name: name for name in SOURCE_FIELDS}
+
+    def test_a_target_that_is_not_a_field_of_the_note_type_is_refused(self):
+        """The page's <select> constrains this today — which is exactly why leaving it
+        unchecked here would go unnoticed if it ever stopped."""
+        col = FakeCollection()
+        _seed(col)
+
+        with pytest.raises(TransferError, match="not fields of"):
+            plan_import(
+                col,
+                _bundle(col),
+                mode=MODE_OVERWRITE,
+                renames={"Word": "Nonexistent"},
+            )

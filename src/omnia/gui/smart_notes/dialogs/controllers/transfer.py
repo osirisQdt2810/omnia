@@ -171,9 +171,15 @@ class TransferController:
         if mode not in (MODE_CREATE, MODE_CLONE, MODE_OVERWRITE):
             return {"ok": False, "error": f"Unknown import mode {mode!r}."}
         target = str(data.get("target_name", "")).strip() or bundle.note_type_name
-        renames = data.get("renames") or None
-        if renames is not None:
-            renames = {str(k): str(v) for k, v in dict(renames).items() if v}
+        # Absent means "decide for me"; an EMPTY object means "none of them" — the user
+        # set every row to "not imported". Collapsing the two with ``or None`` would
+        # import everything they just declined.
+        raw_renames = data.get("renames")
+        renames = (
+            None
+            if raw_renames is None
+            else {str(k): str(v) for k, v in dict(raw_renames).items() if v}
+        )
 
         col = self._collection()
         loader = self._tool_loader()
@@ -208,6 +214,7 @@ class TransferController:
             "unchecked_tool_params": (
                 list(report.unchecked_tool_params) if report else []
             ),
+            "dropped_tool_params": (list(report.dropped_tool_params) if report else []),
         }
 
     # -- file dialogs --------------------------------------------------------------------

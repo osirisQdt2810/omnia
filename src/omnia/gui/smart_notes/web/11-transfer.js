@@ -279,6 +279,12 @@
       lines.push("Dropped rules with no field here: " + escapeHtml(out.dropped_fields.join(", ")));
     (out.dropped_dependencies || []).length &&
       lines.push("Dropped dependency edges: " + escapeHtml(out.dropped_dependencies.join(", ")));
+    (out.dropped_tool_params || []).length &&
+      lines.push(
+        "<span class='sn-import-warn'>These tool parameters name a field with no " +
+        "counterpart here, so those tools will read a field that does not exist: " +
+        escapeHtml(out.dropped_tool_params.join("; ")) + "</span>"
+      );
     (out.unchecked_tool_params || []).length &&
       lines.push(
         "Check these tool parameters by hand — the tool did not declare them as fields: " +

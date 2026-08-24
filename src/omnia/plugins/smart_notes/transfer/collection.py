@@ -247,16 +247,29 @@ def plan_import(
         target_fields = [
             str(f.get("name", "")) for f in (existing or {}).get("flds", [])
         ]
+        # ``is None``, not truthiness: setting every row to "not imported" sends an EMPTY
+        # mapping, and that is a decision. Falling back to the suggestion there would import
+        # everything the user had just declined.
         mapping = (
-            dict(renames) if renames else suggest_renames(source_fields, target_fields)
+            dict(renames)
+            if renames is not None
+            else suggest_renames(source_fields, target_fields)
         )
     else:
         target_fields = source_fields
         mapping = {name: name for name in source_fields}
 
-    # Two source fields onto one target would write two rules with the same ``field``. The
-    # page refuses it, but the page is the UNTRUSTED side of a pycmd boundary — validate here
-    # too, or a hand-built call silently corrupts the configuration.
+    # The page is the UNTRUSTED side of a pycmd boundary, so both of its guarantees about the
+    # mapping are re-checked here: that no two source fields collapse onto one target, and
+    # that every target is a field the note type actually has. Its <select> constrains the
+    # second today, which is exactly why leaving it unchecked would go unnoticed if it ever
+    # stopped doing so.
+    unknown = sorted({t for t in mapping.values() if t and t not in set(target_fields)})
+    if unknown and mode == MODE_OVERWRITE:
+        raise TransferError(
+            "These are not fields of " f"{wanted!r}: " + ", ".join(unknown)
+        )
+    # Two source fields onto one target would write two rules with the same ``field``.
     collapsed = [
         target
         for target in {t for t in mapping.values() if t}

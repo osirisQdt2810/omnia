@@ -60,6 +60,11 @@ class RemapReport:
     dropped_dependencies: list[str] = dataclass_field(default_factory=list)
     unresolved_prompt_refs: list[str] = dataclass_field(default_factory=list)
     unchecked_tool_params: list[str] = dataclass_field(default_factory=list)
+    #: Params the tool DID declare as field references, naming a field the mapping gives no
+    #: counterpart to. The rule that owns them survives (its own field mapped), so unlike a
+    #: dropped rule or edge nothing else would tell the user the tool is now reading a field
+    #: this note type does not have.
+    dropped_tool_params: list[str] = dataclass_field(default_factory=list)
 
     @property
     def has_warnings(self) -> bool:
@@ -68,6 +73,7 @@ class RemapReport:
             or self.dropped_dependencies
             or self.unresolved_prompt_refs
             or self.unchecked_tool_params
+            or self.dropped_tool_params
         )
 
 
@@ -110,6 +116,8 @@ def _remap_tool(
     renames: Mapping[str, str],
     owner: str,
     report: RemapReport,
+    *,
+    keep_unmapped: bool = False,
 ) -> FieldToolConfig:
     """Rewrite the field-naming params of one tool in a chain."""
     referenced, declares = _tool_referenced(spec)
@@ -122,13 +130,19 @@ def _remap_tool(
     declared = {_fold(name) for name in referenced}
     moves = {old: new for old, new in renames.items() if old != new}
     folded_moves = {_fold(old): new for old, new in moves.items()}
+    # Every name the mapping accounts for, either side. A declared param naming something
+    # OUTSIDE this set has no counterpart on the target note type at all.
+    accounted = {_fold(name) for name in renames} | {
+        _fold(name) for name in renames.values()
+    }
     params: dict[str, Any] = {}
     for key, value in spec.params.items():
         if not isinstance(value, str):
             params[key] = value
             continue
         moved_to = moves.get(value, folded_moves.get(_fold(value)))
-        if moved_to is not None and _fold(value) in declared:
+        is_declared = _fold(value) in declared
+        if moved_to is not None and is_declared:
             params[key] = moved_to
             continue
         params[key] = value
@@ -140,6 +154,17 @@ def _remap_tool(
             report.unchecked_tool_params.append(
                 f"{owner}: {spec.tool}.{key} = {value!r}"
             )
+        elif (
+            moved_to is None
+            and is_declared
+            and not keep_unmapped
+            and _fold(value) not in accounted
+        ):
+            # The TOOL says this param names a field, and the mapping gives that field no
+            # counterpart. The rule itself survives (its own field mapped), so nothing else
+            # would mention it: no dropped rule, no dropped edge. Since ``declared`` comes
+            # from the tool, this cannot fire on a param that merely holds a literal.
+            report.dropped_tool_params.append(f"{owner}: {spec.tool}.{key} = {value!r}")
     return FieldToolConfig(tool=spec.tool, params=params)
 
 
@@ -198,7 +223,10 @@ def remap_note_type_config(
             if ref in known and ref not in renames.values():
                 report.unresolved_prompt_refs.append(f"{rule.field}: {{{{{ref}}}}}")
 
-        tools = [_remap_tool(spec, renames, rule.field, report) for spec in rule.tools]
+        tools = [
+            _remap_tool(spec, renames, rule.field, report, keep_unmapped=keep_unmapped)
+            for spec in rule.tools
+        ]
 
         kept.append(
             rule.copy(

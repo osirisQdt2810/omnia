@@ -306,3 +306,77 @@ class TestAToolParamWrittenLooselyIsStillTheSameField:
 
         assert out.fields[0].tools[0].params["sentence_field"] == "Example"
         assert report.unchecked_tool_params == []
+
+    def test_a_tool_param_naming_a_dropped_field_is_reported(self):
+        """The rule survives (its own field mapped), so no dropped-rule or dropped-edge line
+        would mention it — and the tool is now reading a field this note type does not have.
+        """
+        config = _config(
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    tools=[
+                        FieldToolConfig(
+                            tool="cloze",
+                            params={"sentence_field": "Example", "word_field": "Word"},
+                        )
+                    ],
+                )
+            ]
+        )
+
+        out, report = remap_note_type_config(
+            config, {"Word": "Term", "Definition": "Meaning"}
+        )
+
+        assert out.fields[0].tools[0].params["sentence_field"] == "Example"
+        assert report.dropped_tool_params == [
+            "Definition: cloze.sentence_field = 'Example'"
+        ]
+        assert report.has_warnings
+
+    def test_a_param_holding_a_literal_is_not_reported(self):
+        """``declared`` comes from the tool itself, so a mode like ``mask="none"`` cannot
+        trip this even though "none" has no counterpart in the mapping."""
+        config = _config(
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    tools=[
+                        FieldToolConfig(
+                            tool="cloze",
+                            params={
+                                "sentence_field": "Example",
+                                "word_field": "Word",
+                                "mask": "none",
+                            },
+                        )
+                    ],
+                )
+            ]
+        )
+
+        _out, report = remap_note_type_config(config, RENAMES)
+
+        assert report.dropped_tool_params == []
+
+    def test_keep_unmapped_does_not_report_it(self):
+        """Nothing was dropped: the field it names stays exactly as it was."""
+        config = _config(
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    tools=[
+                        FieldToolConfig(
+                            tool="cloze", params={"sentence_field": "Example"}
+                        )
+                    ],
+                )
+            ]
+        )
+
+        _out, report = remap_note_type_config(
+            config, {"Definition": "Meaning"}, keep_unmapped=True
+        )
+
+        assert report.dropped_tool_params == []
