@@ -86,6 +86,46 @@ class TestLookupEndpoint:
         assert "secret internal detail" not in json.dumps(body)
 
 
+class TestAClientThatHangsUp:
+    """A disconnect mid-response must not reach stderr — Anki turns stderr into its ERROR
+    DIALOG, so a clipper the user simply closes would interrupt their review."""
+
+    def test_disconnect_mid_response_is_not_reported_to_stderr(
+        self, service_factory, capfd
+    ):
+        ready = threading.Event()
+
+        def slow_lookup(word: str) -> dict:
+            ready.set()
+            # Long enough that the client below is gone before the write starts.
+            threading.Event().wait(0.6)
+            return {"word": word, "cards": [{"title": "x" * 5000}]}
+
+        _service, port = service_factory(slow_lookup)
+
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(
+            b"GET /lookup?word=gone HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        assert ready.wait(5), "the handler never reached the lookup"
+        sock.close()  # hang up while the server is still building the answer
+
+        # The server thread needs a moment to finish and (previously) blow up.
+        threading.Event().wait(1.5)
+        assert "Traceback" not in capfd.readouterr().err
+
+    def test_the_service_still_serves_the_next_request(self, service_factory):
+        _service, port = service_factory(lambda word: {"word": word})
+
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"GET /lookup?word=first HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        sock.close()
+
+        status, body = _get(port, "/lookup?word=second")
+        assert (status, body) == (200, {"word": "second"})
+
+
 class TestMainThreadMarshalling:
     """Collection reads must happen on Qt's main thread, not the HTTP worker thread."""
 
