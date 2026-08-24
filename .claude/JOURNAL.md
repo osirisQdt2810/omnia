@@ -71,8 +71,44 @@ Format for each entry:
   plain `pytest tests/` reports **341 errors that have nothing to do with Omnia**. Point `TMP`,
   `TEMP` and `TMPDIR` at a writable dir (or delete those two from an elevated shell).
 
+### The pipeline earned its keep — it caught a regression the live testing did not
+Three PRs, all merged by `github-actions[bot]` with no human click: **#55** (lookup service)
+and **#56** (follow-ups) approved first time; **#54** came back **BLOCKING**, correctly.
+
+The Windows install fix had traded a Windows first-run failure for a **macOS/Linux re-run**
+failure. `_remove_link` branched on `path.is_dir()`, which FOLLOWS the link — harmless on
+Windows (junction and dir-symlink both want `rmdir`) and fatal on POSIX, where `rmdir` refuses
+a symlink with `ENOTDIR`. The second `install_addon.py` would have died clearing the assembly
+the first one made. **All ten CI legs were green with the defect in**, because the only test
+that cleared a link was `skipif(not win)` and the rest stubbed placement out — a green matrix
+across three OSes proves nothing about a branch no test on those OSes enters.
+
+The fix after review is *simpler* than what it replaced: try `rmdir`, fall back to `unlink`.
+No `sys.platform` in the helper at all, and it also handles a dangling directory symlink,
+which the predicted-branch version got wrong too (#56).
+
+### Lessons
+- **A platform-specific fix needs a test that runs where you are not.** The durable shape is
+  two layers: monkeypatch the decision (runs everywhere, including a box that cannot create a
+  symlink at all — which is how the regression became provable on the machine that caused it),
+  plus the real-filesystem test skipped only where the OS refuses.
+- **Prefer attempting the operation over predicting which one applies.** Every predicate about
+  a link answers a question about its TARGET; the call itself answers the one you asked.
+- **`pgrep -f <name>` will match the tool doing the asking** when the tool or its path carries
+  that name — `sync_to_anki.py` matched itself, so the script told every POSIX user to quit an
+  Anki they had not opened.
+- **No `gh` on this box is not a reason to hand PR creation back to the user.** The token is in
+  Git Credential Manager: `git credential fill` + the REST API creates the PR and attaches
+  `automerge`. See [[omnia-ci-auto-merge-pipeline]].
+- **A SHA carries two sets of check runs** — the `push`-triggered workflow (cancelled by the
+  concurrency group) and the `pull_request` one that actually gates. Reading both makes a
+  healthy PR look like it is failing.
+
 ### Next up
-- Merge the two PRs (pushed, not merged).
+- Three cosmetic items the #56 review raised and deliberately did not block on, for whoever
+  next touches those files: `pgrep -x` is case-sensitive (a bundle named `Anki` falls through
+  to the launcher probe); `_remove_link`'s bare `except OSError` reports the second error when
+  a junction is locked, not the first; `_POSIX_ANKI_PROBES` is a tuple of mutable lists.
 - `src/omnia/manifest.json` still declares `min_point_version: 50` while the README and the
   AnkiWeb listing both say 25.09+. An `.ankiaddon` install therefore accepts an Anki far older
   than the code supports; the AnkiWeb route is the only one enforcing 250900.
