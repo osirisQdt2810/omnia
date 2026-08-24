@@ -1053,3 +1053,34 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   filter: blur(1px) saturate(0.45); opacity: 0.3; pointer-events: none;
   transition: filter 0.25s ease, opacity 0.25s ease;
 }
+
+/* --- Import a note type -------------------------------------------------------------
+   The mapping table is the reason this modal is wider than the others: a field name like
+   "Definition (audio filename)" beside a select of the same is what the user is reading. */
+.sn-import-card { max-width: 720px; }
+.sn-import-body { max-height: 62vh; overflow-y: auto; padding-right: 4px; }
+.sn-import-summary { margin-bottom: 12px; }
+.sn-import-name { font-size: 15px; font-weight: 700; }
+.sn-import-meta { color: var(--sn-muted); font-size: 12px; line-height: 1.6; margin-top: 2px; }
+.sn-import-note { color: var(--sn-muted); font-size: 12px; margin: 6px 0; }
+.sn-import-warn { color: var(--sn-danger, #c0392b); }
+.sn-import-err { color: var(--sn-danger, #c0392b); font-size: 12px; margin-top: 4px; }
+.sn-import-choice {
+  display: flex; gap: 8px; align-items: flex-start;
+  margin: 10px 0 4px; font-size: 13px; line-height: 1.5; cursor: pointer;
+}
+.sn-import-choice input { margin-top: 3px; }
+.sn-import-indent { margin: 0 0 8px 24px; }
+.sn-import-map { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sn-import-map th {
+  text-align: left; font-weight: 600; color: var(--sn-muted);
+  padding: 4px 6px; border-bottom: 1px solid var(--sn-border);
+}
+.sn-import-map td { padding: 3px 6px; vertical-align: middle; }
+.sn-import-map td:first-child { width: 48%; word-break: break-word; }
+.sn-import-map select { width: 100%; }
+.sn-import-result {
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+  background: var(--sn-soft, rgba(127, 127, 127, 0.1));
+  font-size: 12px; line-height: 1.7;
+}
