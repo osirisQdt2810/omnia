@@ -226,8 +226,7 @@ def apply_auto_smart(
                 )
 
                 refs = {
-                    ref.strip().lower()
-                    for ref in extract_field_refs(suggestion.prompt)
+                    ref.strip().lower() for ref in extract_field_refs(suggestion.prompt)
                 }
                 kept = [
                     FieldDep(field=dep.field, kind=dep.kind, auto=True)
@@ -287,8 +286,8 @@ def _kind_output_clause(kind: str) -> str:
             " This is an IMAGE field: the prompt you output IS the picture description, sent "
             "VERBATIM to an image model, so it must READ LIKE A SCENE CAPTION and START DIRECTLY "
             'with the visual description — e.g. "A photorealistic close-up photo of {{Word}}: '
-            '<scene grounded in {{Definition}}>, soft natural lighting, one clear subject, no '
-            'text." Even if the rough request is phrased as \'write/generate an image prompt for '
+            "<scene grounded in {{Definition}}>, soft natural lighting, one clear subject, no "
+            "text.\" Even if the rough request is phrased as 'write/generate an image prompt for "
             "DALL-E/Midjourney', treat that as a MISTAKE and output the description itself. Your "
             "output must contain NONE of: 'write a prompt', 'image prompt', 'text-to-image', "
             "'for an/the image model', 'DALL-E', 'Midjourney', 'Stable Diffusion', 'output only', "
@@ -334,7 +333,9 @@ def build_improve_prompt_message(
         f'"""\n{rough.strip()}\n"""\n\n'
         "Rewrite it into ONE complete, production-grade generation prompt that follows your "
         "rules. Decide for yourself which fields the prompt should reference and how to "
-        "self-guard when they are empty." + _kind_output_clause(kind) + " Output ONLY the "
+        "self-guard when they are empty."
+        + _kind_output_clause(kind)
+        + " Output ONLY the "
         "prompt text."
     )
 
