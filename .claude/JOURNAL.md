@@ -24,6 +24,53 @@ Format for each entry:
 
 ---
 
+## 2026-08-25 (Monday)
+
+### Done today
+- **Export / Import of one note type's whole Smart Notes setup** (`feat/smart-notes-transfer`,
+  PR #57) — the macOS→Windows move, made repeatable. Bundle format + pure remap + plan/apply on
+  the collection + the two footer buttons. Overwrite maps the file's fields onto the target's
+  through a table the user edits; clone makes a second note type instead.
+- **Two clipper bugs fixed, both found by running the thing rather than reading it:**
+  - The web clipper's last step **never opened the page it promised**. Chrome silently DROPS a
+    `chrome://` URL passed on the command line and opens the new-tab page. It now writes a local
+    finish-install page — folder, address, copy buttons, the profile it landed in — and opens
+    THAT, since `file://` is accepted.
+  - "Stuck at Omnia installing…" was `QueryOp.with_progress`' single fixed label sitting there
+    for the minutes an install takes. `anki_compat.update_progress` retitles it per step.
+- **Four live harnesses now, all green on Windows 11 / Anki 26.8.1 AND macOS 15.6 / Anki
+  25.09.2**: `run_transfer_smoke.py` (16 checks, real Qt + real collection), `run_smoke.py` (14),
+  and two new — `run_web_install_smoke.py` (9, real Chrome over CDP, with a hand-rolled
+  WebSocket because Anki ships no websocket package) and `run_progress_smoke.py` (5, against a
+  real `ProgressManager`).
+- **PR #57 took five review rounds, each finding a real defect**, all in the same region: what an
+  import is allowed to do to a collection that already has a configuration. In order — an
+  imported tool was written but never REGISTERED; a declared tool param the mapping stranded was
+  kept silently; a carried tool's code RAN before the user had seen a line of it; overwrite
+  destroyed the target's own unmapped rules while promising not to; and the fix for that covered
+  `fields` only, leaving `base_field`, `decks` and `node_positions` still clobbered.
+
+### Gotchas worth remembering
+- **Chrome will not open its own `chrome://` pages from argv** — not with the trailing slash, not
+  without, not `--new-window`, not `--app=`, and `chrome://settings/` behaves the same. `https://`
+  and `file://` in the same position open normally, so it is a scheme filter, not a launch bug.
+  Measured on Chrome 152, both platforms. `--profile-directory` DOES work, and does land in the
+  profile Chrome last used (`Local State` → `profile.last_used`).
+- **A Windows path inside a JS string literal is a broken escape.** `C:\Users\…` written naively
+  kills the whole script — the page's only buttons stop working, on the one platform whose paths
+  contain backslashes. Read what to copy back out of the DOM instead. The throwaway patch scripts
+  writing that very fix hit the same escape three times, in Python.
+- **Anki's `ProgressManager.update` needs `mw.inMainThread()` and a dialog that has actually been
+  SHOWN** (~600ms after `start`). Since `update_progress` suppresses exceptions by design, both
+  look exactly like "the retitle does not work" — harness artefacts, not product bugs.
+- **`decks=[]` means ALL decks, not "no restriction carried".** Any merge that treats an empty
+  list as "nothing to take" silently widens a user's deck scope, turning on generation, and the
+  LLM spend with it, where they had deliberately excluded it.
+- **A cleared `base_field` keeps rules alive but inert**: `compile_field_rule` gives a
+  prompt-less rule `source_field=""`, which then generates from nothing, with no warning. Weighing
+  "drop it" against "keep it", kept-but-inert is the worse of the two — dropped is at least
+  reported.
+
 ## 2026-08-24 (Sunday)
 
 ### Done today
