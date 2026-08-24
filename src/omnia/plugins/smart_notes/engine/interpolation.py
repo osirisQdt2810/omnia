@@ -8,6 +8,7 @@ values, while deliberately leaving Anki cloze deletions (``{{c1::...}}``) untouc
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 from omnia.core.providers.llm.base import PromptParts
 
@@ -22,6 +23,37 @@ _CLOZE_RE = re.compile(r"\{\{c\d+::")
 def extract_field_refs(prompt: str) -> list[str]:
     """Return the field names referenced as ``{{Field}}`` in ``prompt``."""
     return [match.group(1).strip() for match in _FIELD_RE.finditer(prompt)]
+
+
+def rename_field_refs(prompt: str, renames: Mapping[str, str]) -> str:
+    """Rewrite ``{{Old}}`` placeholders to ``{{New}}`` per ``renames``, leaving the rest alone.
+
+    Lives beside :func:`extract_field_refs` so both read the SAME placeholder definition: a
+    rename that used its own regex would eventually disagree about what counts as a reference
+    and silently rewrite an Anki cloze deletion (``{{c1::…}}``) or miss a spaced ``{{ Field }}``.
+
+    A prompt is one of the places a field name is written down — the others being the rule's
+    own name, ``base_field``, ``depends_on``, ``node_positions`` and a tool's params. Renaming
+    a field without rewriting its prompts leaves references pointing at a field that no longer
+    exists, which reads as "generation quietly stopped using my sentence".
+
+    Args:
+        prompt: The prompt template.
+        renames: ``{old field name: new field name}``. Names not present are left as they are.
+
+    Returns:
+        The prompt with its field references rewritten (whitespace inside the braces is
+        normalised away for a ref that IS renamed, and preserved for one that is not).
+    """
+    if not prompt or not renames:
+        return prompt
+
+    def _swap(match: re.Match[str]) -> str:
+        name = match.group(1).strip()
+        new = renames.get(name)
+        return match.group(0) if new is None else "{{" + new + "}}"
+
+    return _FIELD_RE.sub(_swap, prompt)
 
 
 def validate_brace_syntax(prompt: str) -> list[str]:

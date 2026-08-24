@@ -97,11 +97,16 @@ class NativeRuntimeController:
         Qt (a native segfault, not a catchable Python exception). ``_push_native_done`` needs no
         such marshalling — it runs from QueryOp's success/failure, already on the main thread.
         """
-        anki_compat.run_on_main(
-            lambda: self._ctx.eval_js(
+
+        def _show() -> None:
+            self._ctx.eval_js(
                 f"window.__snNativeRuntimeProgress({json.dumps(name)}, {json.dumps(message)});"
             )
-        )
+            # The same message into the modal covering the page: this install creates a venv
+            # and pip-installs a runtime, so a fixed label would sit unchanged for minutes.
+            anki_compat.update_progress(message)
+
+        anki_compat.run_on_main(_show)
 
     def _push_native_done(self, name: str, installed: bool, error: str = "") -> None:
         """Send a runtime install outcome to ``window.__snNativeRuntimeDone``."""

@@ -106,6 +106,8 @@
       <button id="sn-auto" class="sn-btn sn-btn-magic" title="Draft a prompt + type for every Generate-on, unlocked field using the default model">✨ Auto-prompt</button>
       <button id="sn-improve-all" class="sn-btn sn-btn-magic">✦ Improve all prompts</button>
       <button id="sn-options" class="sn-btn" title="Smart Notes generation options">⚙ Options</button>
+      <button id="sn-export" class="sn-btn" title="Save this note type's Smart Notes setup to a file">⤓ Export</button>
+      <button id="sn-import" class="sn-btn" title="Load a note type's Smart Notes setup from a file">⤒ Import</button>
       <span id="sn-msg" class="sn-msg"></span>
     </div>
     <div class="sn-footer-right">
@@ -210,6 +212,69 @@
     <div id="sn-autovoices-list" class="sn-autovoices-list"></div>
     <div class="sn-modal-foot">
       <button id="sn-autovoices-done" class="sn-btn sn-btn-primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<div id="sn-import-modal" class="sn-modal" hidden>
+  <div class="sn-modal-card sn-import-card">
+    <div class="sn-modal-head">
+      <div class="sn-modal-title">Import a note type</div>
+      <button id="sn-import-close" class="sn-iconbtn" title="Close">✕</button>
+    </div>
+    <div class="sn-import-body">
+      <div id="sn-import-summary" class="sn-import-summary"></div>
+
+      <div id="sn-import-collision" hidden>
+        <div class="sn-import-note">
+          This collection already has a note type with that name. Choose what to do with it.
+        </div>
+        <label class="sn-import-choice">
+          <input type="radio" name="sn-import-mode" value="clone" checked>
+          <span><b>Import as a new note type</b> — leaves the existing one untouched.</span>
+        </label>
+        <div class="sn-import-indent">
+          <input id="sn-import-newname" class="sn-input" type="text" placeholder="New note type name">
+          <div id="sn-import-name-err" class="sn-import-err" hidden></div>
+        </div>
+        <label class="sn-import-choice">
+          <input type="radio" name="sn-import-mode" value="overwrite">
+          <span><b>Use the existing note type</b> — map each incoming field onto one of its
+          fields. Prompts, dependency edges, graph positions and tool parameters are rewritten
+          to match.</span>
+        </label>
+        <div id="sn-import-mapping" class="sn-import-indent" hidden>
+          <table class="sn-import-map">
+            <thead><tr><th>Field in the file</th><th>Field here</th></tr></thead>
+            <tbody id="sn-import-map-rows"></tbody>
+          </table>
+          <div id="sn-import-map-note" class="sn-import-note"></div>
+        </div>
+      </div>
+
+      <div id="sn-import-tools" class="sn-import-tools" hidden>
+        <div class="sn-import-tools-head">This file carries tool code</div>
+        <div class="sn-import-note">
+          A tool is Python that Omnia runs on your notes. Read each one before allowing it —
+          this is the same review the Tools tab asks for, and it is the only safety boundary
+          there is. Anything you leave unticked is simply not installed.
+        </div>
+        <div id="sn-import-tools-list"></div>
+      </div>
+
+      <!-- What importing WOULD do, from the same plan the Import button will apply. Shown
+           here, above the button, because a warning that arrives after the write is not a
+           warning. -->
+      <div id="sn-import-preview" class="sn-import-preview" hidden>
+        <div class="sn-import-preview-head">If you import now</div>
+        <ul id="sn-import-preview-list"></ul>
+      </div>
+
+      <div id="sn-import-result" class="sn-import-result" hidden></div>
+    </div>
+    <div class="sn-modal-foot">
+      <button id="sn-import-cancel" class="sn-btn">Cancel</button>
+      <button id="sn-import-go" class="sn-btn sn-btn-primary">Import</button>
     </div>
   </div>
 </div>

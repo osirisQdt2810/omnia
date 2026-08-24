@@ -7,6 +7,7 @@ here keeps features free of ``hasattr`` checks.
 
 from __future__ import annotations
 
+import contextlib
 import random
 from collections.abc import Callable
 from typing import Any, Optional, TypeVar
@@ -96,6 +97,22 @@ def run_in_background(
     if on_failure is not None and hasattr(query, "failure"):
         query = query.failure(on_failure)
     query.run_in_background()
+
+
+def update_progress(label: str) -> None:
+    """Retitle the progress dialog a :func:`run_in_background` label put up. Main thread only.
+
+    ``QueryOp.with_progress`` takes ONE label and shows it for the whole run, so a job that
+    takes minutes sits behind a single unchanging line — which reads as hung, not as working.
+    Every long job already produces step-by-step progress; this is what lets that progress
+    reach the modal covering the page it would otherwise be written to.
+
+    Safe when no progress dialog is up (Anki's manager no-ops) and when Anki's API differs —
+    a cosmetic label must never be able to fail an operation that is otherwise succeeding.
+    """
+    # Cosmetic only: never worth failing an operation that is otherwise succeeding.
+    with contextlib.suppress(Exception):
+        main_window().progress.update(label=label)
 
 
 def run_after(ms: int, callback: Callable[[], None]) -> Any:

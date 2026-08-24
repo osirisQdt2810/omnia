@@ -117,7 +117,9 @@ class WordLookupPlugin(FeaturePlugin):
         note_ids = anki_compat.find_note_ids(query)
         limit = max(1, int(settings.max_results))
         cards: list[LookupCard] = []
-        for nid in note_ids[: limit * 3]:  # over-read a little so ranking has room to reorder
+        for nid in note_ids[
+            : limit * 3
+        ]:  # over-read a little so ranking has room to reorder
             card = self._card_for_note(nid, settings, word)
             if card is not None:
                 cards.append(card)
@@ -144,7 +146,9 @@ class WordLookupPlugin(FeaturePlugin):
         """
         try:
             note = anki_compat.get_note(nid)
-            note_type = self._note_type_name(note)  # needed for the per-note-type field list
+            note_type = self._note_type_name(
+                note
+            )  # needed for the per-note-type field list
             # items() preserves the NOTE TYPE's field order, which the triage uses as its
             # relevance signal — never sort or re-key this.
             ordered = [(name, str(value)) for name, value in note.items()]

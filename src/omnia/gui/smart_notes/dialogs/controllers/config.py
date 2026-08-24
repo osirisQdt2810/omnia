@@ -366,16 +366,24 @@ class ConfigController:
         )
 
     def _push_install_progress(self, key: str, message: str) -> None:
-        """Send an install progress line to ``window.__snClipperInstallProgress`` (main thread).
+        """Send an install progress line to the page AND to the modal covering it (main thread).
 
         MUST marshal to the Qt main thread: this runs on the ``run_in_background`` worker thread,
         and touching the WebView off-thread hard-crashes Qt (see the native-runtime controller).
+
+        The modal matters as much as the page. ``run_in_background``'s label is fixed for the
+        whole run, and a clipper install is minutes of cloning, several hundred MB of pip and a
+        PyInstaller freeze — so the user watched one unchanging line, with these very messages
+        being written to the page the modal was covering, and reasonably read it as hung.
         """
-        anki_compat.run_on_main(
-            lambda: self._ctx.eval_js(
+
+        def _show() -> None:
+            self._ctx.eval_js(
                 f"window.__snClipperInstallProgress({json.dumps(key)}, {json.dumps(message)});"
             )
-        )
+            anki_compat.update_progress(message)
+
+        anki_compat.run_on_main(_show)
 
     def _push_install_done(self, key: str, *, ok: bool, error: str = "") -> None:
         """Send the install outcome to ``window.__snClipperInstallDone`` (already on main)."""

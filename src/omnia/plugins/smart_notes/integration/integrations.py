@@ -32,7 +32,7 @@ class Integration:
         repo_url: Public git URL the one-click installer clones from (empty = not installable).
         install_kind: How the Integrations "Install" button installs it —
             ``"desktop"`` (clone → venv → build → install the app → open),
-            ``"web"`` (clone → open ``chrome://extensions`` + reveal the folder to load unpacked;
+            ``"web"`` (clone → clipboard + open a finish-install page for the manual load-unpacked;
             Chrome blocks true programmatic install), or ``""`` (no Install button).
     """
 

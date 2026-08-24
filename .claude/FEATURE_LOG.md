@@ -21,6 +21,79 @@ Format for each entry:
 
 ---
 
+## 2026-08-25 — Export / Import one note type's Smart Notes setup
+
+**What:** a note type's whole Smart Notes configuration can be written to a file and imported
+into another collection. A bundle carries four things, because three of them do not travel with
+the collection config and a config-only copy imports cleanly and then fails to generate: the
+note type schema, the per-field rules (prompts, tool chains, providers, the dependency graph),
+the SOURCE of every `user:` tool the chains name, and the decks as NAMES (ids are
+per-collection). On import, a name that already exists offers two answers — a second note type
+under a new name, or the existing one with a field mapping — and import is two round trips, so
+what would be rewritten or dropped is shown before anything is written. Two footer buttons in
+the Smart Notes dialog; `tests/smoke/run_transfer_smoke.py` drives them against real Qt.
+
+**Why:** settings sync, but only inside one AnkiWeb account and only as a whole. Carrying ONE
+note type to another machine, profile or person had no route at all. The case that prompted it:
+a 35-field vocabulary note type with 34 rules, a 60-edge graph and a user-authored tool, on a
+macOS machine, needed on a Windows one.
+
+**Files:** `src/omnia/plugins/smart_notes/transfer/{bundle,remap,collection}.py` (new),
+`src/omnia/gui/smart_notes/dialogs/controllers/transfer.py` (new),
+`src/omnia/gui/smart_notes/web/11-transfer.js` + `page.html` + `page.css`,
+`engine/interpolation.py` (`rename_field_refs`), `core/anki_compat.py` (`update_progress`),
+`tests/plugins/smart_notes/transfer/`, `tests/smoke/run_transfer_smoke.py`.
+
+**How to verify:**
+```
+pytest tests/plugins/smart_notes/transfer/ -q          # 64 unit tests, headless
+python tests/smoke/run_transfer_smoke.py               # 12 checks, real Qt + real collection
+```
+The smoke script does NOT go through `aqt.run()` — Anki's single-instance key is
+`anki{checksum(username)}`, the USER and not the base folder, so a second Anki cannot run beside
+your own. See `run_smoke.py` for the per-platform interpreter invocation.
+
+**Safety:** a bundle can come from another person, and a carried ``user:`` tool is Python
+that Omnia executes. Importing therefore installs NOTHING by default: the modal lists each
+carried tool with ``risky_operations`` and its full source behind a toggle, and only ticked
+tools are written and loaded. This is the same read-and-run review the Tools tab requires,
+and it is the add-on's only real boundary — the import allowlist stopped being one when it
+had to permit ``os`` and ``subprocess``. An unticked tool is reported, and the chains using
+it simply do not run, which is the already-handled `missing tool` path.
+
+**Overwrite keeps what it was not asked to replace** — and that covers the WHOLE config,
+not just the rules. The mapping table is the user's statement of what the file gets to
+write; a rule on a target field the mapping never names is work they never offered up, so
+it survives. So do `base_field` when the file's has no counterpart here (a cleared base
+makes every prompt-less rule generate from nothing — kept but inert), `decks` when the file
+names none that resolve (`[]` means ALL decks, so taking the file's empty list switches
+generation on in decks the user excluded), `node_positions`, and any key only a newer Omnia
+knows (ADR-010). The alternative — replacing the whole config
+entry — destroyed local rules silently, and the warning above the button said the opposite.
+
+**The modal previews the real plan.** Every change of mode, mapping, name or tool approval
+calls `preview_import`, which runs the SAME `plan_import` the apply runs and shows its
+warnings above the Import button. A second, hand-written description of what would happen is
+exactly the thing that drifts from what does.
+
+**Notes / rollback:** the hard part is that a field name is written down in SIX places — the
+rule, `base_field`, `depends_on`, `node_positions`, the prompt's `{{refs}}` and a tool's params
+— and a rename reaching five of them yields a config that still loads, still renders, and is
+quietly wrong. Tool params have no fixed key to rewrite (`sentence_field`, `source_field`,
+`word_field`, whatever a user tool invented), so `remap` asks each tool through
+`Tool.referenced_fields`, the same contract the dependency graph uses; a tool that declares
+nothing is REPORTED rather than guessed at. Five review rounds each found a real defect, all in the same
+region: an imported `user:` tool was written to disk but never REGISTERED, so `get_tool` returned
+None and the remap left its params on the old names (fixed by write-then-load before the remap);
+a declared param naming a field with no counterpart was silently kept (now
+`dropped_tool_params`); the install itself executed a stranger's code unattended (now the
+per-tool approval above); overwrite destroyed the target's own unmapped rules while
+promising not to (now the merge + the pre-apply preview); and that merge then covered only
+`fields`, so the base field and deck scope were still clobbered. Rollback is removing the two
+buttons — the format is a file, nothing migrates.
+
+---
+
 ## 2026-08-22 — Generation defaults from a live benchmark: 8 workers, K stays 10
 
 **What:** `max_concurrent_generations` ships at **8** instead of 1;

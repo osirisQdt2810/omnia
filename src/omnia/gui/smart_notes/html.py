@@ -115,6 +115,7 @@ _PAGE_JS_PARTS = [
     "08-genpreview.js",
     "09-tools.js",
     "10-usertools.js",
+    "11-transfer.js",
     "07-init.js",
 ]
 

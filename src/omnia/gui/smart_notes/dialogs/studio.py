@@ -37,6 +37,7 @@ from omnia.gui.smart_notes.dialogs.controllers import (
     ConfigController,
     GraphController,
     NativeRuntimeController,
+    TransferController,
     UserToolsController,
 )
 from omnia.gui.smart_notes.html import build_smart_notes_html
@@ -77,6 +78,7 @@ class SmartNotesDialog(WebDialog):
         self._account = AccountController(self._ctx)
         self._native = NativeRuntimeController(self._ctx)
         self._user_tools = UserToolsController(self._ctx)
+        self._transfer = TransferController(self._ctx)
         handlers = {
             **self._config.ops(),
             **self._graph.ops(),
@@ -84,6 +86,7 @@ class SmartNotesDialog(WebDialog):
             **self._account.ops(),
             **self._native.ops(),
             **self._user_tools.ops(),
+            **self._transfer.ops(),
         }
         super().__init__(
             parent,
