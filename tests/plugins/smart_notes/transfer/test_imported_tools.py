@@ -14,6 +14,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from transfer_fakes import (
+    FakeCollection,
+    FakeToolLoader,
+    FakeToolStore,
+)
 
 from omnia.plugins.smart_notes.config import (
     FieldToolConfig,
@@ -27,11 +32,6 @@ from omnia.plugins.smart_notes.transfer.collection import (
     apply_bundle,
     build_bundle,
     plan_import,
-)
-from tests.plugins.smart_notes.transfer.fakes import (
-    FakeCollection,
-    FakeToolLoader,
-    FakeToolStore,
 )
 
 TOOL = "user:my_cloze"

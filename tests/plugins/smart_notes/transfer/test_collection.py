@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from transfer_fakes import FakeCollection, FakeToolStore
 
 from omnia.plugins.smart_notes.config import (
     FieldToolConfig,
@@ -33,7 +34,6 @@ from omnia.plugins.smart_notes.transfer.collection import (
     build_bundle,
     plan_import,
 )
-from tests.plugins.smart_notes.transfer.fakes import FakeCollection, FakeToolStore
 
 SOURCE_FIELDS = ["Word", "Sentence", "Meaning"]
 

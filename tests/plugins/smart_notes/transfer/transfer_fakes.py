@@ -1,8 +1,11 @@
 """A fake collection for the transfer tests.
 
-NOT a ``conftest.py``: several test modules in this repo import the ROOT conftest by name
-(``from conftest import FakeCard``), and a second ``conftest`` in a non-package directory
-goes on ``sys.path`` ahead of it and shadows it for the whole run.
+The name is deliberate on both counts. NOT ``conftest.py``: several modules here import the
+ROOT conftest by name (``from conftest import FakeCard``), and a second ``conftest`` in a
+non-package directory goes on ``sys.path`` ahead of it and shadows it for the whole run.
+NOT ``fakes.py`` either: ``tests/benchmarks/fakes.py`` already claims that module name, and
+pytest puts every non-package test directory on ``sys.path`` — whichever imports first wins
+and the other silently gets the wrong module.
 
 ``collection.py`` takes the collection and the tool loader as arguments precisely so the same
 code runs under the GUI, under a script, and here. This is the "here": enough of Anki's surface
