@@ -1,4 +1,4 @@
-"""Omnia's real-Anki smoke harness — the one place the add-on runs against real aqt/anki/Qt.
+r"""Omnia's real-Anki smoke harness — the one place the add-on runs against real aqt/anki/Qt.
 
 ``tests/conftest.py`` deliberately STUBS ``aqt`` and ``anki`` so the pytest suite runs headless.
 That makes a renamed ``gui_hooks`` signature, a PyQt6 API change, a moved dialog module, or an
@@ -28,8 +28,22 @@ assertions need. It is hermetic — no credentials, no network, no writes outsid
 Each step is isolated: a failure prints its traceback and the run continues. The exit code is
 non-zero if any step failed.
 
-Run with Anki's bundled interpreter:
+Run with Anki's bundled interpreter (macOS / Linux, the launcher build):
     QT_QPA_PLATFORM=offscreen "<AnkiProgramFiles>/.venv/bin/python" tests/smoke/run_smoke.py
+
+On **Windows** there is no interpreter to invoke — the installer ships an embedded Python behind
+``anki.exe``, with no ``python.exe`` beside it. Use a system CPython of the SAME minor version
+(3.13 for Anki 25.09+/26.x, so the bundled ``.pyc`` files match) and put Anki's own packages on
+the path. ``pywin32`` needs its three extra directories or ``aqt.mpv`` dies on ``pywintypes``:
+
+    # PowerShell — cmd expands %A% when it parses the whole line, so a one-liner there
+    # silently sees an empty PYTHONPATH and dies on "No module named 'aqt'".
+    $A = "$env:LOCALAPPDATA\Programs\Anki\app_packages"
+    $env:PYTHONPATH = "$A;$A\win32;$A\win32\lib;$A\Pythonwin"
+    python tests\smoke\run_smoke.py
+
+Leave ``QT_QPA_PLATFORM`` unset there: the dialogs need the real platform plugin, and offscreen
+segfaults ``QWebEngineView`` (the same reason ``capture_screens.py`` does not use it).
 """
 
 from __future__ import annotations
