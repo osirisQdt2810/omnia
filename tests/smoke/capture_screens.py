@@ -14,6 +14,7 @@ Run with Anki's bundled interpreter, same as the smoke:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import sys
@@ -52,7 +53,6 @@ def _save(widget, path: Path, *, settle_ms: int = 400) -> tuple[int, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
     pix.save(str(path), "PNG")
     return pix.width(), pix.height()
-
 
 
 _seeded_name = [""]
@@ -105,8 +105,10 @@ def _seed_demo_content(shot) -> None:
     except Exception as exc:
         print("could not write collection config:", exc)
     _seeded_name[0] = name
-    print(f"seeded {name}: {len(seen)} fields, "
-          f"{sum(1 for f in nt_cfg['fields'] if f.get('enabled'))} enabled")
+    print(
+        f"seeded {name}: {len(seen)} fields, "
+        f"{sum(1 for f in nt_cfg['fields'] if f.get('enabled'))} enabled"
+    )
 
 
 def _run_js(dialog, script: str, *, settle_ms: int = 1200) -> None:
@@ -153,6 +155,7 @@ _SELECT_DEMO = """
 
 _SHOW_GRAPH = "document.getElementById('sn-view-graph')?.click()"
 
+
 def main(argv: list[str]) -> int:
     out = Path(argv[1] if len(argv) > 1 else "docs/images").resolve()
     workdir = Path(tempfile.mkdtemp(prefix="omnia-shots-"))
@@ -169,6 +172,7 @@ def main(argv: list[str]) -> int:
     # never look at.
     try:
         from aqt import theme as _theme
+
         _theme.theme_manager.night_mode = True
         _theme.theme_manager._night_mode_preference = True
     except Exception as exc:
@@ -177,8 +181,13 @@ def main(argv: list[str]) -> int:
     # Read the seeded config back: if the toggles render off, the write did not land.
     _seeded = shot.repo.feature_settings("smart_notes")
     _nt = getattr(_seeded, "note_types", None) if _seeded else None
-    print("seeded note_types:", [(n.note_type, n.base_field,
-          [(f.field, f.enabled) for f in n.fields]) for n in (_nt or [])][:1])
+    print(
+        "seeded note_types:",
+        [
+            (n.note_type, n.base_field, [(f.field, f.enabled) for f in n.fields])
+            for n in (_nt or [])
+        ][:1],
+    )
 
     from omnia.gui.config_form import PluginConfigDialog
 
@@ -204,8 +213,11 @@ def main(argv: list[str]) -> int:
                 # Two shots of the flagship: the field table on a configured note type, and the
                 # dependency graph. Both need the demo note type selected inside the webview.
                 _save(dialog, out / "_warm.png", settle_ms=settle)
-                _run_js(dialog, f"window.__shotNoteType = {json.dumps(_seeded_name[0])};",
-                        settle_ms=200)
+                _run_js(
+                    dialog,
+                    f"window.__shotNoteType = {json.dumps(_seeded_name[0])};",
+                    settle_ms=200,
+                )
                 _run_js(dialog, _SELECT_DEMO, settle_ms=2500)
                 w, h = _save(dialog, out / "smart_notes-fields.png", settle_ms=600)
                 written.append(f"OK   smart_notes-fields.png  {w}x{h}")
@@ -215,13 +227,14 @@ def main(argv: list[str]) -> int:
                 (out / "_warm.png").unlink(missing_ok=True)
             else:
                 w, h = _save(dialog, out / f"{plugin.id}.png", settle_ms=settle)
-                written.append(f"OK   {plugin.id}.png  {w}x{h}  ({type(dialog).__name__})")
+                written.append(
+                    f"OK   {plugin.id}.png  {w}x{h}  ({type(dialog).__name__})"
+                )
         except Exception as exc:
             written.append(f"FAIL {plugin.id}: {type(exc).__name__}: {exc}")
-        try:
+        # A dialog that fails to close must not lose the shots already taken.
+        with contextlib.suppress(Exception):
             dialog.close()
-        except Exception:
-            pass
 
     anki.col.close()
     print("\n".join(written) or "(nothing written)")
