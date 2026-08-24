@@ -28,14 +28,12 @@ from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
 from omnia.plugins.smart_notes.config import SmartNotesNoteTypeConfig
+from omnia.plugins.smart_notes.engine.tools.user_tools import USER_TOOL_PREFIX
 
 #: Bumped when a field is added that an older Omnia could not simply ignore. Import refuses a
 #: HIGHER version rather than guessing: a bundle from a newer Omnia may encode a chain shape
 #: this one would silently drop, and a half-understood import is worse than a clear refusal.
 BUNDLE_VERSION = 1
-
-#: The ``user:`` prefix a user-authored tool's name carries in a chain.
-USER_TOOL_PREFIX = "user:"
 
 
 class BundleSource(PersistedModel):

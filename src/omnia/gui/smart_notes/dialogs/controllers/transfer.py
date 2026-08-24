@@ -4,10 +4,13 @@ Thin Qt glue over :mod:`omnia.plugins.smart_notes.transfer`. Everything that dec
 — what a bundle contains, how fields map, what an import would do — lives there and is pure;
 this owns the file dialogs, the collection handle, and the shape of what the page is told.
 
-Import is two round trips on purpose. The first reads the file and answers "here is what is
-in it and what would happen"; the page then shows the collision choice (clone under a new
-name, or overwrite with a field mapping) and sends back a decision. Nothing is written until
-that second call, because an import can rewrite prompts and drop rules.
+Import is three round trips on purpose, and only the last one writes. ``read_import_file``
+answers "here is what is in the file"; the page shows the collision choice (clone under a new
+name, or overwrite with a field mapping), and every time that choice changes it asks
+``preview_import`` what applying it right now would do — the same :func:`plan_import` call the
+apply makes, so the warnings on screen are the ones that will come true. ``apply_import`` then
+carries out that plan. An import can rewrite prompts, drop rules and run tool code the file
+carried; none of it may first become visible afterwards.
 """
 
 from __future__ import annotations
@@ -43,6 +46,15 @@ logger = get_logger("smart_notes")
 BUNDLE_SUFFIX = ".omnia-notetype.json"
 
 
+class _NothingPendingError(RuntimeError):
+    """The modal asked about an import that is not there, or asked for something nonsensical.
+
+    Separate from :class:`TransferError` because it is a wiring fault, not a judgement about
+    the bundle: a preview reports the second as a warning and keeps going, but has nothing at
+    all to preview in the first.
+    """
+
+
 class TransferController:
     """Handles the Export / Import ops the Smart Notes footer buttons send."""
 
@@ -65,6 +77,7 @@ class TransferController:
         return {
             "export_note_type": self.on_export,
             "read_import_file": self.on_read_import_file,
+            "preview_import": self.on_preview_import,
             "apply_import": self.on_apply_import,
             "cancel_import": self.on_cancel_import,
         }
@@ -173,6 +186,38 @@ class TransferController:
             "note_type_names": sorted(anki_compat.note_type_names(col)),
         }
 
+    def _plan(self, data: dict[str, Any]) -> Any:
+        """Plan the pending import from what the modal sent. Raises; writes nothing.
+
+        Shared by preview and apply ON PURPOSE: a preview that computed its warnings any
+        differently from the apply that follows would be a preview of something else.
+        """
+        bundle = self._pending
+        if bundle is None:
+            raise _NothingPendingError("Nothing to import — pick a file first.")
+        mode = str(data.get("mode", "")) or MODE_CREATE
+        if mode not in (MODE_CREATE, MODE_CLONE, MODE_OVERWRITE):
+            raise _NothingPendingError(f"Unknown import mode {mode!r}.")
+        target = str(data.get("target_name", "")).strip() or bundle.note_type_name
+        # Absent means "decide for me"; an EMPTY object means "none of them" — the user
+        # set every row to "not imported". Collapsing the two with ``or None`` would
+        # import everything they just declined.
+        raw_renames = data.get("renames")
+        renames = (
+            None
+            if raw_renames is None
+            else {str(k): str(v) for k, v in dict(raw_renames).items() if v}
+        )
+        return plan_import(
+            self._collection(),
+            bundle,
+            mode=mode,
+            target_name=target,
+            renames=renames,
+            tool_loader=self._tool_loader(),
+            approved_tools=[str(name) for name in (data.get("approved_tools") or [])],
+        )
+
     def _carried_tools(self, bundle: Any) -> list[dict[str, Any]]:
         """Describe each ``user:`` tool the bundle carries, for the approval list.
 
@@ -200,45 +245,48 @@ class TransferController:
             )
         return described
 
-    # -- import, step 2: carry out the decision ------------------------------------------
+    # -- import, step 2: say what the decision WOULD do -----------------------------------
+    def on_preview_import(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Plan the pending import without applying it, so the modal can show the warnings.
+
+        Same call ``on_apply_import`` makes, minus :func:`apply_bundle`. It is what makes the
+        two-step real: "an import can rewrite prompts and drop rules" is only a useful thing
+        to say while the user can still change the mapping or press Cancel.
+        """
+        try:
+            plan = self._plan(data)
+        except TransferError as exc:
+            # A mapping the user is still editing is expected to be invalid part of the way
+            # through (two fields onto one, say). That is the warning, not a failure.
+            return {"ok": True, "blocked": str(exc), "warnings": []}
+        except _NothingPendingError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "warnings": plan.warnings,
+            "unapproved_tools": plan.unapproved_tools,
+            "tools_to_install": plan.tools_to_install,
+        }
+
+    # -- import, step 3: carry out the decision ------------------------------------------
     def on_apply_import(self, data: dict[str, Any]) -> dict[str, Any]:
         """Apply the pending bundle with the mode and mapping the user chose."""
-        bundle = self._pending
-        if bundle is None:
-            return {"ok": False, "error": "Nothing to import — pick a file first."}
-
-        mode = str(data.get("mode", "")) or MODE_CREATE
-        if mode not in (MODE_CREATE, MODE_CLONE, MODE_OVERWRITE):
-            return {"ok": False, "error": f"Unknown import mode {mode!r}."}
-        target = str(data.get("target_name", "")).strip() or bundle.note_type_name
-        # Absent means "decide for me"; an EMPTY object means "none of them" — the user
-        # set every row to "not imported". Collapsing the two with ``or None`` would
-        # import everything they just declined.
-        raw_renames = data.get("renames")
-        renames = (
-            None
-            if raw_renames is None
-            else {str(k): str(v) for k, v in dict(raw_renames).items() if v}
-        )
-
-        approved = [str(name) for name in (data.get("approved_tools") or [])]
-        col = self._collection()
-        loader = self._tool_loader()
         try:
-            plan = plan_import(
-                col,
-                bundle,
-                mode=mode,
-                target_name=target,
-                renames=renames,
-                tool_loader=loader,
-                approved_tools=approved,
+            plan = self._plan(data)
+            result = apply_bundle(
+                self._collection(),
+                self._pending,
+                plan,
+                tool_loader=self._tool_loader(),
             )
-            result = apply_bundle(col, bundle, plan, tool_loader=loader)
+        except _NothingPendingError as exc:
+            return {"ok": False, "error": str(exc)}
         except TransferError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # boundary: never take the dialog down on a bad bundle
-            logger.exception("smart_notes: import failed for %r", target)
+            logger.exception(
+                "smart_notes: import failed for %r", data.get("target_name")
+            )
             return {"ok": False, "error": f"Import failed: {exc}"}
 
         self._pending = None

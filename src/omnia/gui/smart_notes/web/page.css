@@ -1085,6 +1085,16 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   font-size: 12px; line-height: 1.7;
 }
 
+/* --- What importing would do, shown BEFORE the button that does it ------------------- */
+.sn-import-preview {
+  margin-top: 14px; padding: 10px 12px; border-radius: 8px;
+  background: var(--sn-soft, rgba(127, 127, 127, 0.1));
+  font-size: 12px; line-height: 1.6;
+}
+.sn-import-preview-head { font-weight: 700; font-size: 13px; margin-bottom: 4px; }
+.sn-import-preview ul { margin: 0; padding-left: 18px; }
+.sn-import-preview li { margin: 3px 0; }
+
 /* --- Tool code carried by an imported file -------------------------------------------
    Shown in full, not summarised: installing one of these RUNS it, and the read-and-run
    review is the safety boundary (the import allowlist has to permit os and subprocess). */

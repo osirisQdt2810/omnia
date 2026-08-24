@@ -15,7 +15,6 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesNoteTypeConfig,
 )
 from omnia.plugins.smart_notes.transfer.remap import (
-    identity_renames,
     remap_note_type_config,
     suggest_renames,
 )
@@ -151,14 +150,6 @@ class TestFieldsWithNoCounterpart:
         assert out.fields[0].depends_on == []
         assert report.dropped_dependencies == ["Definition -> Example"]
 
-    def test_keep_unmapped_keeps_the_name_as_it_was(self):
-        out, report = remap_note_type_config(
-            _config(), {"Word": "Term"}, keep_unmapped=True
-        )
-
-        assert [rule.field for rule in out.fields] == ["Definition", "Example"]
-        assert report.dropped_fields == []
-
     def test_a_dropped_base_field_is_reported(self):
         out, report = remap_note_type_config(_config(), {"Definition": "Meaning"})
 
@@ -217,19 +208,22 @@ class TestAToolThatDeclaresNothing:
 
 
 class TestTheMappingHelpers:
-    def test_identity_covers_the_base_field_too(self):
-        mapping = identity_renames(_config())
+    def test_a_mapping_of_every_name_onto_itself_changes_nothing(self):
+        """The control case: whatever the six rewrite sites do, an identity mapping is a no-op.
 
-        assert mapping == {
-            "Definition": "Definition",
-            "Example": "Example",
-            "Word": "Word",
+        A remap that "cleans up" on the way through would fail here before it ever reached a
+        user's collection.
+        """
+        config = _config()
+        identity = {
+            name: name
+            for name in dict.fromkeys(
+                [rule.field for rule in config.fields] + [config.base_field]
+            )
+            if name
         }
 
-    def test_identity_remap_changes_nothing(self):
-        config = _config()
-
-        out, report = remap_note_type_config(config, identity_renames(config))
+        out, report = remap_note_type_config(config, identity)
 
         assert out.dict() == config.dict()
         assert not report.has_warnings
@@ -360,8 +354,8 @@ class TestAToolParamWrittenLooselyIsStillTheSameField:
 
         assert report.dropped_tool_params == []
 
-    def test_keep_unmapped_does_not_report_it(self):
-        """Nothing was dropped: the field it names stays exactly as it was."""
+    def test_a_param_naming_a_field_that_keeps_its_name_is_not_reported(self):
+        """Nothing was dropped: the field it names is mapped onto itself."""
         config = _config(
             fields=[
                 SmartNotesFieldConfig(
@@ -376,7 +370,7 @@ class TestAToolParamWrittenLooselyIsStillTheSameField:
         )
 
         _out, report = remap_note_type_config(
-            config, {"Definition": "Meaning"}, keep_unmapped=True
+            config, {"Definition": "Meaning", "Example": "Example"}
         )
 
         assert report.dropped_tool_params == []

@@ -116,8 +116,6 @@ def _remap_tool(
     renames: Mapping[str, str],
     owner: str,
     report: RemapReport,
-    *,
-    keep_unmapped: bool = False,
 ) -> FieldToolConfig:
     """Rewrite the field-naming params of one tool in a chain."""
     referenced, declares = _tool_referenced(spec)
@@ -154,12 +152,7 @@ def _remap_tool(
             report.unchecked_tool_params.append(
                 f"{owner}: {spec.tool}.{key} = {value!r}"
             )
-        elif (
-            moved_to is None
-            and is_declared
-            and not keep_unmapped
-            and _fold(value) not in accounted
-        ):
+        elif moved_to is None and is_declared and _fold(value) not in accounted:
             # The TOOL says this param names a field, and the mapping gives that field no
             # counterpart. The rule itself survives (its own field mapped), so nothing else
             # would mention it: no dropped rule, no dropped edge. Since ``declared`` comes
@@ -173,7 +166,6 @@ def remap_note_type_config(
     renames: Mapping[str, str],
     *,
     note_type_name: str | None = None,
-    keep_unmapped: bool = False,
 ) -> tuple[SmartNotesNoteTypeConfig, RemapReport]:
     """Return ``config`` rewritten onto the field names ``renames`` gives, plus a report.
 
@@ -182,9 +174,6 @@ def remap_note_type_config(
         renames: ``{source field name: target field name}``. A source field absent from the
             mapping has no counterpart on the target note type.
         note_type_name: Rename the note type itself (``None`` keeps the source's name).
-        keep_unmapped: Keep rules for fields with no target instead of dropping them. Off by
-            default: a rule whose target field does not exist can never generate, and keeping
-            it means the Fields table shows a row the user cannot act on.
 
     Returns:
         ``(remapped config, report)``. The report names every rule and edge that was dropped
@@ -197,9 +186,7 @@ def remap_note_type_config(
     known = frozenset(source_names)
 
     def target_of(name: str) -> str | None:
-        if name in renames:
-            return renames[name]
-        return name if keep_unmapped else None
+        return renames.get(name)
 
     kept: list[SmartNotesFieldConfig] = []
     for rule in config.fields:
@@ -220,13 +207,16 @@ def remap_note_type_config(
         for ref in extract_field_refs(prompt):
             # A ref that names neither a target field nor anything we knew about is either a
             # typo the user already had, or a field that did not survive the mapping.
+            #
+            # ``known`` is the CONFIGURED names — rule fields and the base field — because
+            # those are all this module is given. A prompt naming a plain note-type field
+            # with no rule of its own is outside it and not reported here; the plan's
+            # ``unmapped_source_fields`` warning, which does have the note type's full field
+            # list, is what names that case.
             if ref in known and ref not in renames.values():
                 report.unresolved_prompt_refs.append(f"{rule.field}: {{{{{ref}}}}}")
 
-        tools = [
-            _remap_tool(spec, renames, rule.field, report, keep_unmapped=keep_unmapped)
-            for spec in rule.tools
-        ]
+        tools = [_remap_tool(spec, renames, rule.field, report) for spec in rule.tools]
 
         kept.append(
             rule.copy(
@@ -261,19 +251,6 @@ def remap_note_type_config(
         }
     )
     return remapped, report
-
-
-def identity_renames(config: SmartNotesNoteTypeConfig) -> dict[str, str]:
-    """The no-op mapping for ``config`` — every field name onto itself.
-
-    Used by the tests as the control case (an identity remap must change nothing), and
-    available to a caller that wants to start from "same names" rather than from
-    :func:`suggest_renames`. The dialog uses the latter.
-    """
-    names = [rule.field for rule in config.fields]
-    if config.base_field:
-        names.append(config.base_field)
-    return {name: name for name in dict.fromkeys(names)}
 
 
 def suggest_renames(

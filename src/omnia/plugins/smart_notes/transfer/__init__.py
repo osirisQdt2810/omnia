@@ -24,7 +24,6 @@ from omnia.plugins.smart_notes.transfer.bundle import (
 )
 from omnia.plugins.smart_notes.transfer.remap import (
     RemapReport,
-    identity_renames,
     remap_note_type_config,
     suggest_renames,
 )
@@ -35,7 +34,6 @@ __all__ = [
     "BundleSource",
     "NoteTypeBundle",
     "RemapReport",
-    "identity_renames",
     "parse_bundle",
     "remap_note_type_config",
     "suggest_renames",

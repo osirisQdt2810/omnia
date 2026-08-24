@@ -6,8 +6,10 @@ runs under the GUI, under a script against a closed collection, and under a test
 
 Applying a bundle is deliberately a two-step: :func:`plan_import` decides what WOULD happen and
 returns it for the user to look at, and :func:`apply_bundle` carries out a plan. An import can
-rewrite prompts, drop rules and overwrite a note type's templates — none of which should first
-become visible after the fact.
+rewrite prompts, drop rules and run tool code the file carried — none of which should first
+become visible after the fact. Overwrite replaces the setups of the fields the mapping names
+and leaves the target's other rules alone: the mapping table is the user's statement of what
+to replace, and a rule it never mentions is work they never offered up.
 """
 
 from __future__ import annotations
@@ -23,9 +25,9 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
+from omnia.plugins.smart_notes.engine.tools.user_tools import USER_TOOL_PREFIX
 from omnia.plugins.smart_notes.integration.store import SmartNotesStore
 from omnia.plugins.smart_notes.transfer.bundle import (
-    USER_TOOL_PREFIX,
     BundleSource,
     NoteTypeBundle,
 )
@@ -103,7 +105,6 @@ def build_bundle(
     note_type_name: str,
     *,
     tool_store: Any = None,
-    include_note_type: bool = True,
     profile: str = "",
 ) -> NoteTypeBundle:
     """Read ``note_type_name``'s complete Smart Notes setup out of ``col``.
@@ -114,8 +115,6 @@ def build_bundle(
         tool_store: A :class:`~omnia.plugins.smart_notes.engine.tools.user_tools.UserToolStore`
             to read ``user:`` tool sources from. ``None`` exports without them, which the
             import then reports as missing.
-        include_note_type: Carry Anki's note type schema (fields/templates/css). Off exports
-            configuration only — for refreshing a target whose templates must not be touched.
         profile: The Anki profile name, recorded for the import preview.
 
     Returns:
@@ -166,7 +165,7 @@ def build_bundle(
             exported_at=time.strftime("%Y-%m-%d %H:%M:%S"),
         ),
         note_type_name=note_type_name,
-        anki_note_type=dict(model) if include_note_type else None,
+        anki_note_type=dict(model),
         smart_notes=config,
         deck_names=deck_names,
         user_tools=tools,
@@ -329,8 +328,8 @@ def plan_import(
         )
     if plan.mode == MODE_OVERWRITE and plan.unused_target_fields:
         plan.warnings.append(
-            "These fields of the note type receive nothing from the file and keep whatever "
-            "they are configured with here: " + ", ".join(plan.unused_target_fields)
+            "These fields receive nothing from the file; the rules they already have here "
+            "are kept as they are: " + ", ".join(plan.unused_target_fields)
         )
     if plan.missing_tools:
         plan.warnings.append(
@@ -351,7 +350,8 @@ def plan_import(
         )
     if plan.mode == MODE_OVERWRITE and plan.replaces_config:
         plan.warnings.append(
-            f"{wanted!r} already has a Smart Notes configuration here; it will be replaced."
+            f"{wanted!r} already has a Smart Notes configuration here. The fields you map "
+            "below have their rules replaced by the file's; the rest keep theirs."
         )
     return plan
 
@@ -394,6 +394,8 @@ def apply_bundle(
         bundle.smart_notes, plan.renames, note_type_name=plan.target_note_type
     )
     config = config.copy(update={"decks": _deck_ids(col, bundle.deck_names)})
+    if plan.mode == MODE_OVERWRITE:
+        config = _keeping_local_rules(col, config, plan.target_note_type)
     _write_config_entry(col, config)
 
     return ImportResult(
@@ -404,6 +406,39 @@ def apply_bundle(
         tools_failed=failed,
         remap=report,
     )
+
+
+def _keeping_local_rules(
+    col: Any, config: SmartNotesNoteTypeConfig, note_type: str
+) -> SmartNotesNoteTypeConfig:
+    """Return ``config`` with the target's own rules for fields the import does not configure.
+
+    Overwrite means "put the file's setup onto this note type" — not "delete the parts the
+    file has nothing to say about". A user importing a colleague's vocabulary setup onto a
+    note type that also has a local Audio rule expects to still have that Audio rule; the
+    alternative destroys work the mapping table never mentioned, which is the one thing an
+    import must not do quietly.
+
+    Kept rules go after the imported ones, in the order the target had them. Their edges stay
+    valid: overwrite does not touch the note type's fields, so everything they name still
+    exists.
+
+    Args:
+        col: The collection to read the target's current configuration from.
+        config: The remapped configuration about to be written.
+        note_type: The target note type's name.
+
+    Returns:
+        ``config``, or a copy of it with the surviving local rules appended.
+    """
+    existing = _settings(col).note_type_config(note_type)
+    if existing is None:
+        return config
+    imported = {rule.field for rule in config.fields}
+    kept = [rule for rule in existing.fields if rule.field not in imported]
+    if not kept:
+        return config
+    return config.copy(update={"fields": list(config.fields) + kept})
 
 
 def _install_tool(tool_loader: Any, tool_name: str, source_text: str) -> Optional[str]:

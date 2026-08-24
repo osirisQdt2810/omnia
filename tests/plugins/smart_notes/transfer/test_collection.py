@@ -394,3 +394,103 @@ class TestTheMappingComesFromAnUntrustedPage:
                 mode=MODE_OVERWRITE,
                 renames={"Word": "Nonexistent"},
             )
+
+
+class TestWhatOverwriteDoesToTheTargetsOwnSetup:
+    """Overwrite means "put the file's setup onto this note type", not "delete the parts the
+    file has nothing to say about". The distinction is the difference between an import and
+    silent data loss: the mapping table is the user's statement of what to replace, and a rule
+    it never mentions is work they never offered up.
+    """
+
+    def _target_with_local_rules(self):
+        """A collection whose ``Vocab`` has rules on Meaning AND Audio."""
+        col = FakeCollection()
+        col.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning", "Audio"])
+        col.set_config(
+            SMART_NOTES_KEY,
+            {
+                "note_types": [
+                    _config(
+                        fields=[
+                            SmartNotesFieldConfig(
+                                field="Meaning", enabled=True, prompt="local meaning"
+                            ),
+                            SmartNotesFieldConfig(
+                                field="Audio", enabled=True, prompt="local audio prompt"
+                            ),
+                        ]
+                    ).dict()
+                ]
+            },
+        )
+        return col
+
+    def _incoming(self):
+        """A bundle that configures ``Meaning`` only."""
+        source = FakeCollection()
+        _seed(
+            source,
+            config=_config(
+                fields=[
+                    SmartNotesFieldConfig(
+                        field="Meaning", enabled=True, prompt="imported meaning"
+                    )
+                ]
+            ),
+        )
+        return _bundle(source)
+
+    def _apply(self, col, bundle, renames):
+        plan = plan_import(
+            col, bundle, mode=MODE_OVERWRITE, target_name="Vocab", renames=renames
+        )
+        apply_bundle(col, bundle, plan)
+        entry = col.get_config(SMART_NOTES_KEY)["note_types"][0]
+        return plan, {f["field"]: f["prompt"] for f in entry["fields"]}
+
+    def test_a_rule_on_a_field_the_mapping_never_touches_survives(self):
+        col = self._target_with_local_rules()
+
+        _plan, rules = self._apply(col, self._incoming(), {"Meaning": "Meaning"})
+
+        assert rules["Audio"] == "local audio prompt"
+
+    def test_the_mapped_field_does_take_the_file_s_rule(self):
+        col = self._target_with_local_rules()
+
+        _plan, rules = self._apply(col, self._incoming(), {"Meaning": "Meaning"})
+
+        assert rules["Meaning"] == "imported meaning"
+
+    def test_the_warning_says_what_actually_happens(self):
+        """This warning is read while the import can still be cancelled; it having said the
+        opposite of the write is worse than it not being there at all.
+        """
+        col = self._target_with_local_rules()
+
+        plan, rules = self._apply(col, self._incoming(), {"Meaning": "Meaning"})
+
+        kept = " ".join(w for w in plan.warnings if "Audio" in w)
+        assert "kept as they are" in kept
+        assert rules["Audio"] == "local audio prompt"
+
+    def test_a_field_the_mapping_redirects_away_from_keeps_its_local_rule(self):
+        """``Meaning`` mapped onto ``Sentence`` leaves the local Meaning rule untouched: the
+        import wrote Sentence, and said nothing about Meaning.
+        """
+        col = self._target_with_local_rules()
+
+        _plan, rules = self._apply(col, self._incoming(), {"Meaning": "Sentence"})
+
+        assert rules["Sentence"] == "imported meaning"
+        assert rules["Meaning"] == "local meaning"
+        assert rules["Audio"] == "local audio prompt"
+
+    def test_a_target_with_no_configuration_of_its_own_is_unaffected(self):
+        col = FakeCollection()
+        col.models.add_note_type("Vocab", ["Word", "Sentence", "Meaning"])
+
+        _plan, rules = self._apply(col, self._incoming(), {"Meaning": "Meaning"})
+
+        assert rules == {"Meaning": "imported meaning"}

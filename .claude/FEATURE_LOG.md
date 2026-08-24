@@ -61,19 +61,30 @@ and it is the add-on's only real boundary — the import allowlist stopped being
 had to permit ``os`` and ``subprocess``. An unticked tool is reported, and the chains using
 it simply do not run, which is the already-handled `missing tool` path.
 
+**Overwrite keeps what it was not asked to replace.** The mapping table is the user's
+statement of what the file gets to write; a rule on a target field the mapping never names
+is work they never offered up, so it survives. The alternative — replacing the whole config
+entry — destroyed local rules silently, and the warning above the button said the opposite.
+
+**The modal previews the real plan.** Every change of mode, mapping, name or tool approval
+calls `preview_import`, which runs the SAME `plan_import` the apply runs and shows its
+warnings above the Import button. A second, hand-written description of what would happen is
+exactly the thing that drifts from what does.
+
 **Notes / rollback:** the hard part is that a field name is written down in SIX places — the
 rule, `base_field`, `depends_on`, `node_positions`, the prompt's `{{refs}}` and a tool's params
 — and a rename reaching five of them yields a config that still loads, still renders, and is
 quietly wrong. Tool params have no fixed key to rewrite (`sentence_field`, `source_field`,
 `word_field`, whatever a user tool invented), so `remap` asks each tool through
 `Tool.referenced_fields`, the same contract the dependency graph uses; a tool that declares
-nothing is REPORTED rather than guessed at. Three review rounds each found a real defect, all in the same
+nothing is REPORTED rather than guessed at. Four review rounds each found a real defect, all in the same
 region: an imported `user:` tool was written to disk but never REGISTERED, so `get_tool` returned
 None and the remap left its params on the old names (fixed by write-then-load before the remap);
 a declared param naming a field with no counterpart was silently kept (now
-`dropped_tool_params`); and the install itself executed a stranger's code unattended (now the
-per-tool approval above). Rollback is removing the two buttons — the format is a file,
-nothing migrates.
+`dropped_tool_params`); the install itself executed a stranger's code unattended (now the
+per-tool approval above); and overwrite destroyed the target's own unmapped rules while
+promising not to (now the merge + the pre-apply preview). Rollback is removing the two
+buttons — the format is a file, nothing migrates.
 
 ---
 

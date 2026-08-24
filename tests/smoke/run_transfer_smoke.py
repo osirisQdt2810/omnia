@@ -276,11 +276,22 @@ def main() -> int:
         runner.check(
             "import.overwrite_shows_the_mapping_table", lambda: _overwrite_ui(page)
         )
+        runner.check(
+            "import.the_modal_warns_before_it_writes", lambda: _preview_warns(page)
+        )
         runner.check("import.duplicate_mapping_is_refused", lambda: _duplicate(page))
         runner.check("import.overwrite_applies", lambda: _apply_overwrite(page))
         runner.check(
             "remap.every_field_reference_was_rewritten",
             lambda: _remap(col, bundle_path, workdir),
+        )
+        runner.check(
+            "import.a_rule_the_mapping_never_touches_survives",
+            lambda: _local_rule_survives(page, col),
+        )
+        runner.check(
+            "import.cancelling_drops_the_parsed_bundle",
+            lambda: _cancel_drops_bundle(page, dialog),
         )
     finally:
         # The dialog is deliberately NOT closed. ``AnkiWebView.cleanup`` reaches for parts of
@@ -512,6 +523,105 @@ def _remap(col: Any, bundle_path: Path, workdir: Path) -> str:
         "rule names, base_field, prompts, depends_on, node_positions and tool params "
         "all rewritten; the non-field param was left alone"
     )
+
+
+def _preview_warns(page: Page) -> str:
+    """The plan's warnings must be on screen while the user can still press Cancel.
+
+    ``plan_import`` computes "this note type already has a configuration; the fields you map
+    have their rules replaced" — which is only useful before the write. The page asks for it
+    through ``preview_import``, the same call the apply makes, so what is shown here is what
+    will happen rather than a second description of it that can drift.
+    """
+    pump(1.0)
+    require(
+        not page("document.getElementById('sn-import-preview').hidden"),
+        "the modal must say what importing would do BEFORE the Import button",
+    )
+    text = page("document.getElementById('sn-import-preview').textContent")
+    require(
+        "already has a Smart Notes configuration" in text,
+        f"the preview did not name the replacement: {text!r}",
+    )
+    require(
+        page("document.getElementById('sn-import-modal').hidden") is False,
+        "the warning has to arrive while the modal is still open",
+    )
+    return f"warned before writing: {text.strip()[:90]!r}"
+
+
+def _local_rule_survives(page: Page, col: Any) -> str:
+    """A rule on a field the mapping leaves out is the user's, not the file's.
+
+    Overwrite replaces what the mapping names. A local rule on a field the incoming file says
+    nothing about is work the user never offered up, and losing it is the one thing an import
+    must not do quietly.
+    """
+    entry = config_entry(col, SOURCE)
+    fields = list(entry["fields"])
+    fields.append({"field": "Meaning", "enabled": True, "prompt": "LOCAL ONLY"})
+    # Replace the Meaning rule with a distinctive local one, keeping Sentence as it was.
+    entry["fields"] = [f for f in fields if f["field"] != "Meaning"] + [
+        {"field": "Meaning", "enabled": True, "prompt": "LOCAL ONLY"}
+    ]
+    blob = col.get_config(SMART_NOTES_KEY, default={}) or {}
+    blob["note_types"] = [
+        entry if e.get("note_type") == SOURCE else e for e in blob["note_types"]
+    ]
+    col.set_config(SMART_NOTES_KEY, blob)
+
+    page.click("sn-import", settle=3.0)
+    page(
+        "(function(){var r=document.querySelector"
+        '("input[name=sn-import-mode][value=overwrite]");'
+        "r.checked=true;r.dispatchEvent(new Event('change',{bubbles:true}));return '';})()"
+    )
+    pump(0.5)
+    # Map Sentence only; leave every other row on "— not imported —".
+    page(
+        "(function(){document.querySelectorAll('.sn-import-target').forEach(function(s){"
+        "var want=s.getAttribute('data-source')==='Sentence'?'Sentence':'';"
+        "for(var i=0;i<s.options.length;i++){if(s.options[i].value===want){s.selectedIndex=i;"
+        "s.dispatchEvent(new Event('change',{bubbles:true}));break;}}});return '';})()"
+    )
+    pump(1.0)
+    preview = page("document.getElementById('sn-import-preview').textContent")
+    require(
+        "kept as they are" in preview,
+        f"the preview must promise the untouched rules are kept: {preview!r}",
+    )
+    page.click("sn-import-go", settle=3.5)
+
+    after = config_entry(col, SOURCE)
+    rules = {rule["field"]: rule.get("prompt", "") for rule in after["fields"]}
+    require(
+        rules.get("Meaning") == "LOCAL ONLY",
+        f"the local Meaning rule was destroyed: {rules!r}",
+    )
+    require(
+        "Write a sentence" in rules.get("Sentence", ""),
+        f"the mapped Sentence rule did not take the file's: {rules!r}",
+    )
+    return f"kept the local rule; wrote the mapped one ({sorted(rules)})"
+
+
+def _cancel_drops_bundle(page: Page, dialog: Any) -> str:
+    """Closing the modal must let go of the bundle — it holds the tool SOURCE the file carried."""
+    page.click("sn-import", settle=3.0)
+    require(
+        dialog._transfer._pending is not None,
+        "reading a file should leave a bundle pending",
+    )
+    page.click("sn-import-cancel", settle=1.5)
+    require(
+        dialog._transfer._pending is None,
+        "cancelling left someone else's tool source in memory",
+    )
+    require(
+        bool(page("document.getElementById('sn-import-modal').hidden")),
+        "cancel must close the modal",
+    )
+    return "bundle dropped on cancel"
 
 
 if __name__ == "__main__":

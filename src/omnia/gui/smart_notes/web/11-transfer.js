@@ -1,10 +1,10 @@
 /**
  * @fileoverview Smart Notes config page — Export / Import of one note type's setup.
  *
- * Export is one call. Import is deliberately two: the first reads the file and reports what
- * is in it, and only after the user has answered the collision question — import as a new
- * note type, or map onto an existing one — does the second write anything. An import can
- * rewrite prompts and drop rules, so none of that may first become visible afterwards.
+ * Export is one call. Import is three, and nothing before the last one writes: read the file
+ * and report what is in it; plan what the chosen mode and mapping WOULD do and show that above
+ * the button; apply. An import can rewrite prompts, drop rules and run tool code the file
+ * carried, so none of that may first become visible afterwards.
  */
 
   const exportBtn = document.getElementById("sn-export");
@@ -23,6 +23,8 @@
   const importResult = document.getElementById("sn-import-result");
   const importTools = document.getElementById("sn-import-tools");
   const importToolsList = document.getElementById("sn-import-tools-list");
+  const importPreview = document.getElementById("sn-import-preview");
+  const importPreviewList = document.getElementById("sn-import-preview-list");
 
   // What the last "read the file" call told us. Null when no import is in flight.
   let pendingImport = null;
@@ -115,9 +117,10 @@
       importCollision.hidden = false;
       importNewName.value = uniqueName(info.note_type, info.note_type_names || []);
       buildMappingRows(info);
-      syncCollisionUi();
+      syncCollisionUi();  // itself refreshes the preview
     } else {
       importCollision.hidden = true;
+      refreshPreview();
     }
     importModal.hidden = false;
   }
@@ -138,6 +141,9 @@
       box.type = "checkbox";
       box.className = "sn-import-tool-approve";
       box.setAttribute("data-tool", tool.name);
+      // Approving one moves it from "will not be installed" to "will run here", which is
+      // exactly the kind of thing the preview above the button is for.
+      box.addEventListener("change", refreshPreview);
       const text = document.createElement("span");
       text.innerHTML =
         "<span class='sn-import-tool-name'>" + escapeHtml(tool.name) + "</span> — " +
@@ -250,6 +256,7 @@
       ? "sn-import-note sn-import-warn"
       : "sn-import-note";
     if (importMode() === "overwrite") importGo.disabled = !!picked.duplicate;
+    refreshPreview();
   }
 
   function syncCollisionUi() {
@@ -258,15 +265,71 @@
     importNewName.disabled = mode !== "clone";
     if (mode === "overwrite") describeMapping();
     else importGo.disabled = false;
+    refreshPreview();
   }
 
   document.querySelectorAll("input[name=sn-import-mode]").forEach(function (radio) {
     radio.addEventListener("change", syncCollisionUi);
   });
+  if (importNewName) importNewName.addEventListener("input", refreshPreview);
+
+  /** The payload the Import button would send, with no validation of its own. */
+  function currentPayload() {
+    const payload = {approved_tools: approvedTools()};
+    if (!pendingImport.collides) {
+      payload.mode = "create";
+    } else if (importMode() === "clone") {
+      payload.mode = "clone";
+      payload.target_name = (importNewName.value || "").trim();
+    } else {
+      payload.mode = "overwrite";
+      payload.target_name = pendingImport.note_type;
+      payload.renames = collectRenames().renames;
+    }
+    return payload;
+  }
+
+  /**
+   * Ask what importing right now would do, and show it above the Import button.
+   *
+   * The plan comes from the same call the apply makes, so what is shown here is what will
+   * happen — not a second, hand-written description of it that can drift.
+   */
+  function refreshPreview() {
+    if (!pendingImport || !importPreview) return;
+    const payload = currentPayload();
+    // While the clone name is still empty there is nothing coherent to plan; the modal's own
+    // name error covers that case.
+    if (payload.mode === "clone" && !payload.target_name) {
+      importPreview.hidden = true;
+      return;
+    }
+    send("preview_import", payload, function (res) {
+      const out = typeof res === "string" ? JSON.parse(res) : res;
+      const warnings = (out && out.warnings) || [];
+      if (!out || !out.ok || (!warnings.length && !out.blocked)) {
+        importPreview.hidden = true;
+        return;
+      }
+      importPreviewList.innerHTML = "";
+      const lines = out.blocked ? [out.blocked] : warnings;
+      lines.forEach(function (line) {
+        const item = document.createElement("li");
+        item.textContent = line;
+        importPreviewList.appendChild(item);
+      });
+      importPreview.hidden = false;
+    });
+  }
 
   function closeImport() {
     importModal.hidden = true;
+    // Tell the add-on to drop the parsed bundle too: it holds the tool SOURCE the file
+    // carried, and keeping a stranger's code in memory for the dialog's lifetime is not
+    // something to do by omission.
+    if (pendingImport) send("cancel_import", {}, function () {});
     pendingImport = null;
+    if (importPreview) importPreview.hidden = true;
   }
   if (importClose) importClose.addEventListener("click", closeImport);
   if (importCancel) importCancel.addEventListener("click", closeImport);
