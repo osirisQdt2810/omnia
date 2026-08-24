@@ -203,10 +203,21 @@ class LookupService:
 
             def _respond(self, status: int, payload: dict[str, Any]) -> None:
                 body = json.dumps(payload).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except OSError as exc:
+                    # The client hung up before we finished writing — an ordinary event for a
+                    # floating clipper the user closes or that times out mid-lookup. Left to
+                    # propagate it reaches socketserver's handle_error, which prints the
+                    # traceback to stderr, and Anki turns anything on stderr into its ERROR
+                    # DIALOG: a normal disconnect would interrupt the user's review. Same
+                    # reason ``log_message`` above is silenced; this is the write path.
+                    logger.debug(
+                        "word_lookup: client disconnected mid-response (%s)", exc
+                    )
 
         return Handler
