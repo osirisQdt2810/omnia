@@ -56,6 +56,7 @@ from omnia.plugins.smart_notes.config import (  # noqa: E402
     SmartNotesNoteTypeConfig,
 )
 from omnia.plugins.smart_notes.engine.tools.user_tools import (  # noqa: E402
+    UserToolLoader,
     UserToolStore,
 )
 from omnia.plugins.smart_notes.transfer.bundle import parse_bundle  # noqa: E402
@@ -250,7 +251,7 @@ def main() -> int:
     repo = ConfigRepository(ConfigLoader(workdir / "config"))
     dialog = SmartNotesDialog(repo, None)
     # The tools the bundle carries must land in the temp dir, never in the source tree.
-    dialog._transfer._store = UserToolStore(workdir / "tools")
+    dialog._transfer._loader = UserToolLoader(UserToolStore(workdir / "tools"))
     dialog.show()
     pump(3.0)
     page = Page(dialog)
@@ -457,7 +458,9 @@ def _remap(col: Any, bundle_path: Path, workdir: Path) -> str:
     plan = plan_import(
         col, bundle, mode="overwrite", target_name=TARGET, renames=renames
     )
-    apply_bundle(col, bundle, plan, tool_store=UserToolStore(workdir / "tools"))
+    apply_bundle(
+        col, bundle, plan, tool_loader=UserToolLoader(UserToolStore(workdir / "tools"))
+    )
 
     entry = config_entry(col, TARGET)
     require(entry is not None, "no configuration was written for the target")

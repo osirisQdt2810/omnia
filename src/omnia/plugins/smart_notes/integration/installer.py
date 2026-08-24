@@ -53,6 +53,8 @@ _DESKTOP_APP = f"{_DESKTOP_APP_NAME}.app"
 # status() compares it against the remote main HEAD to offer Install / Upgrade / Up-to-date
 # (mirrors the ``.omnia-installed`` marker the native-runtime manager uses for its venvs).
 _MARKER = ".omnia-installed"
+# A clipboard helper is a convenience; it must never be able to stall an install.
+_CLIPBOARD_TIMEOUT_SECONDS = 10
 
 
 class InstallError(RuntimeError):
@@ -146,8 +148,11 @@ class SubprocessCommandRunner:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=True,
+                # A ceiling, like the sibling runners have: xclip normally backgrounds itself,
+                # but one that does not would hang the install worker with no limit at all.
+                timeout=_CLIPBOARD_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.CalledProcessError) as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             raise InstallError(f"{argv[0]!r} failed: {exc}") from exc
 
 

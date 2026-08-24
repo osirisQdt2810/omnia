@@ -19,7 +19,10 @@ from typing import Any, Optional
 from omnia import addon_user_files_dir
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.plugins.smart_notes.engine.tools.user_tools import UserToolStore
+from omnia.plugins.smart_notes.engine.tools.user_tools import (
+    UserToolLoader,
+    UserToolStore,
+)
 from omnia.plugins.smart_notes.transfer.bundle import BundleError, parse_bundle
 from omnia.plugins.smart_notes.transfer.collection import (
     MODE_CLONE,
@@ -42,17 +45,19 @@ BUNDLE_SUFFIX = ".omnia-notetype.json"
 class TransferController:
     """Handles the Export / Import ops the Smart Notes footer buttons send."""
 
-    def __init__(self, ctx: Any, tool_store: Optional[UserToolStore] = None) -> None:
+    def __init__(self, ctx: Any, tool_loader: Optional[UserToolLoader] = None) -> None:
         """Initialise the controller.
 
         Args:
             ctx: The shared dialog context.
-            tool_store: Where ``user:`` tools are read and written. Injected by the smoke
-                harness so a test run never writes Python into the source tree; defaults to
-                the add-on's own ``user_files/tools`` (mirroring ``UserToolsController``).
+            tool_loader: Reads, writes AND REGISTERS ``user:`` tools. A loader rather than a
+                bare store because an imported tool has to be registered before the remap
+                reads it — see ``apply_bundle``. Injected by the smoke harness so a test run
+                never writes Python into the source tree; defaults to the add-on's own
+                ``user_files/tools`` (mirroring ``UserToolsController``).
         """
         self._ctx = ctx
-        self._store = tool_store
+        self._loader = tool_loader
         self._pending: Optional[Any] = None  # the bundle awaiting a collision decision
 
     def ops(self) -> dict[str, Any]:
@@ -66,10 +71,12 @@ class TransferController:
     def _collection(self) -> Any:
         return anki_compat.main_window().col
 
-    def _tool_store(self) -> UserToolStore:
-        if self._store is not None:
-            return self._store
-        return UserToolStore(addon_user_files_dir() / "tools")
+    def _tool_loader(self) -> UserToolLoader:
+        if self._loader is None:
+            self._loader = UserToolLoader(
+                UserToolStore(addon_user_files_dir() / "tools")
+            )
+        return self._loader
 
     def _profile_name(self) -> str:
         try:
@@ -87,7 +94,7 @@ class TransferController:
             bundle = build_bundle(
                 self._collection(),
                 note_type,
-                tool_store=self._tool_store(),
+                tool_store=self._tool_loader().store,
                 profile=self._profile_name(),
             )
         except TransferError as exc:
@@ -169,7 +176,7 @@ class TransferController:
             renames = {str(k): str(v) for k, v in dict(renames).items() if v}
 
         col = self._collection()
-        store = self._tool_store()
+        loader = self._tool_loader()
         try:
             plan = plan_import(
                 col,
@@ -177,9 +184,9 @@ class TransferController:
                 mode=mode,
                 target_name=target,
                 renames=renames,
-                tool_store=store,
+                tool_loader=loader,
             )
-            result = apply_bundle(col, bundle, plan, tool_store=store)
+            result = apply_bundle(col, bundle, plan, tool_loader=loader)
         except TransferError as exc:
             return {"ok": False, "error": str(exc)}
         except Exception as exc:  # boundary: never take the dialog down on a bad bundle
@@ -194,6 +201,7 @@ class TransferController:
             "created": result.created_note_type,
             "fields": result.fields_configured,
             "tools": result.tools_written,
+            "tools_failed": result.tools_failed,
             "warnings": plan.warnings,
             "dropped_fields": list(report.dropped_fields) if report else [],
             "dropped_dependencies": list(report.dropped_dependencies) if report else [],

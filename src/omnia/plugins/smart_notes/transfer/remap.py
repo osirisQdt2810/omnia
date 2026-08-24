@@ -71,6 +71,11 @@ class RemapReport:
         )
 
 
+def _fold(name: str) -> str:
+    """The comparison form for a field name: trimmed and case-folded, as the graph compares."""
+    return name.strip().casefold()
+
+
 def _tool_referenced(spec: FieldToolConfig) -> tuple[list[str], bool]:
     """Return ``(field names this tool's params name, the tool answered)``.
 
@@ -108,15 +113,26 @@ def _remap_tool(
 ) -> FieldToolConfig:
     """Rewrite the field-naming params of one tool in a chain."""
     referenced, declares = _tool_referenced(spec)
-    targets = {name for name in referenced if name in renames}
+    # Match exactly first, then FOLDED. A tool's ``referenced_fields`` strips its params and
+    # the dependency graph compares field names case-insensitively, so a param stored as
+    # " Sentence" or "sentence" is the same field to everything else; matching only the raw
+    # string would leave it neither rewritten nor reported — the silent partial rename this
+    # module exists to prevent. A rename is a MOVE whenever the strings differ, so mapping a
+    # field onto one that differs only in case still writes the target's real spelling.
+    declared = {_fold(name) for name in referenced}
+    moves = {old: new for old, new in renames.items() if old != new}
+    folded_moves = {_fold(old): new for old, new in moves.items()}
     params: dict[str, Any] = {}
     for key, value in spec.params.items():
-        if isinstance(value, str) and value in targets:
-            params[key] = renames[value]
+        if not isinstance(value, str):
+            params[key] = value
+            continue
+        moved_to = moves.get(value, folded_moves.get(_fold(value)))
+        if moved_to is not None and _fold(value) in declared:
+            params[key] = moved_to
             continue
         params[key] = value
-        moved = isinstance(value, str) and renames.get(value, value) != value
-        if moved and not declares:
+        if moved_to is not None and not declares:
             # The value IS a name this remap is moving, but the tool never claimed it as a
             # field reference. Rewriting on a guess breaks a chain that stored a literal;
             # leaving it silently hands over a tool reading a field that no longer exists.

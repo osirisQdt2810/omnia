@@ -255,3 +255,54 @@ class TestTheMappingHelpers:
         mapping = suggest_renames(["Word", "word"], ["Word"])
 
         assert mapping == {"Word": "Word"}
+
+
+class TestAToolParamWrittenLooselyIsStillTheSameField:
+    """A tool's ``referenced_fields`` strips its params and the dependency graph matches field
+    names case-insensitively — so a param stored as `` Sentence`` or ``sentence`` is the same
+    field to everything else. Matching it raw would leave it neither rewritten nor reported.
+    """
+
+    def _with_param(self, stored: str):
+        return _config(
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    tools=[
+                        FieldToolConfig(
+                            tool="cloze",
+                            params={"sentence_field": stored, "word_field": "Word"},
+                        )
+                    ],
+                )
+            ]
+        )
+
+    def test_a_padded_param_is_rewritten(self):
+        out, report = remap_note_type_config(self._with_param("  Example  "), RENAMES)
+
+        assert out.fields[0].tools[0].params["sentence_field"] == "Sentence"
+        assert report.unchecked_tool_params == []
+
+    def test_a_differently_cased_param_is_rewritten(self):
+        out, report = remap_note_type_config(self._with_param("EXAMPLE"), RENAMES)
+
+        assert out.fields[0].tools[0].params["sentence_field"] == "Sentence"
+        assert report.unchecked_tool_params == []
+
+    def test_a_rename_that_only_changes_case_still_moves_it(self):
+        out, _ = remap_note_type_config(
+            self._with_param("Example"),
+            {"Example": "EXAMPLE", "Word": "Word", "Definition": "Definition"},
+        )
+
+        assert out.fields[0].tools[0].params["sentence_field"] == "EXAMPLE"
+
+    def test_a_param_naming_a_field_that_is_not_moving_is_left_alone(self):
+        out, report = remap_note_type_config(
+            self._with_param("Example"),
+            {"Example": "Example", "Word": "Word", "Definition": "Definition"},
+        )
+
+        assert out.fields[0].tools[0].params["sentence_field"] == "Example"
+        assert report.unchecked_tool_params == []

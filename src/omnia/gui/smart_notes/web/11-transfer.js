@@ -266,6 +266,15 @@
     if (out.tools && out.tools.length) {
       lines.push("Installed user tool(s): " + escapeHtml(out.tools.join(", ")));
     }
+    if (out.tools_failed && out.tools_failed.length) {
+      // The import applied, but a chain using this tool will not run — which the user has to
+      // know, or they get a field that silently never generates.
+      lines.push(
+        "<span class='sn-import-warn'>These user tools could not be installed, so the " +
+        "chains using them will not run: " + escapeHtml(out.tools_failed.join("; ")) +
+        "</span>"
+      );
+    }
     (out.dropped_fields || []).length &&
       lines.push("Dropped rules with no field here: " + escapeHtml(out.dropped_fields.join(", ")));
     (out.dropped_dependencies || []).length &&

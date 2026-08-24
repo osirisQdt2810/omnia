@@ -19,7 +19,11 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Any, Optional
 
-from omnia.plugins.smart_notes.config import SmartNotesNoteTypeConfig
+from omnia.plugins.smart_notes.config import (
+    SmartNotesNoteTypeConfig,
+    SmartNotesSettings,
+)
+from omnia.plugins.smart_notes.integration.store import SmartNotesStore
 from omnia.plugins.smart_notes.transfer.bundle import (
     USER_TOOL_PREFIX,
     BundleSource,
@@ -31,8 +35,9 @@ from omnia.plugins.smart_notes.transfer.remap import (
     suggest_renames,
 )
 
-#: The collection-config key the Smart Notes settings live under (ADR-006).
-SMART_NOTES_KEY = "omnia:smart_notes"
+#: The collection-config key the Smart Notes settings live under (ADR-006). Taken FROM the
+#: store rather than restated: two spellings of one key is a rename waiting to go wrong.
+SMART_NOTES_KEY = SmartNotesStore.KEY
 
 #: What an import may do about a name that already exists on the target.
 MODE_CREATE = "create"  # no such note type here — make it from the bundle's schema
@@ -71,20 +76,23 @@ class ImportResult:
     created_note_type: bool
     fields_configured: int
     tools_written: list[str] = dataclass_field(default_factory=list)
+    tools_failed: list[str] = dataclass_field(default_factory=list)
     remap: Optional[RemapReport] = None
 
 
 # --- reading the collection ---------------------------------------------------------------
-def _settings_blob(col: Any) -> dict[str, Any]:
-    blob = col.get_config(SMART_NOTES_KEY, default=None)
-    return dict(blob) if isinstance(blob, dict) else {}
+def _store(col: Any) -> SmartNotesStore:
+    """The settings store, bound to THIS collection.
+
+    Reusing it rather than reading ``col.get_config`` here is what keeps one owner of the key
+    and one definition of the blob's shape — and means an import goes through the model that
+    validates it instead of writing a raw dict past it.
+    """
+    return SmartNotesStore(col_provider=lambda: col)
 
 
-def _entry_for(blob: Mapping[str, Any], note_type: str) -> Optional[dict[str, Any]]:
-    for entry in blob.get("note_types", []) or []:
-        if isinstance(entry, dict) and entry.get("note_type") == note_type:
-            return entry
-    return None
+def _settings(col: Any) -> SmartNotesSettings:
+    return _store(col).load()
 
 
 def build_bundle(
@@ -119,13 +127,12 @@ def build_bundle(
             f"This collection has no note type called {note_type_name!r}."
         )
 
-    raw_entry = _entry_for(_settings_blob(col), note_type_name)
-    if raw_entry is None:
+    config = _settings(col).note_type_config(note_type_name)
+    if config is None:
         raise TransferError(
             f"{note_type_name!r} has no Smart Notes configuration here yet — there is nothing "
             "to export."
         )
-    config = SmartNotesNoteTypeConfig(**raw_entry)
 
     deck_names: list[str] = []
     for deck_id in config.decks:
@@ -189,7 +196,7 @@ def plan_import(
     mode: str = "",
     target_name: str = "",
     renames: Optional[Mapping[str, str]] = None,
-    tool_store: Any = None,
+    tool_loader: Any = None,
 ) -> ImportPlan:
     """Work out what importing ``bundle`` into ``col`` would do, without doing any of it.
 
@@ -203,7 +210,7 @@ def plan_import(
         renames: ``{bundle field: target field}`` for an overwrite. Empty asks
             :func:`~omnia.plugins.smart_notes.transfer.remap.suggest_renames` for the
             unambiguous pairings and leaves the rest for the user.
-        tool_store: Where ``user:`` tools would be written.
+        tool_loader: The user-tool loader (its ``store`` says what is already installed).
 
     Returns:
         The plan.
@@ -247,6 +254,20 @@ def plan_import(
         target_fields = source_fields
         mapping = {name: name for name in source_fields}
 
+    # Two source fields onto one target would write two rules with the same ``field``. The
+    # page refuses it, but the page is the UNTRUSTED side of a pycmd boundary — validate here
+    # too, or a hand-built call silently corrupts the configuration.
+    collapsed = [
+        target
+        for target in {t for t in mapping.values() if t}
+        if sum(1 for value in mapping.values() if value == target) > 1
+    ]
+    if collapsed:
+        raise TransferError(
+            "These fields would both map onto the same field here, which cannot work: "
+            + ", ".join(sorted(collapsed))
+        )
+
     plan = ImportPlan(
         mode=mode,
         target_note_type=wanted,
@@ -256,11 +277,12 @@ def plan_import(
             n for n in target_fields if n not in set(mapping.values())
         ],
         creates_note_type=mode in (MODE_CREATE, MODE_CLONE),
-        replaces_config=_entry_for(_settings_blob(col), wanted) is not None,
+        replaces_config=_settings(col).note_type_config(wanted) is not None,
         missing_tools=bundle.missing_user_tools(),
     )
 
-    installed = set(tool_store.slugs()) if tool_store is not None else set()
+    store = getattr(tool_loader, "store", None)
+    installed = set(store.slugs()) if store is not None else set()
     for tool_name in bundle.required_user_tools():
         slug = tool_name[len(USER_TOOL_PREFIX) :]
         if tool_name in bundle.user_tools and slug not in installed:
@@ -282,8 +304,9 @@ def plan_import(
         )
     if plan.missing_decks:
         plan.warnings.append(
-            "These decks do not exist here, so the deck restriction will be relaxed to 'all "
-            "decks': " + ", ".join(plan.missing_decks)
+            "These decks do not exist here and will be left out of the deck restriction "
+            "(if none of them resolve, the configuration applies to all decks): "
+            + ", ".join(plan.missing_decks)
         )
     if plan.mode == MODE_OVERWRITE and plan.replaces_config:
         plan.warnings.append(
@@ -298,18 +321,27 @@ def apply_bundle(
     bundle: NoteTypeBundle,
     plan: ImportPlan,
     *,
-    tool_store: Any = None,
+    tool_loader: Any = None,
 ) -> ImportResult:
-    """Carry out ``plan``. Writes the note type, the tools, and the configuration.
+    """Carry out ``plan``. Writes the tools, the note type, and the configuration.
 
-    Order matters: tools first (so a chain never resolves to a tool that is not there yet),
-    then the note type, then the configuration that refers to both.
+    Order matters, and "tools first" means WRITTEN AND LOADED first. Writing the file is not
+    enough: a chain resolves a tool through the registry, and :func:`remap_note_type_config`
+    asks the registry which of a tool's params name fields. A tool that is on disk but
+    unregistered is invisible to both — so its ``sentence_field`` keeps the OLD name while
+    ``depends_on`` is rewritten to the new one, leaving the graph and the tool disagreeing,
+    and the tool reading a field the note type does not have. It is also dead for the rest of
+    the session, since nothing loads ``user_files/tools`` again until the next Anki start.
     """
     written: list[str] = []
-    if tool_store is not None:
+    failed: list[str] = []
+    if tool_loader is not None:
         for tool_name in plan.tools_to_install:
-            written.append(
-                _write_tool(tool_store, tool_name, bundle.user_tools[tool_name])
+            outcome = _install_tool(
+                tool_loader, tool_name, bundle.user_tools[tool_name]
+            )
+            (written if outcome is None else failed).append(
+                tool_name if outcome is None else f"{tool_name}: {outcome}"
             )
 
     created = False
@@ -328,16 +360,31 @@ def apply_bundle(
         created_note_type=created,
         fields_configured=len(config.fields),
         tools_written=written,
+        tools_failed=failed,
         remap=report,
     )
 
 
-def _write_tool(tool_store: Any, tool_name: str, source_text: str) -> str:
+def _install_tool(tool_loader: Any, tool_name: str, source_text: str) -> Optional[str]:
+    """Write a carried tool and register it. Returns None on success, else the reason.
+
+    The write-then-load pair mirrors what the Tools tab does when the user saves one
+    (``UserToolsController.on_save``): the store owns the file, the loader owns the registry,
+    and only the second makes the tool resolvable.
+    """
     from omnia.plugins.smart_notes.engine.tools.user_tools import UserToolSource
 
     slug = tool_name[len(USER_TOOL_PREFIX) :]
-    tool_store.write(UserToolSource.parse(slug, source_text))
-    return tool_name
+    try:
+        tool_loader.store.write(UserToolSource.parse(slug, source_text))
+    except Exception as exc:
+        return f"could not be saved ({exc})"
+    load = tool_loader.load(slug)
+    if not getattr(load, "ok", False):
+        # The import still applies — but the chain using this tool will not run, and saying so
+        # is the difference between a known gap and a mystery.
+        return getattr(load, "error", "") or "could not be loaded"
+    return None
 
 
 def _add_note_type(col: Any, bundle: NoteTypeBundle, name: str) -> None:
@@ -373,19 +420,16 @@ def _deck_ids(col: Any, deck_names: list[str]) -> list[int]:
 def _write_config_entry(col: Any, config: SmartNotesNoteTypeConfig) -> None:
     """Replace (or append) this note type's entry, leaving every other one untouched.
 
-    Reading, editing and writing back the WHOLE blob is what keeps the other note types' setups
-    and the global flags intact — the config key holds all of them together.
+    Loading, editing and saving the WHOLE settings object is what keeps the other note types'
+    setups and the global flags intact — the config key holds all of them together, and
+    ``PersistedModel``'s ``extra="allow"`` carries through anything a newer Omnia added.
     """
-    blob = _settings_blob(col)
-    entries = [e for e in (blob.get("note_types") or []) if isinstance(e, dict)]
-    payload = config.dict()
-    replaced = False
+    settings = _settings(col)
+    entries = list(settings.note_types)
     for index, entry in enumerate(entries):
-        if entry.get("note_type") == config.note_type:
-            entries[index] = payload
-            replaced = True
+        if entry.note_type == config.note_type:
+            entries[index] = config
             break
-    if not replaced:
-        entries.append(payload)
-    blob["note_types"] = entries
-    col.set_config(SMART_NOTES_KEY, blob)
+    else:
+        entries.append(config)
+    _store(col).save(settings.copy(update={"note_types": entries}))
