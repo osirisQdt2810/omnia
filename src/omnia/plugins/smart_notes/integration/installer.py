@@ -11,7 +11,9 @@ Two install kinds (see :class:`~omnia.plugins.smart_notes.integration.integratio
   build.py, install, open, grant" flow with one click. It is a genuinely long job (hundreds of MB + a
   PyInstaller freeze), so callers run :meth:`install` OFF the Qt main thread and surface ``progress``.
 * ``"web"`` — a browser extension can't be installed programmatically (Chrome blocks it), so this
-  clones the repo, reveals the folder, and opens ``chrome://extensions`` for a manual load-unpacked.
+  clones the repo, puts the folder on the clipboard, and opens a local finish-install page in the
+  Chrome profile the user actually uses. Chrome will not open ``chrome://extensions`` from the
+  command line either (it drops the URL), which is why that page exists.
 
 Everything is cross-platform (macOS / Windows / Linux): git + venv + pip + build.py are the same
 everywhere, and the venv python and install location branch on ``platform``. The installer is the
@@ -316,28 +318,61 @@ class ClipperInstaller:
         else:  # linux: launch the built binary directly
             self._runner.spawn([str(launch_path)])
 
-    # -- web: clone -> reveal folder + open chrome://extensions --------------------------------
+    # -- web: clone -> clipboard + open the finish-install page --------------------------------
 
     def _reveal_web(self, integration: Integration, progress: Progress) -> None:
         """Take the user as far as Chrome allows, and say where the last step is.
 
         Chrome has closed every route to installing an unpacked extension programmatically —
-        measured on Chrome 151, not assumed: ``--load-extension`` is ignored, and while the
+        measured on Chrome 151/152, not assumed: ``--load-extension`` is ignored, and while the
         DevTools ``Extensions.loadUnpacked`` command does load one, it is SESSION-ONLY (nothing
         is recorded in the profile, so it is gone at the next restart). A CRX outside the Web
         Store is refused. So the final click is the user's, and the job here is to leave them
         one paste away from it rather than in a file manager wondering what to do.
+
+        It cannot even open ``chrome://extensions`` for them: Chrome drops a ``chrome://`` URL
+        given on the command line and opens the new-tab page instead (see
+        :mod:`~omnia.plugins.smart_notes.integration.install_page`). So what gets opened, in
+        the right profile, is a local page carrying the folder, the address, and the steps.
         """
         src = self._clone_or_update(integration, progress)
         self._copy_to_clipboard(str(src))
         profile = self._chrome_profile()
         where = f" in your '{profile.name}' profile" if profile else ""
+        page = self._write_install_page(integration, src, profile)
         progress(
-            f"Opening chrome://extensions{where}. Turn on Developer mode, click 'Load "
-            f"unpacked', and paste the path (already copied): {src}"
+            f"Opening the finish-install page{where}. Go to chrome://extensions, turn on "
+            f"Developer mode, click 'Load unpacked', and paste the path (already copied): {src}"
         )
-        self._open_chrome_extensions(profile)
+        self._open_chrome(page.as_uri() if page else None, profile)
         self._write_marker(src)
+
+    def _write_install_page(
+        self,
+        integration: Integration,
+        source: Path,
+        profile: Optional[ChromeProfile],
+    ) -> Optional[Path]:
+        """Write the finish-install page next to the clone; None when it cannot be written.
+
+        Beside the clone rather than inside it: the folder is about to be handed to "Load
+        unpacked", and an extension directory should contain the extension and nothing else.
+        """
+        from omnia.plugins.smart_notes.integration.install_page import (
+            render_install_page,
+        )
+
+        path = self._clones_dir / f"{integration.key}-finish-install.html"
+        try:
+            path.write_text(
+                render_install_page(source, profile.name if profile else ""),
+                encoding="utf-8",
+            )
+        except (
+            OSError
+        ):  # a page we cannot write must not fail an install that succeeded
+            return None
+        return path
 
     def _chrome_profile(self) -> Optional[ChromeProfile]:
         """The Chrome profile to target, or None when it cannot be determined."""
@@ -364,23 +399,28 @@ class ClipperInstaller:
         except Exception:
             pass
 
-    def _open_chrome_extensions(self, profile: Optional[ChromeProfile] = None) -> None:
-        """Open ``chrome://extensions`` — in ``profile`` when one could be identified.
+    def _open_chrome(
+        self, url: Optional[str], profile: Optional[ChromeProfile] = None
+    ) -> None:
+        """Open ``url`` in Chrome — in ``profile`` when one could be identified.
 
         Chrome numbers profile directories in creation order and shows an unrelated display
         name, so on a machine with several profiles the plain "open Chrome" shortcuts land in
         whichever one Chrome picks. ``--profile-directory`` is the only way to say which, and
         it needs Chrome's real executable: ``open -a`` / ``start chrome`` take a URL but not
         Chrome's own flags.
+
+        ``url`` is None when the page could not be written; Chrome is still raised on the right
+        profile, since the progress message carries the steps either way.
         """
         from omnia.plugins.smart_notes.integration.browser import chrome_executable
 
-        url = "chrome://extensions/"
         executable = chrome_executable(self._platform) if profile is not None else None
         if executable and profile is not None:
-            self._runner.spawn(
-                [executable, f"--profile-directory={profile.directory}", url]
-            )
+            argv = [executable, f"--profile-directory={profile.directory}"]
+            self._runner.spawn([*argv, url] if url else argv)
+            return
+        if url is None:  # nothing to open and no profile to aim at
             return
         if self._platform == "darwin":
             self._runner.spawn(["open", "-a", "Google Chrome", url])

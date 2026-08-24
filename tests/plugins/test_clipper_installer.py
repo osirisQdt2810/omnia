@@ -37,6 +37,17 @@ WEB = Integration(
 )
 
 
+def _raise_on_html(original):
+    """Make ONLY the finish-install page unwritable — the marker write must still succeed."""
+
+    def write_text(self, data, *args, **kwargs):
+        if self.suffix == ".html":
+            raise OSError("read-only")
+        return original(self, data, *args, **kwargs)
+
+    return write_text
+
+
 class _FakeRunner:
     def __init__(
         self,
@@ -257,11 +268,9 @@ class TestWebInstall:
 
         _installer(tmp_path, runner).install(WEB, lambda _m: None)
 
-        assert runner.spawns[-1] == [
-            "/chrome",
-            "--profile-directory=Profile 1",
-            "chrome://extensions/",
-        ]
+        argv = runner.spawns[-1]
+        assert argv[:2] == ["/chrome", "--profile-directory=Profile 1"]
+        assert argv[2].startswith("file://")
 
     def test_it_falls_back_to_plain_chrome_when_the_profile_is_unknown(
         self, tmp_path, monkeypatch
@@ -274,8 +283,80 @@ class TestWebInstall:
 
         _installer(tmp_path, runner).install(WEB, lambda _m: None)
 
-        assert "chrome://extensions/" in runner.spawns[-1]
         assert "Google Chrome" in runner.spawns[-1]
+        assert runner.spawns[-1][-1].startswith("file://")
+
+    def test_chrome_is_never_asked_to_open_a_chrome_url(self, tmp_path, monkeypatch):
+        """Chrome DROPS a ``chrome://`` URL given on the command line and opens the new-tab
+        page instead — measured on Chrome 152, macOS and Windows, for every spelling of it
+        including ``--app=`` and ``chrome://settings/``. Asking anyway lands the user on a
+        blank tab with no idea what the install wanted from them.
+        """
+        from omnia.plugins.smart_notes.integration import browser
+
+        monkeypatch.setattr(
+            browser,
+            "preferred_profile",
+            lambda platform="": browser.ChromeProfile("Profile 1", "phuc"),
+        )
+        monkeypatch.setattr(browser, "chrome_executable", lambda platform="": "/chrome")
+        runner = _FakeRunner()
+        self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        assert not any(
+            arg.startswith("chrome://") for argv in runner.spawns for arg in argv
+        )
+
+    def test_the_page_it_opens_carries_the_folder_and_the_address(
+        self, tmp_path, monkeypatch
+    ):
+        """What Chrome will not navigate to, the page has to say in words the user can paste."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        monkeypatch.setattr(
+            browser,
+            "preferred_profile",
+            lambda platform="": browser.ChromeProfile("Profile 1", "phuc"),
+        )
+        monkeypatch.setattr(browser, "chrome_executable", lambda platform="": "/chrome")
+        runner = _FakeRunner()
+        source = self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        page = tmp_path / "clippers" / "web_clipper-finish-install.html"
+        assert page.is_file()
+        html = page.read_text(encoding="utf-8")
+        assert str(source) in html
+        assert "chrome://extensions/" in html
+        assert "Load unpacked" in html
+        assert "phuc" in html  # names the profile it opened in
+        # Written BESIDE the clone: the folder is about to be handed to "Load unpacked".
+        assert page.parent == source.parent
+
+    def test_a_page_that_cannot_be_written_still_opens_the_right_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """The install's real output is the clone; a page write is a courtesy on top of it."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        monkeypatch.setattr(
+            browser,
+            "preferred_profile",
+            lambda platform="": browser.ChromeProfile("Profile 1", "phuc"),
+        )
+        monkeypatch.setattr(browser, "chrome_executable", lambda platform="": "/chrome")
+        monkeypatch.setattr(
+            Path, "write_text", _raise_on_html(Path.write_text), raising=True
+        )
+        runner = _FakeRunner()
+        self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        assert runner.spawns[-1] == ["/chrome", "--profile-directory=Profile 1"]
 
     def test_the_progress_line_names_the_path_to_paste(self, tmp_path):
         """This message is what the user reads in the modal; it has to carry the next step."""
