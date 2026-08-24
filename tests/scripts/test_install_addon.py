@@ -7,11 +7,11 @@ should be performing. Two parts are still worth pinning:
   success while the add-on lands in a folder the running Anki never reads, which looks exactly
   like "my code change did nothing".
 * **How** each item is placed and, above all, **removed**, because that is where the script's
-  own idempotence lives and the two platforms disagree about it. A link has to be dropped by
-  the call that fits what the entry IS — POSIX ``rmdir`` refuses a symlink, Windows ``unlink``
-  refuses a directory symlink, and ``shutil.rmtree`` refuses a reparse point — so a wrong
-  branch here leaves an install that works exactly once and fails on every re-run, on whichever
-  platform the author did not happen to be using.
+  own idempotence lives and no two platforms agree about it: POSIX ``rmdir`` refuses a symlink,
+  Windows ``unlink`` refuses a directory symlink, ``shutil.rmtree`` refuses a reparse point,
+  and ``is_dir()`` — the obvious thing to branch on — answers a question about the TARGET. A
+  wrong choice here leaves an install that works exactly once and fails on every re-run, on
+  whichever platform the author did not happen to be using.
 """
 
 from __future__ import annotations
@@ -191,64 +191,96 @@ class TestPlacingAnItemWhenTheOsRefusesASymlink:
             install_addon._place(source, tmp_path / "placed", copy=False)
 
 
-class TestRemoveLinkPicksTheCallThatFitsTheLink:
-    """Which call removes a link depends on what the entry IS, and the two platforms disagree:
-    POSIX ``rmdir`` refuses a symlink (``ENOTDIR``) while Windows ``unlink`` refuses a directory
-    symlink. Branching on ``is_dir()`` answers neither question — it FOLLOWS the link — which is
-    how a Windows-only fix broke every macOS/Linux re-install. Monkeypatched so the branch is
-    pinned on any machine, including one that cannot create a symlink at all.
+class TestRemoveLinkTriesRatherThanPredicts:
+    """No property of the path answers "is this a directory link?" reliably: ``is_dir()``
+    FOLLOWS the link (so a POSIX symlink-to-a-directory looks like a directory, and ``rmdir``
+    refuses it with ENOTDIR) and a DANGLING Windows directory symlink looks like a file (so
+    ``unlink`` refuses it). Attempting ``rmdir`` and falling back is the only shape that covers
+    all four. Monkeypatched, so the order is pinned on any machine — including one that cannot
+    create a symlink at all.
     """
 
-    def _spy(self, monkeypatch, *, platform, is_symlink, is_dir):
+    def _spy(self, monkeypatch, *, rmdir_raises):
         calls = []
-        monkeypatch.setattr(install_addon.sys, "platform", platform)
-        monkeypatch.setattr(
-            install_addon.os, "rmdir", lambda p: calls.append(("rmdir", p))
-        )
-        monkeypatch.setattr(Path, "is_symlink", lambda _self: is_symlink)
-        monkeypatch.setattr(Path, "is_dir", lambda _self: is_dir)
+
+        def _rmdir(path):
+            calls.append(("rmdir", path))
+            if rmdir_raises is not None:
+                raise rmdir_raises
+
+        monkeypatch.setattr(install_addon.os, "rmdir", _rmdir)
         monkeypatch.setattr(
             Path, "unlink", lambda _self, **_kw: calls.append(("unlink", _self))
         )
         return calls
 
-    def test_a_posix_symlink_to_a_directory_is_unlinked(self, monkeypatch):
-        """The regression: rmdir here raises ENOTDIR and aborts the whole re-install."""
-        calls = self._spy(monkeypatch, platform="linux", is_symlink=True, is_dir=True)
-
-        install_addon._remove_link(Path("addon/core"))
-
-        assert calls == [("unlink", Path("addon/core"))]
-
-    def test_a_posix_symlink_to_a_file_is_unlinked(self, monkeypatch):
-        calls = self._spy(monkeypatch, platform="darwin", is_symlink=True, is_dir=False)
-
-        install_addon._remove_link(Path("addon/envs.py"))
-
-        assert calls == [("unlink", Path("addon/envs.py"))]
-
-    def test_a_windows_junction_is_rmdir_since_it_is_not_a_symlink(self, monkeypatch):
-        calls = self._spy(monkeypatch, platform="win32", is_symlink=False, is_dir=True)
+    def test_a_directory_link_is_removed_by_rmdir_alone(self, monkeypatch):
+        """A Windows junction or a directory symlink, live or dangling."""
+        calls = self._spy(monkeypatch, rmdir_raises=None)
 
         install_addon._remove_link(Path("addon/core"))
 
         assert calls == [("rmdir", Path("addon/core"))]
 
-    def test_a_windows_directory_symlink_is_rmdir_since_unlink_refuses_it(
-        self, monkeypatch
-    ):
-        calls = self._spy(monkeypatch, platform="win32", is_symlink=True, is_dir=True)
+    def test_a_posix_symlink_falls_back_to_unlink(self, monkeypatch):
+        """The regression this class exists for: POSIX rmdir refuses a symlink outright, and
+        giving up there aborted every re-install on macOS and Linux."""
+        calls = self._spy(
+            monkeypatch, rmdir_raises=NotADirectoryError(20, "Not a directory")
+        )
 
         install_addon._remove_link(Path("addon/core"))
 
-        assert calls == [("rmdir", Path("addon/core"))]
+        assert calls == [("rmdir", Path("addon/core")), ("unlink", Path("addon/core"))]
 
-    def test_a_windows_file_symlink_is_unlinked(self, monkeypatch):
-        calls = self._spy(monkeypatch, platform="win32", is_symlink=True, is_dir=False)
+    def test_a_file_link_falls_back_to_unlink(self, monkeypatch):
+        calls = self._spy(
+            monkeypatch, rmdir_raises=OSError(267, "The directory name is invalid")
+        )
 
         install_addon._remove_link(Path("addon/envs.py"))
 
-        assert calls == [("unlink", Path("addon/envs.py"))]
+        assert calls == [
+            ("rmdir", Path("addon/envs.py")),
+            ("unlink", Path("addon/envs.py")),
+        ]
+
+    def test_rmdir_is_always_attempted_first(self, monkeypatch):
+        """Order matters: unlink-first would delete a Windows junction's ENTRY on some paths
+        and refuse on others, and the fallback would never be reached for the dangling case.
+        """
+        calls = self._spy(monkeypatch, rmdir_raises=OSError(1, "nope"))
+
+        install_addon._remove_link(Path("addon/anything"))
+
+        assert calls[0][0] == "rmdir"
+
+
+class TestAJunctionThatCannotBeMade:
+    def test_mklinks_reason_reaches_the_user(self, monkeypatch, tmp_path):
+        """``capture_output=True`` swallows the one line that says why — and junctions really
+        are unsupported in places (a UNC path, a non-NTFS volume). Without this the install
+        ends as a bare 'returned non-zero exit status 1'."""
+        # ``sys.modules[name] = None`` makes ``import name`` raise ImportError, which is how
+        # the shell fallback becomes the path under test on a machine that HAS _winapi.
+        monkeypatch.setitem(sys.modules, "_winapi", None)
+
+        def _fail(*_args, **_kwargs):
+            raise install_addon.subprocess.CalledProcessError(
+                1,
+                "mklink",
+                output="",
+                stderr="Local volumes are required to complete the operation.\n",
+            )
+
+        monkeypatch.setattr(install_addon.subprocess, "run", _fail)
+
+        with pytest.raises(SystemExit) as excinfo:
+            install_addon._create_junction(tmp_path / "src", tmp_path / "dest")
+
+        message = str(excinfo.value)
+        assert "Local volumes are required" in message
+        assert "--copy" in message
 
 
 @pytest.fixture

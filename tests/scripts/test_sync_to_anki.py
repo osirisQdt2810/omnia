@@ -164,6 +164,82 @@ class TestTheVoiceModelReport:
         assert sizes and all(0 < size <= 64 for size in sizes), sizes
 
 
+class TestIsAnkiRunning:
+    """Only picks the closing line ('restart Anki' vs 'start Anki') — but a check that is
+    always True tells every user to quit an app they never opened, which reads as the script
+    misunderstanding their machine."""
+
+    def _fake_run(self, monkeypatch, answers: dict[str, str]):
+        """Answer each probe by its last argument; record what was asked."""
+        asked = []
+
+        class _Result:
+            def __init__(self, stdout: str) -> None:
+                self.stdout = stdout
+
+        def _run(cmd, **_kwargs):
+            asked.append(cmd)
+            return _Result(answers.get(cmd[-1], ""))
+
+        monkeypatch.setattr(sync_to_anki.subprocess, "run", _run)
+        return asked
+
+    def test_posix_does_not_match_the_script_itself(self, monkeypatch):
+        """``pgrep -f anki`` matched this very process: the script is called sync_to_anki.py,
+        usually under a repo path containing 'anki'. Nothing may match the whole command line
+        on a bare 'anki'."""
+        monkeypatch.setattr(sync_to_anki.sys, "platform", "linux")
+        asked = self._fake_run(monkeypatch, {})
+
+        assert sync_to_anki.anki_is_running() is False
+        assert ["pgrep", "-f", "anki"] not in asked
+
+    def test_posix_finds_the_classic_binary_by_exact_name(self, monkeypatch):
+        monkeypatch.setattr(sync_to_anki.sys, "platform", "darwin")
+        self._fake_run(monkeypatch, {"anki": "4711\n"})
+
+        assert sync_to_anki.anki_is_running() is True
+
+    def test_posix_finds_the_launcher_build(self, monkeypatch):
+        """The launcher runs …/AnkiProgramFiles/.venv/bin/python, whose process NAME is just
+        'python' — only the command line identifies it."""
+        monkeypatch.setattr(sync_to_anki.sys, "platform", "darwin")
+        self._fake_run(monkeypatch, {"AnkiProgramFiles": "4712\n"})
+
+        assert sync_to_anki.anki_is_running() is True
+
+    def test_windows_reads_the_task_list(self, monkeypatch):
+        monkeypatch.setattr(sync_to_anki.sys, "platform", "win32")
+
+        class _Result:
+            stdout = "anki.exe   4713 Console   1   180,000 K\n"
+
+        monkeypatch.setattr(sync_to_anki.subprocess, "run", lambda *a, **k: _Result())
+
+        assert sync_to_anki.anki_is_running() is True
+
+    def test_windows_with_no_match(self, monkeypatch):
+        monkeypatch.setattr(sync_to_anki.sys, "platform", "win32")
+
+        class _Result:
+            stdout = "INFO: No tasks are running which match the specified criteria.\n"
+
+        monkeypatch.setattr(sync_to_anki.subprocess, "run", lambda *a, **k: _Result())
+
+        assert sync_to_anki.anki_is_running() is False
+
+    def test_a_missing_pgrep_is_not_fatal(self, monkeypatch):
+        """A trimmed container may not have it; the install must still finish."""
+        monkeypatch.setattr(sync_to_anki.sys, "platform", "linux")
+
+        def _boom(*_a, **_k):
+            raise FileNotFoundError(2, "No such file or directory: 'pgrep'")
+
+        monkeypatch.setattr(sync_to_anki.subprocess, "run", _boom)
+
+        assert sync_to_anki.anki_is_running() is False
+
+
 class TestTheVenvInterpreterPath:
     def test_windows_layout(self, monkeypatch):
         monkeypatch.setattr(sync_to_anki.sys, "platform", "win32")

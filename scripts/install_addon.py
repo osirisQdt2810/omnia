@@ -114,18 +114,21 @@ def _is_link(path: Path) -> bool:
 def _remove_link(path: Path) -> None:
     """Remove a link entry without following it, leaving its target untouched.
 
-    Which call does that depends on what the entry IS, not on what it points at — and
-    ``Path.is_dir()`` answers the second question, because it follows the link. Branching on it
-    sends a POSIX symlink-to-a-directory into ``os.rmdir``, which refuses a symlink outright
-    (``ENOTDIR``) and breaks every re-run of the install on the platform where the dev loop
-    mostly runs.
+    Try, don't predict. Every way of asking "is this a directory link?" up front is wrong for
+    some case: ``Path.is_dir()`` FOLLOWS the link, so a POSIX symlink-to-a-directory looks like
+    a directory (``os.rmdir`` then refuses it with ``ENOTDIR``, breaking every re-install on the
+    platform the dev loop runs on), and a DANGLING Windows directory symlink looks like a file
+    (``unlink`` then refuses it, because Windows needs ``rmdir`` for one).
+
+    Attempting ``rmdir`` first covers every directory link — Windows junction, Windows directory
+    symlink, live or dangling — and the failure it raises for a file link, or for any symlink on
+    POSIX, is exactly the signal to unlink instead. ``rmdir`` never removes the target: POSIX
+    requires it to fail with ``ENOTDIR`` when the path names a symlink.
     """
-    if not path.is_symlink():
-        os.rmdir(path)  # a Windows junction: a directory entry, so rmdir drops the link
-    elif sys.platform.startswith("win") and path.is_dir():
-        os.rmdir(path)  # a Windows directory symlink: unlink refuses it
-    else:
-        path.unlink()  # a POSIX symlink, dir or file: rmdir would raise ENOTDIR
+    try:
+        os.rmdir(path)
+    except OSError:
+        path.unlink()
 
 
 def _clear_prior_assembly(target: Path) -> None:
@@ -163,11 +166,22 @@ def _create_junction(src: Path, dest: Path) -> None:
         _winapi.CreateJunction(str(src), str(dest))
     except (ImportError, AttributeError, OSError):
         # Fall back to the shell built-in, which does the same thing.
-        subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(dest), str(src)],
-            check=True,
-            capture_output=True,
-        )
+        try:
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(dest), str(src)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # capture_output hides the ONE line that says why — and junctions genuinely are
+            # unsupported in places (a UNC path, a non-NTFS volume). Without this the install
+            # fails as a bare "returned non-zero exit status 1".
+            raise SystemExit(
+                f"Could not create a junction {dest} -> {src}:\n"
+                f"  {(exc.stderr or exc.stdout or '').strip() or 'mklink gave no reason'}\n"
+                "Junctions need NTFS and a local path; re-run with --copy to install a snapshot."
+            ) from exc
 
 
 def _place(src: Path, dest: Path, *, copy: bool) -> Optional[str]:
