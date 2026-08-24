@@ -35,7 +35,10 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Optional, Protocol
+
+if TYPE_CHECKING:
+    from omnia.plugins.smart_notes.integration.browser import ChromeProfile
 
 from .integrations import Integration
 
@@ -72,6 +75,9 @@ class CommandRunner(Protocol):
     def spawn(self, argv: list[str]) -> None:
         """Fire-and-forget launch (opening an app / a URL / a Finder reveal)."""
 
+    def run_stdin(self, argv: list[str], text: str) -> None:
+        """Run ``argv`` feeding ``text`` on stdin (the platform clipboard tools take it there)."""
+
 
 class SubprocessCommandRunner:
     """The real :class:`CommandRunner`: subprocess with output captured (never Anki's stderr).
@@ -92,7 +98,9 @@ class SubprocessCommandRunner:
                 timeout=1800,  # 30-min ceiling; a first-time build + downloads can be slow
             )
         except FileNotFoundError as exc:
-            raise InstallError(f"Command not found: {argv[0]!r}. Is it installed?") from exc
+            raise InstallError(
+                f"Command not found: {argv[0]!r}. Is it installed?"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise InstallError(f"`{argv[0]} …` timed out.") from exc
         if completed.returncode != 0:
@@ -112,11 +120,15 @@ class SubprocessCommandRunner:
                 timeout=120,  # short read-only git queries
             )
         except FileNotFoundError as exc:
-            raise InstallError(f"Command not found: {argv[0]!r}. Is it installed?") from exc
+            raise InstallError(
+                f"Command not found: {argv[0]!r}. Is it installed?"
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             raise InstallError(f"`{argv[0]} …` timed out.") from exc
         if completed.returncode != 0:
-            raise InstallError(f"`{' '.join(argv[:3])} …` failed (exit {completed.returncode}).")
+            raise InstallError(
+                f"`{' '.join(argv[:3])} …` failed (exit {completed.returncode})."
+            )
         return completed.stdout or ""
 
     def spawn(self, argv: list[str]) -> None:
@@ -124,6 +136,19 @@ class SubprocessCommandRunner:
             subprocess.Popen(argv)  # fixed argv, no shell
         except OSError as exc:
             raise InstallError(f"Could not launch {argv[0]!r}: {exc}") from exc
+
+    def run_stdin(self, argv: list[str], text: str) -> None:
+        try:
+            subprocess.run(
+                argv,
+                input=text,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise InstallError(f"{argv[0]!r} failed: {exc}") from exc
 
 
 class ClipperInstaller:
@@ -240,7 +265,11 @@ class ClipperInstaller:
             try:
                 base.mkdir(parents=True, exist_ok=True)
                 self._copy_app(source, dest)
-            except (OSError, shutil.Error, InstallError) as exc:  # not writable → next candidate
+            except (
+                OSError,
+                shutil.Error,
+                InstallError,
+            ) as exc:  # not writable → next candidate
                 last_err = f"{base}: {exc}"
                 continue
             # macOS launches the .app bundle itself; Windows/Linux launch the inner binary.
@@ -256,7 +285,9 @@ class ClipperInstaller:
         ``ditto`` and no signature to preserve; ``symlinks=True`` keeps any onedir symlinks).
         """
         if self._platform == "darwin":
-            self._runner.run(["rm", "-rf", str(dest)])  # ditto merges into an existing dir; clear it
+            self._runner.run(
+                ["rm", "-rf", str(dest)]
+            )  # ditto merges into an existing dir; clear it
             self._runner.run(["ditto", str(source), str(dest)])
         else:
             if dest.exists():
@@ -264,11 +295,17 @@ class ClipperInstaller:
             shutil.copytree(source, dest, symlinks=True)
 
     def _desktop_exe_name(self) -> str:
-        return f"{_DESKTOP_APP_NAME}.exe" if self._platform.startswith("win") else _DESKTOP_APP_NAME
+        return (
+            f"{_DESKTOP_APP_NAME}.exe"
+            if self._platform.startswith("win")
+            else _DESKTOP_APP_NAME
+        )
 
     def _open_desktop_app(self, launch_path: Path) -> None:
         if self._platform == "darwin":
-            self._runner.spawn(["open", str(launch_path)])  # open the installed .app bundle
+            self._runner.spawn(
+                ["open", str(launch_path)]
+            )  # open the installed .app bundle
         elif self._platform.startswith("win"):
             self._runner.spawn(["cmd", "/c", "start", "", str(launch_path)])
         else:  # linux: launch the built binary directly
@@ -277,22 +314,69 @@ class ClipperInstaller:
     # -- web: clone -> reveal folder + open chrome://extensions --------------------------------
 
     def _reveal_web(self, integration: Integration, progress: Progress) -> None:
+        """Take the user as far as Chrome allows, and say where the last step is.
+
+        Chrome has closed every route to installing an unpacked extension programmatically —
+        measured on Chrome 151, not assumed: ``--load-extension`` is ignored, and while the
+        DevTools ``Extensions.loadUnpacked`` command does load one, it is SESSION-ONLY (nothing
+        is recorded in the profile, so it is gone at the next restart). A CRX outside the Web
+        Store is refused. So the final click is the user's, and the job here is to leave them
+        one paste away from it rather than in a file manager wondering what to do.
+        """
         src = self._clone_or_update(integration, progress)
-        progress("Opening chrome://extensions and revealing the folder to load unpacked…")
-        self._reveal(src)
-        self._open_chrome_extensions()
+        self._copy_to_clipboard(str(src))
+        profile = self._chrome_profile()
+        where = f" in your '{profile.name}' profile" if profile else ""
+        progress(
+            f"Opening chrome://extensions{where}. Turn on Developer mode, click 'Load "
+            f"unpacked', and paste the path (already copied): {src}"
+        )
+        self._open_chrome_extensions(profile)
         self._write_marker(src)
 
-    def _reveal(self, path: Path) -> None:
-        if self._platform == "darwin":
-            self._runner.spawn(["open", "-R", str(path)])
-        elif self._platform.startswith("win"):
-            self._runner.spawn(["explorer", str(path)])
-        else:
-            self._runner.spawn(["xdg-open", str(path)])
+    def _chrome_profile(self) -> Optional[ChromeProfile]:
+        """The Chrome profile to target, or None when it cannot be determined."""
+        from omnia.plugins.smart_notes.integration.browser import preferred_profile
 
-    def _open_chrome_extensions(self) -> None:
+        try:
+            return preferred_profile(self._platform)
+        except Exception:  # choosing a profile is a convenience, never a failure
+            return None
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        """Put ``text`` on the clipboard so 'Load unpacked' is a paste, not a hunt.
+
+        Best-effort and silent on failure: a missing clipboard tool must not fail an install
+        whose real output is the cloned folder.
+        """
+        try:
+            if self._platform == "darwin":
+                self._runner.run_stdin(["pbcopy"], text)
+            elif self._platform.startswith("win"):
+                self._runner.run_stdin(["clip"], text)
+            else:
+                self._runner.run_stdin(["xclip", "-selection", "clipboard"], text)
+        except Exception:
+            pass
+
+    def _open_chrome_extensions(self, profile: Optional[ChromeProfile] = None) -> None:
+        """Open ``chrome://extensions`` — in ``profile`` when one could be identified.
+
+        Chrome numbers profile directories in creation order and shows an unrelated display
+        name, so on a machine with several profiles the plain "open Chrome" shortcuts land in
+        whichever one Chrome picks. ``--profile-directory`` is the only way to say which, and
+        it needs Chrome's real executable: ``open -a`` / ``start chrome`` take a URL but not
+        Chrome's own flags.
+        """
+        from omnia.plugins.smart_notes.integration.browser import chrome_executable
+
         url = "chrome://extensions/"
+        executable = chrome_executable(self._platform) if profile is not None else None
+        if executable and profile is not None:
+            self._runner.spawn(
+                [executable, f"--profile-directory={profile.directory}", url]
+            )
+            return
         if self._platform == "darwin":
             self._runner.spawn(["open", "-a", "Google Chrome", url])
         elif self._platform.startswith("win"):
@@ -330,7 +414,9 @@ class ClipperInstaller:
         if not src.is_dir():
             return
         try:
-            sha = self._runner.run_capture(["git", "-C", str(src), "rev-parse", "HEAD"]).strip()
+            sha = self._runner.run_capture(
+                ["git", "-C", str(src), "rev-parse", "HEAD"]
+            ).strip()
         except InstallError:
             return
         if sha:

@@ -47,6 +47,8 @@ class _FakeRunner:
         self.runs: list[tuple[list[str], str | None]] = []
         self.spawns: list[list[str]] = []
         self.captures: list[tuple[list[str], str | None]] = []
+        self.stdins: list[tuple[list[str], str]] = []
+        self.stdin_raises = False
         self._fail_on = fail_on
         self.head_sha = head_sha
         self.remote_sha = remote_sha
@@ -66,6 +68,11 @@ class _FakeRunner:
 
     def spawn(self, argv):
         self.spawns.append(argv)
+
+    def run_stdin(self, argv, text):
+        if self.stdin_raises:
+            raise InstallError("no clipboard tool here")
+        self.stdins.append((argv, text))
 
 
 def _installer(tmp_path, runner, host_python="/usr/bin/python3", platform="darwin"):
@@ -173,23 +180,113 @@ class TestDesktopInstall:
         assert runner.spawns[-1] == [str(launch)]
 
 
-class TestWebReveal:
-    def test_clone_then_reveal_and_open_chrome(self, tmp_path):
+class TestWebInstall:
+    """Chrome allows no programmatic install of an unpacked extension, so the last click is
+    the user's. What the install owes them is landing on the right page in the right profile
+    with the path already on the clipboard — not a file manager and a puzzle."""
+
+    def _clone(self, tmp_path):
+        source = tmp_path / "clippers" / "web_clipper"
+        source.mkdir(parents=True, exist_ok=True)
+        marker = source / ".omnia-installed"
+        if marker.exists():
+            marker.unlink()
+        return source
+
+    def test_it_clones_and_records_the_commit(self, tmp_path):
         runner = _FakeRunner()
-        (tmp_path / "clippers" / "web_clipper").mkdir(
-            parents=True
-        )  # simulate the cloned dir
+        self._clone(tmp_path)
+
         _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
         assert runner.runs[0][0][:2] == ["git", "clone"]  # only clones, no build
         assert len(runner.runs) == 1
-        assert runner.spawns[0][:2] == ["open", "-R"]  # reveal folder
-        assert (
-            "Google Chrome" in runner.spawns[1]
-            and "chrome://extensions/" in runner.spawns[1]
-        )
-        # web install also records the installed commit for upgrade detection
         marker = tmp_path / "clippers" / "web_clipper" / ".omnia-installed"
         assert marker.read_text().strip() == runner.head_sha
+
+    def test_the_extension_path_goes_on_the_clipboard(self, tmp_path):
+        """'Load unpacked' opens a folder picker; a path on the clipboard is one paste."""
+        runner = _FakeRunner()
+        source = self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        assert runner.stdins == [(["pbcopy"], str(source))]
+
+    @pytest.mark.parametrize(
+        "platform,tool",
+        [("win32", ["clip"]), ("linux", ["xclip", "-selection", "clipboard"])],
+    )
+    def test_windows_and_linux_use_their_own_clipboard_tool(
+        self, tmp_path, platform, tool
+    ):
+        runner = _FakeRunner()
+        source = self._clone(tmp_path)
+
+        _installer(tmp_path, runner, platform=platform).install(WEB, lambda _m: None)
+
+        assert runner.stdins == [(tool, str(source))]
+
+    def test_a_clipboard_tool_that_is_missing_does_not_fail_the_install(self, tmp_path):
+        """The install's real output is the cloned folder; a missing pbcopy is not a failure."""
+        runner = _FakeRunner()
+        runner.stdin_raises = True
+        self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        marker = tmp_path / "clippers" / "web_clipper" / ".omnia-installed"
+        assert marker.is_file()
+
+    def test_chrome_opens_on_the_profile_chrome_itself_last_used(
+        self, tmp_path, monkeypatch
+    ):
+        """Chrome numbers profile dirs in creation order and shows an unrelated display name,
+        so on a machine with eight profiles 'just open Chrome' lands in the wrong one.
+        """
+        from omnia.plugins.smart_notes.integration import browser
+
+        monkeypatch.setattr(
+            browser,
+            "preferred_profile",
+            lambda platform="": browser.ChromeProfile("Profile 1", "phuc"),
+        )
+        monkeypatch.setattr(browser, "chrome_executable", lambda platform="": "/chrome")
+        runner = _FakeRunner()
+        self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        assert runner.spawns[-1] == [
+            "/chrome",
+            "--profile-directory=Profile 1",
+            "chrome://extensions/",
+        ]
+
+    def test_it_falls_back_to_plain_chrome_when_the_profile_is_unknown(
+        self, tmp_path, monkeypatch
+    ):
+        from omnia.plugins.smart_notes.integration import browser
+
+        monkeypatch.setattr(browser, "preferred_profile", lambda platform="": None)
+        runner = _FakeRunner()
+        self._clone(tmp_path)
+
+        _installer(tmp_path, runner).install(WEB, lambda _m: None)
+
+        assert "chrome://extensions/" in runner.spawns[-1]
+        assert "Google Chrome" in runner.spawns[-1]
+
+    def test_the_progress_line_names_the_path_to_paste(self, tmp_path):
+        """This message is what the user reads in the modal; it has to carry the next step."""
+        runner = _FakeRunner()
+        source = self._clone(tmp_path)
+        seen: list[str] = []
+
+        _installer(tmp_path, runner).install(WEB, seen.append)
+
+        assert any(str(source) in message for message in seen)
+        assert any("Developer mode" in message for message in seen)
 
 
 class TestStatus:
