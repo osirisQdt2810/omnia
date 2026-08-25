@@ -262,7 +262,6 @@
     btn.type = "button";
     btn.className = "sn-btn";
     btn.id = "sn-launch-btn-" + integ.key;
-    btn.dataset.launchKey = integ.key;
     btn.textContent = web ? "Reload" : "Open";
     btn.disabled = true;
     btn.title = web

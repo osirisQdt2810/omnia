@@ -340,7 +340,7 @@ class ConfigController:
                 key, ok=True, message=str(message), action="launch"
             ),
             on_failure=lambda exc: self._push_install_done(
-                key, ok=False, error=self._install_error_text(exc), action="launch"
+                key, ok=False, error=self._launch_error_text(exc), action="launch"
             ),
         )
         return {"started": True}
@@ -389,6 +389,22 @@ class ConfigController:
     def _push_install_status(self, states: dict[str, dict[str, bool]]) -> None:
         """Push the per-integration install states to the page (already on the Qt main thread)."""
         self._ctx.eval_js(f"window.__snClipperInstallStatus({json.dumps(states)});")
+
+    @staticmethod
+    def _launch_error_text(exc: Exception) -> str:
+        """A user-facing one-liner for a failed Open/Reload (full detail goes to the log).
+
+        Separate from :meth:`_install_error_text` because that one says "Install failed", and
+        telling someone who pressed Open that an install failed sends them to look at the wrong
+        thing entirely. An :class:`InstallError` here already carries a message written for this
+        button — no Chrome, no profile, not installed — so it is shown as-is.
+        """
+        logger.exception("smart_notes: clipper launch failed")
+        return (
+            str(exc)
+            if isinstance(exc, InstallError)
+            else "Could not open it — see the log."
+        )
 
     @staticmethod
     def _install_error_text(exc: Exception) -> str:

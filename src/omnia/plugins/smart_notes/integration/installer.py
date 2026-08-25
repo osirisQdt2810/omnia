@@ -282,9 +282,22 @@ class ClipperInstaller:
             ) as exc:  # not writable → next candidate
                 last_err = f"{base}: {exc}"
                 continue
-            # macOS launches the .app bundle itself; Windows/Linux launch the inner binary.
-            return dest if is_mac else dest / self._desktop_exe_name()
+            return self._installed_app_path(base)
         raise InstallError(f"Built the app but could not install it. {last_err}")
+
+    def _installed_app_path(self, base: Path) -> Path:
+        """Where an app installed under ``base`` is launched from.
+
+        macOS launches the ``.app`` bundle itself; PyInstaller's onedir layout on Windows and
+        Linux puts the binary INSIDE a folder of the same name, so the launch path is one level
+        deeper. Defined once because the install and the later Open must agree: they disagreed,
+        and the Open side looked a directory level too high — on Windows it reported "not
+        installed" to a user with a working installation, and on Linux the check passed
+        (``exists()`` is true for a directory) and the spawn tried to execute the folder.
+        """
+        if self._platform == "darwin":
+            return base / _DESKTOP_APP
+        return base / _DESKTOP_APP_NAME / self._desktop_exe_name()
 
     def _copy_app(self, source: Path, dest: Path) -> None:
         """Replace ``dest`` with a copy of the built app ``source``.
@@ -403,7 +416,11 @@ class ClipperInstaller:
             pass
 
     def _open_chrome(
-        self, url: Optional[str], profile: Optional[ChromeProfile] = None
+        self,
+        url: Optional[str],
+        profile: Optional[ChromeProfile] = None,
+        *,
+        executable: Optional[str] = None,
     ) -> None:
         """Open ``url`` in Chrome — in ``profile`` when one could be identified.
 
@@ -418,7 +435,8 @@ class ClipperInstaller:
         """
         from omnia.plugins.smart_notes.integration.browser import chrome_executable
 
-        executable = chrome_executable(self._platform) if profile is not None else None
+        if executable is None and profile is not None:
+            executable = chrome_executable(self._platform)
         if executable and profile is not None:
             argv = [executable, f"--profile-directory={profile.directory}"]
             self._runner.spawn([*argv, url] if url else argv)
@@ -459,11 +477,8 @@ class ClipperInstaller:
 
     def _open_installed_desktop(self) -> str:
         """Launch the installed desktop app, wherever this platform put it."""
-        # macOS launches the .app BUNDLE; Windows and Linux launch the executable file, which
-        # is exactly the split _desktop_exe_name already encodes.
-        name = _DESKTOP_APP if self._platform == "darwin" else self._desktop_exe_name()
         for parent in self._app_dest_dirs():
-            launch_path = parent / name
+            launch_path = self._installed_app_path(parent)
             if launch_path.exists():
                 self._open_desktop_app(launch_path)
                 return f"Opened {launch_path}."
@@ -491,7 +506,10 @@ class ClipperInstaller:
             installed_extension_id,
         )
 
-        if chrome_executable(self._platform) is None:
+        # Resolved ONCE and handed to _open_chrome, which would otherwise sweep the same
+        # candidate paths again for the same click.
+        executable = chrome_executable(self._platform)
+        if executable is None:
             raise InstallError(
                 "Google Chrome is not installed on this machine, so there is nothing to "
                 "reload. The Omnia Web Clipper is a Chrome extension."
@@ -513,7 +531,7 @@ class ClipperInstaller:
                 f"{profile.name!r}. Use Set up… to load it first."
             )
         url = f"chrome-extension://{extension_id}/{_WEB_OPTIONS_PAGE}?omnia-reload=1"
-        self._open_chrome(url, profile)
+        self._open_chrome(url, profile, executable=executable)
         return f"Reloading in Chrome profile {profile.name!r}…"
 
     # -- install state (Install / Upgrade / Up-to-date button) --------------------------------
