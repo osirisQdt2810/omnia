@@ -51,6 +51,9 @@ Progress = Callable[[str], None]
 # whose binary is ``<name>.exe`` / ``<name>``).
 _DESKTOP_APP_NAME = "Omnia Desktop Clipper"
 _DESKTOP_APP = f"{_DESKTOP_APP_NAME}.app"
+# The extension page Reload opens. It carries ?omnia-reload=1, which the clipper answers by
+# reloading itself and reopening Settings (see that repo's options.js / background.js).
+_WEB_OPTIONS_PAGE = "src/options.html"
 # Marker file written into a clone after a successful install, holding the installed commit SHA.
 # status() compares it against the remote main HEAD to offer Install / Upgrade / Up-to-date
 # (mirrors the ``.omnia-installed`` marker the native-runtime manager uses for its venvs).
@@ -428,6 +431,90 @@ class ClipperInstaller:
             self._runner.spawn(["cmd", "/c", "start", "chrome", url])
         else:
             self._runner.spawn(["google-chrome", url])
+
+    # -- launch an ALREADY-installed clipper (Open / Reload buttons) ---------------------------
+
+    def launch(self, integration: Integration) -> str:
+        """Open or reload an already-installed integration; return a line for the user.
+
+        Separate from :meth:`install` because the two answer different questions. Install is a
+        long job that clones, builds and copies; this is the short one a user wants when the
+        thing is already there and they just want it in front of them — a desktop app that was
+        quit, or an extension that needs picking up an edit.
+
+        Args:
+            integration: The registered integration to launch.
+
+        Returns:
+            A short sentence naming what happened, shown next to the button.
+
+        Raises:
+            InstallError: When it cannot be launched, with the reason a user can act on.
+        """
+        if integration.install_kind == "desktop":
+            return self._open_installed_desktop()
+        if integration.install_kind == "web":
+            return self._reload_web_extension(integration)
+        raise InstallError(f"{integration.name} cannot be opened from here.")
+
+    def _open_installed_desktop(self) -> str:
+        """Launch the installed desktop app, wherever this platform put it."""
+        # macOS launches the .app BUNDLE; Windows and Linux launch the executable file, which
+        # is exactly the split _desktop_exe_name already encodes.
+        name = _DESKTOP_APP if self._platform == "darwin" else self._desktop_exe_name()
+        for parent in self._app_dest_dirs():
+            launch_path = parent / name
+            if launch_path.exists():
+                self._open_desktop_app(launch_path)
+                return f"Opened {launch_path}."
+        looked_in = ", ".join(str(parent) for parent in self._app_dest_dirs())
+        raise InstallError(
+            f"{_DESKTOP_APP_NAME} is not installed here (looked in {looked_in}). "
+            "Use Install first."
+        )
+
+    def _reload_web_extension(self, integration: Integration) -> str:
+        """Reload the extension in the profile Chrome last used, and show its Settings.
+
+        Chrome gives an outside process no way to reload an unpacked extension — a ``chrome://``
+        URL is dropped from the command line and DevTools ``loadUnpacked`` is session-only — but
+        it does open an extension's OWN page. So this opens the clipper's options page with
+        ``?omnia-reload=1``, and the extension does the rest: that page stores a flag, calls
+        ``chrome.runtime.reload()``, and the fresh service worker reopens Settings.
+
+        The id cannot be hard-coded. An unpacked extension with no manifest ``key`` gets an id
+        derived from its path, so it differs per machine and has to be read out of the profile
+        Chrome recorded it in.
+        """
+        from omnia.plugins.smart_notes.integration.browser import (
+            chrome_executable,
+            installed_extension_id,
+        )
+
+        if chrome_executable(self._platform) is None:
+            raise InstallError(
+                "Google Chrome is not installed on this machine, so there is nothing to "
+                "reload. The Omnia Web Clipper is a Chrome extension."
+            )
+        profile = self._chrome_profile()
+        if profile is None:
+            raise InstallError(
+                "Could not tell which Chrome profile to use. Open Chrome once, then try again."
+            )
+        extension_id = installed_extension_id(
+            name=integration.name,
+            source_dir=self._clones_dir / integration.key,
+            profile=profile,
+            platform=self._platform,
+        )
+        if extension_id is None:
+            raise InstallError(
+                f"{integration.name} is not loaded in Chrome profile "
+                f"{profile.name!r}. Use Set up… to load it first."
+            )
+        url = f"chrome-extension://{extension_id}/{_WEB_OPTIONS_PAGE}?omnia-reload=1"
+        self._open_chrome(url, profile)
+        return f"Reloading in Chrome profile {profile.name!r}…"
 
     # -- install state (Install / Upgrade / Up-to-date button) --------------------------------
 
