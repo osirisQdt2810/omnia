@@ -88,6 +88,7 @@ class ConfigController:
             "save": self.on_save,
             "cancel": self.on_cancel,
             "install_integration": self.on_install_integration,
+            "launch_integration": self.on_launch_integration,
             "refresh_install_status": self.on_refresh_install_status,
         }
 
@@ -310,6 +311,40 @@ class ConfigController:
         )
         return {"started": True}
 
+    def on_launch_integration(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Open (desktop) or reload (web) an ALREADY-installed integration, off the Qt thread.
+
+        Short where :meth:`on_install_integration` is long: nothing is cloned or built, so this
+        finishes in the time it takes to start a process. It still goes to a worker because it
+        spawns one and, for the web clipper, reads Chrome's profile files — neither belongs on
+        the thread painting the dialog.
+
+        Reuses the install progress channel, so the row reports success or failure exactly where
+        the user is already looking, with no second mechanism to keep working.
+        """
+        key = str(data.get("key", ""))
+        integration = integration_for_key(key)
+        if integration is None or not integration.install_kind:
+            return {"started": False, "error": "This integration can't be opened."}
+
+        # No host-Python probe: launching runs no build, and probing is a main-thread
+        # subprocess sweep that would delay the very thing the user wants to be instant.
+        installer = self._build_installer(resolve_host_python=False)
+
+        def op() -> str:
+            return installer.launch(integration)
+
+        anki_compat.run_in_background(
+            op,
+            on_success=lambda message: self._push_install_done(
+                key, ok=True, message=str(message), action="launch"
+            ),
+            on_failure=lambda exc: self._push_install_done(
+                key, ok=False, error=self._launch_error_text(exc), action="launch"
+            ),
+        )
+        return {"started": True}
+
     def on_refresh_install_status(self, _data: dict[str, Any]) -> dict[str, Any]:
         """Compute each installable integration's Install/Upgrade/Up-to-date state OFF the Qt main
         thread (a ``git ls-remote`` per integration hits the network) and push the result to
@@ -356,6 +391,22 @@ class ConfigController:
         self._ctx.eval_js(f"window.__snClipperInstallStatus({json.dumps(states)});")
 
     @staticmethod
+    def _launch_error_text(exc: Exception) -> str:
+        """A user-facing one-liner for a failed Open/Reload (full detail goes to the log).
+
+        Separate from :meth:`_install_error_text` because that one says "Install failed", and
+        telling someone who pressed Open that an install failed sends them to look at the wrong
+        thing entirely. An :class:`InstallError` here already carries a message written for this
+        button — no Chrome, no profile, not installed — so it is shown as-is.
+        """
+        logger.exception("smart_notes: clipper launch failed")
+        return (
+            str(exc)
+            if isinstance(exc, InstallError)
+            else "Could not open it — see the log."
+        )
+
+    @staticmethod
     def _install_error_text(exc: Exception) -> str:
         """A user-facing one-liner for a failed install (full detail goes to the log)."""
         logger.exception("smart_notes: clipper install failed")
@@ -385,9 +436,30 @@ class ConfigController:
 
         anki_compat.run_on_main(_show)
 
-    def _push_install_done(self, key: str, *, ok: bool, error: str = "") -> None:
-        """Send the install outcome to ``window.__snClipperInstallDone`` (already on main)."""
+    def _push_install_done(
+        self,
+        key: str,
+        *,
+        ok: bool,
+        error: str = "",
+        message: str = "",
+        action: str = "install",
+    ) -> None:
+        """Send the install outcome to ``window.__snClipperInstallDone`` (already on main).
+
+        ``message`` is what a SUCCESS has to say. An install has nothing to add — the button
+        flipping to "Up to date" is the whole result — but Open and Reload do: which app was
+        launched, or which Chrome profile is being reloaded.
+
+        ``action`` is sent so the page never has to INFER which job finished. Only an install
+        may relabel the Install button to "Up to date"; a launch proves nothing about whether
+        the clone is current, and inferring the difference from "did it send a message" would
+        silently relabel the moment a launch stopped having anything to say.
+        """
         result: dict[str, Any] = {"ok": ok} if ok else {"ok": False, "error": error}
+        result["action"] = action
+        if ok and message:
+            result["message"] = message
         self._ctx.eval_js(
             f"window.__snClipperInstallDone({json.dumps(key)}, {json.dumps(result)});"
         )

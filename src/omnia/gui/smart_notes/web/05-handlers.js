@@ -241,8 +241,44 @@
       });
     });
     actions.appendChild(btn);
+    actions.appendChild(integrationLaunchButton(integ, prog));
     actions.appendChild(prog);
     return actions;
+  }
+
+  /**
+   * Build the "Open" (desktop) / "Reload" (web) button that acts on an ALREADY-installed
+   * clipper, so both live under Omnia rather than being hunted for in the OS.
+   *
+   * Starts disabled: until refresh_install_status says the integration is installed there is
+   * nothing to open, and offering it would fail in a way the user cannot act on.
+   * @param {!Object} integ {key, install_kind, name, ...}
+   * @param {!HTMLElement} prog The row's shared status line.
+   * @return {!HTMLElement}
+   */
+  function integrationLaunchButton(integ, prog) {
+    const web = integ.install_kind === "web";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sn-btn";
+    btn.id = "sn-launch-btn-" + integ.key;
+    btn.textContent = web ? "Reload" : "Open";
+    btn.disabled = true;
+    btn.title = web
+      ? "Reload the extension in the Chrome profile you used last, and open its Settings. " +
+        "Needs Chrome installed and the extension already loaded."
+      : "Re-open the installed Omnia Desktop Clipper.";
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      prog.textContent = web ? "Reloading…" : "Opening…";
+      send("launch_integration", {key: integ.key}, function (res) {
+        if (!res || res.started === false) {
+          btn.disabled = false;
+          prog.textContent = (res && res.error) || "Could not start.";
+        }
+      });
+    });
+    return btn;
   }
 
   /**
@@ -254,6 +290,9 @@
    */
   function applyInstallState(btn, st) {
     const web = btn.dataset.installKind === "web";
+    // The launch button tracks the same status: nothing to open until something is installed.
+    const launch = document.getElementById("sn-launch-btn-" + btn.dataset.installKey);
+    if (launch) launch.disabled = !(st && st.installed);
     if (!st || !st.installed) {
       btn.textContent = web ? "Set up…" : "Install app";
       btn.disabled = false;
@@ -281,12 +320,25 @@
   window.__snClipperInstallDone = function (key, result) {
     const btn = document.getElementById("sn-install-btn-" + key);
     const el = document.getElementById("sn-install-status-" + key);
+    const launch = document.getElementById("sn-launch-btn-" + key);
+    // Which job finished is TOLD to us, never inferred: opening an app proves nothing about
+    // whether the clone is current, so only an install may relabel the button to "Up to date".
+    const wasLaunch = result && result.action === "launch";
     if (result && result.ok) {
-      // Just cloned/pulled + built → now at the latest commit: reflect "Up to date".
-      if (btn) applyInstallState(btn, {installed: true, upgrade: false});
-      if (el) el.textContent = "Done ✓";
+      if (wasLaunch) {
+        if (launch) launch.disabled = false;
+        if (el) el.textContent = result.message || "Done ✓";
+      } else {
+        // Just cloned/pulled + built → now at the latest commit: reflect "Up to date".
+        if (btn) applyInstallState(btn, {installed: true, upgrade: false});
+        if (el) el.textContent = "Done ✓";
+      }
     } else {
-      if (btn) btn.disabled = false; // let them retry (label stays the actionable one)
+      if (wasLaunch) {
+        if (launch) launch.disabled = false;
+      } else if (btn) {
+        btn.disabled = false; // let them retry (label stays the actionable one)
+      }
       if (el) el.textContent = "Failed: " + ((result && result.error) || "unknown error");
     }
   };

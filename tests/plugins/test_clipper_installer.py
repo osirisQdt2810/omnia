@@ -6,6 +6,7 @@ injected ``install_root``, so nothing here ever touches the real ``/Applications
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,16 @@ class _FakeRunner:
         self.runs.append((argv, str(cwd) if cwd is not None else None))
         if self._fail_on and any(self._fail_on in a for a in argv):
             raise InstallError(f"boom: {self._fail_on}")
+        # ``ditto`` and ``rm -rf`` are how the macOS install actually MOVES the app, so the fake
+        # performs them. A recorder that only remembers the words leaves the install a no-op on
+        # that platform, and any test asking "is it installed?" afterwards is answering about an
+        # empty directory. (Windows/Linux copy in-process via shutil, so they need nothing here.)
+        if argv[:1] == ["ditto"] and len(argv) == 3:
+            source, dest = Path(argv[1]), Path(argv[2])
+            if source.is_dir():
+                shutil.copytree(source, dest, symlinks=True, dirs_exist_ok=True)
+        elif argv[:2] == ["rm", "-rf"] and len(argv) == 3:
+            shutil.rmtree(argv[2], ignore_errors=True)
 
     def run_capture(self, argv, cwd=None):
         self.captures.append((argv, str(cwd) if cwd is not None else None))
@@ -102,6 +113,12 @@ def _seed_build(tmp_path, *, mac: bool = True):
     art = "Omnia Desktop Clipper.app" if mac else "Omnia Desktop Clipper"
     (clone / "dist" / art).mkdir(parents=True)
     (clone / "dist" / art / "placeholder").write_text("x")
+    if not mac:
+        # PyInstaller's onedir layout: the BINARY lives inside the folder. Without it the seed
+        # is a directory that only looks like an install, and a test that asks "can this be
+        # opened?" gets the wrong answer for the wrong reason.
+        (clone / "dist" / art / "Omnia Desktop Clipper.exe").write_text("x")
+        (clone / "dist" / art / "Omnia Desktop Clipper").write_text("x")
     return clone
 
 
@@ -421,3 +438,202 @@ class TestGuards:
     def test_integration_for_key(self):
         assert integration_for_key("desktop_clipper") is not None
         assert integration_for_key("nope") is None
+
+
+class TestLaunchDesktop:
+    """The Integrations "Open" button: re-open the clipper that is already installed."""
+
+    @staticmethod
+    def _install_then_launch(tmp_path, platform):
+        """INSTALL with the real installer, then Open — never fabricate the layout.
+
+        The first version of these tests hand-created the file where ``_open_installed_desktop``
+        happened to look, so they asserted the bug rather than the feature: PyInstaller's onedir
+        layout puts the binary inside a folder of the same name, and Open was looking a level
+        too high. Driving the real install is what makes them able to disagree with the code.
+        """
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform=platform)
+        _seed_build(tmp_path, mac=(platform == "darwin"))
+        installer.install(DESKTOP, lambda _m: None)
+        installed_spawn = list(runner.spawns)
+        runner.spawns.clear()
+        message = installer.launch(DESKTOP)
+        return runner.spawns, installed_spawn, message
+
+    def test_open_launches_exactly_what_install_launched_on_macos(self, tmp_path):
+        opened, installed, message = self._install_then_launch(tmp_path, "darwin")
+
+        assert opened == installed, "Open and Install disagree about where the app is"
+        assert opened == [
+            ["open", str(tmp_path / "apps" / "Omnia Desktop Clipper.app")]
+        ]
+        assert "Omnia Desktop Clipper.app" in message
+
+    def test_open_launches_exactly_what_install_launched_on_windows(self, tmp_path):
+        """The onedir folder is the level that was missing; the exe lives INSIDE it."""
+        opened, installed, _ = self._install_then_launch(tmp_path, "win32")
+
+        expected = (
+            tmp_path / "apps" / "Omnia Desktop Clipper" / "Omnia Desktop Clipper.exe"
+        )
+        assert opened == installed
+        assert opened == [["cmd", "/c", "start", "", str(expected)]]
+
+    def test_open_launches_exactly_what_install_launched_on_linux(self, tmp_path):
+        """Worse than Windows if this drifts: exists() is True for the folder, so the check
+        passes and the spawn tries to execute a DIRECTORY."""
+        opened, installed, _ = self._install_then_launch(tmp_path, "linux")
+
+        expected = tmp_path / "apps" / "Omnia Desktop Clipper" / "Omnia Desktop Clipper"
+        assert opened == installed
+        assert opened == [[str(expected)]]
+        assert expected.is_file(), "Open would be spawning a directory"
+
+    def test_nothing_installed_says_so_and_launches_nothing(self, tmp_path):
+        """The failure a user can act on: it names where it looked and what to do."""
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin")
+
+        with pytest.raises(InstallError) as excinfo:
+            installer.launch(DESKTOP)
+
+        assert "not installed" in str(excinfo.value)
+        assert "Install" in str(excinfo.value)
+        assert runner.spawns == []
+
+
+class TestLaunchWeb:
+    """The Integrations "Reload" button: reload the extension and show its Settings."""
+
+    @staticmethod
+    def _patch_browser(
+        monkeypatch, *, chrome="/chrome", profile=..., extension_id="abc123"
+    ):
+        from omnia.plugins.smart_notes.integration import browser
+
+        if profile is ...:
+            profile = browser.ChromeProfile(directory="Profile 1", name="phuc")
+        monkeypatch.setattr(browser, "chrome_executable", lambda *a, **k: chrome)
+        monkeypatch.setattr(browser, "preferred_profile", lambda *a, **k: profile)
+        monkeypatch.setattr(
+            browser, "installed_extension_id", lambda *a, **k: extension_id
+        )
+        return profile
+
+    def test_it_opens_the_extension_page_with_the_reload_flag(
+        self, tmp_path, monkeypatch
+    ):
+        """The whole mechanism in one assertion: our own page, in the right profile.
+
+        Chrome refuses every other route — a ``chrome://`` URL is dropped from the command line
+        and DevTools loadUnpacked is session-only — so the extension's own page carrying
+        ``?omnia-reload=1`` IS the feature.
+        """
+        self._patch_browser(monkeypatch)
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin")
+
+        message = installer.launch(WEB)
+
+        assert len(runner.spawns) == 1
+        argv = runner.spawns[0]
+        assert argv[0] == "/chrome"
+        assert "--profile-directory=Profile 1" in argv
+        assert argv[-1] == "chrome-extension://abc123/src/options.html?omnia-reload=1"
+        assert "phuc" in message
+
+    def test_chrome_is_resolved_once_per_click(self, tmp_path, monkeypatch):
+        """One filesystem sweep, not two. Reload is meant to feel instant."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        sweeps = {"n": 0}
+
+        def counting(*_args, **_kwargs):
+            sweeps["n"] += 1
+            return "/chrome"
+
+        monkeypatch.setattr(browser, "chrome_executable", counting)
+        monkeypatch.setattr(
+            browser,
+            "preferred_profile",
+            lambda *a, **k: browser.ChromeProfile(directory="Profile 1", name="phuc"),
+        )
+        monkeypatch.setattr(browser, "installed_extension_id", lambda **k: "abc123")
+        installer = _installer(tmp_path, _FakeRunner(), platform="darwin")
+
+        installer.launch(WEB)
+
+        assert sweeps["n"] == 1
+
+    def test_no_chrome_is_an_error_not_a_silent_no_op(self, tmp_path, monkeypatch):
+        """Explicitly required: a machine without Chrome must SAY so."""
+        self._patch_browser(monkeypatch, chrome=None)
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="win32")
+
+        with pytest.raises(InstallError) as excinfo:
+            installer.launch(WEB)
+
+        assert "Chrome" in str(excinfo.value)
+        assert runner.spawns == []
+
+    def test_no_profile_is_an_error(self, tmp_path, monkeypatch):
+        self._patch_browser(monkeypatch, profile=None)
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin")
+
+        with pytest.raises(InstallError):
+            installer.launch(WEB)
+
+        assert runner.spawns == []
+
+    def test_an_extension_that_is_not_loaded_says_where_to_load_it(
+        self, tmp_path, monkeypatch
+    ):
+        """Chrome cannot be made to load it programmatically, so the message must point at Set up."""
+        self._patch_browser(monkeypatch, extension_id=None)
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin")
+
+        with pytest.raises(InstallError) as excinfo:
+            installer.launch(WEB)
+
+        assert "Set up" in str(excinfo.value)
+        assert runner.spawns == []
+
+    def test_it_looks_the_extension_up_in_the_clone_it_installed(
+        self, tmp_path, monkeypatch
+    ):
+        """Matching on OUR clone, not just the name, so another build of it is not reloaded."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        seen: dict = {}
+        monkeypatch.setattr(browser, "chrome_executable", lambda *a, **k: "/chrome")
+        monkeypatch.setattr(
+            browser,
+            "preferred_profile",
+            lambda *a, **k: browser.ChromeProfile(directory="Profile 1", name="phuc"),
+        )
+        monkeypatch.setattr(
+            browser,
+            "installed_extension_id",
+            lambda **kwargs: seen.update(kwargs) or "abc123",
+        )
+        installer = _installer(tmp_path, _FakeRunner(), platform="darwin")
+
+        installer.launch(WEB)
+
+        assert seen["source_dir"] == tmp_path / "clippers" / "web_clipper"
+        assert seen["name"] == WEB.name
+
+
+class TestLaunchDispatch:
+    def test_an_integration_with_no_install_kind_cannot_be_launched(self, tmp_path):
+        from omnia.plugins.smart_notes.integration.integrations import Integration
+
+        installer = _installer(tmp_path, _FakeRunner())
+        plain = Integration(key="x", source_tag="x", name="X", description="")
+
+        with pytest.raises(InstallError):
+            installer.launch(plain)

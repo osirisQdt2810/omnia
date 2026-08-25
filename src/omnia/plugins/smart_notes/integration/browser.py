@@ -136,3 +136,106 @@ def chrome_executable(platform: str = "") -> Optional[str]:
         if os.path.exists(candidate):
             return candidate
     return None
+
+
+#: Where Chrome records an installed extension. ``Secure Preferences`` is the file that holds
+#: ``extensions.settings`` on current Chrome; ``Preferences`` is read as a fallback for older
+#: profiles that kept it there. Measured, not assumed: on Chrome 152 the plain ``Preferences``
+#: carries an empty ``extensions.settings`` while the real list sits in the secure file.
+_EXTENSION_PREFERENCE_FILES = ("Secure Preferences", "Preferences")
+
+
+def find_extension_id(
+    preferences: Mapping[str, Any],
+    *,
+    name: str = "",
+    source_dir: Optional[Path] = None,
+) -> Optional[str]:
+    """Return the id Chrome gave an unpacked extension, or None when it is not installed.
+
+    An unpacked extension with no ``key`` in its manifest gets an id DERIVED FROM ITS PATH, so
+    the id differs per machine and cannot be hard-coded. It has to be looked up, and the two
+    things we know about our own extension are where it was cloned to and what it is called.
+
+    ``source_dir`` is tried first and is the stronger signal: it identifies the copy this
+    add-on installed, rather than any build of the extension the user may also have loaded.
+    ``name`` is the fallback, for a user who loaded it from somewhere else.
+
+    Args:
+        preferences: The decoded contents of a profile's ``Secure Preferences``/``Preferences``.
+        name: The extension's manifest name, matched case-insensitively.
+        source_dir: The unpacked directory Chrome was pointed at.
+
+    Returns:
+        The extension id, or None when no entry matches.
+    """
+    extensions = preferences.get("extensions")
+    settings = extensions.get("settings") if isinstance(extensions, Mapping) else None
+    if not isinstance(settings, Mapping):
+        return None
+
+    wanted_path = (
+        str(source_dir).replace("\\", "/").rstrip("/").lower() if source_dir else ""
+    )
+    wanted_name = name.strip().lower()
+    by_name: Optional[str] = None
+
+    for extension_id, entry in settings.items():
+        if not isinstance(entry, Mapping):
+            continue
+        entry_path = str(entry.get("path") or "").replace("\\", "/").rstrip("/").lower()
+        if wanted_path and entry_path == wanted_path:
+            return str(extension_id)
+        manifest = entry.get("manifest")
+        entry_name = (
+            str(manifest.get("name") or "") if isinstance(manifest, Mapping) else ""
+        )
+        if (
+            wanted_name
+            and entry_name.strip().lower() == wanted_name
+            and by_name is None
+        ):
+            by_name = str(extension_id)
+    return by_name
+
+
+def read_profile_preferences(
+    user_data_dir: Optional[Path], profile_directory: str
+) -> dict[str, Any]:
+    """Read a profile's extension preferences, trying the secure file first.
+
+    Never raises, for the same reason :func:`read_local_state` does not: a locked or missing
+    file means "cannot tell", which the caller reports as a plain message rather than a crash.
+    """
+    if user_data_dir is None or not profile_directory:
+        return {}
+    for filename in _EXTENSION_PREFERENCE_FILES:
+        try:
+            text = (user_data_dir / profile_directory / filename).read_text(
+                encoding="utf-8", errors="replace"
+            )
+            data = json.loads(text)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, Mapping):
+            continue
+        extensions = data.get("extensions")
+        if isinstance(extensions, Mapping) and extensions.get("settings"):
+            return dict(data)
+    return {}
+
+
+def installed_extension_id(
+    *,
+    name: str = "",
+    source_dir: Optional[Path] = None,
+    profile: Optional[ChromeProfile] = None,
+    platform: str = "",
+) -> Optional[str]:
+    """The id of our unpacked extension in ``profile`` (default: the last-used one), or None."""
+    user_data_dir = chrome_user_data_dir(platform)
+    profile = profile or preferred_profile(platform)
+    if profile is None:
+        return None
+    preferences = read_profile_preferences(user_data_dir, profile.directory)
+    return find_extension_id(preferences, name=name, source_dir=source_dir)
