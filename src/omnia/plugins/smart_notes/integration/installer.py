@@ -31,6 +31,7 @@ git/pip/network) and installs under a temp dir instead of the real ``/Applicatio
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -54,6 +55,8 @@ _DESKTOP_APP = f"{_DESKTOP_APP_NAME}.app"
 # The extension page Reload opens. It carries ?omnia-reload=1, which the clipper answers by
 # reloading itself and reopening Settings (see that repo's options.js / background.js).
 _WEB_OPTIONS_PAGE = "src/options.html"
+# Marks an install the previous app was still running from. Swept on the next install.
+_RETIRED_SUFFIX = ".retired-"
 # Marker file written into a clone after a successful install, holding the installed commit SHA.
 # status() compares it against the remote main HEAD to offer Install / Upgrade / Up-to-date
 # (mirrors the ``.omnia-installed`` marker the native-runtime manager uses for its venvs).
@@ -313,9 +316,48 @@ class ClipperInstaller:
             )  # ditto merges into an existing dir; clear it
             self._runner.run(["ditto", str(source), str(dest)])
         else:
-            if dest.exists():
-                shutil.rmtree(dest)
+            self._clear_dest(dest)
             shutil.copytree(source, dest, symlinks=True)
+        self._sweep_retired(dest)
+
+    def _clear_dest(self, dest: Path) -> None:
+        """Make ``dest`` free for a fresh copy, even while the old app is RUNNING.
+
+        Deleting it outright is what an upgrade used to do, and on Windows that fails: the
+        running app holds its own DLLs open, so ``rmtree`` stops at the first one with
+        ``[WinError 5] Access is denied`` on something like
+        ``_internal/PyQt6/Qt6/bin/MSVCP140.dll`` and the install dies half-done. Telling the
+        user to quit first would work, but Upgrade is a button in a settings dialog -- it should
+        not require choreography.
+
+        Windows lets a DIRECTORY be renamed while files inside it are open (verified on this
+        machine against a live install), and the running process keeps reading from the renamed
+        copy quite happily. So the old app is moved aside rather than deleted, the new one takes
+        its place, and the retired copy is removed when it can be -- next launch at the latest.
+        """
+        if not dest.exists():
+            return
+        try:
+            shutil.rmtree(dest)
+            return
+        except OSError:
+            pass  # in use -- move it aside instead
+        retired = dest.with_name(f"{dest.name}{_RETIRED_SUFFIX}{os.getpid()}")
+        os.replace(dest, retired)
+
+    @staticmethod
+    def _sweep_retired(dest: Path) -> None:
+        """Delete copies retired by an earlier upgrade, now that nothing may be holding them.
+
+        Best-effort and silent: one still in use simply waits for the next install. Leaving
+        them forever would grow a few hundred MB per upgrade in the user's Programs folder.
+        """
+        parent = dest.parent
+        if not parent.is_dir():
+            return
+        for stale in parent.glob(f"{dest.name}{_RETIRED_SUFFIX}*"):
+            with contextlib.suppress(OSError):
+                shutil.rmtree(stale)
 
     def _desktop_exe_name(self) -> str:
         return (
