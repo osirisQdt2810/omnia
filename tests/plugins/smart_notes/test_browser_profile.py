@@ -112,6 +112,22 @@ def _entry(name, path):
     return {"manifest": {"name": name}, "path": path}
 
 
+def _entry_without_manifest(path):
+    """A real Chrome entry for an unpacked load: a path, and no cached manifest.
+
+    Copied from what a live profile actually holds. `_entry` above is the convenient shape,
+    not the common one, and testing only against it is how the name fallback stayed broken
+    while its test stayed green.
+    """
+    return {
+        "path": path,
+        "location": 4,
+        "active_permissions": {"api": ["storage"]},
+        "has_started_service_worker": True,
+        "was_installed_by_default": False,
+    }
+
+
 class TestFindingOurExtension:
     """An unpacked extension with no manifest ``key`` gets a PATH-DERIVED id.
 
@@ -155,6 +171,48 @@ class TestFindingOurExtension:
             source_dir=Path("/home/u/clippers/web_clipper"),
         )
         assert found == "zzz"
+
+    def test_the_fallback_works_when_chrome_cached_no_manifest(self, tmp_path):
+        """The case the old fallback could not reach, and the one users actually hit.
+
+        Chrome routinely records an unpacked extension with a path and NO manifest. The name
+        then has to come off disk, from the directory Chrome did record, or a running
+        extension is reported as not loaded.
+        """
+        loaded = tmp_path / "omnia-web-clipper"
+        loaded.mkdir()
+        (loaded / "manifest.json").write_text(
+            json.dumps({"name": "Omnia Web Clipper", "version": "1.0"}),
+            encoding="utf-8",
+        )
+        prefs = _prefs({"zzz": _entry_without_manifest(str(loaded))})
+
+        found = find_extension_id(
+            prefs,
+            name="Omnia Web Clipper",
+            source_dir=tmp_path / "somewhere" / "we" / "installed",
+        )
+
+        assert found == "zzz"
+
+    def test_a_manifest_less_entry_for_someone_elses_extension_is_ignored(
+        self, tmp_path
+    ):
+        """Reading names off disk must not turn into matching anything with a manifest."""
+        other = tmp_path / "unrelated"
+        other.mkdir()
+        (other / "manifest.json").write_text(
+            json.dumps({"name": "Some Other Extension"}), encoding="utf-8"
+        )
+        prefs = _prefs({"aaa": _entry_without_manifest(str(other))})
+
+        assert find_extension_id(prefs, name="Omnia Web Clipper") is None
+
+    def test_a_store_extensions_relative_path_is_never_read_from_disk(self):
+        """Chrome writes "<id>/<version>" for store extensions; that is not a directory."""
+        prefs = _prefs({"aaa": _entry_without_manifest("abcdef/1.2.3_0")})
+
+        assert find_extension_id(prefs, name="Omnia Web Clipper") is None
 
     def test_matching_ignores_case_and_a_trailing_separator(self):
         """Chrome writes the path as the OS gave it; ours comes from pathlib."""

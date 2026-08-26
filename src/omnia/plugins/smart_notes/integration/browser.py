@@ -145,6 +145,40 @@ def chrome_executable(platform: str = "") -> Optional[str]:
 _EXTENSION_PREFERENCE_FILES = ("Secure Preferences", "Preferences")
 
 
+def _entry_name(entry: Mapping[str, Any], entry_path: str) -> str:
+    """The extension's name for ``entry``, from Chrome's copy or from disk.
+
+    Chrome usually caches the manifest under ``"manifest"``, but for an extension loaded
+    unpacked it frequently records only the PATH -- a real profile here had every key from
+    ``active_permissions`` to ``service_worker_registration_info`` and no ``manifest`` at all.
+    Reading the name off that entry alone therefore yields "", the name fallback never fires,
+    and a running extension is reported as not loaded. So when Chrome kept no manifest, this
+    reads ``manifest.json`` out of the directory Chrome DID record.
+
+    Args:
+        entry: One value from ``extensions.settings``.
+        entry_path: That entry's ``path``, already normalised to forward slashes and lowercased.
+
+    Returns:
+        The manifest name, or ``""`` when neither source has one.
+    """
+    manifest = entry.get("manifest")
+    if isinstance(manifest, Mapping):
+        cached = str(manifest.get("name") or "").strip()
+        if cached:
+            return cached
+    # Chrome stores a RELATIVE path for store extensions ("<id>/<version>"); only an absolute
+    # path is an unpacked load we can read from.
+    raw = str(entry.get("path") or "")
+    if not raw or not Path(raw).is_absolute():
+        return ""
+    try:
+        on_disk = json.loads((Path(raw) / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(on_disk.get("name") or "").strip() if isinstance(on_disk, dict) else ""
+
+
 def find_extension_id(
     preferences: Mapping[str, Any],
     *,
@@ -186,10 +220,7 @@ def find_extension_id(
         entry_path = str(entry.get("path") or "").replace("\\", "/").rstrip("/").lower()
         if wanted_path and entry_path == wanted_path:
             return str(extension_id)
-        manifest = entry.get("manifest")
-        entry_name = (
-            str(manifest.get("name") or "") if isinstance(manifest, Mapping) else ""
-        )
+        entry_name = _entry_name(entry, entry_path)
         if (
             wanted_name
             and entry_name.strip().lower() == wanted_name
