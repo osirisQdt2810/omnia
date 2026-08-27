@@ -31,6 +31,7 @@ git/pip/network) and installs under a temp dir instead of the real ``/Applicatio
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -38,6 +39,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Protocol
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.integration.browser import ChromeProfile
@@ -54,6 +56,11 @@ _DESKTOP_APP = f"{_DESKTOP_APP_NAME}.app"
 # The extension page Reload opens. It carries ?omnia-reload=1, which the clipper answers by
 # reloading itself and reopening Settings (see that repo's options.js / background.js).
 _WEB_OPTIONS_PAGE = "src/options.html"
+# Marks an install the previous app was still running from. Swept on the next install.
+_RETIRED_SUFFIX = ".retired-"
+
+# Retired names are random; a handful of tries is far more than enough to find a free one.
+_RETIRE_NAME_ATTEMPTS = 8
 # Marker file written into a clone after a successful install, holding the installed commit SHA.
 # status() compares it against the remote main HEAD to offer Install / Upgrade / Up-to-date
 # (mirrors the ``.omnia-installed`` marker the native-runtime manager uses for its venvs).
@@ -313,9 +320,104 @@ class ClipperInstaller:
             )  # ditto merges into an existing dir; clear it
             self._runner.run(["ditto", str(source), str(dest)])
         else:
-            if dest.exists():
-                shutil.rmtree(dest)
+            self._clear_dest(dest)
             shutil.copytree(source, dest, symlinks=True)
+
+    def _clear_dest(self, dest: Path) -> None:
+        """Make ``dest`` free for a fresh copy, even while the old app is RUNNING.
+
+        Deleting it outright is what an upgrade used to do, and on Windows that fails: the
+        running app holds its own DLLs open, so ``rmtree`` stops at the first one with
+        ``[WinError 5] Access is denied`` on something like
+        ``_internal/PyQt6/Qt6/bin/MSVCP140.dll`` and the install dies half-done. Telling the
+        user to quit first would work, but Upgrade is a button in a settings dialog -- it should
+        not require choreography.
+
+        Windows lets a DIRECTORY be renamed while files inside it are open (verified on this
+        machine against a live install), so the old app is moved aside rather than deleted.
+        Handles already open follow the rename and keep working; a PyInstaller onedir lazy load
+        does NOT, because ``sys._MEIPASS`` is the absolute path captured at startup and now
+        resolves into the new build sitting at that path. So this buys a mixed-version window
+        that ends at the next restart -- which is still strictly better than the half-deleted
+        tree the alternative leaves, and unlike that one it fails no worse than a normal
+        upgrade would.
+
+        Whether it is running is decided UP FRONT, not by letting the delete fail. ``rmtree``
+        deletes everything it walks past before it reaches the locked DLL and gives up, so
+        discovering the app is running that way leaves a copy full of holes -- and that hole-y
+        copy is precisely what the still-running app would then be left reading from, failing
+        at its next lazy load rather than at a moment anyone could connect to the upgrade.
+        """
+        # Sweep BEFORE retiring anything: afterwards it would delete the copy this very
+        # install just moved the running app into. Ahead of the exists() check too, so a
+        # reinstall over a vanished app still clears what earlier upgrades left behind.
+        self._sweep_retired(dest)
+        if not dest.exists():
+            return
+        if self._app_is_running(dest):
+            os.replace(dest, self._retired_path(dest))
+            return
+        try:
+            shutil.rmtree(dest)
+        except OSError:
+            # Not running, yet something still holds a file -- an indexer or an AV scan. No
+            # process is reading this copy, so a partial delete harms nobody; move the remains
+            # aside and let the next install sweep them.
+            os.replace(dest, self._retired_path(dest))
+
+    def _app_is_running(self, dest: Path) -> bool:
+        """Is the installed app holding its own executable open?
+
+        Windows locks the image of a running process, so opening it for writing raises
+        ``PermissionError`` -- the same probe that identified this bug against the live install.
+        POSIX raises ``ETXTBSY`` instead, but there ``rmtree`` over a running app is legal and
+        works, so only the Windows answer needs to change what we do.
+
+        A missing exe means there is nothing to protect, so the caller deletes as before.
+        """
+        exe = dest / self._desktop_exe_name()
+        if not exe.is_file():
+            return False
+        try:
+            with open(exe, "r+b"):
+                return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _retired_path(dest: Path) -> Path:
+        """A retired name nothing on disk is using yet.
+
+        The suffix was ``os.getpid()``, which is ANKI's pid and therefore the SAME for every
+        upgrade in one session. ``os.replace`` cannot overwrite a non-empty directory, so a
+        second upgrade in one session raised straight back into ``install()``'s ``except
+        OSError`` -- read there as "this base is not writable" -- and the user got the same
+        "Built the app but could not install it" this whole fix exists to remove.
+        """
+        for _ in range(_RETIRE_NAME_ATTEMPTS):
+            candidate = dest.with_name(f"{dest.name}{_RETIRED_SUFFIX}{uuid4().hex[:8]}")
+            if not candidate.exists():
+                return candidate
+        return dest.with_name(f"{dest.name}{_RETIRED_SUFFIX}{uuid4().hex}")
+
+    @staticmethod
+    def _sweep_retired(dest: Path) -> None:
+        """Delete copies retired by an earlier upgrade, now that nothing may be holding them.
+
+        Best-effort and silent: one still in use simply waits for the next install. Leaving
+        them forever would grow a few hundred MB per upgrade in the user's Programs folder.
+
+        Only ever called BEFORE this install retires a copy of its own, so it can never delete
+        the directory the currently-running app was just moved into.
+        """
+        parent = dest.parent
+        if not parent.is_dir():
+            return
+        for stale in parent.glob(f"{dest.name}{_RETIRED_SUFFIX}*"):
+            with contextlib.suppress(OSError):
+                shutil.rmtree(stale)
 
     def _desktop_exe_name(self) -> str:
         return (

@@ -637,3 +637,317 @@ class TestLaunchDispatch:
 
         with pytest.raises(InstallError):
             installer.launch(plain)
+
+
+class TestUpgradingWhileTheAppIsRunning:
+    """The reported failure: Upgrade dies with WinError 5 on a DLL the running app holds.
+
+        Failed: Built the app but could not install it.
+        C:\\...\\Programs: [WinError 5] Access is denied:
+        '...\\Omnia Desktop Clipper\\_internal\\PyQt6\\Qt6\\bin\\MSVCP140.dll'
+
+    Verified against the live install on this machine: opening that DLL for writing raises
+    PermissionError while the app runs, and renaming the app's directory succeeds. So the old
+    copy is moved aside rather than deleted.
+    """
+
+    @staticmethod
+    def _install_over_a_locked_copy(tmp_path, platform, locker):
+        """Install once, make the result undeletable, then install again."""
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform=platform)
+        _seed_build(tmp_path, mac=(platform == "darwin"))
+        installer.install(DESKTOP, lambda _m: None)
+        locker()
+        runner.spawns.clear()
+        installer.install(DESKTOP, lambda _m: None)
+        return runner, installer
+
+    def test_an_upgrade_succeeds_while_the_old_copy_is_locked(
+        self, tmp_path, monkeypatch
+    ):
+        """rmtree fails the way Windows fails it; the install must still finish."""
+        import shutil as shutil_module
+
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        installed = tmp_path / "apps" / "Omnia Desktop Clipper"
+        real_rmtree = shutil_module.rmtree
+
+        def refuse_the_live_copy(path, *args, **kwargs):
+            if str(path) == str(installed):
+                raise PermissionError(13, "Access is denied")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(module.shutil, "rmtree", refuse_the_live_copy)
+
+        runner, _installer_obj = self._install_over_a_locked_copy(
+            tmp_path, "win32", lambda: None
+        )
+
+        exe = installed / "Omnia Desktop Clipper.exe"
+        assert exe.is_file(), "the upgrade did not land the new build"
+        assert runner.spawns == [["cmd", "/c", "start", "", str(exe)]]
+
+    def test_the_old_copy_is_moved_aside_not_left_in_place(self, tmp_path, monkeypatch):
+        """The running app keeps reading from the retired directory until it restarts.
+
+        The refusal covers the RETIRED path too, because that is what actually happens: the
+        app is still running out of it during this very install, so the sweep at the end of the
+        same install cannot remove it either. Refusing only the live path made the sweep
+        succeed instantly and left nothing to observe.
+        """
+        import shutil as shutil_module
+
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        installed = tmp_path / "apps" / "Omnia Desktop Clipper"
+        real_rmtree = shutil_module.rmtree
+
+        def refuse_anything_the_app_holds(path, *args, **kwargs):
+            if "Omnia Desktop Clipper" in str(path) and "dist" not in str(path):
+                raise PermissionError(13, "Access is denied")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(module.shutil, "rmtree", refuse_anything_the_app_holds)
+        self._install_over_a_locked_copy(tmp_path, "win32", lambda: None)
+
+        retired = list((tmp_path / "apps").glob("Omnia Desktop Clipper.retired-*"))
+        assert retired, "the locked copy was neither deleted nor retired"
+        assert installed.is_dir(), "the new build did not land"
+        assert (installed / "Omnia Desktop Clipper.exe").is_file()
+
+    def test_a_retired_copy_is_swept_on_the_next_install(self, tmp_path):
+        """Left forever they would cost a few hundred MB per upgrade."""
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="win32")
+        stale = tmp_path / "apps" / "Omnia Desktop Clipper.retired-9999"
+        stale.mkdir(parents=True)
+        (stale / "junk").write_text("x")
+        _seed_build(tmp_path, mac=False)
+
+        installer.install(DESKTOP, lambda _m: None)
+
+        assert not stale.exists(), "an old retired copy was never cleaned up"
+
+    def test_a_retired_copy_that_is_still_busy_survives_the_sweep(
+        self, tmp_path, monkeypatch
+    ):
+        """Sweeping is best-effort: one still in use waits for the install after this."""
+        import shutil as shutil_module
+
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="win32")
+        stale = tmp_path / "apps" / "Omnia Desktop Clipper.retired-9999"
+        stale.mkdir(parents=True)
+        real_rmtree = shutil_module.rmtree
+
+        def refuse_the_stale_copy(path, *args, **kwargs):
+            if str(path) == str(stale):
+                raise PermissionError(13, "Access is denied")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(module.shutil, "rmtree", refuse_the_stale_copy)
+        _seed_build(tmp_path, mac=False)
+
+        installer.install(DESKTOP, lambda _m: None)
+
+        assert stale.exists()
+        assert (tmp_path / "apps" / "Omnia Desktop Clipper").is_dir()
+
+    def test_a_normal_upgrade_still_deletes_rather_than_retires(self, tmp_path):
+        """Nothing holding the files means no directory left behind at all."""
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="win32")
+        _seed_build(tmp_path, mac=False)
+        installer.install(DESKTOP, lambda _m: None)
+        installer.install(DESKTOP, lambda _m: None)
+
+        retired = list((tmp_path / "apps").glob("Omnia Desktop Clipper.retired-*"))
+        assert retired == []
+
+
+_RETIRED_MARKER = ".retired-"
+
+
+class TestTheRunningAppIsNeverPartiallyDeleted:
+    """`rmtree` deletes everything it walks past BEFORE it reaches the locked file.
+
+    That is what makes "let the delete fail, then rename" wrong rather than merely roundabout.
+    By the time Windows refuses `_internal/PyQt6/Qt6/bin/MSVCP140.dll`, the resource packs and
+    the image-format plugins next to it are already gone -- so the copy moved aside for the
+    running app to keep reading from is full of holes, and the app dies at its next lazy load:
+    a blank web view or a missing preview, at a moment nobody would connect to an upgrade.
+
+    So the question is asked up front instead, with the probe that identified the bug on the
+    live install: opening the exe for writing raises PermissionError while it runs.
+    """
+
+    @staticmethod
+    def _install_with_app_running(tmp_path, monkeypatch, *, running: bool):
+        """Install once, then again with the app reporting `running`, recording rmtree calls."""
+        import shutil as shutil_module
+
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        runner = _FakeRunner()
+        obj = _installer(tmp_path, runner, platform="win32")
+        _seed_build(tmp_path, mac=False)
+        obj.install(DESKTOP, lambda _m: None)
+
+        deleted: list[str] = []
+        real_rmtree = shutil_module.rmtree
+
+        def recording(path, *args, **kwargs):
+            deleted.append(str(path))
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(module.shutil, "rmtree", recording)
+        monkeypatch.setattr(
+            module.ClipperInstaller, "_app_is_running", lambda self, dest: running
+        )
+        obj.install(DESKTOP, lambda _m: None)
+        return obj, deleted, tmp_path / "apps" / "Omnia Desktop Clipper"
+
+    def test_a_running_app_is_never_handed_to_rmtree(self, tmp_path, monkeypatch):
+        _obj, deleted, installed = self._install_with_app_running(
+            tmp_path, monkeypatch, running=True
+        )
+
+        assert str(installed) not in deleted, (
+            "the live app was walked by rmtree, so it was already half-deleted before the "
+            "rename that is supposed to preserve it"
+        )
+        assert installed.is_dir()
+
+    def test_the_retired_copy_is_intact_not_a_shell(self, tmp_path, monkeypatch):
+        """The whole point of retiring: the running app can go on reading from it."""
+        _obj, _deleted, installed = self._install_with_app_running(
+            tmp_path, monkeypatch, running=True
+        )
+
+        retired = list(installed.parent.glob("Omnia Desktop Clipper.retired-*"))
+        assert len(retired) == 1
+        assert (
+            retired[0] / "Omnia Desktop Clipper.exe"
+        ).is_file(), (
+            "the retired copy lost its executable, so the running app was not preserved"
+        )
+
+    def test_an_app_that_is_not_running_is_still_deleted_outright(
+        self, tmp_path, monkeypatch
+    ):
+        """A normal upgrade must leave nothing behind; retiring is the exception, not the rule."""
+        _obj, deleted, installed = self._install_with_app_running(
+            tmp_path, monkeypatch, running=False
+        )
+
+        assert str(installed) in deleted
+        assert list(installed.parent.glob("Omnia Desktop Clipper.retired-*")) == []
+
+
+class TestTwoUpgradesInOneAnkiSession:
+    """The retired name used to be `os.getpid()` -- ANKI's pid, identical all session long.
+
+    `os.replace` cannot overwrite a non-empty directory, so the second upgrade of a session
+    raised, and `_copy_app` runs inside `install()`'s `except OSError` loop, which reads any
+    OSError as "this base is not writable". The user got "Built the app but could not install
+    it" -- the very message this fix exists to remove -- or an install under a different base.
+    """
+
+    def test_the_second_upgrade_of_a_session_also_succeeds(self, tmp_path, monkeypatch):
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        runner = _FakeRunner()
+        obj = _installer(tmp_path, runner, platform="win32")
+        _seed_build(tmp_path, mac=False)
+        obj.install(DESKTOP, lambda _m: None)
+        # The app stays open across both upgrades, and the pid never changes.
+        monkeypatch.setattr(
+            module.ClipperInstaller, "_app_is_running", lambda self, dest: True
+        )
+        monkeypatch.setattr(module.os, "getpid", lambda: 8504)
+
+        obj.install(DESKTOP, lambda _m: None)
+        obj.install(DESKTOP, lambda _m: None)
+
+        installed = tmp_path / "apps" / "Omnia Desktop Clipper"
+        assert (installed / "Omnia Desktop Clipper.exe").is_file()
+
+    def test_a_second_upgrade_succeeds_with_the_first_retired_copy_still_held(
+        self, tmp_path, monkeypatch
+    ):
+        """The reviewer's exact sequence, and the one the sweep cannot rescue.
+
+        The user upgrades, does NOT restart the clipper, and upgrades again. The first retired
+        copy is still being read from, so the sweep cannot remove it and its name stays taken.
+        With a pid-derived suffix the second `os.replace` targets that same existing directory
+        and raises ENOTEMPTY -- swallowed by `install()` as "base not writable".
+        """
+        import shutil as shutil_module
+
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        runner = _FakeRunner()
+        obj = _installer(tmp_path, runner, platform="win32")
+        _seed_build(tmp_path, mac=False)
+        obj.install(DESKTOP, lambda _m: None)
+
+        real_rmtree = shutil_module.rmtree
+
+        def refuse_retired(path, *args, **kwargs):
+            if _RETIRED_MARKER in str(path):
+                raise PermissionError(13, "Access is denied")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(module.shutil, "rmtree", refuse_retired)
+        monkeypatch.setattr(
+            module.ClipperInstaller, "_app_is_running", lambda self, dest: True
+        )
+        monkeypatch.setattr(module.os, "getpid", lambda: 8504)
+
+        obj.install(DESKTOP, lambda _m: None)
+        obj.install(DESKTOP, lambda _m: None)
+
+        apps = tmp_path / "apps"
+        assert (apps / "Omnia Desktop Clipper" / "Omnia Desktop Clipper.exe").is_file()
+        retired = list(apps.glob("Omnia Desktop Clipper.retired-*"))
+        assert (
+            len(retired) == 2
+        ), f"expected one retired copy per upgrade, found {[r.name for r in retired]}"
+
+    def test_each_retirement_gets_its_own_name(self, tmp_path):
+        """Two names drawn in one process must differ, whatever the pid is."""
+        from omnia.plugins.smart_notes.integration.installer import ClipperInstaller
+
+        dest = tmp_path / "Omnia Desktop Clipper"
+        first = ClipperInstaller._retired_path(dest)
+        first.mkdir(parents=True)
+        second = ClipperInstaller._retired_path(dest)
+
+        assert first != second
+        assert not second.exists()
+
+    def test_this_installs_own_retired_copy_survives_this_install(
+        self, tmp_path, monkeypatch
+    ):
+        """Sweeping after the copy would delete the directory the live app just moved into."""
+        from omnia.plugins.smart_notes.integration import installer as module
+
+        runner = _FakeRunner()
+        obj = _installer(tmp_path, runner, platform="win32")
+        _seed_build(tmp_path, mac=False)
+        obj.install(DESKTOP, lambda _m: None)
+        monkeypatch.setattr(
+            module.ClipperInstaller, "_app_is_running", lambda self, dest: True
+        )
+
+        obj.install(DESKTOP, lambda _m: None)
+
+        retired = list((tmp_path / "apps").glob("Omnia Desktop Clipper.retired-*"))
+        assert (
+            len(retired) == 1
+        ), "the copy retired by this install was swept by this install"
+        assert (retired[0] / "Omnia Desktop Clipper.exe").is_file()

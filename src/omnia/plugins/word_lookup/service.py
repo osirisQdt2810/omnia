@@ -26,6 +26,7 @@ import os
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -50,19 +51,61 @@ class _ExclusiveBindHTTPServer(ThreadingHTTPServer):
 # than left hanging (the clipper shows "Anki is busy" instead of a spinner that never resolves).
 _MAIN_THREAD_TIMEOUT_SECONDS = 5.0
 _LOOKUP_PATH = "/lookup"
+_MEDIA_PATH = "/media"
+
+
+# Enough to let a browser or Qt identify the bytes; anything else is served as octet-stream,
+# which QPixmap sniffs perfectly well.
+_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".svg": "image/svg+xml",
+    ".bmp": "image/bmp",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+}
+
+
+def _is_bare_file_name(name: str) -> bool:
+    """Is ``name`` a plain file name, the only shape an Anki media reference takes?
+
+    Anything carrying a separator, a drive or a parent reference is not one, and honouring it
+    would turn a loopback lookup service into a file reader for the whole disk. Both flavours
+    of path are asked, because the name arrives over HTTP from a client that may not run on
+    this OS: a backslash means nothing to POSIX but everything to Windows.
+
+    Asked this way rather than by searching for ".." as a SUBSTRING, which also refuses a
+    legitimately-named ``diagram..png`` sitting in the media folder.
+    """
+    if name in {".", ".."}:
+        return False
+    return PurePosixPath(name).name == name and PureWindowsPath(name).name == name
 
 
 class LookupService:
-    """Serves ``GET /lookup?word=…`` on loopback, answering from the collection.
+    """Serves ``GET /lookup?word=…`` and ``GET /media?file=…`` on loopback.
 
     The lookup callable is injected, so the whole service tests without Anki: pass any
     ``(word) -> dict``.
+
+    ``/media`` exists because the panel this serves shows a note's images, and the bytes have
+    to come from somewhere. They used to come from AnkiConnect, a SEPARATE add-on the user may
+    simply not have -- and on a machine without it every preview reported "Image unavailable"
+    while the lookup itself worked perfectly, because the lookup is this service and the image
+    was not. This service already runs inside Anki with the collection open; serving the file
+    is a few lines, and it removes a dependency the feature never needed.
     """
 
     def __init__(
         self,
         lookup: Callable[[str], dict[str, Any]],
         *,
+        media_dir: Optional[Callable[[], str]] = None,
         port: int = 8766,
         host: str = "127.0.0.1",
         run_on_main: Optional[Callable[[Callable[[], None]], None]] = None,
@@ -72,6 +115,9 @@ class LookupService:
         Args:
             lookup: Performs one lookup and returns the JSON-able payload. Called on the Qt
                 main thread when ``run_on_main`` is supplied.
+            media_dir: Returns the collection's media folder. ``None`` disables ``/media``,
+                which is what a headless test wants -- and what the panel reads as "no image
+                fetcher", so it shows a badge instead of a broken button.
             port: Loopback port to listen on.
             host: Interface to bind. Anything but a loopback address is refused by
                 :meth:`start` — this service must never be exposed to a network.
@@ -79,6 +125,7 @@ class LookupService:
                 inline (tests / headless), which is only safe when there is no live collection.
         """
         self._lookup = lookup
+        self._media_dir = media_dir
         self._port = port
         self._host = host
         self._run_on_main = run_on_main
@@ -141,6 +188,42 @@ class LookupService:
         """Whether ``host`` is a loopback address (the only thing this service may bind)."""
         return host in {"127.0.0.1", "::1", "localhost"}
 
+    def _media_bytes(self, filename: str) -> Optional[bytes]:
+        """Return a collection-media file's bytes, or ``None``.
+
+        The name is checked BEFORE the folder is consulted: an Anki media name is a bare file
+        name, so anything with a separator or a parent reference is not one, and honouring it
+        would turn a loopback lookup service into a reader for the whole disk. The resolved
+        path is then required to sit inside the media folder, which catches whatever the name
+        check did not.
+        """
+        if self._media_dir is None or not filename:
+            return None
+        if not _is_bare_file_name(filename):
+            return None
+        try:
+            # The RESULT decides, not the callable. The plugin returns "" when there is no
+            # collection -- and every failure inside it funnels into that same "" -- while
+            # Path("").resolve() is the process's working directory. Checking only that the
+            # callable exists therefore turned "no media folder" into "serve Anki's CWD",
+            # which is a real loopback file reader over a directory nobody chose.
+            folder_name = self._media_dir()
+            if not folder_name:
+                return None
+            folder = Path(folder_name).resolve()
+            target = (folder / filename).resolve()
+            if folder not in target.parents:
+                return None
+            return target.read_bytes()
+        except (OSError, ValueError):
+            # ValueError is the stdlib's signal for a path string it cannot use at all --
+            # "embedded null byte" from resolve()/read_bytes(). It is NOT an OSError, and a
+            # name that is nothing but a NUL passes the bare-name check, so it is the one
+            # rejected shape that reaches the filesystem call instead of being refused
+            # before it. Escaping here would print a traceback to stderr, which Anki turns
+            # into an error dialog.
+            return None
+
     def _lookup_via_main_thread(self, word: str) -> dict[str, Any]:
         """Run the injected lookup on the Qt main thread and return its payload.
 
@@ -183,7 +266,11 @@ class LookupService:
 
             def do_GET(self) -> None:
                 parsed = urlparse(self.path)
-                if parsed.path.rstrip("/") != _LOOKUP_PATH:
+                route = parsed.path.rstrip("/")
+                if route == _MEDIA_PATH:
+                    self._serve_media(parse_qs(parsed.query))
+                    return
+                if route != _LOOKUP_PATH:
                     self._respond(404, {"error": "unknown endpoint"})
                     return
                 params = parse_qs(parsed.query)
@@ -200,6 +287,48 @@ class LookupService:
                     self._respond(500, {"error": "lookup failed"})
                 else:
                     self._respond(200, payload)
+
+            def _serve_media(self, params: dict[str, list[str]]) -> None:
+                """Answer ``GET /media?file=…`` with the raw bytes, or a JSON error."""
+                filename = (params.get("file") or [""])[0].strip()
+                if not filename:
+                    self._respond(400, {"error": "missing 'file'"})
+                    return
+                # No main-thread hop: this is file IO plus one cached attribute read
+                # (MediaManager.dir() returns a value set in __init__, with no backend call),
+                # not a collection query. Marshalling it would queue behind whatever the user
+                # is doing in Anki for no reason.
+                #
+                # Nothing may escape this method. Anki turns anything on stderr into its error
+                # dialog, and socketserver prints an unhandled handler exception there -- so a
+                # single bad request would pop a dialog mid-review, from any page that can do
+                # <img src="http://127.0.0.1:.../media?file=...">. The /lookup branch above has
+                # always caught broadly for this reason; this one now matches it.
+                try:
+                    data = service._media_bytes(filename)
+                except Exception:
+                    logger.exception("word_lookup: media failed for %r", filename)
+                    self._respond(500, {"error": "media failed"})
+                    return
+                if data is None:
+                    self._respond(404, {"error": "no such media file"})
+                    return
+                self._respond_bytes(
+                    data,
+                    _MEDIA_TYPES.get(
+                        Path(filename).suffix.lower(), "application/octet-stream"
+                    ),
+                )
+
+            def _respond_bytes(self, body: bytes, content_type: str) -> None:
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except OSError as exc:
+                    logger.debug("word_lookup: client disconnected mid-media (%s)", exc)
 
             def _respond(self, status: int, payload: dict[str, Any]) -> None:
                 body = json.dumps(payload).encode("utf-8")

@@ -68,6 +68,7 @@ class WordLookupPlugin(FeaturePlugin):
         self._ctx = ctx
         self._service = LookupService(
             self.lookup,
+            media_dir=self._media_dir,
             port=int(getattr(ctx.settings, "port", 8766)),
             run_on_main=anki_compat.run_on_main,
         )
@@ -90,6 +91,20 @@ class WordLookupPlugin(FeaturePlugin):
         return WordLookupSettingsDialog(repo, parent)
 
     # -- the endpoint's payload ----------------------------------------------------------
+
+    @staticmethod
+    def _media_dir() -> str:
+        """The collection's media folder, or ``""`` when there is no collection.
+
+        Read lazily rather than captured at enable time: a profile switch swaps the collection
+        underneath us, and a path captured once would serve the previous profile's media.
+        """
+        try:
+            from aqt import mw
+
+            return str(mw.col.media.dir()) if mw and mw.col else ""
+        except Exception:
+            return ""
 
     def lookup(self, word: str) -> dict[str, Any]:
         """Search the collection for ``word`` and return a display-ready payload.
