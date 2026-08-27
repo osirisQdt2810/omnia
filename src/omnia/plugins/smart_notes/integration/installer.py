@@ -334,8 +334,13 @@ class ClipperInstaller:
         not require choreography.
 
         Windows lets a DIRECTORY be renamed while files inside it are open (verified on this
-        machine against a live install), and the running process keeps reading from the renamed
-        copy. So the old app is moved aside rather than deleted.
+        machine against a live install), so the old app is moved aside rather than deleted.
+        Handles already open follow the rename and keep working; a PyInstaller onedir lazy load
+        does NOT, because ``sys._MEIPASS`` is the absolute path captured at startup and now
+        resolves into the new build sitting at that path. So this buys a mixed-version window
+        that ends at the next restart -- which is still strictly better than the half-deleted
+        tree the alternative leaves, and unlike that one it fails no worse than a normal
+        upgrade would.
 
         Whether it is running is decided UP FRONT, not by letting the delete fail. ``rmtree``
         deletes everything it walks past before it reaches the locked DLL and gives up, so

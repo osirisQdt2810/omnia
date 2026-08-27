@@ -223,3 +223,59 @@ class TestWithoutAMediaFolder:
         assert status == 200
         assert "json" in (content_type or "")
         assert json.loads(body)["word"] == "hello"
+
+
+class TestNothingEscapesIntoAnkisErrorDialog:
+    """An unhandled handler exception is printed to stderr, and Anki turns stderr into a dialog.
+
+    That is why `_respond` swallows disconnects and `log_message` is silenced, and the /media
+    route has to keep the same discipline. It is not a local-only concern: any page the user
+    visits can issue `<img src="http://127.0.0.1:8766/media?file=%00">` -- a plain cross-origin
+    GET, no preflight, no CORS opt-in -- and pop the dialog mid-review, over and over.
+    """
+
+    def test_a_null_byte_is_a_404_not_a_traceback(self, served) -> None:
+        """`\x00` IS a bare file name, so it reaches the filesystem call and raises there.
+
+        `Path.resolve()` and `read_bytes()` raise ValueError("embedded null byte"), which is
+        not an OSError -- the one rejected shape that gets past the name check.
+        """
+        service, _media = served
+
+        status, _content_type, _body = _get(service, "/media?file=%00")
+
+        assert status == 404
+
+    @pytest.mark.parametrize("attempt", ["%00", "a%00b.png", "pic.png%00.txt"])
+    def test_the_connection_is_answered_not_dropped(self, served, attempt: str) -> None:
+        """A crash in the handler closes the socket, so the client sees RemoteDisconnected."""
+        service, _media = served
+
+        status, _content_type, _body = _get(service, f"/media?file={attempt}")
+
+        assert status in (400, 404), f"{attempt!r} did not get a clean HTTP answer"
+
+    def test_an_unexpected_failure_answers_500_instead_of_escaping(
+        self, served, monkeypatch
+    ) -> None:
+        """Whatever else `_media_bytes` ever raises must not reach socketserver either."""
+        service, _media = served
+
+        def explode(_filename):
+            raise RuntimeError("something nobody predicted")
+
+        monkeypatch.setattr(service, "_media_bytes", explode)
+
+        status, _content_type, _body = _get(service, "/media?file=picture.png")
+
+        assert status == 500
+
+    def test_the_service_survives_and_keeps_serving(self, served) -> None:
+        """The dialog is the symptom; a wedged lookup service would be the worse outcome."""
+        service, media = served
+
+        _get(service, "/media?file=%00")
+
+        status, _content_type, body = _get(service, "/media?file=picture.png")
+        assert status == 200
+        assert body == (media / "picture.png").read_bytes()

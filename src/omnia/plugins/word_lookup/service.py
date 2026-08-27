@@ -215,7 +215,13 @@ class LookupService:
             if folder not in target.parents:
                 return None
             return target.read_bytes()
-        except OSError:
+        except (OSError, ValueError):
+            # ValueError is the stdlib's signal for a path string it cannot use at all --
+            # "embedded null byte" from resolve()/read_bytes(). It is NOT an OSError, and a
+            # name that is nothing but a NUL passes the bare-name check, so it is the one
+            # rejected shape that reaches the filesystem call instead of being refused
+            # before it. Escaping here would print a traceback to stderr, which Anki turns
+            # into an error dialog.
             return None
 
     def _lookup_via_main_thread(self, word: str) -> dict[str, Any]:
@@ -288,10 +294,22 @@ class LookupService:
                 if not filename:
                     self._respond(400, {"error": "missing 'file'"})
                     return
-                # No main-thread hop: this is file IO against a folder whose path is already
-                # known, not a collection read. Marshalling it would queue behind whatever the
-                # user is doing in Anki for no reason.
-                data = service._media_bytes(filename)
+                # No main-thread hop: this is file IO plus one cached attribute read
+                # (MediaManager.dir() returns a value set in __init__, with no backend call),
+                # not a collection query. Marshalling it would queue behind whatever the user
+                # is doing in Anki for no reason.
+                #
+                # Nothing may escape this method. Anki turns anything on stderr into its error
+                # dialog, and socketserver prints an unhandled handler exception there -- so a
+                # single bad request would pop a dialog mid-review, from any page that can do
+                # <img src="http://127.0.0.1:.../media?file=...">. The /lookup branch above has
+                # always caught broadly for this reason; this one now matches it.
+                try:
+                    data = service._media_bytes(filename)
+                except Exception:
+                    logger.exception("word_lookup: media failed for %r", filename)
+                    self._respond(500, {"error": "media failed"})
+                    return
                 if data is None:
                     self._respond(404, {"error": "no such media file"})
                     return
