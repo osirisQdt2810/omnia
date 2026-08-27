@@ -91,6 +91,22 @@ class TestServingMedia:
         assert body == b"bytes"
         assert content_type == "application/octet-stream"
 
+    @pytest.mark.parametrize("name", ["diagram..png", "a..b..c.png", "..leading.png"])
+    def test_a_dotted_name_is_not_a_traversal(self, served, name: str) -> None:
+        """Refusing ".." as a SUBSTRING also refuses real files people actually have.
+
+        Anki keeps whatever name the note referenced, and a double dot inside one is legal.
+        The check asks whether the name IS a bare file name, not whether it happens to contain
+        a suspicious sequence.
+        """
+        _service, media = served
+        (media / name).write_bytes(b"real file")
+
+        status, _content_type, body = _get(_service, f"/media?file={name}")
+
+        assert status == 200, f"{name!r} is a legitimate media name and was refused"
+        assert body == b"real file"
+
     def test_a_missing_file_is_404_not_a_crash(self, served) -> None:
         service, _media = served
 
@@ -144,16 +160,59 @@ class TestItWillNotReadTheDisk:
 
 
 class TestWithoutAMediaFolder:
-    def test_media_is_disabled_when_no_folder_is_injected(self, tmp_path) -> None:
-        """Headless and tests: no folder means no endpoint, not a traceback."""
-        service = LookupService(lambda word: {"word": word}, port=_free_port())
+    @pytest.mark.parametrize("injected", [None, lambda: "", lambda: None])
+    def test_media_is_disabled_when_there_is_no_folder(
+        self, injected, tmp_path, monkeypatch
+    ) -> None:
+        """`None` is the shape tests inject; `""` is the shape PRODUCTION returns.
+
+        `WordLookupPlugin._media_dir` answers "" when there is no collection, and every failure
+        inside it funnels into that same "". Guarding on the callable rather than on its result
+        let `Path("").resolve()` become the process's working directory, so a bare name served
+        whatever happened to sit next to Anki -- a loopback file reader over a directory nobody
+        chose. Testing only the `None` shape passed while exactly that was true.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "cwdsecret.png").write_bytes(b"CWD SECRET BYTES")
+
+        kwargs = {} if injected is None else {"media_dir": injected}
+        service = LookupService(
+            lambda word: {"word": word}, port=_free_port(), **kwargs
+        )
         assert service.start()
         try:
-            status, _content_type, _body = _get(service, "/media?file=picture.png")
+            status, _content_type, body = _get(service, "/media?file=cwdsecret.png")
         finally:
             service.stop()
 
-        assert status == 404
+        assert status == 404, f"the working directory was served: {body!r}"
+
+    def test_the_folder_is_read_per_request_not_once(self, tmp_path) -> None:
+        """Switching Anki profiles swaps the collection, so a cached folder would go stale.
+
+        This is the entire reason the constructor takes a callable rather than a path, and
+        nothing pinned it.
+        """
+        first = tmp_path / "first.media"
+        second = tmp_path / "second.media"
+        first.mkdir()
+        second.mkdir()
+        (first / "shared.png").write_bytes(b"FIRST")
+        (second / "shared.png").write_bytes(b"SECOND")
+        current = {"dir": first}
+
+        service = LookupService(
+            lambda word: {"word": word},
+            media_dir=lambda: str(current["dir"]),
+            port=_free_port(),
+        )
+        assert service.start()
+        try:
+            assert _get(service, "/media?file=shared.png")[2] == b"FIRST"
+            current["dir"] = second
+            assert _get(service, "/media?file=shared.png")[2] == b"SECOND"
+        finally:
+            service.stop()
 
     def test_lookup_still_works(self, served) -> None:
         """The new route must not have shadowed the old one."""

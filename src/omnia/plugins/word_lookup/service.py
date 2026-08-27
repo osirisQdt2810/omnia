@@ -26,7 +26,7 @@ import os
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -53,10 +53,6 @@ _MAIN_THREAD_TIMEOUT_SECONDS = 5.0
 _LOOKUP_PATH = "/lookup"
 _MEDIA_PATH = "/media"
 
-# A media name Anki stores is a bare file name. Anything carrying a separator or a parent
-# reference is not one, and serving it would turn a loopback lookup service into a file reader
-# for the whole disk -- so those are refused before the media folder is even consulted.
-_UNSAFE_IN_MEDIA_NAME = ("/", "\\", "..", ":")
 
 # Enough to let a browser or Qt identify the bytes; anything else is served as octet-stream,
 # which QPixmap sniffs perfectly well.
@@ -73,6 +69,22 @@ _MEDIA_TYPES = {
     ".wav": "audio/wav",
     ".m4a": "audio/mp4",
 }
+
+
+def _is_bare_file_name(name: str) -> bool:
+    """Is ``name`` a plain file name, the only shape an Anki media reference takes?
+
+    Anything carrying a separator, a drive or a parent reference is not one, and honouring it
+    would turn a loopback lookup service into a file reader for the whole disk. Both flavours
+    of path are asked, because the name arrives over HTTP from a client that may not run on
+    this OS: a backslash means nothing to POSIX but everything to Windows.
+
+    Asked this way rather than by searching for ".." as a SUBSTRING, which also refuses a
+    legitimately-named ``diagram..png`` sitting in the media folder.
+    """
+    if name in {".", ".."}:
+        return False
+    return PurePosixPath(name).name == name and PureWindowsPath(name).name == name
 
 
 class LookupService:
@@ -187,10 +199,18 @@ class LookupService:
         """
         if self._media_dir is None or not filename:
             return None
-        if any(bad in filename for bad in _UNSAFE_IN_MEDIA_NAME):
+        if not _is_bare_file_name(filename):
             return None
         try:
-            folder = Path(self._media_dir()).resolve()
+            # The RESULT decides, not the callable. The plugin returns "" when there is no
+            # collection -- and every failure inside it funnels into that same "" -- while
+            # Path("").resolve() is the process's working directory. Checking only that the
+            # callable exists therefore turned "no media folder" into "serve Anki's CWD",
+            # which is a real loopback file reader over a directory nobody chose.
+            folder_name = self._media_dir()
+            if not folder_name:
+                return None
+            folder = Path(folder_name).resolve()
             target = (folder / filename).resolve()
             if folder not in target.parents:
                 return None
