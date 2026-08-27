@@ -35,7 +35,7 @@ somewhere safe before removing anything:
 ```
 
 It contains `providers.toml` and a `.secrets\` folder holding one file per key. Restoring is
-just copying it back (§8.3).
+just copying it back (§8.4).
 
 ---
 
@@ -119,8 +119,9 @@ Tools → Omnia → Smart Notes → ⚙ Options → Usage & Keys → 🔑 Keys
 The **⚙ Options** button is on the Smart Notes panel itself. The word "Keys" appears nowhere
 until that modal is open *and* the **Usage & Keys** tab is selected.
 
-Each provider is a card with its own fields, a link to its console, and — for OpenRouter — a
-live credit balance.
+The page shows **three cards** — Gemini · AI Studio, Gemini · Vertex AI, OpenRouter — and only
+those three. Each has its own fields, a link to its console, and, for OpenRouter, a live credit
+balance. Nothing you can do adds a fourth card (§3.3).
 
 Keys are written to `user_files/config/.secrets/`, one file per key, never into your collection
 and never into the collection sync.
@@ -149,7 +150,16 @@ claim to show them, because they are not readable from a service-account key.
 |---|---|---|
 | Gemini · AI Studio | API key | <https://aistudio.google.com/app/apikey> |
 | OpenRouter | API key | <https://openrouter.ai/settings/credits> |
-| OpenAI / OpenAI-compatible | API key + base URL | your provider's dashboard |
+
+Those two, **plus Vertex (§3.2), are the only LLM providers there are**. The Keys page has
+exactly three cards, and the Text subtab's dropdown offers exactly those three names — the set
+is fixed, not open-ended.
+
+> **If you have an OpenAI key:** OpenAI and other OpenAI-compatible endpoints are understood by
+> the config layer but have **no key-entry UI and no dropdown entry**. Using one means editing
+> `[llm.openai]` (or `[llm.openai_compatible]`) in
+> `user_files/config/providers.toml` by hand — there is no path to it through the settings
+> dialog, so do not go looking for a card that does not exist.
 
 Inside **⚙ Options → Usage & Keys** there are four subtabs. Knowing which does what saves a lot
 of hunting:
@@ -172,13 +182,18 @@ The five tabs of the Options modal overall are **General**, **Usage & Keys**, **
 
 ### 3.4 Text-to-speech
 
-TTS is configured in **⚙ Options → Usage & Keys → Sound**, separately from the LLM. Two need no
-account at all:
+TTS is configured in **⚙ Options → Usage & Keys → Sound**, separately from the LLM. The dropdown
+offers five, and **four of them need no account at all**:
 
-- **Google Translate TTS** — no key, good enough for most vocabulary decks.
-- **Edge TTS** — no key, noticeably better voices.
+| Voice provider | Key needed? | Notes |
+|---|---|---|
+| **Edge TTS** | No | Free Microsoft voices; the best quality you can get without an account |
+| **Google Translate TTS** | No | Free; pick a language rather than a named voice. Fine for vocabulary |
+| **Piper** | No | Fully offline. Downloads a voice model on first use |
+| **VietTTS** | No | A local open-source server — good Vietnamese, but you run the server |
+| **Google Cloud TTS** | **Yes** | Paid, via your Google Cloud project |
 
-`piper` runs fully offline but downloads a voice model on first use.
+If you just want audio working now, choose **Edge TTS** and move on.
 
 ---
 
@@ -477,7 +492,28 @@ If you just want to see everything work, in order:
 3. Some applications refuse to expose their text to other programs. Try the same selection in a
    plain text editor to tell an app problem from a clipper problem.
 
-### 8.3 Restoring your provider keys
+### 8.3 "I have an OpenAI key and there is no card for it"
+
+There isn't one, and you have not missed a setting. The Keys page has exactly three cards
+(Gemini · AI Studio, Gemini · Vertex AI, OpenRouter) and the Text dropdown offers exactly those
+three names.
+
+OpenAI and other OpenAI-compatible endpoints are supported by the config layer only. To use one,
+close Anki and edit `user_files/config/providers.toml` by hand:
+
+```toml
+[llm]
+provider = "openai"
+
+[llm.openai]
+api_key = "sk-…"
+base_url = "https://api.openai.com/v1"
+text_model = "…"
+```
+
+Then reopen Anki. `[llm.openai_compatible]` works the same way for a self-hosted endpoint.
+
+### 8.4 Restoring your provider keys
 
 Copy your backed-up folder back over:
 
@@ -487,20 +523,24 @@ Copy your backed-up folder back over:
 
 Restart Anki. The Keys page shows the restored providers (values masked).
 
-### 8.4 Port already in use
+### 8.5 Port already in use
 
 Word Lookup defaults to `8766`. If something else holds it, change `port` in the Word Lookup
 options — and set the same port in the Desktop Clipper's settings, or the two stop talking.
 
-### 8.5 Where the logs are
+### 8.6 Where the logs are
 
-Omnia writes one log:
+Omnia writes one log, crashes included:
 
 ```
 %APPDATA%\Anki2\addons21\<omnia-id>\user_files\omnia.log
 ```
 
-When reporting a problem, its last ~50 lines are usually enough.
+It rotates at 2 MB and keeps three older files beside it — `omnia.log.1`, `.2`, `.3`. `omnia.log`
+is always the newest; reach for the numbered ones only when chasing something that happened a
+while ago.
+
+When reporting a problem, the last ~50 lines of `omnia.log` are usually enough.
 
 The Desktop Clipper has no log viewer in its UI — its tray menu is only **Enabled**, **Capture
 now**, **Settings…** and **Quit**. To see what it is doing, run it from a terminal so its output
