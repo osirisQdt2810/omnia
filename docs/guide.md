@@ -65,15 +65,32 @@ see §8.1.
 
 ### 2.1 Opening it
 
-**Tools → Omnia**. The window lists every feature with a checkbox on the left and that feature's
-own options on the right.
+**Tools → Omnia**. The window is a list of feature **cards**, grouped into sections:
+
+| Section | Features |
+|---|---|
+| Reviewing | Auto Flip, Display Interval |
+| Grading | Typing Accuracy, Overdue Guard |
+| AI | Smart Notes |
+| Editing | Note Maintenance |
+| Integrations | Word Lookup |
 
 ### 2.2 How features work
 
-Every feature is **off until you tick it**. Ticking takes effect immediately — no restart. The
-same is true of unticking, which is the fastest way to isolate a feature that is misbehaving.
+Each card has two controls: a **toggle switch** and a **Configure…** button.
 
-Settings save as you change them.
+- Every feature is **off until you flip its toggle**. Flipping takes effect immediately — no
+  restart. So does flipping it back, which is the fastest way to isolate a feature that is
+  misbehaving.
+- **Configure…** opens that feature's options. What you get depends on the feature:
+
+| Feature | Configure… opens |
+|---|---|
+| Auto Flip, Display Interval, Typing Accuracy, Overdue Guard | A generic options form — changes apply on **OK**, Cancel discards them |
+| Smart Notes, Note Maintenance, Word Lookup | A purpose-built panel of their own |
+
+Smart Notes' panel is the largest, and has its own **⚙ Options** modal inside it (§3.1) — which
+is why its settings are two levels deep rather than one.
 
 ### 2.3 Starting from a clean slate
 
@@ -93,8 +110,17 @@ account and no network.
 
 ### 3.1 Where keys are entered
 
-**Tools → Omnia → Smart Notes → Keys**. Each provider is a card with its own fields, a link to
-its console, and — for OpenRouter — a live credit balance.
+The full path, which is easy to miss because it is behind a modal:
+
+```
+Tools → Omnia → Smart Notes → ⚙ Options → Usage & Keys → 🔑 Keys
+```
+
+The **⚙ Options** button is on the Smart Notes panel itself. The word "Keys" appears nowhere
+until that modal is open *and* the **Usage & Keys** tab is selected.
+
+Each provider is a card with its own fields, a link to its console, and — for OpenRouter — a
+live credit balance.
 
 Keys are written to `user_files/config/.secrets/`, one file per key, never into your collection
 and never into the collection sync.
@@ -125,17 +151,29 @@ claim to show them, because they are not readable from a service-account key.
 | OpenRouter | API key | <https://openrouter.ai/settings/credits> |
 | OpenAI / OpenAI-compatible | API key + base URL | your provider's dashboard |
 
-Smart Notes has three subtabs, and it is worth knowing which does what:
+Inside **⚙ Options → Usage & Keys** there are four subtabs. Knowing which does what saves a lot
+of hunting:
 
 | Subtab | What you set there |
 |---|---|
-| **Text** | The active **LLM** provider and its models |
+| **Text** | The active **LLM** provider and its text model |
+| **Image** | The active **image** provider and its model |
 | **Sound** | The active **TTS** provider and its voice |
-| **Keys** | Credentials for every provider (§3.1) |
+| **🔑 Keys** | Credentials for every provider (§3.1) |
+
+Do not skip **Image** if you generate picture fields — it is a first-class rule kind alongside
+text and TTS, with its own provider and model.
+
+These set the *defaults*. Each individual rule row can override the provider and model for
+itself (§4.7).
+
+The five tabs of the Options modal overall are **General**, **Usage & Keys**, **Tools**,
+**Integrations** and **Advanced**.
 
 ### 3.4 Text-to-speech
 
-TTS is configured in the **Sound** subtab, separately from the LLM. Two need no account at all:
+TTS is configured in **⚙ Options → Usage & Keys → Sound**, separately from the LLM. Two need no
+account at all:
 
 - **Google Translate TTS** — no key, good enough for most vocabulary decks.
 - **Edge TTS** — no key, noticeably better voices.
@@ -276,7 +314,12 @@ would make the real load swing wildly with note shape.
 
 **Try it:**
 
-1. **Smart Notes → Note types**, pick a note type, add a rule: target field, prompt, provider.
+1. On the Smart Notes panel itself (not in ⚙ Options), pick your note type from the **Note
+   type** dropdown. The **Fields** table below lists every field of that note type, one row
+   each, with columns **Generate**, **Type** (`text` / `image` / `tts`), **Prompt**,
+   **Provider**, **Model**, **Voice**, **Preview** and **Overwrite**. Tick *Generate* on a
+   field and fill in its prompt — the per-row Provider/Model override the defaults you set in
+   §3.3, so you can leave them alone at first.
 2. Open the Browser, select two or three notes, **right-click → the Omnia generate action**.
    (Omnia also adds entries to the Browser *sidebar* context menu and to the *editor* context
    menu, so you can generate from whichever you have open.)
@@ -291,8 +334,24 @@ Start with **two notes**, not two hundred. Every generation costs provider credi
 The clippers capture text from **outside** Anki and turn it into cards. They are optional, and
 each is a separate program installed from Omnia rather than hunted down in the OS.
 
-Go to **Tools → Omnia → Smart Notes → Integrations**. Each row has **Install**, and a second
-button that acts on an already-installed clipper:
+Go to:
+
+```
+Tools → Omnia → Smart Notes → ⚙ Options → Integrations
+```
+
+Each row has an install button whose **label changes with state** — there is never a button
+simply reading "Install", so look for the label that matches your situation:
+
+| Situation | Desktop Clipper | Web Clipper |
+|---|---|---|
+| Not installed yet | **Install app** | **Set up…** |
+| Installed, newer build available | **Upgrade** | **Upgrade** |
+| Installed and current | **Up to date** *(greyed out)* | **Up to date** *(greyed out)* |
+
+"Up to date" being disabled is correct, not a broken UI: there is nothing to do.
+
+Each row also has a second button that acts on an already-installed clipper:
 
 | Row | Second button | What it does |
 |---|---|---|
@@ -304,20 +363,23 @@ before that would only fail in a way you could not act on.
 
 ### 5.1 Desktop Clipper
 
-1. **Integrations → Omnia Desktop Clipper → Install.** It clones, builds and installs; the row
-   shows progress. First install takes a few minutes.
+1. **Integrations → Omnia Desktop Clipper → Install app.** It clones, builds and installs; the
+   row shows progress. First install takes a few minutes.
 2. When it finishes, the app launches on its own. Afterwards use **Open**.
 3. Grant permissions when asked:
    - **macOS:** Accessibility *and* Input Monitoring, in System Settings → Privacy & Security.
    - **Windows:** no special permission; allow it through the firewall prompt if one appears.
 
-**Upgrading:** press **Install** again on an existing install. You do **not** need to quit the
-clipper first — the upgrade moves the running copy aside rather than trying to delete files
-Windows has locked. Restart the clipper afterwards to be running the new build.
+**Upgrading:** press **Upgrade** when the row offers it. If the button reads **Up to date** and
+is greyed out, you already have the current build and there is nothing to press.
+
+You do **not** need to quit the clipper first — the upgrade moves the running copy aside rather
+than trying to delete files Windows has locked. Restart the clipper afterwards to be running the
+new build.
 
 ### 5.2 Web Clipper
 
-1. **Integrations → Omnia Web Clipper → Install.** Omnia prepares the extension and opens a
+1. **Integrations → Omnia Web Clipper → Set up….** Omnia prepares the extension and opens a
    finish-install page.
 2. Follow that page: open `chrome://extensions`, enable **Developer mode**, choose **Load
    unpacked**, and select the folder the page names.
