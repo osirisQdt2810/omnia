@@ -23,8 +23,8 @@ mpv): the mpv call reports False, the HTML path still works, and nothing raises 
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
 from collections.abc import Callable
+from typing import Any, Optional
 
 from omnia.core import anki_compat
 from omnia.core.plugin import FeaturePlugin, PluginContext
@@ -75,7 +75,7 @@ class AudioSpeedPlugin(FeaturePlugin):
         "Play card audio faster or slower with a shortcut — on both sides, for [sound:] "
         "clips and for audio the template plays itself — and remember the speed."
     )
-    group = "Reviewer"
+    group = "Reviewing"
     tooltip = (
         "Default ] speeds up, [ slows down, Ctrl+] resets. Works on both the question and the "
         "answer side, unlike per-element speed add-ons, and the speed is kept between sessions."
