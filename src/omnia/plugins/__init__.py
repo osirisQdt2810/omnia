@@ -10,6 +10,7 @@ from __future__ import annotations
 # Registered features (each import runs its @register decorator). F401 "unused import" is
 # expected here — these imports exist purely for their registration side effect, and the
 # pyproject per-file-ignore for __init__.py already allows it.
+from omnia.plugins.audio_speed import AudioSpeedPlugin
 from omnia.plugins.auto_flip import AutoFlipPlugin
 from omnia.plugins.display_interval import DisplayIntervalPlugin
 from omnia.plugins.note_maintenance import NoteMaintenancePlugin
