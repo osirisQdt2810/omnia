@@ -405,12 +405,7 @@ class ClipperInstaller:
         the one Chrome is sitting in is the only defensible choice. Finding an EXISTING
         install is the opposite problem — see :meth:`_chrome_profiles`.
         """
-        from omnia.plugins.smart_notes.integration.browser import preferred_profile
-
-        try:
-            return preferred_profile(self._platform)
-        except Exception:  # choosing a profile is a convenience, never a failure
-            return None
+        return next(iter(self._chrome_profiles()), None)
 
     def _chrome_profiles(self) -> list[ChromeProfile]:
         """Every Chrome profile, preferred first — the profiles a lookup must search."""
@@ -571,11 +566,18 @@ class ClipperInstaller:
         were searched — the fastest way for a user to spot that they loaded it into a profile
         Chrome has since forgotten.
         """
-        checked = ", ".join(profile.name for profile in profiles)
+        # Display names collide routinely (Chrome's own defaults are "Person 1", "Person 2",
+        # and users rename by account — three of the reporting machine's profiles are
+        # "phuc"), so a bare name list cannot tell the user WHICH one Chrome forgot. The
+        # directory is the disambiguator, shown only when it adds information.
+        checked = ", ".join(
+            f"{p.name} ({p.directory})" if p.name != p.directory else p.directory
+            for p in profiles
+        )
         page = self._install_page_path(integration)
         finish = (
-            f" The same steps, with copy buttons, are on the page this add-on wrote at "
-            f"{page} — open it in Chrome."
+            f" The same steps, with copy buttons, are on the page this add-on wrote: paste "
+            f"{page.as_uri()} into Chrome's address bar."
             if page.is_file()
             else ""
         )

@@ -216,8 +216,21 @@ class TestFindingOurExtension:
 
         assert find_extension_id(prefs, name="Omnia Web Clipper") is None
 
-    def test_a_store_extensions_relative_path_is_never_read_from_disk(self):
-        """Chrome writes "<id>/<version>" for store extensions; that is not a directory."""
+    def test_a_store_extensions_relative_path_is_never_read_from_disk(
+        self, tmp_path, monkeypatch
+    ):
+        """Chrome writes "<id>/<version>" for store extensions; resolving that against the
+        process CWD would match a stranger's manifest.
+
+        The directory is CREATED here on purpose: without it a relative path merely raises
+        FileNotFoundError, which the reader swallows into "" anyway, and the guard could be
+        deleted without this test noticing. It was.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "abcdef" / "1.2.3_0").mkdir(parents=True)
+        (tmp_path / "abcdef" / "1.2.3_0" / "manifest.json").write_text(
+            json.dumps({"name": "Omnia Web Clipper"}), encoding="utf-8"
+        )
         prefs = _prefs({"aaa": _entry_without_manifest("abcdef/1.2.3_0")})
 
         assert find_extension_id(prefs, name="Omnia Web Clipper") is None
@@ -382,6 +395,47 @@ class TestLocatingTheExtension:
         found = locate_extension(profiles, name="Omnia Web Clipper")
         assert found is not None
         assert (found.profile.directory, found.extension_id) == ("Default", "aaaa")
+
+    def test_our_clone_in_a_later_profile_beats_another_build_in_the_preferred_one(
+        self, monkeypatch
+    ):
+        """Match strength outranks profile order.
+
+        The user keeps a dev checkout of the clipper loaded in their everyday profile and the
+        add-on's own clone in another. After Upgrade, Reload must act on the CLONE — the copy
+        that was just upgraded — not on whichever build happens to sit in the profile Chrome
+        opened last. A single first-hit pass over profiles got this backwards.
+        """
+        self._preferences_by_dir(
+            monkeypatch,
+            {
+                "Default": _prefs(
+                    {
+                        "devdev": _entry(
+                            "Omnia Web Clipper", "/home/u/dev/omnia-web-clipper"
+                        )
+                    }
+                ),
+                "Profile 3": _prefs(
+                    {
+                        "oursid": _entry(
+                            "Omnia Web Clipper", "/home/u/clippers/web_clipper"
+                        )
+                    }
+                ),
+            },
+        )
+        profiles = [
+            ChromeProfile("Default", "moreh", 10.0),
+            ChromeProfile("Profile 3", "phuc", 999.0),
+        ]
+        found = locate_extension(
+            profiles,
+            name="Omnia Web Clipper",
+            source_dir=Path("/home/u/clippers/web_clipper"),
+        )
+        assert found is not None
+        assert (found.profile.directory, found.extension_id) == ("Profile 3", "oursid")
 
     def test_nowhere_is_none_not_a_wrong_profile(self, monkeypatch):
         self._preferences_by_dir(

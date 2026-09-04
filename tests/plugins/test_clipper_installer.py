@@ -209,6 +209,20 @@ class TestDesktopInstall:
 
 
 class TestWebInstall:
+    @pytest.fixture(autouse=True)
+    def _no_real_chrome(self, monkeypatch):
+        """Install reads the preferred profile to name it in its progress line.
+
+        Left unstubbed, that read reaches the developer's real Chrome and the asserted line
+        differs between this machine and CI. Every test in this class therefore sees one fixed
+        profile — the same seam Reload's tests use.
+        """
+        from omnia.plugins.smart_notes.integration import browser
+
+        fixed = browser.ChromeProfile(directory="Profile 1", name="phuc")
+        monkeypatch.setattr(browser, "preferred_profile", lambda *a, **k: fixed)
+        monkeypatch.setattr(browser, "chrome_profiles", lambda *a, **k: [fixed])
+
     """Chrome allows no programmatic install of an unpacked extension, so the last click is
     the user's. What the install owes them is landing on the right page in the right profile
     with the path already on the clipboard — not a file manager and a puzzle."""
@@ -294,7 +308,10 @@ class TestWebInstall:
     ):
         from omnia.plugins.smart_notes.integration import browser
 
+        # Both readers say "nothing": the install's profile now derives from the same list
+        # Reload searches, so an unknown profile is an EMPTY list, not just a None.
         monkeypatch.setattr(browser, "preferred_profile", lambda platform="": None)
+        monkeypatch.setattr(browser, "chrome_profiles", lambda platform="": [])
         runner = _FakeRunner()
         self._clone(tmp_path)
 
@@ -700,6 +717,30 @@ class TestLaunchWeb:
         ), "says which profiles were searched"
         assert runner.spawns == []
 
+    def test_duplicate_display_names_are_told_apart_by_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """Three profiles all named "phuc" is the reporting machine, not a hypothetical."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        profiles = [
+            browser.ChromeProfile(directory="Default", name="phuc"),
+            browser.ChromeProfile(directory="Profile 3", name="phuc"),
+            browser.ChromeProfile(directory="Profile 8", name="phuc"),
+        ]
+        self._patch_browser(
+            monkeypatch, profile=profiles[0], profiles=profiles, extension_id=None
+        )
+        installer = _installer(tmp_path, _FakeRunner(), platform="darwin")
+
+        with pytest.raises(InstallError) as excinfo:
+            installer.launch(WEB)
+
+        text = str(excinfo.value)
+        assert "phuc (Default)" in text
+        assert "phuc (Profile 3)" in text
+        assert "phuc (Profile 8)" in text
+
     def test_the_not_loaded_message_offers_the_finish_page_when_one_exists(
         self, tmp_path, monkeypatch
     ):
@@ -713,7 +754,7 @@ class TestLaunchWeb:
         with pytest.raises(InstallError) as excinfo:
             installer.launch(WEB)
 
-        assert str(page) in str(excinfo.value)
+        assert page.as_uri() in str(excinfo.value)
 
     def test_it_looks_the_extension_up_in_the_clone_it_installed(
         self, tmp_path, monkeypatch
@@ -732,8 +773,10 @@ class TestLaunchWeb:
 
         installer.launch(WEB)
 
+        # The exact-path pass carries NO name on purpose: that is what makes a path match
+        # unambiguous, so another build of the extension can never satisfy it.
         assert seen["source_dir"] == tmp_path / "clippers" / "web_clipper"
-        assert seen["name"] == WEB.name
+        assert "name" not in seen
 
 
 class TestLaunchDispatch:

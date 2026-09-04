@@ -13,8 +13,10 @@ absent because it is not in the last-used profile is the bug :func:`locate_exten
 to close. So installing still aims at the preferred profile, while looking something UP walks
 every profile — preferred first, so a machine where both agree behaves exactly as before.
 
-Pure logic: the parsing takes the already-decoded ``Local State`` mapping, so it unit-tests
-without a browser, a filesystem or a platform.
+Pure logic, with one exception: the parsing takes the already-decoded ``Local State`` mapping,
+so it unit-tests without a browser or a platform. :func:`find_extension_id` is the one function
+that touches disk — it reads ``manifest.json`` out of an unpacked extension's directory when
+Chrome cached no manifest for it, which for unpacked loads is the common case.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -191,7 +193,7 @@ def chrome_executable(platform: str = "") -> Optional[str]:
 _EXTENSION_PREFERENCE_FILES = ("Secure Preferences", "Preferences")
 
 
-def _entry_name(entry: Mapping[str, Any], entry_path: str) -> str:
+def _entry_name(entry: Mapping[str, Any]) -> str:
     """The extension's name for ``entry``, from Chrome's copy or from disk.
 
     Chrome usually caches the manifest under ``"manifest"``, but for an extension loaded
@@ -201,10 +203,6 @@ def _entry_name(entry: Mapping[str, Any], entry_path: str) -> str:
     and a running extension is reported as not loaded. So when Chrome kept no manifest, this
     reads ``manifest.json`` out of the directory Chrome DID record.
 
-    Args:
-        entry: One value from ``extensions.settings``.
-        entry_path: That entry's ``path``, already normalised to forward slashes and lowercased.
-
     Returns:
         The manifest name, or ``""`` when neither source has one.
     """
@@ -213,8 +211,10 @@ def _entry_name(entry: Mapping[str, Any], entry_path: str) -> str:
         cached = str(manifest.get("name") or "").strip()
         if cached:
             return cached
-    # Chrome stores a RELATIVE path for store extensions ("<id>/<version>"); only an absolute
-    # path is an unpacked load we can read from.
+    # The RAW path, never the lowercased one the matcher compares with: a lowercased path
+    # does not open on a case-sensitive filesystem, and that silence would read as "not
+    # loaded". Chrome stores a RELATIVE path for store extensions ("<id>/<version>"); only an
+    # absolute path is an unpacked load there is a directory to read from.
     raw = str(entry.get("path") or "")
     if not raw or not Path(raw).is_absolute():
         return ""
@@ -266,7 +266,7 @@ def find_extension_id(
         entry_path = str(entry.get("path") or "").replace("\\", "/").rstrip("/").lower()
         if wanted_path and entry_path == wanted_path:
             return str(extension_id)
-        entry_name = _entry_name(entry, entry_path)
+        entry_name = _entry_name(entry) if wanted_name and by_name is None else ""
         if (
             wanted_name
             and entry_name.strip().lower() == wanted_name
@@ -331,29 +331,44 @@ class ExtensionLocation:
 
 
 def locate_extension(
-    profiles: Iterable[ChromeProfile],
+    profiles: Sequence[ChromeProfile],
     *,
     name: str = "",
     source_dir: Optional[Path] = None,
     platform: str = "",
 ) -> Optional[ExtensionLocation]:
-    """Find our extension in the first of ``profiles`` that has it, or None if none does.
+    """Find our extension across ``profiles``: the copy we installed first, any copy second.
 
     Chrome gives an unpacked extension a different id in every profile it is loaded into, so
-    "is it installed?" can only be answered per profile. Taking the profiles as an argument
-    (rather than reading them here) lets the caller name the ones it searched when the answer
-    is no — a user with eight profiles needs to see which were looked at.
+    "is it installed?" can only be answered per profile. The priority rule is a property of the
+    LOOKUP, not of a profile: a path match (the clone this add-on installed) in a later profile
+    must beat a name match (some other build of the extension) in an earlier one — otherwise a
+    user who also keeps a dev checkout loaded in their everyday profile upgrades the clipper,
+    presses Reload, and the copy that was just upgraded is never reloaded. So the search is two
+    passes over the same order: exact path everywhere, then name everywhere. Profile order only
+    breaks ties within a pass. Each pass costs one preferences read per profile, ~2 ms total.
+
+    ``profiles`` is a ``Sequence`` because the caller enumerates it again to name what was
+    searched when nothing is found; a generator would leave that list empty.
 
     Args:
         profiles: Profiles to search, in priority order (see :func:`profile_search_order`).
-        name: The extension's manifest name, used when the path does not match.
+        name: The extension's manifest name, used when no profile has a path match.
         source_dir: The unpacked directory this add-on cloned the extension into.
         platform: ``sys.platform`` override (for tests).
     """
-    for profile in profiles:
-        extension_id = installed_extension_id(
-            name=name, source_dir=source_dir, profile=profile, platform=platform
-        )
-        if extension_id:
-            return ExtensionLocation(profile=profile, extension_id=extension_id)
+    if source_dir is not None:
+        for profile in profiles:
+            exact = installed_extension_id(
+                source_dir=source_dir, profile=profile, platform=platform
+            )
+            if exact:
+                return ExtensionLocation(profile=profile, extension_id=exact)
+    if name:
+        for profile in profiles:
+            named = installed_extension_id(
+                name=name, profile=profile, platform=platform
+            )
+            if named:
+                return ExtensionLocation(profile=profile, extension_id=named)
     return None
