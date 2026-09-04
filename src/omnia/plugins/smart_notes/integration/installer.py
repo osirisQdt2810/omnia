@@ -480,7 +480,7 @@ class ClipperInstaller:
             render_install_page,
         )
 
-        path = self._clones_dir / f"{integration.key}-finish-install.html"
+        path = self._install_page_path(integration)
         try:
             path.write_text(
                 render_install_page(source, profile.name if profile else ""),
@@ -492,14 +492,31 @@ class ClipperInstaller:
             return None
         return path
 
+    def _install_page_path(self, integration: Integration) -> Path:
+        """Where an install writes (and a later Reload looks for) the finish-install page.
+
+        One definition because two features depend on the same file: the install opens it, and
+        a Reload that finds nothing loaded points the user back at it.
+        """
+        return self._clones_dir / f"{integration.key}-finish-install.html"
+
     def _chrome_profile(self) -> Optional[ChromeProfile]:
-        """The Chrome profile to target, or None when it cannot be determined."""
-        from omnia.plugins.smart_notes.integration.browser import preferred_profile
+        """The Chrome profile to INSTALL into, or None when it cannot be determined.
+
+        Deliberately still the last-used one: an install has to choose a single profile, and
+        the one Chrome is sitting in is the only defensible choice. Finding an EXISTING
+        install is the opposite problem — see :meth:`_chrome_profiles`.
+        """
+        return next(iter(self._chrome_profiles()), None)
+
+    def _chrome_profiles(self) -> list[ChromeProfile]:
+        """Every Chrome profile, preferred first — the profiles a lookup must search."""
+        from omnia.plugins.smart_notes.integration.browser import chrome_profiles
 
         try:
-            return preferred_profile(self._platform)
-        except Exception:  # choosing a profile is a convenience, never a failure
-            return None
+            return chrome_profiles(self._platform)
+        except Exception:  # reading Chrome's files is best-effort, never a crash
+            return []
 
     def _copy_to_clipboard(self, text: str) -> None:
         """Put ``text`` on the clipboard so 'Load unpacked' is a paste, not a hunt.
@@ -591,7 +608,7 @@ class ClipperInstaller:
         )
 
     def _reload_web_extension(self, integration: Integration) -> str:
-        """Reload the extension in the profile Chrome last used, and show its Settings.
+        """Reload the extension wherever it is loaded, and show its Settings.
 
         Chrome gives an outside process no way to reload an unpacked extension — a ``chrome://``
         URL is dropped from the command line and DevTools ``loadUnpacked`` is session-only — but
@@ -601,11 +618,16 @@ class ClipperInstaller:
 
         The id cannot be hard-coded. An unpacked extension with no manifest ``key`` gets an id
         derived from its path, so it differs per machine and has to be read out of the profile
-        Chrome recorded it in.
+        Chrome recorded it in — and NOT only out of the last-used one. A user whose Chrome is
+        sitting in "Default" while the clipper runs in "Profile 3" was told a running extension
+        was not loaded, and pointed at a button that is not on screen in that state. So the
+        search walks every profile (preferred first, so the working case is unchanged), Chrome
+        is opened on the profile that actually has it, and failing that the message names the
+        page and the folder that finish the job.
         """
         from omnia.plugins.smart_notes.integration.browser import (
             chrome_executable,
-            installed_extension_id,
+            locate_extension,
         )
 
         # Resolved ONCE and handed to _open_chrome, which would otherwise sweep the same
@@ -616,25 +638,57 @@ class ClipperInstaller:
                 "Google Chrome is not installed on this machine, so there is nothing to "
                 "reload. The Omnia Web Clipper is a Chrome extension."
             )
-        profile = self._chrome_profile()
-        if profile is None:
+        profiles = self._chrome_profiles()
+        if not profiles:
             raise InstallError(
                 "Could not tell which Chrome profile to use. Open Chrome once, then try again."
             )
-        extension_id = installed_extension_id(
+        source_dir = self._clones_dir / integration.key
+        located = locate_extension(
+            profiles,
             name=integration.name,
-            source_dir=self._clones_dir / integration.key,
-            profile=profile,
+            source_dir=source_dir,
             platform=self._platform,
         )
-        if extension_id is None:
-            raise InstallError(
-                f"{integration.name} is not loaded in Chrome profile "
-                f"{profile.name!r}. Use Set up… to load it first."
-            )
-        url = f"chrome-extension://{extension_id}/{_WEB_OPTIONS_PAGE}?omnia-reload=1"
-        self._open_chrome(url, profile, executable=executable)
-        return f"Reloading in Chrome profile {profile.name!r}…"
+        if located is None:
+            raise InstallError(self._not_loaded_message(integration, profiles))
+        url = f"chrome-extension://{located.extension_id}/{_WEB_OPTIONS_PAGE}?omnia-reload=1"
+        self._open_chrome(url, located.profile, executable=executable)
+        return f"Reloading in Chrome profile {located.profile.name!r}…"
+
+    def _not_loaded_message(
+        self, integration: Integration, profiles: list[ChromeProfile]
+    ) -> str:
+        """Explain that nothing was found, and name something the user can act on NOW.
+
+        The state this fires in is "installed and up to date": the install button reads "Up to
+        date" and is disabled, so telling the user to click Set up… names a control that is not
+        on their screen. What IS available is the finish-install page the install already wrote
+        and the cloned folder itself, so the message hands over both, plus the profiles that
+        were searched — the fastest way for a user to spot that they loaded it into a profile
+        Chrome has since forgotten.
+        """
+        # Display names collide routinely (Chrome's own defaults are "Person 1", "Person 2",
+        # and users rename by account — three of the reporting machine's profiles are
+        # "phuc"), so a bare name list cannot tell the user WHICH one Chrome forgot. The
+        # directory is the disambiguator, shown only when it adds information.
+        checked = ", ".join(
+            f"{p.name} ({p.directory})" if p.name != p.directory else p.directory
+            for p in profiles
+        )
+        page = self._install_page_path(integration)
+        finish = (
+            f" The same steps, with copy buttons, are on the page this add-on wrote: paste "
+            f"{page.as_uri()} into Chrome's address bar."
+            if page.is_file()
+            else ""
+        )
+        return (
+            f"{integration.name} is not loaded in any of your Chrome profiles "
+            f"(searched: {checked}). Load it once and Reload will work from then on: in "
+            f"Chrome open chrome://extensions, turn on Developer mode, click 'Load unpacked' "
+            f"and pick {self._clones_dir / integration.key}.{finish}"
+        )
 
     # -- install state (Install / Upgrade / Up-to-date button) --------------------------------
 

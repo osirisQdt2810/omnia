@@ -1,9 +1,14 @@
-"""Picking the Chrome profile to open ``chrome://extensions`` in.
+"""Picking the Chrome profile to open ``chrome://extensions`` in, and finding the one that
+already has the clipper.
 
 Chrome numbers profile DIRECTORIES in creation order and shows an unrelated display name, so
 "Profile 16" can be the everyday one and "Default" long abandoned. Opening the wrong one is
 not a crash — it is the user loading the extension into a profile they never browse in and
 concluding the extension does not work.
+
+The mirror image of that, and a reported bug: a clipper loaded and running in "Profile 3"
+was reported as not loaded because Chrome's last-used profile was "Default". Installing still
+targets the last-used profile; LOOKING SOMETHING UP now searches them all.
 """
 
 from __future__ import annotations
@@ -13,11 +18,14 @@ from pathlib import Path
 
 import pytest
 
+from omnia.plugins.smart_notes.integration import browser
 from omnia.plugins.smart_notes.integration.browser import (
     ChromeProfile,
     chrome_user_data_dir,
     find_extension_id,
+    locate_extension,
     pick_profile,
+    profile_search_order,
     read_local_state,
 )
 
@@ -208,8 +216,21 @@ class TestFindingOurExtension:
 
         assert find_extension_id(prefs, name="Omnia Web Clipper") is None
 
-    def test_a_store_extensions_relative_path_is_never_read_from_disk(self):
-        """Chrome writes "<id>/<version>" for store extensions; that is not a directory."""
+    def test_a_store_extensions_relative_path_is_never_read_from_disk(
+        self, tmp_path, monkeypatch
+    ):
+        """Chrome writes "<id>/<version>" for store extensions; resolving that against the
+        process CWD would match a stranger's manifest.
+
+        The directory is CREATED here on purpose: without it a relative path merely raises
+        FileNotFoundError, which the reader swallows into "" anyway, and the guard could be
+        deleted without this test noticing. It was.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "abcdef" / "1.2.3_0").mkdir(parents=True)
+        (tmp_path / "abcdef" / "1.2.3_0" / "manifest.json").write_text(
+            json.dumps({"name": "Omnia Web Clipper"}), encoding="utf-8"
+        )
         prefs = _prefs({"aaa": _entry_without_manifest("abcdef/1.2.3_0")})
 
         assert find_extension_id(prefs, name="Omnia Web Clipper") is None
@@ -240,3 +261,191 @@ class TestFindingOurExtension:
             }
         )
         assert find_extension_id(prefs, name="Omnia Web Clipper") == "good"
+
+
+def _local_state(last_used, **profiles):
+    """Chrome's ``Local State`` shape: ``profile.last_used`` + ``profile.info_cache``.
+
+    ``profiles`` maps directory -> (display name, active_time), the two fields the code reads.
+    """
+    return {
+        "profile": {
+            "last_used": last_used,
+            "info_cache": {
+                directory: {"name": name, "active_time": active}
+                for directory, (name, active) in profiles.items()
+            },
+        }
+    }
+
+
+class TestTheSearchOrder:
+    """Which profiles a lookup walks, and in what order.
+
+    Installing still targets the one Chrome last used. Looking something UP has to try them all,
+    or an extension running in "Profile 3" is reported missing because Chrome happens to be
+    sitting in "Default" — the reported bug.
+    """
+
+    def test_the_preferred_profile_leads(self):
+        """A lookup that succeeded before must still resolve to the same profile."""
+        state = _local_state(
+            "Default",
+            **{"Default": ("moreh", 10), "Profile 3": ("phuc", 999)},
+        )
+        order = profile_search_order(state)
+        assert [p.directory for p in order] == ["Default", "Profile 3"]
+
+    def test_the_rest_follow_most_recently_active_first(self):
+        """Between two profiles that both hold it, the one the user browses in is the one meant."""
+        state = _local_state(
+            "Default",
+            **{
+                "Default": ("moreh", 10),
+                "Profile 3": ("phuc", 500),
+                "Profile 8": ("phuc", 900),
+                "Profile 5": ("moreh.io", 100),
+            },
+        )
+        order = profile_search_order(state)
+        assert [p.directory for p in order] == [
+            "Default",
+            "Profile 8",
+            "Profile 3",
+            "Profile 5",
+        ]
+
+    def test_ties_break_on_directory_so_the_order_is_stable(self):
+        """Equal (often zero) active_time must not reorder between clicks."""
+        state = _local_state(
+            "Default",
+            **{"Default": ("a", 0), "Profile 9": ("x", 0), "Profile 2": ("y", 0)},
+        )
+        first = [p.directory for p in profile_search_order(state)]
+        second = [p.directory for p in profile_search_order(state)]
+        assert first == second == ["Default", "Profile 2", "Profile 9"]
+
+    def test_every_profile_appears_exactly_once(self):
+        """The preferred one is pulled to the front, not duplicated."""
+        state = _local_state(
+            "Profile 3",
+            **{"Default": ("moreh", 10), "Profile 3": ("phuc", 999)},
+        )
+        dirs = [p.directory for p in profile_search_order(state)]
+        assert sorted(dirs) == ["Default", "Profile 3"]
+        assert dirs[0] == "Profile 3"
+
+    def test_no_profiles_at_all_is_an_empty_list(self):
+        assert profile_search_order({}) == []
+        assert profile_search_order({"profile": {}}) == []
+
+
+class TestLocatingTheExtension:
+    """`locate_extension` walks the given profiles and returns the FIRST that has it."""
+
+    @staticmethod
+    def _preferences_by_dir(monkeypatch, per_dir):
+        """Route `installed_extension_id`'s preference read to an in-memory map by directory."""
+        monkeypatch.setattr(
+            browser,
+            "read_profile_preferences",
+            lambda _udd, directory: per_dir.get(directory, {}),
+        )
+        monkeypatch.setattr(
+            browser, "chrome_user_data_dir", lambda _p="": Path("/nowhere")
+        )
+
+    def test_finds_it_in_a_profile_that_is_not_the_preferred_one(self, monkeypatch):
+        """The reported bug: loaded in Profile 3, Chrome last used Default."""
+        self._preferences_by_dir(
+            monkeypatch,
+            {
+                "Default": _prefs({}),
+                "Profile 3": _prefs(
+                    {
+                        "jmdh": _entry(
+                            "Omnia Web Clipper", "/home/u/dev/omnia-web-clipper"
+                        )
+                    }
+                ),
+            },
+        )
+        profiles = [
+            ChromeProfile("Default", "moreh", 10.0),
+            ChromeProfile("Profile 3", "phuc", 999.0),
+        ]
+        found = locate_extension(profiles, name="Omnia Web Clipper")
+        assert found is not None
+        assert found.profile.directory == "Profile 3"
+        assert found.extension_id == "jmdh"
+
+    def test_the_first_profile_in_order_wins_when_several_have_it(self, monkeypatch):
+        """Two copies loaded in two profiles: act on the one the caller ranked first."""
+        self._preferences_by_dir(
+            monkeypatch,
+            {
+                "Default": _prefs({"aaaa": _entry("Omnia Web Clipper", "/one")}),
+                "Profile 3": _prefs({"bbbb": _entry("Omnia Web Clipper", "/two")}),
+            },
+        )
+        profiles = [
+            ChromeProfile("Default", "moreh", 10.0),
+            ChromeProfile("Profile 3", "phuc", 999.0),
+        ]
+        found = locate_extension(profiles, name="Omnia Web Clipper")
+        assert found is not None
+        assert (found.profile.directory, found.extension_id) == ("Default", "aaaa")
+
+    def test_our_clone_in_a_later_profile_beats_another_build_in_the_preferred_one(
+        self, monkeypatch
+    ):
+        """Match strength outranks profile order.
+
+        The user keeps a dev checkout of the clipper loaded in their everyday profile and the
+        add-on's own clone in another. After Upgrade, Reload must act on the CLONE — the copy
+        that was just upgraded — not on whichever build happens to sit in the profile Chrome
+        opened last. A single first-hit pass over profiles got this backwards.
+        """
+        self._preferences_by_dir(
+            monkeypatch,
+            {
+                "Default": _prefs(
+                    {
+                        "devdev": _entry(
+                            "Omnia Web Clipper", "/home/u/dev/omnia-web-clipper"
+                        )
+                    }
+                ),
+                "Profile 3": _prefs(
+                    {
+                        "oursid": _entry(
+                            "Omnia Web Clipper", "/home/u/clippers/web_clipper"
+                        )
+                    }
+                ),
+            },
+        )
+        profiles = [
+            ChromeProfile("Default", "moreh", 10.0),
+            ChromeProfile("Profile 3", "phuc", 999.0),
+        ]
+        found = locate_extension(
+            profiles,
+            name="Omnia Web Clipper",
+            source_dir=Path("/home/u/clippers/web_clipper"),
+        )
+        assert found is not None
+        assert (found.profile.directory, found.extension_id) == ("Profile 3", "oursid")
+
+    def test_nowhere_is_none_not_a_wrong_profile(self, monkeypatch):
+        self._preferences_by_dir(
+            monkeypatch, {"Default": _prefs({}), "Profile 3": _prefs({})}
+        )
+        profiles = [
+            ChromeProfile("Default", "moreh", 10.0),
+            ChromeProfile("Profile 3", "phuc", 999.0),
+        ]
+        assert locate_extension(profiles, name="Omnia Web Clipper") is None
+
+    def test_no_profiles_to_search_is_none(self):
+        assert locate_extension([], name="Omnia Web Clipper") is None

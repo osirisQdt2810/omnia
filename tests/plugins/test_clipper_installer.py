@@ -209,6 +209,20 @@ class TestDesktopInstall:
 
 
 class TestWebInstall:
+    @pytest.fixture(autouse=True)
+    def _no_real_chrome(self, monkeypatch):
+        """Install reads the preferred profile to name it in its progress line.
+
+        Left unstubbed, that read reaches the developer's real Chrome and the asserted line
+        differs between this machine and CI. Every test in this class therefore sees one fixed
+        profile — the same seam Reload's tests use.
+        """
+        from omnia.plugins.smart_notes.integration import browser
+
+        fixed = browser.ChromeProfile(directory="Profile 1", name="phuc")
+        monkeypatch.setattr(browser, "preferred_profile", lambda *a, **k: fixed)
+        monkeypatch.setattr(browser, "chrome_profiles", lambda *a, **k: [fixed])
+
     """Chrome allows no programmatic install of an unpacked extension, so the last click is
     the user's. What the install owes them is landing on the right page in the right profile
     with the path already on the clipboard — not a file manager and a puzzle."""
@@ -294,7 +308,10 @@ class TestWebInstall:
     ):
         from omnia.plugins.smart_notes.integration import browser
 
+        # Both readers say "nothing": the install's profile now derives from the same list
+        # Reload searches, so an unknown profile is an EMPTY list, not just a None.
         monkeypatch.setattr(browser, "preferred_profile", lambda platform="": None)
+        monkeypatch.setattr(browser, "chrome_profiles", lambda platform="": [])
         runner = _FakeRunner()
         self._clone(tmp_path)
 
@@ -508,17 +525,44 @@ class TestLaunchWeb:
 
     @staticmethod
     def _patch_browser(
-        monkeypatch, *, chrome="/chrome", profile=..., extension_id="abc123"
+        monkeypatch,
+        *,
+        chrome="/chrome",
+        profile=...,
+        extension_id="abc123",
+        profiles=...,
+        found_in=None,
     ):
+        """Stub every browser seam Reload touches, so no test reads this machine's Chrome.
+
+        Reload now searches ALL profiles via ``chrome_profiles``; leaving that unstubbed made
+        the suite read the developer's real ``Local State`` and pass or fail depending on
+        which Chrome profiles happen to exist on the machine running it.
+
+        ``profiles`` is the search order (default: just ``profile``). ``found_in`` names the
+        one directory that has the extension; None means every profile reports it, so the
+        first in order wins, and ``extension_id=None`` means none does.
+        """
         from omnia.plugins.smart_notes.integration import browser
 
         if profile is ...:
             profile = browser.ChromeProfile(directory="Profile 1", name="phuc")
+        if profiles is ...:
+            profiles = [profile] if profile is not None else []
         monkeypatch.setattr(browser, "chrome_executable", lambda *a, **k: chrome)
         monkeypatch.setattr(browser, "preferred_profile", lambda *a, **k: profile)
-        monkeypatch.setattr(
-            browser, "installed_extension_id", lambda *a, **k: extension_id
-        )
+        monkeypatch.setattr(browser, "chrome_profiles", lambda *a, **k: list(profiles))
+
+        def _installed(*_args, profile=None, **_kwargs):
+            if extension_id is None:
+                return None
+            if found_in is not None and (
+                profile is None or profile.directory != found_in
+            ):
+                return None
+            return extension_id
+
+        monkeypatch.setattr(browser, "installed_extension_id", _installed)
         return profile
 
     def test_it_opens_the_extension_page_with_the_reload_flag(
@@ -553,13 +597,8 @@ class TestLaunchWeb:
             sweeps["n"] += 1
             return "/chrome"
 
+        self._patch_browser(monkeypatch)
         monkeypatch.setattr(browser, "chrome_executable", counting)
-        monkeypatch.setattr(
-            browser,
-            "preferred_profile",
-            lambda *a, **k: browser.ChromeProfile(directory="Profile 1", name="phuc"),
-        )
-        monkeypatch.setattr(browser, "installed_extension_id", lambda **k: "abc123")
         installer = _installer(tmp_path, _FakeRunner(), platform="darwin")
 
         installer.launch(WEB)
@@ -579,7 +618,8 @@ class TestLaunchWeb:
         assert runner.spawns == []
 
     def test_no_profile_is_an_error(self, tmp_path, monkeypatch):
-        self._patch_browser(monkeypatch, profile=None)
+        """Chrome installed but never opened: there is nothing to search, and Reload says so."""
+        self._patch_browser(monkeypatch, profile=None, profiles=[])
         runner = _FakeRunner()
         installer = _installer(tmp_path, runner, platform="darwin")
 
@@ -588,19 +628,133 @@ class TestLaunchWeb:
 
         assert runner.spawns == []
 
+    def test_it_finds_the_extension_in_a_profile_that_is_not_the_preferred_one(
+        self, tmp_path, monkeypatch
+    ):
+        """The reported bug, end to end.
+
+        Chrome last used "Default"; the clipper is loaded and running in "Profile 3". Reload
+        used to look only in "Default" and report a running extension as absent. It must now
+        find it AND open Chrome on the profile that has it — the id is only valid there.
+        """
+        from omnia.plugins.smart_notes.integration import browser
+
+        default = browser.ChromeProfile(directory="Default", name="moreh.com.vn")
+        third = browser.ChromeProfile(directory="Profile 3", name="phuc")
+        self._patch_browser(
+            monkeypatch,
+            profile=default,
+            profiles=[default, third],
+            extension_id="jmdh",
+            found_in="Profile 3",
+        )
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin")
+
+        message = installer.launch(WEB)
+
+        assert len(runner.spawns) == 1
+        argv = runner.spawns[0]
+        assert "--profile-directory=Profile 3" in argv
+        assert "--profile-directory=Default" not in argv
+        assert argv[-1] == "chrome-extension://jmdh/src/options.html?omnia-reload=1"
+        assert "phuc" in message
+
+    def test_the_preferred_profile_still_wins_when_it_has_the_extension(
+        self, tmp_path, monkeypatch
+    ):
+        """Widening the search must not change the case that already worked."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        default = browser.ChromeProfile(directory="Default", name="moreh.com.vn")
+        third = browser.ChromeProfile(directory="Profile 3", name="phuc")
+        self._patch_browser(
+            monkeypatch,
+            profile=default,
+            profiles=[default, third],
+            extension_id="abc123",
+        )
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin")
+
+        installer.launch(WEB)
+
+        assert "--profile-directory=Default" in runner.spawns[0]
+
     def test_an_extension_that_is_not_loaded_says_where_to_load_it(
         self, tmp_path, monkeypatch
     ):
-        """Chrome cannot be made to load it programmatically, so the message must point at Set up."""
-        self._patch_browser(monkeypatch, extension_id=None)
+        """Nothing loaded anywhere: the message must name things that EXIST on screen.
+
+        The old text said "Use Set up…". That button only renders when the clipper is NOT
+        installed; once installed and current it reads "Up to date" and is disabled, so the
+        user was pointed at a control they could not click. What genuinely exists in that
+        state is Chrome's own extensions page and the cloned folder — so those are named,
+        along with which profiles were searched.
+        """
+        from omnia.plugins.smart_notes.integration import browser
+
+        default = browser.ChromeProfile(directory="Default", name="moreh.com.vn")
+        third = browser.ChromeProfile(directory="Profile 3", name="phuc")
+        self._patch_browser(
+            monkeypatch, profile=default, profiles=[default, third], extension_id=None
+        )
         runner = _FakeRunner()
         installer = _installer(tmp_path, runner, platform="darwin")
 
         with pytest.raises(InstallError) as excinfo:
             installer.launch(WEB)
 
-        assert "Set up" in str(excinfo.value)
+        text = str(excinfo.value)
+        assert (
+            "Set up" not in text
+        ), "names a button that is not on screen in this state"
+        assert "chrome://extensions" in text
+        assert "Load unpacked" in text
+        assert str(tmp_path / "clippers" / "web_clipper") in text
+        assert (
+            "moreh.com.vn" in text and "phuc" in text
+        ), "says which profiles were searched"
         assert runner.spawns == []
+
+    def test_duplicate_display_names_are_told_apart_by_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """Three profiles all named "phuc" is the reporting machine, not a hypothetical."""
+        from omnia.plugins.smart_notes.integration import browser
+
+        profiles = [
+            browser.ChromeProfile(directory="Default", name="phuc"),
+            browser.ChromeProfile(directory="Profile 3", name="phuc"),
+            browser.ChromeProfile(directory="Profile 8", name="phuc"),
+        ]
+        self._patch_browser(
+            monkeypatch, profile=profiles[0], profiles=profiles, extension_id=None
+        )
+        installer = _installer(tmp_path, _FakeRunner(), platform="darwin")
+
+        with pytest.raises(InstallError) as excinfo:
+            installer.launch(WEB)
+
+        text = str(excinfo.value)
+        assert "phuc (Default)" in text
+        assert "phuc (Profile 3)" in text
+        assert "phuc (Profile 8)" in text
+
+    def test_the_not_loaded_message_offers_the_finish_page_when_one_exists(
+        self, tmp_path, monkeypatch
+    ):
+        """An earlier install wrote a finish-install page; the message should hand it back."""
+        self._patch_browser(monkeypatch, extension_id=None)
+        installer = _installer(tmp_path, _FakeRunner(), platform="darwin")
+        page = tmp_path / "clippers" / "web_clipper-finish-install.html"
+        page.parent.mkdir(parents=True)
+        page.write_text("<html></html>", encoding="utf-8")
+
+        with pytest.raises(InstallError) as excinfo:
+            installer.launch(WEB)
+
+        assert page.as_uri() in str(excinfo.value)
 
     def test_it_looks_the_extension_up_in_the_clone_it_installed(
         self, tmp_path, monkeypatch
@@ -609,12 +763,7 @@ class TestLaunchWeb:
         from omnia.plugins.smart_notes.integration import browser
 
         seen: dict = {}
-        monkeypatch.setattr(browser, "chrome_executable", lambda *a, **k: "/chrome")
-        monkeypatch.setattr(
-            browser,
-            "preferred_profile",
-            lambda *a, **k: browser.ChromeProfile(directory="Profile 1", name="phuc"),
-        )
+        self._patch_browser(monkeypatch)
         monkeypatch.setattr(
             browser,
             "installed_extension_id",
@@ -624,8 +773,10 @@ class TestLaunchWeb:
 
         installer.launch(WEB)
 
+        # The exact-path pass carries NO name on purpose: that is what makes a path match
+        # unambiguous, so another build of the extension can never satisfy it.
         assert seen["source_dir"] == tmp_path / "clippers" / "web_clipper"
-        assert seen["name"] == WEB.name
+        assert "name" not in seen
 
 
 class TestLaunchDispatch:
