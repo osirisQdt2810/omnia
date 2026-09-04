@@ -6,6 +6,13 @@ profiles opening ``chrome://extensions`` gets whichever one Chrome felt like, wh
 installing an extension is the wrong one often enough to matter — so this reads Chrome's own
 ``Local State`` and picks the profile Chrome itself last used.
 
+Which profile Chrome last used is the right answer for INSTALLING, and the wrong one for
+finding something already installed: a user whose everyday profile is "Default" can perfectly
+well have loaded the clipper in "Profile 3" months ago, and reporting a running extension as
+absent because it is not in the last-used profile is the bug :func:`locate_extension` exists
+to close. So installing still aims at the preferred profile, while looking something UP walks
+every profile — preferred first, so a machine where both agree behaves exactly as before.
+
 Pure logic: the parsing takes the already-decoded ``Local State`` mapping, so it unit-tests
 without a browser, a filesystem or a platform.
 """
@@ -15,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -46,21 +53,10 @@ def pick_profile(local_state: Mapping[str, Any]) -> Optional[ChromeProfile]:
     profile = local_state.get("profile")
     if not isinstance(profile, Mapping):
         return None
-    cache = profile.get("info_cache")
-    cache = cache if isinstance(cache, Mapping) else {}
-
-    def _build(directory: str) -> ChromeProfile:
-        meta = cache.get(directory)
-        meta = meta if isinstance(meta, Mapping) else {}
-        return ChromeProfile(
-            directory=directory,
-            name=str(meta.get("name", "") or directory),
-            last_active=float(meta.get("active_time", 0) or 0),
-        )
-
+    cache = _info_cache(local_state)
     last_used = profile.get("last_used")
     if isinstance(last_used, str) and last_used:
-        return _build(last_used)
+        return _profile_from_cache(cache, last_used)
     if not cache:
         return None
     newest = max(
@@ -69,7 +65,52 @@ def pick_profile(local_state: Mapping[str, Any]) -> Optional[ChromeProfile]:
             (cache.get(directory) or {}).get("active_time", 0) or 0
         ),
     )
-    return _build(newest)
+    return _profile_from_cache(cache, newest)
+
+
+def _info_cache(local_state: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Chrome's per-profile metadata, keyed by profile directory; ``{}`` when absent."""
+    profile = local_state.get("profile")
+    if not isinstance(profile, Mapping):
+        return {}
+    cache = profile.get("info_cache")
+    return cache if isinstance(cache, Mapping) else {}
+
+
+def _profile_from_cache(cache: Mapping[str, Any], directory: str) -> ChromeProfile:
+    """Describe the profile in ``directory``, falling back to the directory as its name.
+
+    Chrome can name a ``last_used`` directory that ``info_cache`` says nothing about, so a
+    missing entry is normal and must still produce a usable profile rather than nothing.
+    """
+    meta = cache.get(directory)
+    meta = meta if isinstance(meta, Mapping) else {}
+    return ChromeProfile(
+        directory=directory,
+        name=str(meta.get("name", "") or directory),
+        last_active=float(meta.get("active_time", 0) or 0),
+    )
+
+
+def profile_search_order(local_state: Mapping[str, Any]) -> list[ChromeProfile]:
+    """Every profile in ``local_state``, in the order a lookup should try them.
+
+    The preferred profile leads, so a lookup that would have succeeded before still resolves
+    to the same profile and nothing about the common case changes; the rest follow
+    most-recently-active first, because between two profiles that both hold the extension the
+    one the user actually browses in is the one they meant.
+    """
+    preferred = pick_profile(local_state)
+    cache = _info_cache(local_state)
+    others = [
+        _profile_from_cache(cache, directory)
+        for directory in cache
+        if preferred is None or directory != preferred.directory
+    ]
+    # Directory as the tie-break: two profiles with the same (often zero) active_time must not
+    # reorder between calls, or the same click reloads a different profile each time.
+    others.sort(key=lambda profile: (-profile.last_active, profile.directory))
+    return ([preferred] if preferred is not None else []) + others
 
 
 def chrome_user_data_dir(
@@ -107,6 +148,11 @@ def read_local_state(user_data_dir: Optional[Path]) -> dict[str, Any]:
 def preferred_profile(platform: str = "") -> Optional[ChromeProfile]:
     """The Chrome profile this machine's Chrome last used, or None."""
     return pick_profile(read_local_state(chrome_user_data_dir(platform)))
+
+
+def chrome_profiles(platform: str = "") -> list[ChromeProfile]:
+    """Every Chrome profile on this machine, preferred first; empty when Chrome never ran."""
+    return profile_search_order(read_local_state(chrome_user_data_dir(platform)))
 
 
 #: Where Chrome's executable normally lives, per platform, in the order to try.
@@ -270,3 +316,44 @@ def installed_extension_id(
         return None
     preferences = read_profile_preferences(user_data_dir, profile.directory)
     return find_extension_id(preferences, name=name, source_dir=source_dir)
+
+
+@dataclass(frozen=True)
+class ExtensionLocation:
+    """Where an extension was found: the profile holding it, and the id Chrome gave it there.
+
+    The two travel together because neither is usable alone — the id addresses the extension's
+    own pages, and only the profile that recorded that id can open them.
+    """
+
+    profile: ChromeProfile
+    extension_id: str
+
+
+def locate_extension(
+    profiles: Iterable[ChromeProfile],
+    *,
+    name: str = "",
+    source_dir: Optional[Path] = None,
+    platform: str = "",
+) -> Optional[ExtensionLocation]:
+    """Find our extension in the first of ``profiles`` that has it, or None if none does.
+
+    Chrome gives an unpacked extension a different id in every profile it is loaded into, so
+    "is it installed?" can only be answered per profile. Taking the profiles as an argument
+    (rather than reading them here) lets the caller name the ones it searched when the answer
+    is no — a user with eight profiles needs to see which were looked at.
+
+    Args:
+        profiles: Profiles to search, in priority order (see :func:`profile_search_order`).
+        name: The extension's manifest name, used when the path does not match.
+        source_dir: The unpacked directory this add-on cloned the extension into.
+        platform: ``sys.platform`` override (for tests).
+    """
+    for profile in profiles:
+        extension_id = installed_extension_id(
+            name=name, source_dir=source_dir, profile=profile, platform=platform
+        )
+        if extension_id:
+            return ExtensionLocation(profile=profile, extension_id=extension_id)
+    return None
