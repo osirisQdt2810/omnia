@@ -12,7 +12,7 @@ and it is the thing the third-party add-on this replaces never did.
 
 from __future__ import annotations
 
-from pydantic import Field, validator
+from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
 
@@ -48,22 +48,12 @@ class AudioSpeedSettings(PersistedModel):
         le=4.0,
         description="Fastest speed the shortcuts will go to.",
     )
-
-    @validator("max_rate")
-    def _max_not_below_min(cls, value: float, values: dict) -> float:
-        """Reject a crossed pair here, where the settings form can show the error.
-
-        Each bound is range-checked on its own, but the PAIR is what ``SpeedBounds`` refuses.
-        Without this the save succeeds and the failure surfaces one layer down, inside
-        ``on_enable``, where the manager's isolation boundary logs it and the user is left
-        with a ticked plugin that silently does nothing.
-        """
-        minimum = values.get("min_rate")
-        if minimum is not None and value < minimum:
-            raise ValueError(
-                f"max_rate ({value}) must not be below min_rate ({minimum})"
-            )
-        return value
+    # NOT cross-validated against min_rate, deliberately. The generic settings form writes what
+    # the spinboxes say without parsing it back through this model, so a rejected pair would
+    # reach the config file anyway — and from then on the typed read raises, which makes the
+    # plugin inert AND stops its own settings panel from opening, because that panel reads the
+    # section too. There would be no way back except editing the config by hand. The plugin
+    # sorts the pair when it builds its bounds instead; a crossed pair is a harmless typo.
 
     remember_rate: bool = Field(
         True,

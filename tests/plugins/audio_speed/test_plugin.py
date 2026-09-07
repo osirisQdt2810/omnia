@@ -226,14 +226,15 @@ class TestDisable:
         # Dropping the injector entry only stops FUTURE renders from carrying a rate. The
         # applier already installed in the page on screen keeps forcing the old rate onto every
         # <audio> the template creates — the exact answer-side case this plugin exists to fix —
-        # until the reviewer webview is rebuilt. Disable has to push 1.0 into it.
+        # until the reviewer webview is rebuilt. Zero resets it to 1.0 and stands it down, so a
+        # template that sets a rate of its own is not overridden by a disabled plugin either.
         plugin = AudioSpeedPlugin()
         ctx = _ctx(rate=2.0)
         plugin.on_enable(ctx)
 
         plugin.on_disable(ctx)
 
-        assert anki.evals[-1] == push_rate_js(1.0)
+        assert anki.evals[-1] == push_rate_js(0.0)
 
     def test_a_shortcut_fired_after_disable_is_a_no_op(self, anki):
         plugin = AudioSpeedPlugin()

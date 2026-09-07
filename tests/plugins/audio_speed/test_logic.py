@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 
 from omnia.plugins.audio_speed.config import AudioSpeedSettings
 from omnia.plugins.audio_speed.logic import (
@@ -113,18 +112,19 @@ class TestFormatting:
         assert format_rate(1.9999999999999998) == "2×"
 
 
-class TestSettingsValidation:
-    """The settings model rejects what ``SpeedBounds`` would refuse one layer down."""
+class TestSettingsBounds:
+    """A crossed min/max pair must stay READABLE — see the comment on ``max_rate``."""
 
-    def test_a_max_below_the_min_is_refused_at_save_time(self):
-        # Each bound is in range on its own; the PAIR is the problem. Caught here, the settings
-        # form shows the error; caught in on_enable, the manager logs it and the user is left
-        # with a ticked plugin that silently does nothing.
-        with pytest.raises(ValidationError):
-            AudioSpeedSettings(min_rate=2.0, max_rate=1.0)
+    def test_a_crossed_pair_still_parses(self):
+        # The generic settings form writes the spinboxes without parsing them back through the
+        # model, so a rejected pair would reach the config file anyway and then make the whole
+        # section raise on read — which disables the plugin AND stops its panel from opening.
+        settings = AudioSpeedSettings(min_rate=2.0, max_rate=1.0)
+        assert (settings.min_rate, settings.max_rate) == (2.0, 1.0)
 
-    def test_min_equal_to_max_is_allowed(self):
-        assert AudioSpeedSettings(min_rate=1.5, max_rate=1.5).max_rate == 1.5
+    def test_the_plugin_sorts_a_crossed_pair_into_the_window_meant(self):
+        bounds = SpeedBounds(*sorted((2.0, 1.0)), step=0.1)
+        assert (bounds.minimum, bounds.maximum) == (1.0, 2.0)
 
     def test_the_default_pair_is_valid(self):
         settings = AudioSpeedSettings()

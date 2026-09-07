@@ -23,14 +23,19 @@
  *     the former on `load()`, and the reset must land on OUR rate, not 1.0.
  *   - The Python side may run before this file on a given render; it then leaves the rate in
  *     `window.__omniaAudioSpeedPending` and the installer below consumes it. Order-independent.
+ *   - `apply(0)` switches the applier OFF. The prototype wrap and the document listeners cannot
+ *     be removed from a page that is already rendered, so disabling the plugin has to make them
+ *     inert instead — otherwise a disabled speed feature would go on forcing 1.0 onto a template
+ *     that sets a playback rate of its own.
  */
 (function () {
   "use strict";
   var S = window.__omniaAudioSpeed;
   if (!S) {
-    S = window.__omniaAudioSpeed = { rate: 1.0 };
+    S = window.__omniaAudioSpeed = { rate: 1.0, off: false };
 
     function applyTo(el) {
+      if (S.off) return;
       if (!el || typeof el.playbackRate !== "number") return;
       try {
         el.defaultPlaybackRate = S.rate;
@@ -41,9 +46,12 @@
     }
 
     S.apply = function (rate) {
-      if (typeof rate === "number" && isFinite(rate) && rate > 0) S.rate = rate;
+      // 0 means "stand down": hand every element back to 1.0 once, then stop touching them.
+      if (rate === 0) { S.off = false; S.rate = 1.0; }
+      else if (typeof rate === "number" && isFinite(rate) && rate > 0) { S.off = false; S.rate = rate; }
       var els = document.querySelectorAll("audio,video");
       for (var i = 0; i < els.length; i++) applyTo(els[i]);
+      if (rate === 0) S.off = true;
       return S.rate;
     };
 

@@ -99,13 +99,14 @@ class AudioSpeedPlugin(FeaturePlugin):
         self._show_tooltip = bool(getattr(settings, "show_tooltip", True))
         self._remember = bool(getattr(settings, "remember_rate", True))
         start = float(settings.rate) if self._remember else 1.0
+        # Sorted, not trusted in order: the settings form has no cross-field validation, so a
+        # user who raises min_rate before max_rate writes a crossed pair. Sorting turns that
+        # into the window they meant; rejecting it would make the section unreadable and take
+        # the panel down with it, leaving no way to correct the mistake in the UI.
+        low, high = sorted((float(settings.min_rate), float(settings.max_rate)))
         self._controller = SpeedController(
             start,
-            SpeedBounds(
-                minimum=float(settings.min_rate),
-                maximum=float(settings.max_rate),
-                step=float(settings.step),
-            ),
+            SpeedBounds(minimum=low, maximum=high, step=float(settings.step)),
         )
 
         web = getattr(ctx, "web", None)
@@ -149,8 +150,10 @@ class AudioSpeedPlugin(FeaturePlugin):
         # Both players have to be handed back, not just mpv. Dropping the injector entry only
         # stops FUTURE renders from carrying a rate; the applier installed in the page that is
         # on screen right now keeps forcing the old rate on every <audio> the template creates,
-        # until the reviewer webview is rebuilt. Pushing 1.0 makes it inert immediately.
-        self._push_rate(1.0)
+        # until the reviewer webview is rebuilt. Zero resets everything to 1.0 and then stands
+        # the applier down — the prototype wrap cannot be removed, but it can be made inert, so
+        # a template that sets its own rate is left alone.
+        self._push_rate(0.0)
         # Leave mpv the way Anki expects it; a disabled speed plugin must not keep 1.7×.
         anki_compat.set_mpv_speed(1.0)
         self._controller = None
@@ -211,7 +214,14 @@ class AudioSpeedPlugin(FeaturePlugin):
             logger.exception("audio_speed: could not persist rate")
 
     def _rate_for_card(self, _card: Any) -> str:
-        """Dynamic-JS provider: the current rate, every render, both sides."""
+        """Dynamic-JS provider: the current rate, every render, both sides.
+
+        Also re-asserts the rate on mpv. ``speed`` is per-process state and Anki restarts mpv
+        when it dies (``MpvManager.on_init`` exists for exactly that), so a rate set once at
+        enable time can quietly go back to 1× mid-session. Re-setting it per render is one
+        local IPC call on a hop Anki already makes.
+        """
         if self._controller is None:
             return ""
+        anki_compat.set_mpv_speed(self._controller.rate)
         return push_rate_js(self._controller.rate)
