@@ -25,9 +25,22 @@ class AudioSpeedSettings(PersistedModel):
         ge=0.25,
         le=4.0,
         description=(
-            "Playback speed for card audio, as a multiplier (1.0 = normal).\n"
+            "Playback speed for audio on the FRONT (question) side, as a multiplier "
+            "(1.0 = normal).\n"
             "• Applies to [sound:] clips AND to <audio>/<video> elements a template plays itself.\n"
             "• Changed live with the shortcuts below; saved back here when 'Remember' is on."
+        ),
+    )
+    answer_rate: float = Field(
+        1.0,
+        ge=0.25,
+        le=4.0,
+        description=(
+            "Playback speed for audio on the BACK (answer) side.\n"
+            "• Separate from the front so a one-word prompt and a full example sentence can "
+            "play at the speeds each of them needs.\n"
+            "• Upgrading from a single-speed version copies your old speed here once, so both "
+            "sides keep sounding the way they did."
         ),
     )
     step: float = Field(
@@ -68,13 +81,37 @@ class AudioSpeedSettings(PersistedModel):
     )
     speed_up_shortcut: str = Field(
         "]",
-        description="Keyboard shortcut to speed up (Qt key sequence, e.g. ']' or 'Ctrl+Up').",
+        description=(
+            "Keyboard shortcut to speed BOTH sides up (Qt key sequence, e.g. ']' or "
+            "'Ctrl+Up').\n"
+            "Both sides move by one step each, so a difference you set between them is kept."
+        ),
     )
     slow_down_shortcut: str = Field(
         "[",
-        description="Keyboard shortcut to slow down.",
+        description="Keyboard shortcut to slow BOTH sides down.",
     )
     reset_shortcut: str = Field(
         "Ctrl+]",
-        description="Keyboard shortcut to return to 1.0×.",
+        description="Keyboard shortcut to return both sides to 1.0×.",
+    )
+    question_up_shortcut: str = Field(
+        "Alt+]",
+        description=(
+            "Speed up the FRONT side only.\n"
+            "Change it if your keyboard layout does not deliver this combination — the plain "
+            "] and [ are unaffected either way."
+        ),
+    )
+    question_down_shortcut: str = Field(
+        "Alt+[",
+        description="Slow down the FRONT side only.",
+    )
+    answer_up_shortcut: str = Field(
+        "Shift+]",
+        description="Speed up the BACK side only.",
+    )
+    answer_down_shortcut: str = Field(
+        "Shift+[",
+        description="Slow down the BACK side only.",
     )

@@ -18,15 +18,20 @@ min_days = 2                   # minimum days late before the guard can trigger
 force_again_after_days = 7     # if the Hard interval would exceed this, force Again (0 = off)
 
 [audio_speed]
-rate = 1.0                     # current speed multiplier; the shortcuts write it back here
-step = 0.1                     # how much one press moves the rate
+rate = 1.0                     # FRONT (question) side speed; the shortcuts write it back here
+answer_rate = 1.0              # BACK (answer) side speed — a word and a sentence rarely want the same
+step = 0.1                     # how much one press moves a rate
 min_rate = 0.5                 # slowest the shortcuts will go
-max_rate = 3.0                 # fastest the shortcuts will go (must not be below min_rate)
-remember_rate = true           # keep the speed across sessions (off = every launch starts at 1.0)
+max_rate = 3.0                 # fastest the shortcuts will go (a crossed pair is sorted, not refused)
+remember_rate = true           # keep the speeds across sessions (off = every launch starts at 1.0)
 show_tooltip = true            # flash the new speed each time a shortcut changes it
-speed_up_shortcut = "]"        # Qt key sequences
+speed_up_shortcut = "]"        # both sides, one step each (Qt key sequences)
 slow_down_shortcut = "["
-reset_shortcut = "Ctrl+]"
+reset_shortcut = "Ctrl+]"      # both sides back to 1.0
+question_up_shortcut = "Alt+]"    # front side only
+question_down_shortcut = "Alt+["
+answer_up_shortcut = "Shift+]"    # back side only
+answer_down_shortcut = "Shift+["
 
 # display_interval has no options.
 

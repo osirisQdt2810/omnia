@@ -21,6 +21,34 @@ Format for each entry:
 
 ---
 
+## 2026-09-07 — Audio Speed keeps a separate rate for the front and the back
+
+**What:** the plugin now holds two rates instead of one. `]` / `[` still move both — by one step
+each, so a difference the user set survives — and `Ctrl+]` resets both. `Alt+]` / `Alt+[` move only
+the front side and `Shift+]` / `Shift+[` only the back. The flip is what switches speeds: each
+side's render hands its own rate to mpv and to the page.
+
+**Why:** one rate forces a compromise. On the vocabulary decks this was built for, the question is
+a single word and the answer is a sentence read at length; the speed that keeps the word
+intelligible is not the speed that makes the sentence bearable.
+
+**Files:** `plugins/audio_speed/logic.py` (`SideSpeeds`, `describe`), `plugins/audio_speed/config.py`
+(`answer_rate` + four shortcuts), `plugins/audio_speed/__init__.py`, `tests/plugins/audio_speed/`,
+`config/features.example.toml`.
+
+**How to verify:**
+```
+pytest tests/plugins/audio_speed -q      # 67 tests, headless
+```
+In Anki: review a card with audio on both sides, press `Shift+]` while the question is showing —
+the tooltip says "(back)" and nothing changes yet; flip, and the answer plays faster.
+
+**Notes / rollback:** a section written by the single-rate version has `rate` and no `answer_rate`;
+both sides adopt the old rate and it is written out at once, because until the key exists the
+generic settings form shows its 1.0 default and saving that form would write the default over the
+speed the user is hearing. A press changes a stored rate, but only the side on screen can be made
+audible now — that is why the tooltip names the side it moved.
+
 ## 2026-09-07 — Settings dialog opens on plugin categories, not one long list
 
 **What:** the Omnia settings dialog now opens on a grid of category tiles — icon, one-line blurb,
