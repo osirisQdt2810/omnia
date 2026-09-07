@@ -348,8 +348,7 @@ desktop panel with a note switcher rarely want the same fields back. Each profil
 | `search_fields` / `display_fields` | Fields to search in; fields to show |
 | `match_word_forms` | Match "running" against "run" |
 | `hidden_fields` | Never show these |
-| `max_results`, `max_fields` | Result limits. A note type with more fields than fit keeps a
-  quarter of the budget for empty ones, so a field worth generating stays visible |
+| `max_results`, `max_fields` | Result limits. A note type with more fields than fit keeps a quarter of the budget for empty ones, so a field worth generating stays visible |
 
 This feature's own **Configure…** holds only what belongs to the service rather than to a
 clipper:
@@ -357,8 +356,7 @@ clipper:
 | Option | Meaning |
 |---|---|
 | `port` | Default `8766` — change only on a conflict, and restart Anki afterwards |
-| `token` | Issued automatically. A clipper must present it to regenerate anything, because that
-  request changes notes and spends provider credits |
+| `token` | Issued automatically. A clipper must present it to regenerate anything, because that request changes notes and spends provider credits |
 
 **Try it:** see §6.3, which uses it from the Desktop Clipper.
 
