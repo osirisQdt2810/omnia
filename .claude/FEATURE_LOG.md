@@ -21,6 +21,45 @@ Format for each entry:
 
 ---
 
+## 2026-09-07 — Settings dialog opens on plugin categories, not one long list
+
+**What:** the Omnia settings dialog now opens on a grid of category tiles — icon, one-line blurb,
+and a live "N of M on" count — and clicking one reveals that category's feature cards with the
+same toggle, Configure… and (i) popover as before. Both views are rendered into the one
+self-contained document the webview's CSP demands, and switching between them is client-side
+(entrance animations staggered per tile/card, Escape and a Back button, focus restored to the tile
+you came from). No new `pycmd` op: `toggle` and `configure` keep their contracts.
+
+**Why:** every new plugin used to make the page longer, so finding one meant scrolling past all
+the others, and there was no level of the UI between "the whole add-on" and "one feature". With
+eight plugins the flat list had already stopped being scannable; the categories were declared all
+along (`FeaturePlugin.group`) and were only being used as section labels.
+
+**Files:** `src/omnia/gui/settings_categories.py` (new — the icon/blurb/gradient table plus a
+default for an unstyled group), `src/omnia/gui/settings_html.py` (`CategoryModel` + the landing and
+category renderers), `src/omnia/gui/web/settings.{html,css,js}`, `src/omnia/gui/settings_dialog.py`
+(size only), `src/omnia/core/manager.py` (`_GROUP_ORDER` → public `GROUP_ORDER`, plus Integrations
+and Editing, which had been sorting with the unknown groups), `tests/gui/test_settings_html.py`,
+`tests/gui/test_settings_categories.py`, `tests/core/test_grouping.py`.
+
+**How to verify:**
+```
+pytest tests/gui tests/core -q                 # headless: the builder and the grouping
+python scripts/install_addon.py                # then Tools -> Omnia in a real Anki
+```
+The page's *behaviour* cannot be asserted headless, so it was driven in Chrome over CDP with a
+stubbed `pycmd` — 29 checks per palette covering the view switch, focus, Escape/Back, the live
+count (including that a failed enable does not inflate it), the popover, reduced motion, and that
+the CSS stays inside the QtWebEngine 6.6 floor.
+
+**Notes / rollback:** the category paint table lives in `gui/` and the ORDER in `core/`, because
+`core` must never import `gui`; a test pins that every name in `GROUP_ORDER` has a style. A plugin
+declaring a group nobody has styled still renders — it gets the default, whose accents are theme
+variables rather than literal colours. Two rules are load-bearing and easy to undo by accident:
+`animation-fill-mode` must stay `backwards` (a forward fill keeps the last keyframe's transform and
+outranks the card hover lift), and `[hidden]` needs an explicit `display: none` (the UA rule loses
+to the `display: grid` on the same element).
+
 ## 2026-08-25 — Export / Import one note type's Smart Notes setup
 
 **What:** a note type's whole Smart Notes configuration can be written to a file and imported
