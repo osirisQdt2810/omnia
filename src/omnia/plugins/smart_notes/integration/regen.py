@@ -325,7 +325,12 @@ class RegenerationService:
                 )
             else:
                 candidates.append(name)
-        return order, refusals, candidates
+        # Deduplicated, because `candidates` becomes one RULE each and every rule is a provider
+        # round trip on the user's paid key. A request naming one field fifty times would
+        # otherwise buy fifty identical generations, and the body cap admits thousands of names.
+        # `order` keeps its duplicates: it drives the reply, `outcomes` is keyed by name, so
+        # every position the caller asked about still gets its answer.
+        return order, refusals, list(dict.fromkeys(candidates))
 
     def _predicted_blocks(
         self,
@@ -466,7 +471,9 @@ class RegenerationService:
         }
         for name in missing:
             outcomes[name] = FieldOutcome(
-                name, STATUS_SKIPPED, _skip_message(rules.get(name), snapshot.fields)
+                name,
+                STATUS_SKIPPED,
+                _skip_message(rules.get(name), snapshot.fields, outcomes),
             )
 
     # --- Anki glue: everything below touches the collection ------------------------------------
@@ -586,17 +593,34 @@ def _refusal(
     )
 
 
-def _skip_message(rule: Optional[SmartNotesFieldRule], fields: dict[str, str]) -> str:
-    """Name the blank source fields that made the engine skip ``rule``."""
-    blank = (
-        [
-            name
-            for name in rule_source_fields(rule)
-            if not str(fields.get(name, "")).strip()
-        ]
-        if rule is not None
-        else []
-    )
+def _skip_message(
+    rule: Optional[SmartNotesFieldRule],
+    fields: dict[str, str],
+    outcomes: Optional[dict[str, FieldOutcome]] = None,
+) -> str:
+    """Say why the engine skipped ``rule``, naming a cause the user can act on.
+
+    A blank source is the usual reason, but not always the real one: a source this same run
+    tried and could not produce is blank for a reason of its own, and telling the user to fill
+    it — or to turn on "generate even when sources are empty", which would change nothing —
+    points away from the actual failure. So a source that already has a verdict wins.
+
+    Args:
+        rule: The compiled rule, or None when there is none.
+        fields: The note's fields as they stood.
+        outcomes: What the same run concluded about the other fields, if anything.
+    """
+    sources = rule_source_fields(rule) if rule is not None else []
+    reported = outcomes or {}
+    upstream = [
+        name
+        for name in sources
+        if reported.get(name) is not None
+        and reported[name].status in (STATUS_ERROR, STATUS_BLOCKED)
+    ]
+    if upstream:
+        return f"Waiting on {_join(upstream)}, which did not generate — fix that field first."
+    blank = [name for name in sources if not str(fields.get(name, "")).strip()]
     if not blank:
         return "Smart Notes found nothing to generate for this field."
     return (

@@ -397,6 +397,13 @@ class LookupService:
         service = self
 
         class Handler(BaseHTTPRequestHandler):
+            # A socket that opens and then says nothing would otherwise park a thread for ever
+            # inside readline(); the server is threaded, so a handful of those is a slow leak
+            # any local process can start. Five seconds is far longer than a loopback client
+            # needs to finish a request line, and it bounds nothing a real one does — the
+            # generation itself happens after the request is fully read.
+            timeout = 5
+
             # Quiet: BaseHTTPRequestHandler logs every request to stderr, and writing to Anki's
             # stderr pops its error dialog.
             def log_message(self, *_args: Any) -> None:

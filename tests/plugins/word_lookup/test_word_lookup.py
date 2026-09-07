@@ -484,3 +484,44 @@ class TestFieldFromRaw:
 
     def test_a_blank_value_is_an_empty_field(self):
         assert LookupField.from_raw("Blank", "").is_empty is True
+
+
+class TestAWideNoteTypeStillShowsSomethingToGenerate:
+    """The blank is the reason the panel has a generate button at all.
+
+    Sinking blanks and then truncating is right until the note type is wide: the deck this was
+    built for has 35 fields, and with ten of them filled and the default budget of eight the
+    panel came back with eight filled fields and no blanks — so the field somebody opened it to
+    generate was invisible on exactly the note types the feature was pitched for.
+    """
+
+    def _wide(self, filled: int, blanks: int):
+        pairs = [("Word", "plunge")]
+        pairs += [(f"Filled {i}", f"value {i}") for i in range(filled)]
+        pairs += [(f"Blank {i}", "") for i in range(blanks)]
+        return pairs
+
+    def test_a_quarter_of_the_budget_is_kept_for_blanks(self):
+        _title, fields = triage_fields(self._wide(filled=10, blanks=25), max_fields=8)
+
+        names = [f.name for f in fields]
+        assert len(names) == 8
+        assert sum(1 for f in fields if f.is_empty) == 2
+        assert sum(1 for f in fields if not f.is_empty) == 6
+
+    def test_the_blanks_come_after_the_fields_with_content(self):
+        _title, fields = triage_fields(self._wide(filled=10, blanks=25), max_fields=8)
+
+        assert [f.is_empty for f in fields] == [False] * 6 + [True] * 2
+
+    def test_a_budget_too_small_to_spare_a_seat_reserves_none(self):
+        # Below four there is no room to spend without losing something showable.
+        _title, fields = triage_fields(self._wide(filled=10, blanks=25), max_fields=3)
+
+        assert [f.is_empty for f in fields] == [False, False, False]
+
+    def test_a_note_type_with_no_blanks_is_unaffected(self):
+        _title, fields = triage_fields(self._wide(filled=10, blanks=0), max_fields=8)
+
+        assert len(fields) == 8
+        assert not any(f.is_empty for f in fields)

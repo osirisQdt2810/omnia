@@ -57,12 +57,13 @@ class TestSavingOneClipper:
         assert section["port"] == 9999
         assert "port" not in section["clients"][WEB_CLIPPER]
 
-    def test_no_client_edits_the_flat_fallback(self):
-        # The profile older clipper builds — the ones that send no `client` — are served from.
-        section = _save({}, "", {"max_results": 3})
+    def test_the_flat_pre_upgrade_keys_are_never_written_again(self):
+        # They are still READ — that is what an older clipper sending no `client` is served
+        # from — but every profile belongs to somebody now, so a save only touches `clients`.
+        section = _save({"max_results": 9}, WEB_CLIPPER, {"max_results": 3})
 
-        assert section["max_results"] == 3
-        assert "clients" not in section
+        assert set(section) == {"clients", "port"}
+        assert section["clients"][WEB_CLIPPER]["max_results"] == 3
 
 
 class TestSaveKeepsWhatTheDialogCannotRender:

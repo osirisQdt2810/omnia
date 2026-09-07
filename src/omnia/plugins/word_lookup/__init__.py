@@ -408,9 +408,13 @@ class WordLookupPlugin(FeaturePlugin):
         }
 
     def _settings(self) -> WordLookupSettings:
-        """The plugin's settings, RE-READ from config on every request.
+        """The plugin's settings, read from the config repository on every request.
 
-        Not ``ctx.settings``: that is the snapshot ``PluginManager`` took at enable time, which
+        "Read-through" rather than "re-read from disk": the repository answers from a merged
+        cache that its own ``_reload`` refreshes, and a write through ``update_section`` goes
+        through that. What matters here is that the value is not frozen at enable time.
+
+        Not ``ctx.settings``, which is the snapshot ``PluginManager`` took at enable time and
         only ``manager.reload()`` refreshes — so a lookup profile saved from a clipper's
         “Lookup…” dialog was not served until Anki restarted, while the smart_notes settings the
         very same panel depends on applied at once (its store re-reads per request). One feature

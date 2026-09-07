@@ -226,8 +226,10 @@ def store_profile(
 
     Args:
         raw: The section exactly as stored (``ConfigRepository.raw_section``).
-        client: The clipper this profile belongs to. Empty edits the flat fallback that older
-            clipper builds — the ones that send no ``client`` — are still served from.
+        client: The clipper this profile belongs to. Required: every profile is somebody's now,
+            and the only editor passes an integration key. The flat pre-upgrade keys are still
+            READ (see :meth:`WordLookupSettings.legacy_profile`, which is what an older clipper
+            sending no ``client`` is served from) — nothing writes them any more.
         profile: The content settings the dialog rendered.
         port: The server's port. Top level however this was reached: there is one server and
             both clippers talk to it, so a per-client port could not mean anything.
@@ -237,13 +239,9 @@ def store_profile(
     Returns:
         The mapping to hand to ``update_section``.
     """
-    if client:
-        clients = dict(raw.get("clients") or {})
-        entry = dict(clients.get(client) or settings.legacy_profile().dict())
-        entry.update(profile)
-        clients[client] = entry
-        section: dict[str, Any] = {"clients": clients}
-    else:
-        section = dict(profile)
-    section["port"] = port
+    clients = dict(raw.get("clients") or {})
+    entry = dict(clients.get(client) or settings.legacy_profile().dict())
+    entry.update(profile)
+    clients[client] = entry
+    section: dict[str, Any] = {"clients": clients, "port": port}
     return section

@@ -58,7 +58,7 @@ class WordLookupSettingsDialog(QDialog):
         repo: Any,
         parent: Optional[QWidget] = None,
         *,
-        client: str = "",
+        client: str,
         client_name: str = "",
     ) -> None:
         """Build the dialog from one client's saved lookup profile.
@@ -69,7 +69,7 @@ class WordLookupSettingsDialog(QDialog):
             client: Which clipper this profile belongs to (``"web_clipper"`` /
                 ``"desktop_clipper"``). Each one searches and shows what suits it, so a browser
                 panel a few centimetres wide and a desktop panel with room for a note switcher
-                need not agree. Empty edits the shared fallback older clipper builds are served.
+                need not agree.
             client_name: The clipper's display name, for the window title.
         """
         super().__init__(parent)
@@ -343,14 +343,18 @@ class WordLookupSettingsDialog(QDialog):
             "max_results": self._max_results.value(),
             "max_fields": self._max_fields.value(),
         }
-        section = store_profile(
-            self._repo.raw_section(_PLUGIN_ID),
-            self._client,
-            profile,
-            port=self._port.value(),
-            settings=self._settings,
-        )
         try:
+            # Building the section is inside the try with the write: a hand-edited `clients`
+            # that is not a mapping makes it raise, and an exception leaving a Qt slot reaches
+            # stderr — which Anki turns into an error dialog, with this one still open behind
+            # it and no way out but to lose the edits.
+            section = store_profile(
+                self._repo.raw_section(_PLUGIN_ID),
+                self._client,
+                profile,
+                port=self._port.value(),
+                settings=self._settings,
+            )
             self._repo.update_section(_PLUGIN_ID, section)
         except Exception:
             logger.exception("word_lookup: could not save settings")

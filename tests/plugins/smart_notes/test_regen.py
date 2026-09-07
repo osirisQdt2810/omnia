@@ -850,3 +850,86 @@ class TestThreading:
             service.regenerate(1)
         # field_states swallows it, because a UI cannot render an exception.
         assert service.field_states(1) == {}
+
+
+class TestOneRowIsOneRoundTrip:
+    """Every candidate becomes a rule, and every rule is a provider call on a paid key."""
+
+    def test_a_field_named_twice_is_generated_once(self, monkeypatch):
+        settings = _settings()
+        note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": ""})
+        compat = _FakeCompat({note.id: note})
+        _patch(monkeypatch, compat)
+        llm = _RecordingLLM(compat)
+        service = RegenerationService(lambda: settings, _service(compat, llm))
+
+        outcomes = service.regenerate(1, ["Definition", "Definition"])
+
+        # The caller asked twice, so it hears twice — but the model is only asked once.
+        assert [o.field for o in outcomes] == ["Definition", "Definition"]
+        assert len(llm.depths) == 1
+
+    def test_fifty_repeats_are_still_one_round_trip(self, monkeypatch):
+        # The body cap admits thousands of names. Without the dedupe one authenticated request
+        # buys thousands of identical generations — and a retry loop in either separately
+        # shipped clipper produces exactly that request without anyone meaning to.
+        settings = _settings()
+        note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": ""})
+        compat = _FakeCompat({note.id: note})
+        _patch(monkeypatch, compat)
+        llm = _RecordingLLM(compat)
+        service = RegenerationService(lambda: settings, _service(compat, llm))
+
+        outcomes = service.regenerate(1, ["Definition"] * 50)
+
+        assert len(outcomes) == 50
+        assert {o.status for o in outcomes} == {regen.STATUS_GENERATED}
+        assert len(llm.depths) == 1
+
+
+class TestWhoIsBlamedForASkip:
+    """A blank source is the usual reason a field is skipped — not always the real one."""
+
+    def test_a_source_that_failed_is_named_instead_of_being_called_empty(
+        self, monkeypatch
+    ):
+        # Word is generated first and fails; Definition reads it SOFTLY, so it passes the block
+        # gate and reaches the silent skip gate with Word still empty. Telling the user to fill
+        # Word, or to turn on "generate even when sources are empty", points away from the
+        # actual cause and the second suggestion would change nothing at all.
+        config = _config(
+            base_field="Base",
+            fields=[
+                _row("Word", prompt="the word"),
+                _row(
+                    "Definition",
+                    prompt="define {{Word}}",
+                    depends_on=[FieldDep(field="Word", kind="soft")],
+                ),
+            ],
+        )
+        note = _FakeNote(1, "Vocab", {"Base": "seed", "Word": "", "Definition": ""})
+        compat = _FakeCompat({note.id: note})
+        _patch(monkeypatch, compat)
+        service = RegenerationService(
+            lambda: _settings(config),
+            _service(compat, _BrokenLLM("the word", "HTTP 401")),
+        )
+
+        outcomes = {o.field: o for o in service.regenerate(1)}
+
+        assert outcomes["Word"].status == regen.STATUS_ERROR
+        assert outcomes["Definition"].status == regen.STATUS_SKIPPED
+        assert "Word" in outcomes["Definition"].message
+        assert "did not generate" in outcomes["Definition"].message
+        assert "empty" not in outcomes["Definition"].message
+
+    def test_a_genuinely_blank_source_is_still_named_as_blank(self, monkeypatch):
+        service, _ = _build(
+            monkeypatch, _soft_dep_note(), _settings(_soft_dep_config())
+        )
+
+        outcome = service.regenerate(1, ["Definition"])[0]
+
+        assert outcome.status == regen.STATUS_SKIPPED
+        assert "empty" in outcome.message

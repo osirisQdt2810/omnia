@@ -277,6 +277,12 @@ def _classify(text: str, audio: tuple[str, ...], images: tuple[str, ...]) -> str
     return KIND_TEXT
 
 
+#: Share of a ``max_fields`` budget kept for blanks when a note type has both, rounded DOWN.
+#: One in four, so a budget of eight seats two blanks and a budget of three seats none: below
+#: four there is no room to spend without the panel losing something it can actually show.
+_BLANK_SHARE = 4
+
+
 def _display_order(fields: list[LookupField]) -> list[LookupField]:
     """Order fields for display: content first, then bookkeeping, then blank slots.
 
@@ -284,13 +290,35 @@ def _display_order(fields: list[LookupField]) -> list[LookupField]:
     neither of them a removal — nothing is ever silently withheld:
 
     * an identifier-only field (bare number, UUID, hex blob) is bookkeeping noise;
-    * an EMPTY field is a slot to generate into, which only matters once everything with
-      content has had its place — ``max_fields`` caps the list, and a blank must never push a
-      field that has something to show out of it.
+    * an EMPTY field is a slot to generate into, which matters less than a field that already
+      has something to show.
     """
     return sorted(
         fields, key=lambda item: (item.is_empty, looks_like_identifier(item.text))
     )
+
+
+def _capped(fields: list[LookupField], max_fields: int) -> list[LookupField]:
+    """Apply ``max_fields`` while keeping room for the blanks.
+
+    Sinking blanks and then truncating is right until the note type is wide: a 35-field type
+    with ten filled fields and a budget of eight returns eight filled ones and NO blanks — so
+    the field somebody opened the panel to generate is invisible, on exactly the note types
+    this was built for. A quarter of the budget is reserved for blanks whenever there are both
+    kinds AND the budget can spare it. Rounded down, so a budget under four reserves nothing —
+    there, every seat still goes to a field with something in it.
+    """
+    ordered = _display_order(fields)
+    if len(ordered) <= max_fields:
+        return ordered
+    filled = [item for item in ordered if not item.is_empty]
+    blanks = [item for item in ordered if item.is_empty]
+    if not filled or not blanks:
+        return ordered[:max_fields]
+    reserved = min(len(blanks), max_fields // _BLANK_SHARE)
+    if not reserved:
+        return ordered[:max_fields]
+    return filled[: max_fields - reserved] + blanks[:reserved]
 
 
 def triage_fields(
@@ -353,7 +381,7 @@ def triage_fields(
                 title_index = index
                 break
     if title_index < 0:
-        return "", _display_order(kept)[:max_fields]
+        return "", _capped(kept, max_fields)
     title = kept[title_index].text
     rest = [item for index, item in enumerate(kept) if index != title_index]
     if wanted:
@@ -363,7 +391,7 @@ def triage_fields(
         # for.
         by_name = {item.name.strip().lower(): item for item in rest}
         return title, [by_name[key] for key in wanted if key in by_name]
-    return title, _display_order(rest)[:max_fields]
+    return title, _capped(rest, max_fields)
 
 
 def card_state(card_type: int) -> str:
