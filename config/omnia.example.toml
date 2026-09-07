@@ -20,6 +20,9 @@ enabled = false
 [plugins.display_interval]
 enabled = false
 
+[plugins.audio_speed]
+enabled = false
+
 [plugins.overdue_guard]
 enabled = false
 

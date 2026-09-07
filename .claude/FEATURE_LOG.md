@@ -21,6 +21,33 @@ Format for each entry:
 
 ---
 
+## 2026-09-07 — Audio Speed keeps a separate rate for the front and the back
+
+**What:** the plugin now holds two rates instead of one. `]` / `[` still move both — by one step
+each, so a difference the user set survives — and `Ctrl+]` resets both. `Alt+]` / `Alt+[` move only
+the front side and `Shift+]` / `Shift+[` only the back. The flip is what switches speeds: each
+side's render hands its own rate to mpv and to the page.
+
+**Why:** one rate forces a compromise. On the vocabulary decks this was built for, the question is
+a single word and the answer is a sentence read at length; the speed that keeps the word
+intelligible is not the speed that makes the sentence bearable.
+
+**Files:** `plugins/audio_speed/logic.py` (`SideSpeeds`, `describe`), `plugins/audio_speed/config.py`
+(`answer_rate` + four shortcuts), `plugins/audio_speed/__init__.py`, `tests/plugins/audio_speed/`,
+`config/features.example.toml`.
+
+**How to verify:**
+```
+pytest tests/plugins/audio_speed -q      # 67 tests, headless
+```
+In Anki: review a card with audio on both sides, press `Shift+]` while the question is showing —
+the tooltip says "(back)" and nothing changes yet; flip, and the answer plays faster.
+
+**Notes / rollback:** a section written by the single-rate version has `rate` and no `answer_rate`;
+both sides adopt the old rate and it is written out at once, because until the key exists the
+generic settings form shows its 1.0 default and saving that form would write the default over the
+speed the user is hearing. A press changes a stored rate, but only the side on screen can be made
+audible now — that is why the tooltip names the side it moved.
 ## 2026-09-07 — Regenerate a note's fields from a clipper, and per-clipper lookup settings
 
 **What:** the clippers' lookup panels can now ask Omnia to re-generate a note's fields. Every
@@ -129,6 +156,43 @@ variables rather than literal colours. Two rules are load-bearing and easy to un
 `animation-fill-mode` must stay `backwards` (a forward fill keeps the last keyframe's transform and
 outranks the card hover lift), and the explicit `[hidden] { display: none }` is what keeps giving
 either view a `display` of its own later from silently un-hiding it.
+## 2026-09-04 — Audio Speed: one playback rate for every sound on a card, both sides
+
+**What:** a `Reviewing` plugin that holds one playback rate for all card audio. Three Tools-menu
+actions with configurable shortcuts (`]` faster, `[` slower, `Ctrl+]` reset) move the rate in a
+configurable step inside configurable bounds. The rate reaches Anki's mpv player (the `[sound:]`
+tags) through `anki_compat.set_mpv_speed`, and the template's own `<audio>` elements through an
+injected script that wraps `HTMLMediaElement.play` and is re-applied on every question and answer
+render, so the back side is covered too. With `remember_rate` on, the rate survives restarts; a
+tooltip announces each change.
+
+**Why:** the third-party speed add-on changed only the front side. Anki renders the answer side
+afresh, so the rate it had set on the page's audio elements was gone, and it never touched mpv at
+all. On a vocabulary note type the Word audio sped up while the example sentences on the back
+played at 1×. Owning the feature inside Omnia also removes a dependency on an add-on we cannot fix.
+
+**Files:** `src/omnia/plugins/audio_speed/{__init__,logic,config}.py` (new),
+`src/omnia/gui/audio_speed/web/speed.js` (new), `core/anki_compat.py` (`set_mpv_speed`,
+`show_tooltip`), `plugins/__init__.py`, `tests/plugins/audio_speed/`.
+
+**How to verify:**
+```
+pytest tests/plugins/audio_speed -q      # 39 tests, headless
+```
+The same 39 passed on the Windows machine (Anki 26.8.1, which bundles `anki_audio\mpv.exe`, so the
+mpv path is the live one there). In Anki: enable Audio Speed, review a card with audio on both
+sides, press `]`; the tooltip shows the new rate and both sides play faster.
+
+**Notes / rollback:** when mpv is not the active player (`aqt.sound.mpvManager is None`) only the
+HTML audio is sped up and the tooltip says so. Disabling has to hand BOTH players back: it resets
+mpv to 1×, drops the injector entry so later renders carry no rate, and pushes 1.0 into the page
+that is already on screen — the applier installed there outlives the injector entry and would keep
+forcing the old rate until the reviewer webview was rebuilt. Zero is the disable signal to the applier — it resets every element to 1.0 and then stands
+down, because the prototype wrap it installed cannot be removed from a page that is already
+rendered. `min_rate`/`max_rate` are sorted rather than validated: the generic settings form
+writes the spinboxes without parsing them back, so rejecting a crossed pair would make the
+whole section unreadable and take its own settings panel down with it. The persisted key is
+`audio_speed.rate`; delete it to forget the rate.
 
 ## 2026-08-25 — Export / Import one note type's Smart Notes setup
 
