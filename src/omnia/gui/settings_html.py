@@ -146,15 +146,6 @@ def _slug(name: str, index: int) -> str:
     return f"{slug or 'group'}-{index}"
 
 
-def _count_label(on: int, total: int) -> str:
-    """The tile's enabled-count line, e.g. ``"2 of 3 on"``.
-
-    ``settings.js`` rebuilds this exact shape after every toggle; the pairing is pinned by
-    ``test_count_label_shape_matches_js``.
-    """
-    return f"{on} of {total} on"
-
-
 def _style_vars(style: CategoryStyle, index: int | None) -> str:
     """Emit the inline custom properties a tile/section needs: gradient and stagger index.
 
@@ -172,17 +163,20 @@ def _style_vars(style: CategoryStyle, index: int | None) -> str:
 def _icon_html(style: CategoryStyle) -> str:
     """Render a category's icon.
 
-    ``style.icon`` is inserted RAW — it is SVG path data from the module-level
-    :data:`~omnia.gui.settings_categories.CATEGORY_STYLES` table, the page's one trusted
-    insertion. Nothing derived from a plugin or from config may ever reach it. The icon is
-    decorative (the name is right beside it), so it is hidden from assistive tech rather than
-    labelled; a ``title=`` attribute would also resurrect the raw browser tooltip the (i)
-    popover was built to replace.
+    ``style.icon`` is escaped like everything else, even though today it is a module constant
+    of SVG path data whose characters escaping does not touch. Leaving one unescaped hole
+    because the value "is trusted" makes the safety a property of who edits the table rather
+    than of the code; the day a style becomes configurable, or is read from a plugin, the hole
+    is an attribute breakout and nothing here would have changed to warn about it.
+
+    The icon is decorative — the category name sits right beside it — so it is hidden from
+    assistive tech rather than labelled. It gets no ``title=``, which would also resurrect the
+    raw browser tooltip the (i) popover was built to replace.
     """
     return (
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" '
         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" '
-        f'focusable="false"><path d="{style.icon}"/></svg>'
+        f'focusable="false"><path d="{html.escape(style.icon)}"/></svg>'
     )
 
 
@@ -208,8 +202,10 @@ def _tile_html(category: CategoryModel, index: int) -> str:
         f'<span class="omnia-tile-icon" aria-hidden="true">{_icon_html(category.style)}</span>'
         f'<span class="omnia-tile-name">{html.escape(category.name)}</span>'
         f'<span class="omnia-tile-blurb">{html.escape(category.style.blurb)}</span>'
+        # The sentence is written HERE and only here; settings.js rewrites the number inside
+        # the <b> after a toggle, so the two layers cannot drift into different wordings.
         f'<span class="omnia-tile-count">'
-        f"{html.escape(_count_label(category.on_count, category.total))}</span>"
+        f'<b class="omnia-tile-on">{category.on_count}</b> of {category.total} on</span>'
         "</button>"
     )
 
@@ -221,13 +217,15 @@ def _category_view_html(category: CategoryModel) -> str:
     )
     name = html.escape(category.name)
     return (
-        f'<section class="omnia-category" data-category="{category.key}" tabindex="-1" '
+        f'<section class="omnia-category" data-category="{category.key}" '
         f'aria-label="{name}" {_style_vars(category.style, None)} hidden>'
         '<div class="omnia-cat-head">'
         '<button type="button" class="omnia-back">'
         '<span class="omnia-back-arrow" aria-hidden="true">←</span>Back</button>'
         '<div class="omnia-cat-heading">'
-        '<h2 class="omnia-cat-name">'
+        # Focus lands here when the view opens (see settings.js): a heading names the place
+        # you just arrived at, where the section would have been announced as a bare region.
+        '<h2 class="omnia-cat-name" tabindex="-1">'
         f'<span class="omnia-cat-icon" aria-hidden="true">{_icon_html(category.style)}</span>'
         f"{name}</h2>"
         f'<div class="omnia-cat-blurb">{html.escape(category.style.blurb)}</div>'

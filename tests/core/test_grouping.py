@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from omnia.core.manager import GROUP_ORDER, group_plugins, grouped_plugins
+from omnia.core.manager import group_plugins, grouped_plugins
 from omnia.core.plugin import FeaturePlugin
+
+# The settings page supplies its own order (``gui.settings_categories.category_order``); these
+# tests pass one explicitly rather than importing it, so they test the sorting mechanism and not
+# whichever sections the GUI happens to ship this week.
+_ORDER = ("Reviewing", "Grading", "AI", "Integrations", "Editing")
 
 
 def _plugin(plugin_id: str, *, group: str, order: int, name: str = "") -> FeaturePlugin:
@@ -35,15 +40,15 @@ class TestGroupPlugins:
             _plugin("overdue_guard", group="Grading", order=40),
             _plugin("auto_flip", group="Reviewing", order=10),
         ]
-        groups = group_plugins(plugins)
-        assert [name for name, _ in groups] == list(GROUP_ORDER)
+        groups = group_plugins(plugins, order=_ORDER)
+        assert [name for name, _ in groups] == list(_ORDER)
 
     def test_members_sorted_by_order_then_name_within_group(self):
         plugins = [
             _plugin("display_interval", group="Reviewing", order=30),
             _plugin("auto_flip", group="Reviewing", order=10),
         ]
-        groups = dict(group_plugins(plugins))
+        groups = dict(group_plugins(plugins, order=_ORDER))
         assert [p.id for p in groups["Reviewing"]] == ["auto_flip", "display_interval"]
 
     def test_grading_has_both_cooperating_plugins(self):
@@ -51,18 +56,16 @@ class TestGroupPlugins:
             _plugin("typed_accuracy", group="Grading", order=20),
             _plugin("overdue_guard", group="Grading", order=40),
         ]
-        groups = dict(group_plugins(plugins))
+        groups = dict(group_plugins(plugins, order=_ORDER))
         assert [p.id for p in groups["Grading"]] == ["typed_accuracy", "overdue_guard"]
 
-    def test_integrations_and_editing_are_known_groups(self):
-        # Both were once unlisted and sorted with the unknowns; they are preferred now, so a
-        # genuinely unknown group must fall behind them however early it was seen.
+    def test_a_named_group_outranks_an_unnamed_one_seen_earlier(self):
         plugins = [
             _plugin("z", group="Zeta", order=1),
             _plugin("n", group="Editing", order=1),
             _plugin("w", group="Integrations", order=1),
         ]
-        groups = group_plugins(plugins)
+        groups = group_plugins(plugins, order=_ORDER)
         assert [name for name, _ in groups] == ["Integrations", "Editing", "Zeta"]
 
     def test_unknown_group_appended_after_known_in_first_seen_order(self):
@@ -71,16 +74,24 @@ class TestGroupPlugins:
             _plugin("a", group="Alpha", order=1),
             _plugin("r", group="Reviewing", order=1),
         ]
-        groups = group_plugins(plugins)
+        groups = group_plugins(plugins, order=_ORDER)
         assert [name for name, _ in groups] == ["Reviewing", "Zeta", "Alpha"]
 
+    def test_without_an_order_every_group_keeps_its_first_seen_position(self):
+        # The default: `core` names no sections of its own, so nothing is "preferred".
+        plugins = [
+            _plugin("a", group="AI", order=1),
+            _plugin("r", group="Reviewing", order=1),
+        ]
+        assert [name for name, _ in group_plugins(plugins)] == ["AI", "Reviewing"]
+
     def test_empty_input_yields_no_sections(self):
-        assert group_plugins([]) == []
+        assert group_plugins([], order=_ORDER) == []
 
     def test_grouped_plugins_delegates_to_manager(self):
         plugins = [
             _plugin("smart_notes", group="AI", order=50),
             _plugin("auto_flip", group="Reviewing", order=10),
         ]
-        groups = grouped_plugins(_StubManager(plugins))
+        groups = grouped_plugins(_StubManager(plugins), order=_ORDER)
         assert [name for name, _ in groups] == ["Reviewing", "AI"]

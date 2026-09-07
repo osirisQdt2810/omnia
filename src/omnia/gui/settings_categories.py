@@ -1,9 +1,11 @@
 """Presentation metadata for the settings-page plugin CATEGORIES (icon, blurb, accent).
 
 Purely visual, so it lives in ``gui`` — ``core`` must never import ``gui``, and ``core`` has
-no business knowing an SVG path. The *ordering* of categories stays in
-``core.manager.GROUP_ORDER`` (a data concern of ``group_plugins``); every name listed there
-MUST have an entry here — ``tests/gui/test_settings_categories.py`` pins that.
+no business knowing an SVG path. This table is also the categories' DISPLAY ORDER: it is the
+only place that lists them, and :func:`category_order` hands that order to
+:func:`omnia.core.manager.group_plugins`, which knows how to sort but not what the sections
+are. Keeping order and paint in one table means a category cannot exist in one and be missing
+from the other.
 
 Nothing here is derived from a plugin: a category is a *group name*, and the page stays
 generic over the registry (ADR-002, ADR-011/012). A plugin declaring an unlisted group still
@@ -37,6 +39,8 @@ class CategoryStyle:
     accent_to: str
 
 
+# Insertion order IS the section order on the landing page (see ``category_order``); a group
+# nobody lists here still renders, after these, with ``DEFAULT_CATEGORY_STYLE``.
 CATEGORY_STYLES: dict[str, CategoryStyle] = {
     "Reviewing": CategoryStyle(
         icon=(
@@ -92,6 +96,21 @@ DEFAULT_CATEGORY_STYLE = CategoryStyle(
 )
 
 
+# ``FeaturePlugin.group`` defaults to "General", so a plugin whose author never picked a group
+# lands here. Listed last, with the neutral style, so the documented "just set id/name/
+# description" path in CLAUDE.md produces a page that reads correctly instead of an odd-one-out.
+CATEGORY_STYLES["General"] = DEFAULT_CATEGORY_STYLE
+
+
 def category_style(group_name: str) -> CategoryStyle:
     """Return the style for a group, or :data:`DEFAULT_CATEGORY_STYLE` if it is unlisted."""
     return CATEGORY_STYLES.get(group_name, DEFAULT_CATEGORY_STYLE)
+
+
+def category_order() -> tuple[str, ...]:
+    """The categories' display order — the styled ones, in the order they are declared.
+
+    Handed to :func:`omnia.core.manager.group_plugins`. Sorting is a mechanism and lives in
+    ``core``; WHICH sections exist and in what order is presentation and lives here.
+    """
+    return tuple(CATEGORY_STYLES)

@@ -12,7 +12,7 @@ boundary referenced in CONVENTIONS Part 1 (Error Handling).
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Optional
 
 from omnia.core.config import ConfigRepository
@@ -157,26 +157,24 @@ class PluginManager:
         self._web.uninstall()
 
 
-# Preferred display order of the settings-UI sections. Groups not listed here keep their
-# first-seen order after these, so an unknown/new group still renders (just at the end).
-# Public because the settings page pairs each name with an icon/blurb/accent in
-# ``omnia.gui.settings_categories`` — that module must carry an entry for every name here
-# (pinned by ``tests/gui/test_settings_categories.py``). Only the ORDER lives here; the
-# presentation does not, since ``core`` must never import ``gui``.
-GROUP_ORDER = ("Reviewing", "Grading", "AI", "Integrations", "Editing")
-
-
 def group_plugins(
     plugins: Iterable[FeaturePlugin],
+    *,
+    order: Sequence[str] = (),
 ) -> list[tuple[str, list[FeaturePlugin]]]:
     """Group plugins by :attr:`FeaturePlugin.group` for the settings UI.
 
-    Sections are ordered by :data:`GROUP_ORDER` (Reviewing, Grading, AI, Integrations,
-    Editing), with any other group appended in first-seen order. Plugins within a section
-    are sorted by ``order`` then ``name``. Pure — no Anki/Qt — so it unit-tests headless.
+    Sections follow ``order``, with any group it does not name appended in first-seen order,
+    so a plugin declaring a brand-new group still renders. Plugins within a section are
+    sorted by ``order`` then ``name``. Pure — no Anki/Qt — so it unit-tests headless.
+
+    The caller supplies the section order rather than this module owning a list of it: which
+    sections exist and how they read is the settings page's business, and ``core`` must not
+    import ``gui`` to find out. See :func:`omnia.gui.settings_categories.category_order`.
 
     Args:
         plugins: The feature-plugin instances to group.
+        order: Preferred section order; unnamed groups sort after, in first-seen order.
 
     Returns:
         ``[(group_name, [plugins])]`` in display order.
@@ -186,10 +184,10 @@ def group_plugins(
         by_group.setdefault(plugin.group, []).append(plugin)
 
     def _group_rank(name: str) -> tuple[int, int]:
-        # Known groups sort by their index in GROUP_ORDER; unknown groups sort after, by
-        # first-seen position (stable) so the list is deterministic.
-        if name in GROUP_ORDER:
-            return (0, GROUP_ORDER.index(name))
+        # Named groups sort by their index in `order`; the rest sort after, by first-seen
+        # position (stable) so the list is deterministic.
+        if name in order:
+            return (0, order.index(name))
         return (1, list(by_group).index(name))
 
     ordered: list[tuple[str, list[FeaturePlugin]]] = []
@@ -199,6 +197,8 @@ def group_plugins(
     return ordered
 
 
-def grouped_plugins(manager: PluginManager) -> list[tuple[str, list[FeaturePlugin]]]:
+def grouped_plugins(
+    manager: PluginManager, *, order: Sequence[str] = ()
+) -> list[tuple[str, list[FeaturePlugin]]]:
     """Return the manager's plugins grouped for display (see :func:`group_plugins`)."""
-    return group_plugins(manager.plugins())
+    return group_plugins(manager.plugins(), order=order)

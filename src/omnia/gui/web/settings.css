@@ -32,11 +32,6 @@ body {
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .omnia-subtitle { color: var(--muted); margin-top: 4px; }
-.omnia-section { margin-top: 18px; }
-.omnia-section-label {
-  font-size: 12px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.8px; color: var(--muted); margin: 0 0 8px 2px;
-}
 .omnia-cards { display: flex; flex-direction: column; gap: 10px; }
 .omnia-card {
   display: flex; align-items: center; gap: 14px;
@@ -129,8 +124,10 @@ body {
    Landing view — one tile per plugin category.
    ====================================================================================== */
 
-/* Written explicitly: the UA's [hidden] rule loses to a `display: grid/flex` declared on the
-   same element, so a hidden view would still lay itself out. */
+/* Defensive, not load-bearing today: neither view declares a `display` of its own, so the UA's
+   `[hidden]` rule (0,1,0) already beats the UA's `section { display: block }` (0,0,1). Spelled
+   out so that giving either view a `display` later cannot silently un-hide it — a class rule
+   would tie `[hidden]` on specificity and win on order. */
 .omnia-landing[hidden], .omnia-category[hidden] { display: none; }
 
 .omnia-tiles {
@@ -194,11 +191,14 @@ body {
    Category view — the cards of one category, opened from a tile.
    ====================================================================================== */
 
-/* The section is focused programmatically (tabindex="-1") so that Escape, the Back button
-   and screen readers all land in the right place. It is not a control, and the ring Chromium
-   draws around the whole view reads as an error state — the heading and the Back button carry
-   the affordance instead. Every real control keeps its own :focus-visible ring. */
-.omnia-category:focus, .omnia-category:focus-visible { outline: none; }
+/* Opening a category moves focus to its heading (tabindex="-1"), so a keyboard or screen-reader
+   user lands on the name of the place they arrived at rather than at the top of the document.
+   No ring for a mouse click; a deliberate accent one when the browser decides the focus was
+   keyboard-driven. */
+.omnia-cat-name:focus { outline: none; }
+.omnia-cat-name:focus-visible {
+  outline: 2px solid var(--cat-from); outline-offset: 6px; border-radius: 8px;
+}
 .omnia-cat-head { display: flex; align-items: flex-start; gap: 12px; margin: 2px 0 16px; }
 .omnia-back {
   display: inline-flex; align-items: center; gap: 6px; flex: none;

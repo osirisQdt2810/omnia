@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import omnia.plugins  # noqa: F401  (runs every @register so the registry is populated)
-from omnia.core.manager import GROUP_ORDER
+from omnia.core.plugin import FeaturePlugin
 from omnia.core.registry import FEATURE_REGISTRY
 from omnia.gui.settings_categories import (
     CATEGORY_STYLES,
     DEFAULT_CATEGORY_STYLE,
+    category_order,
     category_style,
 )
 
 
 class TestCategoryStyles:
-    def test_every_preferred_group_has_a_style(self):
-        # The two tables live in different layers on purpose (core owns the ORDER, gui owns
-        # the paint). This is what stops a group being added to one and forgotten in the other.
-        missing = [name for name in GROUP_ORDER if name not in CATEGORY_STYLES]
-        assert missing == []
+    def test_the_order_is_the_table(self):
+        # One table, so a category cannot be ordered without being painted. If these ever
+        # became two lists again, this is the test that would have to be deleted to allow it.
+        assert category_order() == tuple(CATEGORY_STYLES)
+
+    def test_the_base_class_default_group_is_styled(self):
+        # CLAUDE.md's "adding a plugin" steps say to set id/name/description and never mention
+        # `group`, so the documented happy path lands on FeaturePlugin's default. It has to
+        # render like any other category rather than fail a test the author never touched.
+        assert FeaturePlugin.group in CATEGORY_STYLES
 
     def test_every_plugin_group_has_a_style(self):
         # A plugin may declare any group; an unlisted one still renders (via the default), but
@@ -56,6 +62,7 @@ class TestCategoryStyles:
         # A blurb that names one goes stale the moment that plugin moves group or is removed.
         ids = set(FEATURE_REGISTRY)
         names = {plugin_id.replace("_", " ") for plugin_id in ids}
-        for name, style in CATEGORY_STYLES.items():
+        styles = {**CATEGORY_STYLES, "<default>": DEFAULT_CATEGORY_STYLE}
+        for name, style in styles.items():
             blurb = style.blurb.lower()
             assert not [term for term in ids | names if term in blurb], name

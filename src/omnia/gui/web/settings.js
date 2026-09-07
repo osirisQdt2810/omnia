@@ -60,7 +60,9 @@
     replay(view);
     document.body.dataset.view = "category";
     window.scrollTo(0, 0);
-    view.focus();
+    // The heading, not the section: it names where you have arrived, and a ring around one
+    // heading looks deliberate where a ring around the whole view looked like an error.
+    (view.querySelector(".omnia-cat-name") || view).focus();
   }
 
   /** Hide whichever category is open and bring the landing back. */
@@ -94,9 +96,10 @@
       return;
     }
     const on = view.querySelectorAll(".omnia-switch input:checked").length;
-    const label = tile.querySelector(".omnia-tile-count");
+    // Only the number: the sentence around it is Python's, written once at render time.
+    const label = tile.querySelector(".omnia-tile-on");
     if (label) {
-      label.textContent = on + " of " + tile.getAttribute("data-total") + " on";
+      label.textContent = String(on);
     }
     tile.classList.toggle("omnia-on", on > 0);
   }
@@ -140,12 +143,13 @@
       const enabled = input.checked;
       send("toggle", {id: id, enabled: enabled}, function (res) {
         const active = !!(res && res.active);
-        if (enabled && !active) {
+        const failed = enabled && !active;
+        if (failed) {
           input.checked = false;
-          setStatus(card, "failed to enable — see logs", true);
-        } else {
-          setStatus(card, active ? "active" : "off", false);
         }
+        // Python already worked out the wording and handed it over; falling back to our own
+        // only covers the bridge returning nothing (no media server -> inert callbacks).
+        setStatus(card, (res && res.status) || (active ? "active" : "off"), failed);
         // AFTER the failed-enable uncheck above, so the tile can't count a switch that
         // bounced back off.
         refreshCount(card);
@@ -158,6 +162,32 @@
       send("configure", {id: btn.getAttribute("data-id")}, null);
     });
   });
+
+  /**
+   * Re-state one card from Python. Configuring a plugin reloads it, and a reload can fail —
+   * leaving a card that says "active" and a tile that counts it. There is no re-render to lean
+   * on (that would throw the reader back to the landing), so the Qt side pushes the new state
+   * for the one card it touched.
+   * @param {{id: string, enabled: boolean, active: boolean, status: string}} state
+   */
+  window.omniaSettings = {
+    setCardState: function (state) {
+      // Matched by attribute rather than a built selector: a plugin id is not our string.
+      const cards = document.querySelectorAll(".omnia-card");
+      for (let i = 0; i < cards.length; i++) {
+        if (cards[i].getAttribute("data-id") !== state.id) {
+          continue;
+        }
+        const input = cards[i].querySelector(".omnia-switch input");
+        if (input) {
+          input.checked = !!state.enabled;
+        }
+        setStatus(cards[i], state.status, !!state.enabled && !state.active);
+        refreshCount(cards[i]);
+        return;
+      }
+    },
+  };
 
   // The (i) help popover is anchored below its icon by default; on the last card of a
   // non-scrolling dialog that clips it under the window edge. Before it shows, measure the

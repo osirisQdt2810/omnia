@@ -57,8 +57,8 @@ the CSS stays inside the QtWebEngine 6.6 floor.
 declaring a group nobody has styled still renders — it gets the default, whose accents are theme
 variables rather than literal colours. Two rules are load-bearing and easy to undo by accident:
 `animation-fill-mode` must stay `backwards` (a forward fill keeps the last keyframe's transform and
-outranks the card hover lift), and `[hidden]` needs an explicit `display: none` (the UA rule loses
-to the `display: grid` on the same element).
+outranks the card hover lift), and the explicit `[hidden] { display: none }` is what keeps giving
+either view a `display` of its own later from silently un-hiding it.
 
 ## 2026-08-25 — Export / Import one note type's Smart Notes setup
 

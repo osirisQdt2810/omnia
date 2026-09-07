@@ -7,7 +7,6 @@ import re
 from omnia.gui.settings_categories import CATEGORY_STYLES, DEFAULT_CATEGORY_STYLE
 from omnia.gui.settings_html import (
     PluginCardModel,
-    _count_label,
     build_settings_html,
     category_models,
     status_text,
@@ -35,6 +34,24 @@ def _card(
         active=active,
         configurable=configurable,
     )
+
+
+def _page_js(html: str) -> str:
+    """The page's inlined script ONLY.
+
+    Searching the whole document for a JS snippet is how an assertion becomes theatre: the
+    stylesheet contains the same selector strings (``.omnia-tile``, ``.omnia-back``,
+    ``.omnia-switch input:checked``), so those substrings are present whether or not any
+    script is.
+    """
+    return html.split("<script>", 1)[1].split("</script>", 1)[0]
+
+
+def _css_rule(css: str, selector: str) -> str:
+    """The declarations of the ONE rule whose selector list starts with ``selector``."""
+    match = re.search(re.escape(selector) + r"[^{,]*\{([^}]*)\}", css)
+    assert match, f"no rule found for {selector}"
+    return match.group(1)
 
 
 def _page_css(html: str) -> str:
@@ -109,7 +126,7 @@ class TestLandingView:
         )
         assert ">AI</span>" in html
         assert CATEGORY_STYLES["AI"].blurb in html
-        assert "1 of 2 on" in html
+        assert '<b class="omnia-tile-on">1</b> of 2 on' in html
         assert 'data-total="2"' in html
 
     def test_tile_with_something_on_is_marked(self):
@@ -139,6 +156,28 @@ class TestLandingView:
         assert 'class="omnia-tile' not in html
         assert 'class="omnia-category"' not in html
 
+    def test_data_total_matches_the_switches_the_view_renders(self):
+        # refreshCount divides the live checked count by this attribute; if they ever disagree
+        # the tile reads "3 of 2 on" forever and nothing else notices.
+        html = build_settings_html(
+            [("AI", [_card("a"), _card("b"), _card("c")])], dark=False
+        )
+        assert 'data-total="3"' in html
+        assert html.count('<input type="checkbox"') == 3
+
+    def test_an_unlisted_group_renders_its_theme_variable_accents_intact(self):
+        # The default style's accents are var() references, the only values that go through
+        # html.escape and still have to survive as CSS.
+        html = build_settings_html([("Sync", [_card("a")])], dark=False)
+        assert "--cat-from:var(--accent);--cat-to:var(--accent-2)" in html
+
+    def test_colliding_group_names_stay_paired_end_to_end(self):
+        html = build_settings_html(
+            [("My Stuff", [_card("a")]), ("My-Stuff", [_card("b")])], dark=False
+        )
+        assert html.count('data-category="my-stuff-0"') == 2
+        assert html.count('data-category="my-stuff-1"') == 2
+
     def test_group_name_is_escaped_in_the_tile(self):
         html = build_settings_html([("<b>AI</b>", [_card("a")])], dark=False)
         assert "<b>AI</b>" not in html
@@ -160,7 +199,8 @@ class TestCategoryView:
             [("Reviewing", [_card("a")]), ("AI", [_card("b")])], dark=False
         )
         assert html.count('<button type="button" class="omnia-back">') == 2
-        assert html.count('<h2 class="omnia-cat-name">') == 2
+        # The heading is the focus target when the view opens, so it must stay focusable.
+        assert html.count('<h2 class="omnia-cat-name" tabindex="-1">') == 2
 
     def test_all_cards_of_all_categories_are_rendered(self):
         html = build_settings_html(
@@ -287,46 +327,57 @@ class TestPageAssets:
 
     They cannot prove the page behaves — that is what the CDP run in the PR does — but they
     are the only headless guard for the handful of rules that are easy to break silently and
-    expensive to notice, so each one pins a rule with a comment saying which.
+    expensive to notice, so each one pins a rule with a comment saying which. Every assertion
+    is scoped to the asset that is supposed to carry it (:func:`_page_js` / :func:`_page_css`);
+    searching the whole document instead lets the stylesheet satisfy a claim about the script.
     """
 
     def test_toggle_and_configure_ops_wired_in_js(self):
-        html = build_settings_html([], dark=False)
-        assert 'send("toggle"' in html  # toggle op posted from the switch
-        assert 'send("configure"' in html  # configure op posted from the button
+        js = _page_js(build_settings_html([], dark=False))
+        assert 'send("toggle"' in js  # toggle op posted from the switch
+        assert 'send("configure"' in js  # configure op posted from the button
 
     def test_view_switching_is_wired_in_js(self):
-        html = build_settings_html([], dark=False)
-        assert ".omnia-tile" in html
-        assert ".omnia-back" in html
-        assert '"Escape"' in html
+        js = _page_js(build_settings_html([], dark=False))
+        assert ".omnia-tile" in js
+        assert ".omnia-back" in js
+        assert '"Escape"' in js
 
     def test_js_recounts_from_the_checked_switches(self):
         # A cached number would drift the moment an enable failed and bounced back off.
-        html = build_settings_html([], dark=False)
-        assert ".omnia-switch input:checked" in html
+        assert ".omnia-switch input:checked" in _page_js(
+            build_settings_html([], dark=False)
+        )
 
-    def test_count_label_shape_matches_js(self):
-        # The label is built twice — once here as the seed, once in JS on every toggle — so
-        # the two spellings have to be pinned together.
-        assert _count_label(2, 3) == "2 of 3 on"
-        html = build_settings_html([], dark=False)
-        assert '" of "' in html
-        assert '" on"' in html
+    def test_js_writes_only_the_number_not_the_sentence(self):
+        # The wording is Python's, rendered once; JS that rebuilt the sentence could drift.
+        js = _page_js(build_settings_html([], dark=False))
+        assert ".omnia-tile-on" in js
+        assert '" of "' not in js
+
+    def test_configure_pushes_the_new_card_state_back_in(self):
+        # A reload can fail, and there is no re-render to lean on; Qt calls this.
+        assert "setCardState" in _page_js(build_settings_html([], dark=False))
 
     def test_hidden_views_are_explicitly_display_none(self):
-        # The UA's [hidden] rule loses to the `display: grid` on the same element.
         css = _page_css(build_settings_html([], dark=False))
         assert re.search(r"\[hidden\][^{]*\{\s*display:\s*none", css)
 
-    def test_entrance_animation_fill_mode_is_backwards(self):
-        # A forward fill would keep the last keyframe's transform and outrank the card's
-        # hover lift.
+    def test_every_entrance_rule_fills_backwards(self):
+        # Asserted PER RULE. "backwards appears in the stylesheet" passes even when the one
+        # rule that matters — the card stagger — has been switched to `both`, which is exactly
+        # the change that kills the hover lift.
         css = _page_css(build_settings_html([], dark=False))
         assert "@keyframes" in css
-        assert "backwards" in css
-        assert "forwards" not in css
-        assert "fill-mode: both" not in css
+        for selector in (
+            ".omnia-landing.omnia-enter",
+            ".omnia-category.omnia-enter",
+            ".omnia-category.omnia-enter .omnia-card",
+        ):
+            rule = _css_rule(css, selector)
+            assert "backwards" in rule, selector
+            assert "forwards" not in rule, selector
+            assert " both" not in rule, selector
 
     def test_reduced_motion_is_honoured(self):
         css = _page_css(build_settings_html([], dark=False))
@@ -338,3 +389,8 @@ class TestPageAssets:
         css = _page_css(build_settings_html([], dark=False))
         for feature in ("color-mix(", ":has(", "@container", "@property"):
             assert feature not in css
+
+    def test_no_stylesheet_rule_is_left_without_a_producer(self):
+        # The flat-list markup is gone; its rules must not linger as dead weight.
+        css = _page_css(build_settings_html([], dark=False))
+        assert "omnia-section" not in css
