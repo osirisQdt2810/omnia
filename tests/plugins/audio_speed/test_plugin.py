@@ -114,15 +114,17 @@ class TestEnable:
         AudioSpeedPlugin().on_enable(_ctx(rate=1.7))
         assert anki.mpv == [1.7]
 
-    def test_registers_three_actions_with_the_configured_shortcuts(self, anki):
-        AudioSpeedPlugin().on_enable(
-            _ctx(speed_up_shortcut="]", slow_down_shortcut="[", reset_shortcut="Ctrl+]")
-        )
+    def test_registers_every_action_with_the_configured_shortcuts(self, anki):
+        AudioSpeedPlugin().on_enable(_ctx())
         by_label = {a.label: a.shortcut for a in anki.actions}
         assert by_label == {
             "Audio: speed up": "]",
             "Audio: slow down": "[",
             "Audio: reset speed": "Ctrl+]",
+            "Audio: speed up (front side)": "Alt+]",
+            "Audio: slow down (front side)": "Alt+[",
+            "Audio: speed up (back side)": "Shift+]",
+            "Audio: slow down (back side)": "Shift+[",
         }
 
     def test_remember_off_starts_at_normal_speed_whatever_was_stored(self, anki):
@@ -145,7 +147,10 @@ class TestShortcuts:
         assert anki.mpv[-1] == 1.25
         assert anki.evals[-1] == push_rate_js(1.25)
         assert anki.tooltips[-1] == "Audio speed 1.25×"
-        assert config.writes[-1] == ("audio_speed", {"rate": 1.25})
+        assert config.writes[-1] == (
+            "audio_speed",
+            {"rate": 1.25, "answer_rate": 1.25},
+        )
         # and the NEXT render of either side carries the new rate
         assert web.dynamic["audio_speed"]["answer"](None) == push_rate_js(1.25)
 
@@ -170,13 +175,13 @@ class TestShortcuts:
         _action(anki, "Audio: speed up").callback(False)
         assert anki.tooltips == []
 
-    def test_the_persisted_write_is_a_one_key_merge(self, anki):
+    def test_the_persisted_write_carries_only_the_two_rates(self, anki):
         """ADR-010: write only what changed, never the whole section."""
         config = _Config()
-        AudioSpeedPlugin().on_enable(_ctx(config=config))
+        AudioSpeedPlugin().on_enable(_ctx(config=config, answer_rate=1.0))
         _action(anki, "Audio: speed up").callback(False)
         section, values = config.writes[-1]
-        assert section == "audio_speed" and set(values) == {"rate"}
+        assert section == "audio_speed" and set(values) == {"rate", "answer_rate"}
 
 
 class TestWithoutMpv:
@@ -253,11 +258,13 @@ class TestPersistence:
     def test_a_press_that_actually_moves_the_rate_is_saved(self, anki):
         config = _Config()
         plugin = AudioSpeedPlugin()
-        plugin.on_enable(_ctx(config=config, rate=1.0, step=0.1, max_rate=3.0))
+        plugin.on_enable(
+            _ctx(config=config, rate=1.0, answer_rate=1.0, step=0.1, max_rate=3.0)
+        )
 
         _action(anki, "Audio: speed up").callback(False)
 
-        assert config.writes == [("audio_speed", {"rate": 1.1})]
+        assert config.writes == [("audio_speed", {"rate": 1.1, "answer_rate": 1.1})]
 
     def test_a_press_at_the_ceiling_writes_nothing(self, anki):
         # Auto-repeat: holding the key at a bound clamps to the same rate over and over, and
@@ -265,7 +272,9 @@ class TestPersistence:
         # written.
         config = _Config()
         plugin = AudioSpeedPlugin()
-        plugin.on_enable(_ctx(config=config, rate=3.0, step=0.1, max_rate=3.0))
+        plugin.on_enable(
+            _ctx(config=config, rate=3.0, answer_rate=3.0, step=0.1, max_rate=3.0)
+        )
 
         for _ in range(5):
             _action(anki, "Audio: speed up").callback(False)
@@ -279,3 +288,115 @@ class TestPushJs:
         assert "S.apply(r)" in js
         assert "__omniaAudioSpeedPending=r" in js
         assert js.endswith("(1.5);")
+
+
+class TestPerSideSpeeds:
+    """The two rates only become two speeds because each render adopts its own side's."""
+
+    def test_each_side_renders_with_its_own_rate(self, anki):
+        web = _Web()
+        AudioSpeedPlugin().on_enable(_ctx(web=web, rate=1.5, answer_rate=2.0))
+        dynamic = web.dynamic["audio_speed"]
+
+        assert dynamic["question"](None) == push_rate_js(1.5)
+        assert dynamic["answer"](None) == push_rate_js(2.0)
+
+    def test_a_render_hands_its_side_rate_to_mpv_too(self, anki):
+        web = _Web()
+        AudioSpeedPlugin().on_enable(_ctx(web=web, rate=1.5, answer_rate=2.0))
+        dynamic = web.dynamic["audio_speed"]
+
+        dynamic["answer"](None)
+        assert anki.mpv[-1] == 2.0
+        dynamic["question"](None)
+        assert anki.mpv[-1] == 1.5
+
+    def test_a_front_only_press_leaves_the_back_alone(self, anki):
+        web, config = _Web(), _Config()
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(
+            _ctx(web=web, config=config, rate=1.0, answer_rate=1.0, step=0.5)
+        )
+
+        _action(anki, "Audio: speed up (front side)").callback(False)
+
+        assert config.writes[-1] == ("audio_speed", {"rate": 1.5, "answer_rate": 1.0})
+        assert web.dynamic["audio_speed"]["question"](None) == push_rate_js(1.5)
+        assert web.dynamic["audio_speed"]["answer"](None) == push_rate_js(1.0)
+
+    def test_a_back_only_press_while_the_question_shows_changes_nothing_audible_yet(
+        self, anki
+    ):
+        # The stored rate moves, but only the side on screen can be made to sound different
+        # now; the back side's new speed arrives with the flip.
+        web = _Web()
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(_ctx(web=web, rate=1.0, answer_rate=1.0, step=0.5))
+        web.dynamic["audio_speed"]["question"](None)
+
+        _action(anki, "Audio: speed up (back side)").callback(False)
+
+        assert anki.mpv[-1] == 1.0
+        assert anki.evals[-1] == push_rate_js(1.0)
+        assert anki.tooltips[-1] == "Audio speed 1.5× (back)"
+        assert web.dynamic["audio_speed"]["answer"](None) == push_rate_js(1.5)
+
+    def test_a_back_only_press_while_the_answer_shows_takes_effect_at_once(self, anki):
+        web = _Web()
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(_ctx(web=web, rate=1.0, answer_rate=1.0, step=0.5))
+        web.dynamic["audio_speed"]["answer"](None)
+
+        _action(anki, "Audio: speed up (back side)").callback(False)
+
+        assert anki.mpv[-1] == 1.5
+        assert anki.evals[-1] == push_rate_js(1.5)
+
+    def test_the_plain_shortcut_keeps_a_gap_the_user_set(self, anki):
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(_ctx(rate=1.0, answer_rate=2.0, step=0.5))
+
+        _action(anki, "Audio: speed up").callback(False)
+
+        assert anki.tooltips[-1] == "Audio speed — front 1.5×, back 2.5×"
+
+    def test_reset_returns_both_sides(self, anki):
+        config = _Config()
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(_ctx(config=config, rate=2.0, answer_rate=0.75))
+
+        _action(anki, "Audio: reset speed").callback(False)
+
+        assert config.writes[-1] == ("audio_speed", {"rate": 1.0, "answer_rate": 1.0})
+
+
+class TestUpgradeFromASingleRate:
+    """A stored section written before the back side existed must not go quiet."""
+
+    def test_a_stored_rate_with_no_answer_rate_is_adopted_by_both_sides(self, anki):
+        web = _Web()
+        # `_ctx(rate=...)` leaves answer_rate unset, which is exactly the pre-upgrade section.
+        AudioSpeedPlugin().on_enable(_ctx(web=web, rate=1.75))
+        dynamic = web.dynamic["audio_speed"]
+
+        assert dynamic["question"](None) == push_rate_js(1.75)
+        assert dynamic["answer"](None) == push_rate_js(1.75)
+
+    def test_the_adopted_rate_is_written_out_immediately(self, anki):
+        # Until the key exists the generic settings form shows the field's 1.0 default, and
+        # saving that form would write the default over the speed the user is hearing.
+        config = _Config()
+        AudioSpeedPlugin().on_enable(_ctx(config=config, rate=1.75))
+        assert config.writes == [("audio_speed", {"rate": 1.75, "answer_rate": 1.75})]
+
+    def test_a_section_that_already_has_both_is_left_alone(self, anki):
+        config = _Config()
+        AudioSpeedPlugin().on_enable(_ctx(config=config, rate=1.75, answer_rate=1.0))
+        assert config.writes == []
+
+    def test_nothing_is_written_when_the_speed_is_not_remembered(self, anki):
+        config = _Config()
+        AudioSpeedPlugin().on_enable(
+            _ctx(config=config, rate=1.75, remember_rate=False)
+        )
+        assert config.writes == []

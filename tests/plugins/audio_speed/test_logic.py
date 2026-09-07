@@ -6,9 +6,14 @@ import pytest
 
 from omnia.plugins.audio_speed.config import AudioSpeedSettings
 from omnia.plugins.audio_speed.logic import (
+    ANSWER,
+    BOTH,
     NORMAL_RATE,
+    QUESTION,
+    SideSpeeds,
     SpeedBounds,
     SpeedController,
+    describe,
     format_rate,
 )
 
@@ -129,3 +134,71 @@ class TestSettingsBounds:
     def test_the_default_pair_is_valid(self):
         settings = AudioSpeedSettings()
         assert settings.min_rate <= settings.max_rate
+
+
+def _speeds(question=1.0, answer=1.0, step=0.1, minimum=0.5, maximum=3.0):
+    bounds = SpeedBounds(minimum=minimum, maximum=maximum, step=step)
+    return SideSpeeds(
+        SpeedController(question, bounds), SpeedController(answer, bounds)
+    )
+
+
+class TestSideSpeeds:
+    def test_both_moves_the_two_sides_by_a_step_each(self):
+        speeds = _speeds(1.0, 1.0, step=0.25)
+        speeds.up(BOTH)
+        assert speeds.rates() == {QUESTION: 1.25, ANSWER: 1.25}
+
+    def test_both_preserves_a_gap_instead_of_levelling_it(self):
+        # The whole point of two rates: a user who set the back side faster meant that gap, and
+        # the plain shortcut must not quietly collapse it into one shared value.
+        speeds = _speeds(1.0, 2.0, step=0.5)
+        speeds.up(BOTH)
+        assert speeds.rates() == {QUESTION: 1.5, ANSWER: 2.5}
+
+    def test_a_side_target_moves_only_that_side(self):
+        speeds = _speeds(1.0, 1.0, step=0.5)
+        speeds.up(QUESTION)
+        assert speeds.rates() == {QUESTION: 1.5, ANSWER: 1.0}
+        speeds.down(ANSWER)
+        assert speeds.rates() == {QUESTION: 1.5, ANSWER: 0.5}
+
+    def test_each_side_stops_at_its_own_bound(self):
+        speeds = _speeds(2.9, 1.0, step=0.5, maximum=3.0)
+        speeds.up(BOTH)
+        assert speeds.rates() == {QUESTION: 3.0, ANSWER: 1.5}
+
+    def test_reset_returns_both_to_normal(self):
+        speeds = _speeds(2.0, 0.6)
+        speeds.reset(BOTH)
+        assert speeds.rates() == {QUESTION: 1.0, ANSWER: 1.0}
+
+    def test_reset_can_target_one_side(self):
+        speeds = _speeds(2.0, 0.6)
+        speeds.reset(ANSWER)
+        assert speeds.rates() == {QUESTION: 2.0, ANSWER: 1.0}
+
+    def test_matched_reports_whether_the_sides_agree(self):
+        assert _speeds(1.5, 1.5).matched()
+        assert not _speeds(1.5, 1.0).matched()
+
+    def test_an_unknown_side_answers_as_the_question_side(self):
+        # The callers are a render hook and a menu action; a wrong name should land on the side
+        # the user is most likely looking at, not raise into the middle of a card.
+        speeds = _speeds(1.4, 2.0)
+        assert speeds.rate_for("sideways") == 1.4
+
+
+class TestDescribe:
+    def test_both_sides_equal_reads_as_one_speed(self):
+        assert describe(_speeds(1.5, 1.5), BOTH) == "Audio speed 1.5×"
+
+    def test_both_sides_differing_names_each_one(self):
+        assert describe(_speeds(1.5, 2.0), BOTH) == "Audio speed — front 1.5×, back 2×"
+
+    def test_a_single_side_is_named(self):
+        # A press can change a rate the user cannot hear yet — bumping the back side while the
+        # question is on screen does nothing audible until the flip — so the tooltip has to say
+        # which side moved or it looks like the key did nothing.
+        assert describe(_speeds(1.5, 1.0), QUESTION) == "Audio speed 1.5× (front)"
+        assert describe(_speeds(1.5, 2.0), ANSWER) == "Audio speed 2× (back)"
