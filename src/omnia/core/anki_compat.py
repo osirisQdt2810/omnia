@@ -177,6 +177,42 @@ def audio_still_playing() -> bool:
     return bool(getattr(av_player, "_enqueued", ()))
 
 
+def set_mpv_speed(rate: float) -> bool:
+    """Set the playback speed of every ``[sound:]`` clip Anki plays from now on.
+
+    Anki plays ``[sound:...]`` tags through ONE long-lived mpv process
+    (``aqt.sound.mpvManager``) and never touches its ``speed`` property itself — ``sound.py``
+    and ``mpv.py`` contain no reference to it — so a single ``set_property`` persists across
+    clips and across the question/answer flip. Card templates that play audio through their
+    own HTML ``<audio>`` element never reach mpv at all; that half is the web injector's job.
+
+    Returns False, and sets nothing, when mpv is not the active player: ``mpvManager`` is None
+    when the user picked the Qt player or when mpv is absent (a stripped Windows install), and
+    a feature that crashed the reviewer over that would be worse than one that merely covers
+    the HTML players. Callers use the return value only to decide what to tell the user.
+    """
+    try:
+        from aqt import sound
+    except Exception:  # not running inside Anki
+        return False
+    manager = getattr(sound, "mpvManager", None)
+    if manager is None:
+        return False
+    try:
+        manager.command("set_property", "speed", float(rate))
+    except Exception:  # mpv gone away mid-session; the next play will re-create it
+        return False
+    return True
+
+
+def show_tooltip(text: str) -> None:
+    """Show Anki's transient tooltip; a no-op outside Anki or if Qt is not up yet."""
+    with contextlib.suppress(Exception):
+        from aqt.utils import tooltip
+
+        tooltip(text)
+
+
 def reviewer_show_answer() -> None:
     """Flip the current card to its answer side."""
     main_window().reviewer._showAnswer()
