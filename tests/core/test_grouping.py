@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from omnia.core.manager import group_plugins, grouped_plugins
+from omnia.core.manager import GROUP_ORDER, group_plugins, grouped_plugins
 from omnia.core.plugin import FeaturePlugin
 
 
@@ -27,13 +27,16 @@ class _StubManager:
 
 class TestGroupPlugins:
     def test_sections_follow_preferred_order(self):
+        # Shuffled on input; the output order is GROUP_ORDER's, not the input's.
         plugins = [
+            _plugin("note_maintenance", group="Editing", order=60),
             _plugin("smart_notes", group="AI", order=50),
+            _plugin("word_lookup", group="Integrations", order=50),
             _plugin("overdue_guard", group="Grading", order=40),
             _plugin("auto_flip", group="Reviewing", order=10),
         ]
         groups = group_plugins(plugins)
-        assert [name for name, _ in groups] == ["Reviewing", "Grading", "AI"]
+        assert [name for name, _ in groups] == list(GROUP_ORDER)
 
     def test_members_sorted_by_order_then_name_within_group(self):
         plugins = [
@@ -50,6 +53,17 @@ class TestGroupPlugins:
         ]
         groups = dict(group_plugins(plugins))
         assert [p.id for p in groups["Grading"]] == ["typed_accuracy", "overdue_guard"]
+
+    def test_integrations_and_editing_are_known_groups(self):
+        # Both were once unlisted and sorted with the unknowns; they are preferred now, so a
+        # genuinely unknown group must fall behind them however early it was seen.
+        plugins = [
+            _plugin("z", group="Zeta", order=1),
+            _plugin("n", group="Editing", order=1),
+            _plugin("w", group="Integrations", order=1),
+        ]
+        groups = group_plugins(plugins)
+        assert [name for name, _ in groups] == ["Integrations", "Editing", "Zeta"]
 
     def test_unknown_group_appended_after_known_in_first_seen_order(self):
         plugins = [

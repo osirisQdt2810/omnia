@@ -159,7 +159,11 @@ class PluginManager:
 
 # Preferred display order of the settings-UI sections. Groups not listed here keep their
 # first-seen order after these, so an unknown/new group still renders (just at the end).
-_GROUP_ORDER = ("Reviewing", "Grading", "AI")
+# Public because the settings page pairs each name with an icon/blurb/accent in
+# ``omnia.gui.settings_categories`` — that module must carry an entry for every name here
+# (pinned by ``tests/gui/test_settings_categories.py``). Only the ORDER lives here; the
+# presentation does not, since ``core`` must never import ``gui``.
+GROUP_ORDER = ("Reviewing", "Grading", "AI", "Integrations", "Editing")
 
 
 def group_plugins(
@@ -167,9 +171,9 @@ def group_plugins(
 ) -> list[tuple[str, list[FeaturePlugin]]]:
     """Group plugins by :attr:`FeaturePlugin.group` for the settings UI.
 
-    Sections are ordered by :data:`_GROUP_ORDER` (Reviewing, Grading, AI), with any other
-    group appended in first-seen order. Plugins within a section are sorted by ``order`` then
-    ``name``. Pure — no Anki/Qt — so it unit-tests headless.
+    Sections are ordered by :data:`GROUP_ORDER` (Reviewing, Grading, AI, Integrations,
+    Editing), with any other group appended in first-seen order. Plugins within a section
+    are sorted by ``order`` then ``name``. Pure — no Anki/Qt — so it unit-tests headless.
 
     Args:
         plugins: The feature-plugin instances to group.
@@ -182,10 +186,10 @@ def group_plugins(
         by_group.setdefault(plugin.group, []).append(plugin)
 
     def _group_rank(name: str) -> tuple[int, int]:
-        # Known groups sort by their index in _GROUP_ORDER; unknown groups sort after, by
+        # Known groups sort by their index in GROUP_ORDER; unknown groups sort after, by
         # first-seen position (stable) so the list is deterministic.
-        if name in _GROUP_ORDER:
-            return (0, _GROUP_ORDER.index(name))
+        if name in GROUP_ORDER:
+            return (0, GROUP_ORDER.index(name))
         return (1, list(by_group).index(name))
 
     ordered: list[tuple[str, list[FeaturePlugin]]] = []

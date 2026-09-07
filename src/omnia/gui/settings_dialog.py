@@ -33,8 +33,8 @@ class SettingsDialog(WebDialog):
             title="Omnia — All-in-One Toolkit",
             html=self._render(),
             handlers={"toggle": self._on_toggle, "configure": self._on_configure},
-            width=620,
-            height=580,
+            width=720,
+            height=620,
         )
 
     def _render(self) -> str:
