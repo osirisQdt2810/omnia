@@ -66,3 +66,19 @@ class TestCategoryStyles:
         for name, style in styles.items():
             blurb = style.blurb.lower()
             assert not [term for term in ids | names if term in blurb], name
+
+
+class TestOneNameOneMeaning:
+    """ "Integrations" names the Smart Notes tab, and nothing on this grid."""
+
+    def test_the_grid_has_no_integrations_category(self):
+        # Smart Notes has an Integrations tab — the clipper cards, their install buttons, their
+        # per-clipper "Lookup…" settings. A category here with the same word read as that place
+        # while being an unrelated plugin bucket, and it held one on/off switch.
+        assert "Integrations" not in CATEGORY_STYLES
+
+    def test_no_plugin_still_declares_that_group(self):
+        # A plugin declaring it would render — with the default style, sorted last — which is
+        # the quiet way the name could come back.
+        groups = {plugin.group for plugin in FEATURE_REGISTRY.values()}
+        assert "Integrations" not in groups

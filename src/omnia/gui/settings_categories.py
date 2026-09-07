@@ -41,6 +41,15 @@ class CategoryStyle:
 
 # Insertion order IS the section order on the landing page (see ``category_order``); a group
 # nobody lists here still renders, after these, with ``DEFAULT_CATEGORY_STYLE``.
+#
+# ``docs/guide.md`` §2.1 lists these categories for the user. Nothing checks that it agrees —
+# pinning prose against a table costs more than the drift does — so editing here means editing
+# there, and this line is the only reminder there is.
+#
+# There is deliberately no "Integrations" here. Smart Notes has a tab by that name — the clipper
+# cards, their install buttons and their per-clipper "Lookup…" settings — and a category on this
+# grid sharing the word read as the same place while being an unrelated plugin bucket holding a
+# single on/off switch. One name, one meaning: integrations are a Smart Notes thing.
 CATEGORY_STYLES: dict[str, CategoryStyle] = {
     "Reviewing": CategoryStyle(
         icon=(
@@ -67,15 +76,6 @@ CATEGORY_STYLES: dict[str, CategoryStyle] = {
         accent_from="#8b5cf6",
         accent_to="#ec4899",
     ),
-    "Integrations": CategoryStyle(
-        icon=(
-            "M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z "
-            "M18 22a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M8.6 13.5l6.8 3.9 M15.4 6.6 8.6 10.5"
-        ),  # share / connected nodes
-        blurb="Bring other apps and the web into Anki.",
-        accent_from="#0ea5e9",
-        accent_to="#6366f1",
-    ),
     "Editing": CategoryStyle(
         icon=(
             "M12 20h9 M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"
@@ -97,9 +97,16 @@ DEFAULT_CATEGORY_STYLE = CategoryStyle(
 
 
 # ``FeaturePlugin.group`` defaults to "General", so a plugin whose author never picked a group
-# lands here. Listed last, with the neutral style, so the documented "just set id/name/
-# description" path in CLAUDE.md produces a page that reads correctly instead of an odd-one-out.
-CATEGORY_STYLES["General"] = DEFAULT_CATEGORY_STYLE
+# lands here — and so does one that genuinely belongs nowhere else. Listed last, and it borrows
+# the default's icon and accents (a catch-all should not compete with the named groups for
+# attention) but says what it holds rather than the fallback's placeholder line: it is a real
+# destination now, not only the shape an unlisted group takes.
+CATEGORY_STYLES["General"] = CategoryStyle(
+    icon=DEFAULT_CATEGORY_STYLE.icon,
+    blurb="Everything that belongs to none of the above.",
+    accent_from=DEFAULT_CATEGORY_STYLE.accent_from,
+    accent_to=DEFAULT_CATEGORY_STYLE.accent_to,
+)
 
 
 def category_style(group_name: str) -> CategoryStyle:

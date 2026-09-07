@@ -7,7 +7,8 @@ from omnia.core.plugin import FeaturePlugin
 
 # The settings page supplies its own order (``gui.settings_categories.category_order``); these
 # tests pass one explicitly rather than importing it, so they test the sorting mechanism and not
-# whichever sections the GUI happens to ship this week.
+# whichever sections the GUI happens to ship this week — "Integrations" below is a name the grid
+# no longer carries, kept here precisely because these tests are about sorting, not about it.
 _ORDER = ("Reviewing", "Grading", "AI", "Integrations", "Editing")
 
 
@@ -36,7 +37,7 @@ class TestGroupPlugins:
         plugins = [
             _plugin("note_maintenance", group="Editing", order=60),
             _plugin("smart_notes", group="AI", order=50),
-            _plugin("word_lookup", group="Integrations", order=50),
+            _plugin("some_integration", group="Integrations", order=50),
             _plugin("overdue_guard", group="Grading", order=40),
             _plugin("auto_flip", group="Reviewing", order=10),
         ]
