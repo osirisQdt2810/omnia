@@ -105,3 +105,46 @@ class TestItWorksOverFile:
 
         assert html.startswith("<!doctype html>")
         assert html.rstrip().endswith("</html>")
+
+
+class TestReachingAFolderThePickerHides:
+    """The path alone does not answer "how do I get there?", and that is where people stop.
+
+    Every platform puts this clone inside a hidden directory. On macOS `~/Library` carries the
+    hidden flag, so Chrome's open panel does not list it at all — and the panel's sidebar shows
+    a `Library` that is the SYSTEM one, a different folder with no Anki2 in it. Someone
+    following the path lands there, finds nothing, and concludes the install failed. It is the
+    single reported failure of this page.
+    """
+
+    def test_macos_names_the_shortcut_and_says_why_browsing_fails(self):
+        html = render_install_page("/tmp/web_clipper", platform="darwin")
+        assert "&#8984;" in html  # ⌘
+        assert "&#8679;" in html  # ⇧
+        assert "hides your <code>Library</code>" in html
+
+    def test_macos_warns_that_the_sidebar_library_is_a_different_one(self):
+        # Landing in /Library and finding no Anki2 is the exact wrong turn to head off.
+        html = render_install_page("/tmp/web_clipper", platform="darwin")
+        assert "different one" in html
+
+    def test_windows_says_paste_into_the_address_bar(self):
+        html = render_install_page("/tmp/web_clipper", platform="win32")
+        assert "address bar" in html
+        assert "&#8984;" not in html  # no macOS keys on Windows
+
+    def test_linux_names_ctrl_l_and_the_hidden_dot_folder(self):
+        html = render_install_page("/tmp/web_clipper", platform="linux")
+        assert "Ctrl" in html
+        assert ".local" in html
+
+    def test_an_unknown_platform_still_gets_a_way_in(self):
+        html = render_install_page("/tmp/web_clipper", platform="freebsd13")
+        assert "paste the path" in html
+
+    def test_the_running_platform_is_used_when_none_is_given(self):
+        import sys
+
+        assert render_install_page("/tmp/web_clipper") == render_install_page(
+            "/tmp/web_clipper", platform=sys.platform
+        )

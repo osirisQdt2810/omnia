@@ -43,7 +43,13 @@ pytest tests/plugins/audio_speed -q      # 67 tests, headless
 In Anki: review a card with audio on both sides, press `Shift+]` while the question is showing —
 the tooltip says "(back)" and nothing changes yet; flip, and the answer plays faster.
 
-**Notes / rollback:** a section written by the single-rate version has `rate` and no `answer_rate`;
+**Notes / rollback:** the add-on this replaces, *Audio Playback Controls* (`312734862`), ships `]`
+and `[` as its own defaults. Two actions holding one key sequence do not fight — Qt marks the
+sequence ambiguous and fires NEITHER, so with both installed the plain shortcuts are simply dead,
+with no error anywhere. That was reported from a real machine. Enabling now checks each sequence
+first and, if something else already holds it, says which key and which action in one tooltip;
+the actions are still registered, so removing the other add-on makes them live without a reload.
+A section written by the single-rate version has `rate` and no `answer_rate`;
 both sides adopt the old rate and it is written out at once, because until the key exists the
 generic settings form shows its 1.0 default and saving that form would write the default over the
 speed the user is hearing. A press changes a stored rate, but only the side on screen can be made

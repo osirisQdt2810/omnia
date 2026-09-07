@@ -85,6 +85,11 @@ def anki(monkeypatch):
     monkeypatch.setattr(anki_compat, "show_tooltip", rec.tooltips.append)
     monkeypatch.setattr(anki_compat, "add_tools_menu_action", add_action)
     monkeypatch.setattr(anki_compat, "remove_tools_menu_action", rec.removed.append)
+    # Nothing else holds a shortcut unless a test says so.
+    rec.taken = {}
+    monkeypatch.setattr(
+        anki_compat, "shortcut_already_taken", lambda s, **_k: rec.taken.get(s, [])
+    )
     return rec
 
 
@@ -118,13 +123,13 @@ class TestEnable:
         AudioSpeedPlugin().on_enable(_ctx())
         by_label = {a.label: a.shortcut for a in anki.actions}
         assert by_label == {
-            "Audio: speed up": "]",
-            "Audio: slow down": "[",
-            "Audio: reset speed": "Ctrl+]",
-            "Audio: speed up (front side)": "Alt+]",
-            "Audio: slow down (front side)": "Alt+[",
-            "Audio: speed up (back side)": "Shift+]",
-            "Audio: slow down (back side)": "Shift+[",
+            "Omnia · Audio: speed up": "]",
+            "Omnia · Audio: slow down": "[",
+            "Omnia · Audio: reset speed": "Ctrl+]",
+            "Omnia · Audio: speed up (front side)": "Alt+]",
+            "Omnia · Audio: slow down (front side)": "Alt+[",
+            "Omnia · Audio: speed up (back side)": "Shift+]",
+            "Omnia · Audio: slow down (back side)": "Shift+[",
         }
 
     def test_remember_off_starts_at_normal_speed_whatever_was_stored(self, anki):
@@ -142,7 +147,7 @@ class TestShortcuts:
         plugin = AudioSpeedPlugin()
         plugin.on_enable(_ctx(web=web, config=config, rate=1.0, step=0.25))
 
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
 
         assert anki.mpv[-1] == 1.25
         assert anki.evals[-1] == push_rate_js(1.25)
@@ -158,28 +163,28 @@ class TestShortcuts:
         plugin = AudioSpeedPlugin()
         plugin.on_enable(_ctx(rate=1.0, step=0.5))
 
-        _action(anki, "Audio: slow down").callback(False)
+        _action(anki, "Omnia · Audio: slow down").callback(False)
         assert anki.mpv[-1] == 0.5
-        _action(anki, "Audio: reset speed").callback(False)
+        _action(anki, "Omnia · Audio: reset speed").callback(False)
         assert anki.mpv[-1] == 1.0
         assert anki.tooltips[-1] == "Audio speed 1×"
 
     def test_remember_off_never_writes_the_config(self, anki):
         config = _Config()
         AudioSpeedPlugin().on_enable(_ctx(config=config, remember_rate=False))
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
         assert config.writes == []
 
     def test_tooltip_can_be_silenced(self, anki):
         AudioSpeedPlugin().on_enable(_ctx(show_tooltip=False))
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
         assert anki.tooltips == []
 
     def test_the_persisted_write_carries_only_the_two_rates(self, anki):
         """ADR-010: write only what changed, never the whole section."""
         config = _Config()
         AudioSpeedPlugin().on_enable(_ctx(config=config, answer_rate=1.0))
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
         section, values = config.writes[-1]
         assert section == "audio_speed" and set(values) == {"rate", "answer_rate"}
 
@@ -192,14 +197,14 @@ class TestWithoutMpv:
         plugin = AudioSpeedPlugin()
         plugin.on_enable(_ctx(rate=1.0, step=0.5))
 
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
 
         assert anki.evals[-1] == push_rate_js(1.5)
 
     def test_the_tooltip_says_why_only_html_audio_changed(self, anki):
         anki.mpv_ok = False
         AudioSpeedPlugin().on_enable(_ctx(step=0.5))
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
         assert "mpv is not the active player" in anki.tooltips[-1]
 
     def test_a_reviewer_eval_failure_is_swallowed(self, anki, monkeypatch):
@@ -210,7 +215,7 @@ class TestWithoutMpv:
 
         monkeypatch.setattr(anki_compat, "reviewer_eval", boom)
         AudioSpeedPlugin().on_enable(_ctx())
-        _action(anki, "Audio: speed up").callback(False)  # does not raise
+        _action(anki, "Omnia · Audio: speed up").callback(False)  # does not raise
 
 
 class TestDisable:
@@ -245,7 +250,7 @@ class TestDisable:
         plugin = AudioSpeedPlugin()
         ctx = _ctx()
         plugin.on_enable(ctx)
-        up = _action(anki, "Audio: speed up")
+        up = _action(anki, "Omnia · Audio: speed up")
         plugin.on_disable(ctx)
         before = list(anki.mpv)
 
@@ -262,7 +267,7 @@ class TestPersistence:
             _ctx(config=config, rate=1.0, answer_rate=1.0, step=0.1, max_rate=3.0)
         )
 
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
 
         assert config.writes == [("audio_speed", {"rate": 1.1, "answer_rate": 1.1})]
 
@@ -277,7 +282,7 @@ class TestPersistence:
         )
 
         for _ in range(5):
-            _action(anki, "Audio: speed up").callback(False)
+            _action(anki, "Omnia · Audio: speed up").callback(False)
 
         assert config.writes == []
 
@@ -318,7 +323,7 @@ class TestPerSideSpeeds:
             _ctx(web=web, config=config, rate=1.0, answer_rate=1.0, step=0.5)
         )
 
-        _action(anki, "Audio: speed up (front side)").callback(False)
+        _action(anki, "Omnia · Audio: speed up (front side)").callback(False)
 
         assert config.writes[-1] == ("audio_speed", {"rate": 1.5, "answer_rate": 1.0})
         assert web.dynamic["audio_speed"]["question"](None) == push_rate_js(1.5)
@@ -334,7 +339,7 @@ class TestPerSideSpeeds:
         plugin.on_enable(_ctx(web=web, rate=1.0, answer_rate=1.0, step=0.5))
         web.dynamic["audio_speed"]["question"](None)
 
-        _action(anki, "Audio: speed up (back side)").callback(False)
+        _action(anki, "Omnia · Audio: speed up (back side)").callback(False)
 
         assert anki.mpv[-1] == 1.0
         assert anki.evals[-1] == push_rate_js(1.0)
@@ -347,7 +352,7 @@ class TestPerSideSpeeds:
         plugin.on_enable(_ctx(web=web, rate=1.0, answer_rate=1.0, step=0.5))
         web.dynamic["audio_speed"]["answer"](None)
 
-        _action(anki, "Audio: speed up (back side)").callback(False)
+        _action(anki, "Omnia · Audio: speed up (back side)").callback(False)
 
         assert anki.mpv[-1] == 1.5
         assert anki.evals[-1] == push_rate_js(1.5)
@@ -356,7 +361,7 @@ class TestPerSideSpeeds:
         plugin = AudioSpeedPlugin()
         plugin.on_enable(_ctx(rate=1.0, answer_rate=2.0, step=0.5))
 
-        _action(anki, "Audio: speed up").callback(False)
+        _action(anki, "Omnia · Audio: speed up").callback(False)
 
         assert anki.tooltips[-1] == "Audio speed — front 1.5×, back 2.5×"
 
@@ -365,7 +370,7 @@ class TestPerSideSpeeds:
         plugin = AudioSpeedPlugin()
         plugin.on_enable(_ctx(config=config, rate=2.0, answer_rate=0.75))
 
-        _action(anki, "Audio: reset speed").callback(False)
+        _action(anki, "Omnia · Audio: reset speed").callback(False)
 
         assert config.writes[-1] == ("audio_speed", {"rate": 1.0, "answer_rate": 1.0})
 
@@ -400,3 +405,51 @@ class TestUpgradeFromASingleRate:
             _ctx(config=config, rate=1.75, remember_rate=False)
         )
         assert config.writes == []
+
+
+class TestAShortcutSomethingElseAlreadyHolds:
+    """Qt refuses a duplicate rather than resolving it, and the user hears nothing at all.
+
+    Two actions carrying the same key sequence make it ambiguous, so NEITHER fires. There is
+    no error, no menu reaction, no log — just a key that does nothing. The add-on this plugin
+    replaces ships `]` and `[` as its own defaults, so anyone who enables this before removing
+    it lands here, and enable time is the only moment there is to say so.
+    """
+
+    def test_it_names_the_key_and_who_holds_it(self, anki):
+        anki.taken = {"]": ["Speed Up Audio"]}
+
+        AudioSpeedPlugin().on_enable(_ctx())
+
+        assert any("] is already used by Speed Up Audio" in t for t in anki.tooltips)
+
+    def test_it_says_where_to_go(self, anki):
+        anki.taken = {"[": ["Slow Down Audio"]}
+
+        AudioSpeedPlugin().on_enable(_ctx())
+
+        assert any("Tools → Add-ons" in t for t in anki.tooltips)
+
+    def test_several_clashes_are_reported_together(self, anki):
+        # One tooltip, not one per key: three in a row is a stack of popups over the deck list.
+        anki.taken = {"]": ["Speed Up Audio"], "[": ["Slow Down Audio"]}
+
+        AudioSpeedPlugin().on_enable(_ctx())
+
+        clash = [t for t in anki.tooltips if "already used by" in t]
+        assert len(clash) == 1
+        assert "]" in clash[0] and "[" in clash[0]
+
+    def test_nothing_is_said_when_the_keys_are_free(self, anki):
+        AudioSpeedPlugin().on_enable(_ctx())
+
+        assert not [t for t in anki.tooltips if "already used by" in t]
+
+    def test_the_actions_are_registered_either_way(self, anki):
+        # The plugin still binds them: the other add-on may be removed next, and a feature that
+        # refused to install itself over a clash would then need a reload nobody would guess at.
+        anki.taken = {"]": ["Speed Up Audio"]}
+
+        AudioSpeedPlugin().on_enable(_ctx())
+
+        assert len(anki.actions) == 7

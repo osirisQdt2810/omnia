@@ -705,6 +705,44 @@ def add_tools_menu_action(
     return action
 
 
+def shortcut_already_taken(shortcut: str, *, ignore: Any = None) -> list[str]:
+    """Return the labels of OTHER actions on the main window already bound to ``shortcut``.
+
+    Qt does not resolve a collision, it refuses one: two actions carrying the same key
+    sequence in overlapping contexts make the shortcut *ambiguous*, and Qt then fires
+    NEITHER. To the user that is not a conflict, it is a dead key — no menu entry reacts, no
+    message appears, and nothing in either add-on has said anything. Silence is the worst
+    failure a keyboard shortcut can have, so a caller that binds one can ask first and say
+    something instead.
+
+    Args:
+        shortcut: The key sequence to look for, in Qt's own spelling.
+        ignore: An action to skip (the caller's own, when it has already been created).
+
+    Returns:
+        The other actions' texts, empty when the sequence is free. Never raises: a diagnostic
+        that breaks the feature it is diagnosing is worse than no diagnostic.
+    """
+    try:
+        from aqt.qt import QAction, QKeySequence
+
+        wanted = QKeySequence(shortcut)
+        if wanted.isEmpty():
+            return []
+        clashes = []
+        for action in main_window().findChildren(QAction):
+            if action is ignore or action.shortcut() != wanted:
+                continue
+            text = str(action.text() or "").replace("&", "").strip()
+            clashes.append(text or "an unnamed action")
+        return clashes
+    except Exception:
+        from omnia.core.logging import get_logger
+
+        get_logger().debug("could not check whether %r is already bound", shortcut)
+        return []
+
+
 def remove_tools_menu_action(action: Any) -> None:
     """Remove an action created by :func:`add_tools_menu_action` from the Tools menu."""
     if action is None:

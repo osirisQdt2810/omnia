@@ -17,6 +17,7 @@ Pure: builds a string from a path and a profile name. No Anki, no Qt, no filesys
 from __future__ import annotations
 
 import html
+import sys
 from pathlib import Path
 
 #: What the user must paste into the address bar. Chrome blocks a LINK to it from a page just
@@ -59,6 +60,12 @@ _PAGE = """<!doctype html>
   }}
   button:hover {{ background: #eef0f3; }}
   .note {{ margin-top: 26px; font-size: 13px; color: #5f6368; }}
+  .hint {{ display: block; margin-top: 8px; font-size: 13px; color: #5f6368; }}
+  kbd {{
+    display: inline-block; border: 1px solid #c7cad1; border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; margin: 0 1px; background: #fff;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: #202124;
+  }}
 </style>
 </head>
 <body>
@@ -72,7 +79,8 @@ _PAGE = """<!doctype html>
     <li>Turn on <strong>Developer mode</strong> (top-right of that page).</li>
     <li>Click <strong>Load unpacked</strong> and pick this folder:<br>
         <code id="omnia-path">{path}</code>
-        <button data-copy="omnia-path">Copy</button></li>
+        <button data-copy="omnia-path">Copy</button>
+        <span class="hint">{reach}</span></li>
   </ol>
   <p class="note">{note}</p>
 </div>
@@ -114,7 +122,44 @@ document.querySelectorAll("button[data-copy]").forEach(function (button) {{
 """
 
 
-def render_install_page(extension_dir: str | Path, profile_name: str = "") -> str:
+#: How to reach a folder the platform's file picker will not show you by browsing.
+#:
+#: Every one of these paths is inside a hidden directory: macOS marks ``~/Library`` hidden, so
+#: it is simply absent from Chrome's open panel — and the panel's sidebar offers a "Library"
+#: that is the SYSTEM ``/Library``, a different folder with no Anki2 in it, which is where
+#: someone following the path in this page lands and concludes the install failed. Linux hides
+#: ``~/.local`` the same way. Windows shows the folder, but typing beats clicking there too.
+_REACH_HINT = {
+    "darwin": (
+        "In that window press <kbd>&#8984;</kbd><kbd>&#8679;</kbd><kbd>G</kbd>, paste the "
+        "path, then press Enter. macOS hides your <code>Library</code> folder, so browsing "
+        "to it will not work &mdash; and the <code>Library</code> in the sidebar is a "
+        "different one."
+    ),
+    "win32": (
+        "In that window, paste the path into the address bar at the top and press Enter."
+    ),
+    "linux": (
+        "In that window press <kbd>Ctrl</kbd><kbd>L</kbd>, paste the path, then press Enter. "
+        "The folder is inside a hidden <code>.local</code>, so browsing to it will not work."
+    ),
+}
+
+
+def _reach_hint(platform: str) -> str:
+    """The hint for ``platform``; an unknown one gets the neutral "paste it" advice."""
+    if platform.startswith("win"):
+        return _REACH_HINT["win32"]
+    if platform.startswith("darwin"):
+        return _REACH_HINT["darwin"]
+    return _REACH_HINT["linux"]
+
+
+def render_install_page(
+    extension_dir: str | Path,
+    profile_name: str = "",
+    platform: str | None = None,
+) -> str:
     """Return the HTML for the "finish the install" page.
 
     Args:
@@ -123,6 +168,9 @@ def render_install_page(extension_dir: str | Path, profile_name: str = "") -> st
             the page because a user with eight profiles needs to see WHICH one is about to get
             the extension — installing into the wrong one is the failure this whole path exists
             to avoid.
+        platform: ``sys.platform`` override (for tests). Decides how the page says to REACH the
+            folder, which the path alone does not answer: it lives somewhere the file picker
+            hides, so a reader who tries to browse to it finds nothing and stops.
 
     Returns:
         A complete, self-contained HTML document (no external assets: it is loaded over
@@ -143,4 +191,5 @@ def render_install_page(extension_dir: str | Path, profile_name: str = "") -> st
         note=note,
         url=html.escape(EXTENSIONS_URL),
         path=html.escape(str(extension_dir)),
+        reach=_reach_hint(sys.platform if platform is None else platform),
     )
