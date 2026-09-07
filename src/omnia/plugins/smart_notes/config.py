@@ -322,6 +322,12 @@ class SmartNotesSettings(PersistedModel):
     regenerate_when_batching: bool = True
     # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
     generate_at_review: bool = False
+    # Gates the per-field / whole-note regenerate buttons the clippers show. A SEPARATE switch
+    # from ``regenerate_when_batching``: that one decides whether an automatic batch overwrites
+    # what it already filled, while this one decides whether a human sitting in the clipper may
+    # ask for a field to be made again — the same word, a better definition. Off ⇒ those buttons
+    # are inert and say why, and no clipper can spend provider budget.
+    regenerate_from_clippers: bool = True
     # Per-integration auto-generate toggles (integration key -> enabled). Empty ⇒ every
     # integration OFF, so no external source triggers LLM spend until the user opts in.
     auto_generate_integrations: dict[str, bool] = Field(default_factory=dict)

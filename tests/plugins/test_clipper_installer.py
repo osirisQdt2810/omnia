@@ -97,13 +97,20 @@ class _FakeRunner:
         self.stdins.append((argv, text))
 
 
-def _installer(tmp_path, runner, host_python="/usr/bin/python3", platform="darwin"):
+def _installer(
+    tmp_path,
+    runner,
+    host_python="/usr/bin/python3",
+    platform="darwin",
+    token_provider=None,
+):
     return ClipperInstaller(
         clones_dir=tmp_path / "clippers",
         host_python=host_python,
         runner=runner,
         platform=platform,
         install_root=tmp_path / "apps",  # never the real /Applications
+        token_provider=token_provider,
     )
 
 
@@ -586,6 +593,51 @@ class TestLaunchWeb:
         assert "--profile-directory=Profile 1" in argv
         assert argv[-1] == "chrome-extension://abc123/src/options.html?omnia-reload=1"
         assert "phuc" in message
+
+    def test_the_reload_hands_the_extension_its_token(self, tmp_path, monkeypatch):
+        """The one channel there is. An extension cannot read the token file the desktop
+        clipper takes it from, and a user asked to copy a secret by hand to make a button work
+        mostly will not, so the reload URL carries it and the page stores it."""
+        self._patch_browser(monkeypatch)
+        runner = _FakeRunner()
+        installer = _installer(
+            tmp_path, runner, platform="darwin", token_provider=lambda: "s3cr3t/tok+en"
+        )
+
+        installer.launch(WEB)
+
+        argv = runner.spawns[0]
+        assert argv[-1] == (
+            "chrome-extension://abc123/src/options.html?omnia-reload=1"
+            "&omnia-token=s3cr3t%2Ftok%2Ben"
+        )
+
+    def test_no_token_leaves_the_url_as_it_was(self, tmp_path, monkeypatch):
+        # word_lookup disabled, or a config that has not issued one yet: the reload must still
+        # work, and the extension keeps whatever token it already had.
+        self._patch_browser(monkeypatch)
+        runner = _FakeRunner()
+        installer = _installer(
+            tmp_path, runner, platform="darwin", token_provider=lambda: ""
+        )
+
+        installer.launch(WEB)
+
+        assert runner.spawns[0][-1].endswith("options.html?omnia-reload=1")
+
+    def test_a_token_provider_that_raises_does_not_break_the_reload(
+        self, tmp_path, monkeypatch
+    ):
+        def boom():
+            raise RuntimeError("config unreadable")
+
+        self._patch_browser(monkeypatch)
+        runner = _FakeRunner()
+        installer = _installer(tmp_path, runner, platform="darwin", token_provider=boom)
+
+        installer.launch(WEB)
+
+        assert runner.spawns[0][-1].endswith("options.html?omnia-reload=1")
 
     def test_chrome_is_resolved_once_per_click(self, tmp_path, monkeypatch):
         """One filesystem sweep, not two. Reload is meant to feel instant."""

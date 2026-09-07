@@ -1900,3 +1900,94 @@ stays attached to "the user never touched it".
 - (=) **`smart_notes_throughput.py` keeps its job and loses one column's authority.** Call counts,
   prompt-cache hits, field identity and the hostile-provider ladder are what it proves; its
   wall-clock column may not decide a batching default. Its docstring now says so.
+
+## ADR-019: A plugin offers a capability through a core registry, never through an import
+
+**Date**: 2026-09-07
+**Status**: Accepted
+
+### Context
+
+The clippers need to ask Smart Notes to regenerate a note's fields from their own lookup panel.
+The panel is served by the `word_lookup` plugin's loopback HTTP server, so one plugin now has to
+call another — the first time that has been necessary.
+
+Three facts made the obvious routes unusable:
+
+- **`plugins/*` may not import `plugins/*`.** The coupling rule in CLAUDE.md is about `core` not
+  importing `plugins`, but a plugin importing a sibling is the same defect wearing a different
+  hat: it welds two features that the plugin system exists to keep separable, and the reviewer
+  already treats "no plugin↔plugin import" as a property to check.
+- **`PluginContext` deliberately carries no handle to other plugins** (`core/plugin.py`), and
+  `PluginManager` keeps its instances in a private dict with no public get-by-id. Adding one
+  would let any plugin reach into any other, which is the coupling we are trying to avoid.
+- **The answer has to change at runtime.** The product rule is that turning Smart Notes off
+  leaves word lookup working — search needs no AI — but makes generation unavailable with a
+  message that says so. An import binds at load time and cannot express "this feature is
+  currently switched off".
+
+### Decision
+
+`core/services.py` holds a tiny process-wide registry: `provide(name, service)`,
+`revoke(name)`, `lookup(name) -> object | None`. A plugin publishes a capability object in
+`on_enable` and withdraws it in `on_disable`. A consumer asks `core` by name and gets `None`
+when nobody is offering.
+
+Smart Notes publishes `"smart_notes.regeneration"`, a `RegenerationService` exposing
+`can_regenerate()`, `field_states(note_id)` and `regenerate(note_id, fields)`. `word_lookup`
+consumes it and degrades to "generation unavailable" when the lookup returns `None`.
+
+### Rationale
+
+The registry inverts the dependency: both plugins depend on `core`, neither on the other, and
+`core` knows nothing about either — it never learns what `"smart_notes.regeneration"` means.
+Adding a second consumer, or replacing the provider, changes no import anywhere.
+
+It also makes the lifecycle question answerable, which is the part an import could never do.
+"Is Smart Notes available right now?" becomes one lookup that reflects the enable toggle
+automatically, because `on_disable` revokes. The disabled-plugin case stops being something
+each consumer has to remember to check and becomes the natural shape of the API — the same
+reason `set_mpv_speed` returns a bool rather than assuming mpv is there.
+
+The capability object is a deliberate narrowing. The consumer sees three methods chosen for it,
+not `GenerationService`, not the settings model, not the collection. The provider can rework
+its internals freely; the seam is the object, and it is small enough to stub in a test, which
+is what keeps the consumer's tests hermetic.
+
+### Consequences
+
+**Easier.** A feature can offer a service without becoming importable. A consumer's tests stub
+one small object instead of standing up Smart Notes. The "provider is switched off" path is
+uniform and impossible to forget. Future cross-feature needs have a route that does not require
+re-litigating the coupling rule.
+
+**Harder.** The dependency is no longer visible to static analysis: nothing in `word_lookup`
+mentions Smart Notes, so a grep for callers of `RegenerationService` finds only the
+registration. Both ends must therefore name the service in a comment pointing at the other, and
+the name string is a contract that no type checker will police — it is pinned by a test on each
+side instead. The registry is process-global mutable state, which is exactly the shape that
+leaks between tests; it needs a fixture that clears it, and `revoke` has to be idempotent so a
+double teardown is harmless. It is also read from a non-Qt HTTP worker thread while written from
+the Qt main thread, so it carries a lock rather than relying on dict atomicity by accident.
+
+**A limit worth stating.** This is a registry, not an event bus and not a plugin API. It holds
+objects one feature hands another; it does not broadcast, queue, or version. If a second and
+third capability appear and start needing negotiation, that is the signal to design a real
+extension point, not to grow this file.
+
+### Alternatives considered
+
+- **Import `smart_notes` from `word_lookup`.** Simplest, and wrong: it couples two features
+  permanently, and the import succeeds whether or not Smart Notes is enabled, so the consumer
+  would have to reach into the manager anyway to find out.
+- **A public `PluginManager.get(plugin_id)`.** Solves the lifecycle question but hands every
+  plugin a key to every other, with no statement of what may be called. The registry exposes one
+  named capability instead of a whole feature object.
+- **Move the lookup server into Smart Notes.** Removes the cross-plugin call entirely, and
+  breaks the product requirement outright: the server would die with Smart Notes and search
+  would stop working, which is precisely what must not happen.
+- **Merge the two plugins.** Same objection, plus it would make a keyless, offline, read-only
+  feature depend on a feature that needs LLM credentials.
+- **A `gui`-level bridge**, where only the dialog layer knows both. It works for settings — the
+  Smart Notes panel already edits the `word_lookup` config section this way — but generation is
+  requested from an HTTP handler with no GUI in the call stack.

@@ -10,10 +10,12 @@ values that are raw HTML containing ``[sound:x.mp3]``, ``<img src="y.jpg">`` and
 Dumping every field is unreadable, and hardcoding field names would only ever fit one user's
 collection. So the rules here are generic and ordering-driven:
 
-* a field is a candidate only if it has content AFTER cleaning (or is pure media);
 * the note type's own field ORDER is the relevance signal — Anki authors put the headword and
   the meaning first — so the first non-empty field becomes the title and the rest follow in
   order, capped;
+* a field with nothing in it is KEPT but sinks to the bottom, so the cap never spends a slot on
+  a blank before a field that has something to show (a client needs to SEE a blank field to
+  offer generating it — that is the field most worth generating);
 * fields that are only media become compact badges rather than walls of markup.
 """
 
@@ -91,6 +93,11 @@ KIND_IMAGE = "image"
 # Anki card.type -> a human state name (mirrors display_interval's mapping).
 _CARD_STATES = {0: "new", 1: "learning", 2: "review", 3: "relearning"}
 
+# Per-field truncation budget for long prose. One constant because two paths must agree: the
+# lookup's triage and the read-back after a regeneration render the same field in the same
+# panel, and a field that changed length on regeneration would look like a different field.
+DEFAULT_MAX_CHARS = 320
+
 
 @dataclass(frozen=True)
 class LookupField:
@@ -101,6 +108,42 @@ class LookupField:
     kind: str = KIND_TEXT
     audio: tuple[str, ...] = ()
     images: tuple[str, ...] = ()
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the field shows nothing at all: no text, no audio, no image.
+
+        Empty fields used to be dropped. They are kept now because a field a client cannot see
+        is a field the user cannot ask to have generated — and a never-filled field is exactly
+        the one worth generating. This flag is what lets a client render it as a blank slot
+        instead of pretending the note type does not have it.
+        """
+        return not (self.text or self.audio or self.images)
+
+    @classmethod
+    def from_raw(
+        cls, name: str, raw: str, *, max_chars: int = DEFAULT_MAX_CHARS
+    ) -> LookupField:
+        """Build a field from a note's RAW value (Anki HTML, ``[sound:…]``, cloze markup).
+
+        The one cleaning path: both the lookup's triage and the read-back after a regeneration
+        go through here, so a field looks the same to a client after it was generated as it did
+        before.
+
+        Args:
+            name: The field's name, as the note type spells it.
+            raw: The stored field value, markup and all.
+            max_chars: Truncation budget for the cleaned text.
+        """
+        audio, images = field_media(raw)
+        text = strip_html(raw)
+        return cls(
+            name=name,
+            text=text[:max_chars],
+            kind=_classify(text, audio, images),
+            audio=audio,
+            images=images,
+        )
 
 
 @dataclass(frozen=True)
@@ -234,12 +277,28 @@ def _classify(text: str, audio: tuple[str, ...], images: tuple[str, ...]) -> str
     return KIND_TEXT
 
 
+def _display_order(fields: list[LookupField]) -> list[LookupField]:
+    """Order fields for display: content first, then bookkeeping, then blank slots.
+
+    A stable sort, so the note type's authored order survives inside each group. Two demotions,
+    neither of them a removal — nothing is ever silently withheld:
+
+    * an identifier-only field (bare number, UUID, hex blob) is bookkeeping noise;
+    * an EMPTY field is a slot to generate into, which only matters once everything with
+      content has had its place — ``max_fields`` caps the list, and a blank must never push a
+      field that has something to show out of it.
+    """
+    return sorted(
+        fields, key=lambda item: (item.is_empty, looks_like_identifier(item.text))
+    )
+
+
 def triage_fields(
     ordered_fields: list[tuple[str, str]],
     *,
     word: str = "",
     max_fields: int = 8,
-    max_chars: int = 320,
+    max_chars: int = DEFAULT_MAX_CHARS,
     hidden: tuple[str, ...] = (),
     only: tuple[str, ...] = (),
 ) -> tuple[str, list[LookupField]]:
@@ -254,15 +313,17 @@ def triage_fields(
       title, detected by shape so no field name is hardcoded.
 
     Everything else follows the note type's authored order until ``max_fields`` is reached, and
-    fields empty after cleaning with no media are dropped — that is what makes a 35-field note
-    type readable.
+    a field that is empty after cleaning sinks to the bottom of that list (see
+    :func:`_display_order`) — which is what keeps a 35-field note type readable while still
+    showing the blanks a client can offer to generate.
 
     Args:
         ordered_fields: ``(field_name, raw_value)`` pairs in the note type's own field order.
         word: The looked-up word; when a field's text matches it, that field titles the card.
         max_fields: How many fields to keep after the title.
         max_chars: Per-field truncation budget for long prose.
-        hidden: Field names (case-insensitive) the user chose never to show.
+        hidden: Field names (case-insensitive) the user chose never to show. This one IS a
+            removal: it is the user saying "never show me this", not a ranking rule.
         only: An explicit field order for this note type. When given, ONLY these fields are
             shown and in this order — the automatic pick is bypassed entirely (``max_fields``
             no longer applies, because the list is already the user's deliberate choice).
@@ -273,23 +334,11 @@ def triage_fields(
     skip = {name.strip().lower() for name in hidden}
     wanted = [name.strip().lower() for name in only if name and name.strip()]
     needle = word.strip().lower()
-    kept: list[LookupField] = []
-    for name, raw in ordered_fields:
-        if name.strip().lower() in skip:
-            continue
-        audio, images = field_media(raw)
-        text = strip_html(raw)
-        if not text and not audio and not images:
-            continue  # empty after cleaning and no media: nothing to show
-        kept.append(
-            LookupField(
-                name=name,
-                text=text[:max_chars],
-                kind=_classify(text, audio, images),
-                audio=audio,
-                images=images,
-            )
-        )
+    kept = [
+        LookupField.from_raw(name, raw, max_chars=max_chars)
+        for name, raw in ordered_fields
+        if name.strip().lower() not in skip
+    ]
 
     # Title: the field that IS the looked-up word, else the first field carrying real content.
     title_index = -1
@@ -304,7 +353,7 @@ def triage_fields(
                 title_index = index
                 break
     if title_index < 0:
-        return "", kept[:max_fields]
+        return "", _display_order(kept)[:max_fields]
     title = kept[title_index].text
     rest = [item for index, item in enumerate(kept) if index != title_index]
     if wanted:
@@ -314,10 +363,7 @@ def triage_fields(
         # for.
         by_name = {item.name.strip().lower(): item for item in rest}
         return title, [by_name[key] for key in wanted if key in by_name]
-    # Identifier-only fields are bookkeeping noise, but the rule is ORDERING, not visibility:
-    # they sink to the bottom rather than disappearing, so nothing is ever silently withheld.
-    rest.sort(key=lambda item: looks_like_identifier(item.text))
-    return title, rest[:max_fields]
+    return title, _display_order(rest)[:max_fields]
 
 
 def card_state(card_type: int) -> str:

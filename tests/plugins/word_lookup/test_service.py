@@ -50,34 +50,46 @@ def service_factory():
 class TestLookupEndpoint:
     def test_returns_the_lookup_payload(self, service_factory):
         _service, port = service_factory(
-            lambda word: {"word": word, "cards": [{"title": word}]}
+            lambda word, client: {"word": word, "cards": [{"title": word}]}
         )
         status, body = _get(port, "/lookup?word=plunge")
         assert status == 200
         assert body == {"word": "plunge", "cards": [{"title": "plunge"}]}
 
     def test_url_encoded_and_unicode_words_survive(self, service_factory):
-        _service, port = service_factory(lambda word: {"echo": word})
+        _service, port = service_factory(lambda word, client: {"echo": word})
         status, body = _get(port, "/lookup?word=lao%20xu%E1%BB%91ng")
         assert status == 200 and body == {"echo": "lao xuống"}
 
+    def test_the_client_reaches_the_lookup(self, service_factory):
+        """Which clipper asked decides which profile it is served."""
+        _service, port = service_factory(lambda word, client: {"client": client})
+        status, body = _get(port, "/lookup?word=x&client=web_clipper")
+        assert (status, body) == (200, {"client": "web_clipper"})
+
+    def test_a_request_without_a_client_still_answers(self, service_factory):
+        """An older clipper build sends none; it must keep working exactly as before."""
+        _service, port = service_factory(lambda word, client: {"client": client})
+        status, body = _get(port, "/lookup?word=x")
+        assert (status, body) == (200, {"client": ""})
+
     def test_missing_word_is_a_400(self, service_factory):
-        _service, port = service_factory(lambda word: {"never": "called"})
+        _service, port = service_factory(lambda word, client: {"never": "called"})
         status, body = _get(port, "/lookup")
         assert status == 400 and "word" in body["error"]
 
     def test_blank_word_is_a_400(self, service_factory):
-        _service, port = service_factory(lambda word: {"never": "called"})
+        _service, port = service_factory(lambda word, client: {"never": "called"})
         status, _body = _get(port, "/lookup?word=%20%20")
         assert status == 400
 
     def test_unknown_path_is_a_404(self, service_factory):
-        _service, port = service_factory(lambda word: {})
+        _service, port = service_factory(lambda word, client: {})
         status, _body = _get(port, "/something-else")
         assert status == 404
 
     def test_lookup_failure_is_a_500_without_leaking_details(self, service_factory):
-        def boom(_word):
+        def boom(_word, _client):
             raise RuntimeError("secret internal detail")
 
         _service, port = service_factory(boom)
@@ -95,7 +107,7 @@ class TestAClientThatHangsUp:
     ):
         ready = threading.Event()
 
-        def slow_lookup(word: str) -> dict:
+        def slow_lookup(word: str, _client: str) -> dict:
             ready.set()
             # Long enough that the client below is gone before the write starts.
             threading.Event().wait(0.6)
@@ -116,7 +128,7 @@ class TestAClientThatHangsUp:
         assert "Traceback" not in capfd.readouterr().err
 
     def test_the_service_still_serves_the_next_request(self, service_factory):
-        _service, port = service_factory(lambda word: {"word": word})
+        _service, port = service_factory(lambda word, client: {"word": word})
 
         sock = socket.create_connection(("127.0.0.1", port), timeout=5)
         sock.sendall(b"GET /lookup?word=first HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
@@ -138,7 +150,7 @@ class TestMainThreadMarshalling:
             thread.start()
             thread.join()
 
-        def lookup(word):
+        def lookup(word, _client):
             ran_on.append(threading.current_thread().name)
             return {"word": word}
 
@@ -154,7 +166,7 @@ class TestMainThreadMarshalling:
             "omnia.plugins.word_lookup.service._MAIN_THREAD_TIMEOUT_SECONDS", 0.2
         )
         _service, port = service_factory(
-            lambda word: {"unreachable": True},
+            lambda word, client: {"unreachable": True},
             run_on_main=lambda work: None,  # never runs the work: Anki busy/frozen
         )
         status, body = _get(port, "/lookup?word=x")
@@ -164,7 +176,7 @@ class TestMainThreadMarshalling:
         def run_on_main(work):
             work()
 
-        def boom(_word):
+        def boom(_word, _client):
             raise ValueError("bad note")
 
         _service, port = service_factory(boom, run_on_main=run_on_main)
@@ -175,26 +187,26 @@ class TestMainThreadMarshalling:
 class TestLifecycle:
     def test_start_is_idempotent_and_stop_releases_the_port(self):
         port = _free_port()
-        service = LookupService(lambda word: {}, port=port)
+        service = LookupService(lambda word, client: {}, port=port)
         assert service.start() is True
         assert service.start() is True  # already running
         assert service.running is True
         service.stop()
         assert service.running is False
         # The port is free again: a second service can bind it.
-        again = LookupService(lambda word: {}, port=port)
+        again = LookupService(lambda word, client: {}, port=port)
         assert again.start() is True
         again.stop()
 
     def test_stop_without_start_is_safe(self):
-        LookupService(lambda word: {}).stop()
+        LookupService(lambda word, client: {}).stop()
 
     def test_bind_failure_reports_false_instead_of_raising(self):
         port = _free_port()
-        first = LookupService(lambda word: {}, port=port)
+        first = LookupService(lambda word, client: {}, port=port)
         assert first.start() is True
         try:
-            second = LookupService(lambda word: {}, port=port)
+            second = LookupService(lambda word, client: {}, port=port)
             assert second.start() is False  # port taken -> reported, not raised
             assert second.running is False
         finally:
@@ -202,6 +214,8 @@ class TestLifecycle:
 
     def test_refuses_to_bind_a_non_loopback_host(self):
         # A lookup endpoint exposed off-machine would leak the user's collection.
-        service = LookupService(lambda word: {}, host="0.0.0.0", port=_free_port())
+        service = LookupService(
+            lambda word, client: {}, host="0.0.0.0", port=_free_port()
+        )
         assert service.start() is False
         assert service.running is False

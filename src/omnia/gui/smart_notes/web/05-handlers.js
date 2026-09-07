@@ -90,6 +90,9 @@
     optGenReview.checked = !!opts.generate_at_review;
     optRegenBatch.checked = opts.regenerate_when_batching !== false;
     optAllowEmpty.checked = !!opts.allow_empty_fields;
+    if (optRegenClippers) {
+      optRegenClippers.checked = opts.regenerate_from_clippers !== false;
+    }
     if (optDiscardUnfilled) {
       optDiscardUnfilled.checked = opts.discard_unfilled_clips !== false;
     }
@@ -214,6 +217,7 @@
   function integrationInstallActions(integ) {
     const actions = document.createElement("div");
     actions.className = "sn-integ-actions";
+    actions.appendChild(integrationLookupButton(integ));
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "sn-btn";
@@ -244,6 +248,31 @@
     actions.appendChild(integrationLaunchButton(integ, prog));
     actions.appendChild(prog);
     return actions;
+  }
+
+  /**
+   * Build the "Lookup…" button — the clipper's own word-lookup field picker.
+   *
+   * Sits to the LEFT of Install / Up to date because it is about what this clipper SHOWS,
+   * which is a thing you revisit, while the install button is a thing you press once. Each
+   * clipper keeps its own profile: a browser panel a few centimetres wide and a desktop panel
+   * with room for a note switcher do not want the same fields back.
+   * @param {!Object} integ The integration record.
+   * @return {!Element}
+   */
+  function integrationLookupButton(integ) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "sn-btn";
+    btn.id = "sn-lookup-btn-" + integ.key;
+    btn.textContent = "Lookup…";
+    btn.title =
+      "Choose which note types this clipper searches, and which fields it shows, when you " +
+      "look a word up from it. Saved separately for each clipper.";
+    btn.addEventListener("click", function () {
+      send("configure_lookup", {key: integ.key}, null);
+    });
+    return btn;
   }
 
   /**
@@ -362,6 +391,11 @@
       discard_unfilled_clips: optDiscardUnfilled ? optDiscardUnfilled.checked : true,
       auto_generate_integrations: autoGenerateIntegrations
     };
+    // Same rule as the two Advanced numbers below: OMITTED, not defaulted, when the control is
+    // missing, so a page that failed to render this row cannot switch the option off on a save.
+    if (optRegenClippers) {
+      opts.regenerate_from_clippers = optRegenClippers.checked;
+    }
     // OMITTED, not defaulted, when the control is missing. The controller's contract is that an
     // ABSENT key keeps the stored value verbatim — which is what a device whose Advanced pane
     // failed to render needs, so it does not overwrite a number set on another device. Posting

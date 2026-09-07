@@ -39,10 +39,13 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Protocol
+from urllib.parse import quote
 from uuid import uuid4
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.integration.browser import ChromeProfile
+
+from omnia.core.logging import get_logger
 
 from .integrations import Integration
 
@@ -179,6 +182,7 @@ class ClipperInstaller:
         runner: CommandRunner,
         platform: str | None = None,
         install_root: Path | None = None,
+        token_provider: Callable[[], str] | None = None,
     ) -> None:
         """Initialise the installer.
 
@@ -191,12 +195,19 @@ class ClipperInstaller:
             install_root: Override the directory the built app is installed under (for tests, so
                 they never touch the real ``/Applications``). ``None`` uses the per-platform
                 default(s) — see :meth:`_app_dest_dirs`.
+            token_provider: Returns the loopback token the web clipper needs to ask Omnia to
+                regenerate a note, handed over in the Reload URL because a browser extension
+                cannot read the file the desktop clipper takes it from. Injected rather than
+                looked up here: the token belongs to another plugin, and only the dialog layer
+                is allowed to know both. ``None`` (or a blank result) simply omits it, and the
+                extension keeps whatever token it already had.
         """
         self._clones_dir = clones_dir
         self._host_python = host_python
         self._runner = runner
         self._platform = platform if platform is not None else sys.platform
         self._install_root = install_root
+        self._token_provider = token_provider or (lambda: "")
 
     def install(self, integration: Integration, progress: Progress) -> None:
         """Install ``integration`` per its ``install_kind`` (progress reported via ``progress``)."""
@@ -652,7 +663,19 @@ class ClipperInstaller:
         )
         if located is None:
             raise InstallError(self._not_loaded_message(integration, profiles))
+        # The token rides along with the reload. The extension cannot read the token file the
+        # desktop clipper uses, and asking a user to copy a secret by hand to make a button work
+        # is a step most will not complete; the page stores it and strips it from its own URL.
         url = f"chrome-extension://{located.extension_id}/{_WEB_OPTIONS_PAGE}?omnia-reload=1"
+        token = ""
+        try:
+            token = (self._token_provider() or "").strip()
+        except Exception:  # a token we cannot read must not stop a reload
+            get_logger("smart_notes").exception(
+                "clipper: could not read the lookup token"
+            )
+        if token:
+            url += f"&omnia-token={quote(token, safe='')}"
         self._open_chrome(url, located.profile, executable=executable)
         return f"Reloading in Chrome profile {located.profile.name!r}…"
 

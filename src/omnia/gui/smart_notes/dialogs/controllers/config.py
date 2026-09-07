@@ -38,6 +38,7 @@ from omnia.plugins.smart_notes.integration.installer import (
 )
 from omnia.plugins.smart_notes.integration.integrations import (
     INTEGRATIONS,
+    Integration,
     integration_for_key,
 )
 
@@ -90,6 +91,7 @@ class ConfigController:
             "install_integration": self.on_install_integration,
             "launch_integration": self.on_launch_integration,
             "refresh_install_status": self.on_refresh_install_status,
+            "configure_lookup": self.on_configure_lookup,
         }
 
     def load_payload_for(self, note_type: str) -> dict[str, Any]:
@@ -198,6 +200,12 @@ class ConfigController:
                     ),
                     "allow_empty_fields": bool(
                         opts.get("allow_empty_fields", settings.allow_empty_fields)
+                    ),
+                    "regenerate_from_clippers": bool(
+                        opts.get(
+                            "regenerate_from_clippers",
+                            settings.regenerate_from_clippers,
+                        )
                     ),
                     "discard_unfilled_clips": bool(
                         opts.get(
@@ -384,7 +392,49 @@ class ConfigController:
                 else None
             ),
             runner=SubprocessCommandRunner(),
+            # The dialog layer is the only place allowed to know both plugins: the token is
+            # word_lookup's, the reload is smart_notes'. Read per call so a token issued after
+            # this installer was built is still the one handed over.
+            token_provider=self._lookup_token,
         )
+
+    def _lookup_token(self) -> str:
+        """The loopback token word_lookup issued, read raw so a shape it cannot parse is fine."""
+        try:
+            return str(self._ctx.repo.raw_section("word_lookup").get("token") or "")
+        except Exception:
+            return ""
+
+    def on_configure_lookup(self, data: dict[str, Any]) -> None:
+        """Open the word-lookup field picker for ONE clipper.
+
+        Each clipper decides for itself which note types are searched and which fields come
+        back, so the picker is reached from that clipper's card rather than from a single
+        add-on-wide dialog. word_lookup owns the settings; this layer owns the button, which is
+        why the import is local to the call — it must not become a module-level dependency of
+        the Smart Notes dialog on another plugin's GUI.
+
+        DEFERRED off the pycmd callback for the same reason ``SettingsDialog._on_configure``
+        is: opening a modal synchronously from inside a webview bridge callback leaves the
+        child unpainted.
+        """
+        from aqt.qt import QTimer
+
+        key = str(data.get("key", "")).strip()
+        integration = integration_for_key(key)
+        if integration is None:
+            return
+        QTimer.singleShot(0, lambda: self._open_lookup_dialog(integration))
+
+    def _open_lookup_dialog(self, integration: Integration) -> None:
+        from omnia.gui.word_lookup.dialog import WordLookupSettingsDialog
+
+        WordLookupSettingsDialog(
+            self._ctx.repo,
+            self._ctx.parent_widget(),
+            client=integration.key,
+            client_name=integration.name,
+        ).exec()
 
     def _push_install_status(self, states: dict[str, dict[str, bool]]) -> None:
         """Push the per-integration install states to the page (already on the Qt main thread)."""
@@ -471,6 +521,7 @@ class ConfigController:
             "generate_at_review": settings.generate_at_review,
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
+            "regenerate_from_clippers": settings.regenerate_from_clippers,
             "discard_unfilled_clips": settings.discard_unfilled_clips,
             "max_concurrent_generations": settings.max_concurrent_generations,
             "batch_notes_per_call": settings.batch_notes_per_call,

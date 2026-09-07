@@ -118,7 +118,7 @@ class TestTriageFields:
         assert title == "plunge"
         assert [f.name for f in fields] == ["Definition"]
 
-    def test_drops_fields_that_are_empty_after_cleaning(self):
+    def test_fields_that_are_empty_after_cleaning_sink_to_the_end(self):
         title, fields = triage_fields(
             [
                 ("Word", "plunge"),
@@ -128,7 +128,9 @@ class TestTriageFields:
             ]
         )
         assert title == "plunge"
-        assert [f.name for f in fields] == ["Meaning"]  # the two empties vanished
+        # Kept, but last: a client cannot offer to generate a field it was never shown.
+        assert [f.name for f in fields] == ["Meaning", "Note ID", "Empty markup"]
+        assert [f.is_empty for f in fields] == [False, True, True]
 
     def test_keeps_note_type_field_order(self):
         _title, fields = triage_fields([("W", "w"), ("B", "b"), ("A", "a"), ("C", "c")])
@@ -404,3 +406,81 @@ class TestLineStructureIsKept:
 
     def test_each_line_is_trimmed(self):
         assert strip_html("  a  <br>   b   ") == "a\nb"
+
+
+class TestEmptyFieldsAreVisibleButLast:
+    """A never-filled field is the one most worth generating, so it may not be invisible.
+
+    It used to be dropped, which made "regenerate this field" impossible to offer for exactly
+    the field that needed it. It is kept now — but always behind everything that has content,
+    because ``max_fields`` caps the list and a blank must never take a real field's slot.
+    """
+
+    def test_an_empty_field_never_pushes_out_a_field_with_content(self):
+        pairs = [("Word", "plunge"), ("Blank", ""), ("Meaning", "m"), ("Example", "e")]
+
+        _title, fields = triage_fields(pairs, max_fields=2)
+
+        assert [f.name for f in fields] == ["Meaning", "Example"]
+
+    def test_the_blank_is_shown_once_there_is_room(self):
+        pairs = [("Word", "plunge"), ("Blank", ""), ("Meaning", "m")]
+
+        _title, fields = triage_fields(pairs, max_fields=2)
+
+        assert [f.name for f in fields] == ["Meaning", "Blank"]
+
+    def test_an_empty_field_carries_no_text_or_media(self):
+        _title, fields = triage_fields([("Word", "w"), ("Blank", "<div></div>")])
+
+        blank = fields[-1]
+        assert (blank.text, blank.audio, blank.images) == ("", (), ())
+        assert blank.is_empty is True
+
+    def test_an_explicitly_listed_field_is_shown_even_when_empty(self):
+        """The whole point: the user lists Definition, the note has none, they want it filled."""
+        pairs = [("Word", "plunge"), ("Definition", "")]
+
+        _title, fields = triage_fields(pairs, word="plunge", only=("Definition",))
+
+        assert [f.name for f in fields] == ["Definition"]
+        assert fields[0].is_empty is True
+
+    def test_a_hidden_field_is_still_removed_entirely(self):
+        """Hiding is the user's explicit choice; sinking empties is only a ranking rule."""
+        pairs = [("Word", "plunge"), ("Secret", ""), ("Meaning", "m")]
+
+        _title, fields = triage_fields(pairs, hidden=("secret",))
+
+        assert [f.name for f in fields] == ["Meaning"]
+
+    def test_a_media_only_field_is_not_empty(self):
+        _title, fields = triage_fields([("W", "w"), ("Audio", "[sound:a.mp3]")])
+
+        assert fields[0].is_empty is False
+
+    def test_empties_sort_after_identifier_fields(self):
+        pairs = [("Word", "plunge"), ("Blank", ""), ("Note ID", "3113"), ("Def", "d")]
+
+        _title, fields = triage_fields(pairs)
+
+        assert [f.name for f in fields] == ["Def", "Note ID", "Blank"]
+
+
+class TestFieldFromRaw:
+    """One cleaning path, shared by the lookup's triage and the post-generation read-back."""
+
+    def test_it_cleans_markup_and_collects_media(self):
+        field = LookupField.from_raw("Ex", 'he dove in [sound:e.mp3] <img src="p.jpg">')
+
+        assert field.text == "he dove in"
+        assert (field.audio, field.images) == (("e.mp3",), ("p.jpg",))
+        assert field.kind == KIND_TEXT
+
+    def test_it_truncates_to_the_same_budget_triage_uses(self):
+        long_field = LookupField.from_raw("Long", "x" * 500, max_chars=50)
+
+        assert len(long_field.text) == 50
+
+    def test_a_blank_value_is_an_empty_field(self):
+        assert LookupField.from_raw("Blank", "").is_empty is True

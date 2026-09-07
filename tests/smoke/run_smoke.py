@@ -628,6 +628,9 @@ def _check_word_lookup_endpoint(smoke: OmniaSmoke) -> None:
     assert payload["cards"][0]["state"] == "review", payload["cards"][0]
 
     miss = smoke.plugin("word_lookup").lookup("nosuchword")
+    # Reported on every answer, hit or miss, so a clipper reads one shape; its value depends on
+    # whether smart_notes is enabled in this profile, which this check does not fix either way.
+    assert isinstance(miss.pop("can_regenerate"), bool), miss
     assert miss == {
         "word": "nosuchword",
         "found": False,

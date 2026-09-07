@@ -38,7 +38,7 @@ def served(tmp_path):
     outside.write_text("not yours", encoding="utf-8")
 
     service = LookupService(
-        lambda word: {"word": word, "found": False},
+        lambda word, client: {"word": word, "found": False},
         media_dir=lambda: str(media),
         port=_free_port(),
     )
@@ -177,7 +177,7 @@ class TestWithoutAMediaFolder:
 
         kwargs = {} if injected is None else {"media_dir": injected}
         service = LookupService(
-            lambda word: {"word": word}, port=_free_port(), **kwargs
+            lambda word, client: {"word": word}, port=_free_port(), **kwargs
         )
         assert service.start()
         try:
@@ -202,7 +202,7 @@ class TestWithoutAMediaFolder:
         current = {"dir": first}
 
         service = LookupService(
-            lambda word: {"word": word},
+            lambda word, client: {"word": word},
             media_dir=lambda: str(current["dir"]),
             port=_free_port(),
         )

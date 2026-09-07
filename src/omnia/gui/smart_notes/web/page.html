@@ -302,6 +302,10 @@
         <input type="checkbox" id="sn-opt-regen-batch" class="sn-check">
         <span><b>Regenerate when batching</b> — during a batch, re-generate fields that already have content.</span>
       </label>
+      <label class="sn-opt-row" title="ON: the clippers may re-generate a note's fields from their lookup panel, replacing whatever is there.&#10;OFF: those buttons are dimmed and say this option has to be switched on.&#10;&#10;Regeneration always overwrites, which is why it has its own switch: a clipper can rewrite a field you edited by hand.&#10;&#10;Example: a note whose Audio never got filled — open the clipper, search the word, generate just that field.">
+        <input type="checkbox" id="sn-opt-regen-clippers" class="sn-check">
+        <span><b>Regenerate from clippers</b> — let the Web and Desktop Clippers re-generate a note's fields from their search results.</span>
+      </label>
       <label class="sn-opt-row" title="ON: a field is generated even when EVERY field its prompt references is blank.&#10;OFF: generation is skipped when all referenced (source) fields are empty — so the AI is never asked about nothing.&#10;&#10;Example: a card with only the Word filled still generates Meaning; a totally blank card generates nothing.">
         <input type="checkbox" id="sn-opt-allow-empty" class="sn-check">
         <span><b>Allow empty sources</b> — generate even when every referenced field is blank.</span>

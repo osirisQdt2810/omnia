@@ -112,6 +112,7 @@ class TestOpRegistryCompleteness:
         "install_integration",
         "launch_integration",
         "refresh_install_status",
+        "configure_lookup",
         "graph_recompute",
         "classify_deps",
         "validate_prompt",
