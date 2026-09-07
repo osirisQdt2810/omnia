@@ -48,6 +48,75 @@ both sides adopt the old rate and it is written out at once, because until the k
 generic settings form shows its 1.0 default and saving that form would write the default over the
 speed the user is hearing. A press changes a stored rate, but only the side on screen can be made
 audible now — that is why the tooltip names the side it moved.
+## 2026-09-07 — Regenerate a note's fields from a clipper, and per-clipper lookup settings
+
+**What:** the clippers' lookup panels can now ask Omnia to re-generate a note's fields. Every
+field carries a small generate button and each note a "Generate all"; a field that cannot be
+generated says why on the spot instead of doing nothing. Word lookup also stopped being one
+setting for everyone: each clipper keeps its own profile — which note types it searches, which
+fields come back — reached from a **Lookup…** button on that clipper's card in Smart Notes →
+Integrations, beside Install / Up to date. A new General option, **Regenerate from clippers**
+(default on), gates the buttons; with it off they are dimmed and say so.
+
+**Why:** a search that finds a note with an empty Audio field, or one whose Definition needs
+redoing, previously ended there — the panel is read-only, and the fix meant leaving the clipper,
+opening Anki's browser, finding the note and running a batch. And one shared lookup profile made
+a browser panel a few centimetres wide and a desktop panel with a note switcher show the same
+thing, which suits neither.
+
+**Files:** `core/services.py` (new, ADR-019), `plugins/smart_notes/integration/regen.py` (new),
+`plugins/smart_notes/config.py` (`regenerate_from_clippers`), `plugins/smart_notes/__init__.py`,
+`plugins/smart_notes/integration/installer.py` (token in the reload URL),
+`plugins/word_lookup/{config,logic,service,__init__}.py`, `gui/word_lookup/dialog.py` (per client),
+`gui/smart_notes/web/{page.html,01-bridge.js,05-handlers.js}`,
+`gui/smart_notes/dialogs/controllers/config.py`, plus the two clipper repos.
+
+**How to verify:**
+```
+pytest tests/ -m "not llm and not tts and not integration" -q   # 2726 passed
+```
+In Anki: Tools → Omnia → Smart Notes → Configure → Integrations → Lookup… on a clipper, pick its
+note types and fields, save. Then look a word up from that clipper and press a field's generate
+button.
+
+**Notes / rollback:** three things are worth knowing before changing any of this.
+
+*The seam.* `word_lookup` serves the panel and `smart_notes` does the generating, and a plugin may
+not import a plugin. Smart Notes **publishes** a regeneration service through `core/services.py`
+while it is enabled and withdraws it on disable; word lookup asks `core` by name. That is what
+makes "turn Smart Notes off and search still works, but generation says it is unavailable" the
+natural shape of the code rather than a rule every consumer has to remember. See ADR-019.
+
+*The write path is authenticated, and the reason is not obvious.* `/generate` is the first
+mutating endpoint on a server that until now could only read. It changes notes and spends LLM
+credits, and any process on the machine can reach 127.0.0.1 — including a web page, which cannot
+READ the response (no CORS headers) but whose `fetch(..., {mode:"no-cors"})` still triggers the
+side effect. So: a token (issued once, written to config and to an owner-only file the desktop
+clipper reads, handed to the extension in the reload URL), and an `Origin` rule. The rule judges
+the VALUE, not the presence: absent is fine (the desktop clipper's `urllib`), `chrome-extension://`
+is fine, anything else is refused before the token is even checked. An earlier version of this
+rejected *any* `Origin` — that would have 403'd the web clipper on every call, because a Chrome
+service worker's POST does carry one.
+
+*Empty fields are now returned by `/lookup`.* They used to be dropped by `triage_fields`, which
+made the very fields most in need of regeneration invisible. They come back with `text: ""` and an
+`empty` flag, ordered after fields that have content so a blank never takes a `max_fields` slot.
+
+*What an integration review across the three repos changed, because none of it was visible from
+inside one lane.* A whole-note request derived its field list from the note-type config and an
+unconfigured note type has none, so "Generate all" answered `{"results": []}` — one client did
+nothing and said nothing, the other reported every row as unanswered. The order comes from the
+NOTE now, which is also what makes `field_states` and `regenerate` agree about the same note.
+Saving a lookup profile did nothing until Anki restarted, because the plugin trusted the settings
+snapshot `PluginManager` caches at enable time and the dialog no longer went through the path that
+reloads it; settings are read per request now, and `port` — bound at socket-bind time — says in its
+own description that it still needs a restart. A read-back after generating used the READ path's
+5-second main-thread budget, so a busy main thread turned a completed, paid-for generation into a
+503; it degrades to "no stored text" instead. And a failed `field_states` was reported as
+`no_rule`, telling users to add a rule that already existed — a failure is `unavailable`.
+`/lookup` also gained `regenerate_reason`, because `can_regenerate: false` could not tell "the
+option is off" from "Smart Notes is disabled", and both clients were sending people to a checkbox
+they could not reach.
 
 ## 2026-09-07 — Settings dialog opens on plugin categories, not one long list
 

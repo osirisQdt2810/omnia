@@ -36,7 +36,11 @@ from aqt.qt import (  # type: ignore[attr-defined]
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.gui.widgets import hint_with_details, rich_tooltip
-from omnia.plugins.word_lookup.config import WordLookupSettings
+from omnia.plugins.word_lookup.config import (
+    LookupProfile,
+    WordLookupSettings,
+    store_profile,
+)
 
 logger = get_logger("word_lookup")
 
@@ -49,24 +53,43 @@ _HEADWORD_HINTS = ("word", "front", "term", "expression", "vocab", "headword", "
 class WordLookupSettingsDialog(QDialog):
     """Pick searchable note types and, per note type, the fields to search and to show."""
 
-    def __init__(self, repo: Any, parent: Optional[QWidget] = None) -> None:
-        """Build the dialog from the plugin's saved settings.
+    def __init__(
+        self,
+        repo: Any,
+        parent: Optional[QWidget] = None,
+        *,
+        client: str,
+        client_name: str = "",
+    ) -> None:
+        """Build the dialog from one client's saved lookup profile.
 
         Args:
             repo: The ``ConfigRepository`` (read on open, written on accept).
             parent: Parent widget.
+            client: Which clipper this profile belongs to (``"web_clipper"`` /
+                ``"desktop_clipper"``). Each one searches and shows what suits it, so a browser
+                panel a few centimetres wide and a desktop panel with room for a note switcher
+                need not agree.
+            client_name: The clipper's display name, for the window title.
         """
         super().__init__(parent)
         self._repo = repo
-        self.setWindowTitle("Word Lookup — settings")
+        self._client = client.strip()
+        who = client_name or "every clipper"
+        self.setWindowTitle(f"Word Lookup — {who}")
         self.resize(760, 520)
 
-        settings = repo.feature_settings(_PLUGIN_ID) or WordLookupSettings()
+        # Kept for the save: rebuilding this client's entry from what the form renders would
+        # drop the settings it does not (``hidden_fields``, anything a newer Omnia added), so
+        # ``store_profile`` seeds the entry from what this client is served today.
+        self._settings = repo.feature_settings(_PLUGIN_ID) or WordLookupSettings()
+        settings = self._settings
+        profile = settings.profile_for(self._client)
         self._search_fields: dict[str, list[str]] = {
-            k: list(v) for k, v in dict(settings.search_fields).items()
+            k: list(v) for k, v in dict(profile.search_fields).items()
         }
         self._display_fields: dict[str, list[str]] = {
-            k: list(v) for k, v in dict(settings.display_fields).items()
+            k: list(v) for k, v in dict(profile.display_fields).items()
         }
         self._current: str = ""
 
@@ -83,7 +106,7 @@ class WordLookupSettingsDialog(QDialog):
         )
 
         columns = QHBoxLayout()
-        columns.addWidget(self._note_type_column(settings), 1)
+        columns.addWidget(self._note_type_column(profile), 1)
         columns.addWidget(
             self._field_column(
                 "Search in",
@@ -117,7 +140,7 @@ class WordLookupSettingsDialog(QDialog):
         root.addLayout(columns, 1)
 
         self._word_forms = QCheckBox("Also match other forms")
-        self._word_forms.setChecked(bool(settings.match_word_forms))
+        self._word_forms.setChecked(bool(profile.match_word_forms))
         self._word_forms.setToolTip(
             rich_tooltip(
                 "Double-clicking an inflected word still finds the card filed under its "
@@ -126,8 +149,8 @@ class WordLookupSettingsDialog(QDialog):
         )
         root.addWidget(self._word_forms)
 
-        self._max_results = self._spin(1, 25, int(settings.max_results))
-        self._max_fields = self._spin(1, 30, int(settings.max_fields))
+        self._max_results = self._spin(1, 25, int(profile.max_results))
+        self._max_fields = self._spin(1, 30, int(profile.max_fields))
         self._port = self._spin(1024, 65535, int(settings.port))
         numbers = QHBoxLayout()
         numbers.addWidget(QLabel("Max results"))
@@ -161,7 +184,7 @@ class WordLookupSettingsDialog(QDialog):
         spin.setValue(value)
         return spin
 
-    def _note_type_column(self, settings: WordLookupSettings) -> QWidget:
+    def _note_type_column(self, profile: LookupProfile) -> QWidget:
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -171,7 +194,7 @@ class WordLookupSettingsDialog(QDialog):
         self._note_types.setSelectionMode(
             QAbstractItemView.SelectionMode.SingleSelection
         )
-        enabled = {name.strip().lower() for name in settings.note_types}
+        enabled = {name.strip().lower() for name in profile.note_types}
         for name in self._all_note_types():
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -312,19 +335,27 @@ class WordLookupSettingsDialog(QDialog):
         # Drop empty entries so the config stays a record of real choices only.
         search = {k: v for k, v in self._search_fields.items() if v}
         display = {k: v for k, v in self._display_fields.items() if v}
+        profile = {
+            "note_types": note_types,
+            "search_fields": search,
+            "display_fields": display,
+            "match_word_forms": self._word_forms.isChecked(),
+            "max_results": self._max_results.value(),
+            "max_fields": self._max_fields.value(),
+        }
         try:
-            self._repo.update_section(
-                _PLUGIN_ID,
-                {
-                    "note_types": note_types,
-                    "search_fields": search,
-                    "display_fields": display,
-                    "match_word_forms": self._word_forms.isChecked(),
-                    "max_results": self._max_results.value(),
-                    "max_fields": self._max_fields.value(),
-                    "port": self._port.value(),
-                },
+            # Building the section is inside the try with the write: a hand-edited `clients`
+            # that is not a mapping makes it raise, and an exception leaving a Qt slot reaches
+            # stderr — which Anki turns into an error dialog, with this one still open behind
+            # it and no way out but to lose the edits.
+            section = store_profile(
+                self._repo.raw_section(_PLUGIN_ID),
+                self._client,
+                profile,
+                port=self._port.value(),
+                settings=self._settings,
             )
+            self._repo.update_section(_PLUGIN_ID, section)
         except Exception:
             logger.exception("word_lookup: could not save settings")
         self.accept()

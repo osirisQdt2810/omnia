@@ -18,7 +18,9 @@ card, it asserts behaviour rather than absence-of-exception:
   out as the ease the rules say — typed_accuracy substitutes its staged grade, overdue_guard then
   caps it, in that order;
 * each of the seven plugins has a step of its own, driving its real entry point (bridge message,
-  menu hook, planner, loopback endpoint, dialog op);
+  menu hook, planner, loopback endpoint, dialog op) — word_lookup gets three, because its
+  per-client profile routing and its ONE writing endpoint (with the token and the Origin rule
+  that guard it) only exist over a real socket;
 * every dialog the settings screen's Configure button can open is constructed, discovered from
   the manager rather than a hard-coded list, plus the two dialogs reached from Anki's own menus.
 
@@ -54,6 +56,7 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -609,6 +612,46 @@ def _check_note_maintenance_plans_a_change(smoke: OmniaSmoke) -> None:
     ), change
 
 
+def _lookup_port(smoke: OmniaSmoke) -> int:
+    """The port word_lookup's service is actually serving on."""
+    return int(smoke.repo.feature_settings("word_lookup").port)
+
+
+def _get_json(port: int, path: str) -> dict[str, Any]:
+    """GET ``path`` off the loopback service and parse the JSON body."""
+    import json
+
+    with urllib.request.urlopen(
+        f"http://127.0.0.1:{port}{path}", timeout=10
+    ) as response:
+        return dict(json.loads(response.read().decode("utf-8")))
+
+
+def _post_json(
+    port: int, path: str, body: dict[str, Any], **headers: str
+) -> tuple[int, dict[str, Any]]:
+    """POST ``body`` as JSON and return ``(status, parsed body)`` — a refusal included.
+
+    ``urllib`` raises on 4xx/5xx, and every interesting answer from the write path IS a 4xx, so
+    the error is unwrapped rather than escaping: its status and body are the assertion.
+    """
+    import json
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+    )
+    request.add_header("Content-Type", "application/json")
+    for name, value in headers.items():
+        request.add_header(name.replace("_", "-"), value)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status, dict(json.loads(response.read().decode("utf-8")))
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(json.loads(exc.read().decode("utf-8")))
+
+
 def _check_word_lookup_endpoint(smoke: OmniaSmoke) -> None:
     """word_lookup answers a real HTTP request from the real collection.
 
@@ -616,24 +659,91 @@ def _check_word_lookup_endpoint(smoke: OmniaSmoke) -> None:
     main-thread marshalling and its JSON shape are what the companion clipper actually depends
     on, and none of them exist in a stubbed test.
     """
-    import json
-
-    port = smoke.repo.feature_settings("word_lookup").port
-    with urllib.request.urlopen(
-        f"http://127.0.0.1:{port}/lookup?word=front", timeout=10
-    ) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = _get_json(_lookup_port(smoke), "/lookup?word=front")
     assert payload["found"] is True, payload
     assert [card["title"] for card in payload["cards"]] == ["front"], payload
     assert payload["cards"][0]["state"] == "review", payload["cards"][0]
 
     miss = smoke.plugin("word_lookup").lookup("nosuchword")
+    # Reported on every answer, hit or miss, so a clipper reads one shape; their values depend
+    # on whether smart_notes is enabled in this profile, which this check does not fix either
+    # way — only that the pair is present and that the flag agrees with the reason.
+    can_regenerate = miss.pop("can_regenerate")
+    reason = miss.pop("regenerate_reason")
+    assert isinstance(can_regenerate, bool), can_regenerate
+    assert can_regenerate is (reason == ""), (can_regenerate, reason)
     assert miss == {
         "word": "nosuchword",
         "found": False,
         "truncated": False,
         "cards": [],
     }, miss
+
+
+def _check_word_lookup_per_client_profile(smoke: OmniaSmoke) -> None:
+    """A profile saved AFTER the plugin started is served to that client on the next request.
+
+    Two things no stubbed test reaches: the ``client=`` parameter routing through the real
+    socket, and the settings being re-read per request. The profile is written straight to the
+    config with NO ``manager.reload()`` — which is exactly what the Integrations “Lookup…”
+    dialog does, and what used to mean "restart Anki before your change does anything".
+    """
+    smoke.repo.update_section(
+        "word_lookup",
+        {
+            "clients": {
+                "web_clipper": {"note_types": ["Basic"], "hidden_fields": ["Front"]}
+            }
+        },
+    )
+    port = _lookup_port(smoke)
+
+    web = _get_json(port, "/lookup?word=front&client=web_clipper")
+    assert web["found"] is True, web
+    # "Front" is hidden for this clipper, so "Back" is all that is left to title the card.
+    assert [card["title"] for card in web["cards"]] == ["back"], web
+
+    # A client with no profile of its own is untouched by the one just written.
+    other = _get_json(port, "/lookup?word=front")
+    assert [card["title"] for card in other["cards"]] == ["front"], other
+
+
+def _check_word_lookup_generate_endpoint(smoke: OmniaSmoke) -> None:
+    """The write path over the real socket: its two guards, then a real answer.
+
+    Deliberately ordered BEFORE the smart_notes step: no generation rules are saved for "Basic"
+    yet, so the run cannot reach a provider — and the answer proves the other half, that a
+    whole-note request on an unconfigured note type reports one status per field instead of the
+    empty ``results`` list that left both clippers with nothing to show and nothing to say.
+    """
+    port = _lookup_port(smoke)
+    token = smoke.repo.feature_settings("word_lookup").token
+    assert token, "no clipper token was issued"
+    note_id = smoke.anki.note.id
+
+    status, body = _post_json(port, "/generate", {"note_id": note_id})
+    assert status == 401, (status, body)
+
+    status, body = _post_json(
+        port,
+        "/generate",
+        {"note_id": note_id},
+        X_Omnia_Token=token,
+        Origin="https://evil.example",
+    )
+    assert status == 403, (status, body)
+    assert "web page" in body.get("error", ""), body
+
+    status, body = _post_json(
+        port,
+        "/generate",
+        {"note_id": note_id, "client": "desktop_clipper"},
+        X_Omnia_Token=token,
+    )
+    assert status == 200, (status, body)
+    assert body["note_id"] == note_id, body
+    results = {result["field"]: result["status"] for result in body["results"]}
+    assert results == {"Front": "no_rule", "Back": "no_rule"}, body
 
 
 def _check_smart_notes_surfaces(smoke: OmniaSmoke) -> None:
@@ -827,6 +937,14 @@ _STEPS: tuple[tuple[str, Callable[[OmniaSmoke], None]], ...] = (
         _check_note_maintenance_plans_a_change,
     ),
     ("word_lookup · loopback endpoint answers", _check_word_lookup_endpoint),
+    (
+        "word_lookup · per-client profile, live (no reload)",
+        _check_word_lookup_per_client_profile,
+    ),
+    (
+        "word_lookup · POST /generate (401 / 403 / 200)",
+        _check_word_lookup_generate_endpoint,
+    ),
     ("smart_notes · editor/menus + dialog ops", _check_smart_notes_surfaces),
     ("Configure dialog for EVERY plugin", _check_every_configure_dialog),
     ("AutoFlip deck / CustomPrompt / Settings dialogs", _check_menu_reached_dialogs),

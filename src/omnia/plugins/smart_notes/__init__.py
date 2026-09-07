@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Optional
 
-from omnia.core import anki_compat
+from omnia.core import anki_compat, services
 from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
@@ -37,6 +37,10 @@ from omnia.plugins.smart_notes.integration import (
     materialize,
     note_materializer,
     set_button_enabled,
+)
+from omnia.plugins.smart_notes.integration.regen import (
+    REGENERATION_SERVICE,
+    RegenerationService,
 )
 
 logger = get_logger("smart_notes")
@@ -86,6 +90,7 @@ class SmartNotesPlugin(FeaturePlugin):
         self._gateway: Optional[IntegrationGateway] = None
         self._store: Optional[SmartNotesStore] = None
         self._user_tools: Optional[UserToolLoader] = None
+        self._regen: Optional[RegenerationService] = None
 
     def on_enable(self, ctx: PluginContext) -> None:
         self._ctx = ctx
@@ -95,6 +100,12 @@ class SmartNotesPlugin(FeaturePlugin):
         self._store = SmartNotesStore()
         self._review = ReviewTimeEvaluator(self._service, self._settings)
         self._gateway = IntegrationGateway(self._service, self._settings)
+        # Offer regeneration to whoever asks for it BY NAME (the clippers, via word_lookup).
+        # Publishing it here and revoking it in on_disable is the whole mechanism behind
+        # "turning Smart Notes off leaves search working but makes generation unavailable":
+        # a consumer holds no import of this plugin, only a name that stops resolving.
+        self._regen = RegenerationService(self._settings, self._service)
+        services.provide(REGENERATION_SERVICE, self._regen)
         anki_compat.subscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
         anki_compat.subscribe_hook(_SIDEBAR_HOOK, self._on_sidebar_menu)
         anki_compat.subscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
@@ -105,6 +116,7 @@ class SmartNotesPlugin(FeaturePlugin):
         )
 
     def on_disable(self, ctx: PluginContext) -> None:
+        services.revoke(REGENERATION_SERVICE)
         anki_compat.unsubscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
         anki_compat.unsubscribe_hook(_SIDEBAR_HOOK, self._on_sidebar_menu)
         anki_compat.unsubscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
@@ -128,6 +140,7 @@ class SmartNotesPlugin(FeaturePlugin):
         self._gateway = None
         self._store = None
         self._user_tools = None
+        self._regen = None
 
     def _load_user_tools(self) -> None:
         """Import every ``user_files/tools/*.py`` so its ``@register_tool`` runs.

@@ -56,6 +56,7 @@
   const optGenReview = document.getElementById("sn-opt-gen-review");
   const optRegenBatch = document.getElementById("sn-opt-regen-batch");
   const optAllowEmpty = document.getElementById("sn-opt-allow-empty");
+  const optRegenClippers = document.getElementById("sn-opt-regen-clippers");
   const optDiscardUnfilled = document.getElementById("sn-opt-discard-unfilled");
   // Advanced tab: how many fields/notes generate at once (bounded 1..16 on both sides).
   const optConcurrency = document.getElementById("sn-opt-concurrency");

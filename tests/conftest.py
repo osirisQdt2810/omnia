@@ -221,6 +221,27 @@ _install_anki_stubs()
 
 
 # --- shared fixtures ----------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _clean_service_registry():
+    """Leave ``core/services``' cross-plugin registry exactly as it was found (ADR-019).
+
+    It is process-global mutable state, so any test that runs a real ``on_enable`` — enabling
+    smart_notes publishes ``smart_notes.regeneration`` — leaves that capability resolvable for
+    every test that follows, including the ones asserting a consumer degrades when NOBODY
+    provides. ADR-019 promised "a fixture that clears it"; the only one lived in
+    ``tests/core/test_services.py``, which is the single file no other test could dirty.
+
+    Captures the module OBJECT before yielding, so a test that swaps ``sys.modules`` entry for a
+    stub (``publish_regeneration`` / ``hide_regeneration``) still gets the real dict restored.
+    """
+    from omnia.core import services
+
+    before = dict(services._SERVICES)
+    yield
+    services._SERVICES.clear()
+    services._SERVICES.update(before)
+
+
 @pytest.fixture
 def gui_hooks():
     """The fake ``aqt.gui_hooks`` namespace (reset between tests)."""
