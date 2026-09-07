@@ -49,8 +49,11 @@ mpv path is the live one there). In Anki: enable Audio Speed, review a card with
 sides, press `]`; the tooltip shows the new rate and both sides play faster.
 
 **Notes / rollback:** when mpv is not the active player (`aqt.sound.mpvManager is None`) only the
-HTML audio is sped up and the tooltip says so. Disabling the plugin resets mpv to 1× and removes the
-injected script. The persisted key is `audio_speed.rate`; delete it to forget the rate.
+HTML audio is sped up and the tooltip says so. Disabling has to hand BOTH players back: it resets
+mpv to 1×, drops the injector entry so later renders carry no rate, and pushes 1.0 into the page
+that is already on screen — the applier installed there outlives the injector entry and would keep
+forcing the old rate until the reviewer webview was rebuilt. The persisted key is
+`audio_speed.rate`; delete it to forget the rate.
 
 ## 2026-08-25 — Export / Import one note type's Smart Notes setup
 
