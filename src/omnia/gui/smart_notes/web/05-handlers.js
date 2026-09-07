@@ -265,8 +265,8 @@
     btn.textContent = web ? "Reload" : "Open";
     btn.disabled = true;
     btn.title = web
-      ? "Reload the extension in the Chrome profile you used last, and open its Settings. " +
-        "Needs Chrome installed and the extension already loaded."
+      ? "Reload the extension in whichever Chrome profile it is loaded in, and open its " +
+        "Settings. Needs Chrome installed and the extension already loaded."
       : "Re-open the installed Omnia Desktop Clipper.";
     btn.addEventListener("click", function () {
       btn.disabled = true;

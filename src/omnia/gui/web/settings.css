@@ -32,11 +32,6 @@ body {
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .omnia-subtitle { color: var(--muted); margin-top: 4px; }
-.omnia-section { margin-top: 18px; }
-.omnia-section-label {
-  font-size: 12px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.8px; color: var(--muted); margin: 0 0 8px 2px;
-}
 .omnia-cards { display: flex; flex-direction: column; gap: 10px; }
 .omnia-card {
   display: flex; align-items: center; gap: 14px;
@@ -124,3 +119,146 @@ body {
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
 }
 .omnia-switch input:checked + .omnia-slider::before { transform: translateX(20px); }
+
+/* ======================================================================================
+   Landing view — one tile per plugin category.
+   ====================================================================================== */
+
+/* Defensive, not load-bearing today: neither view declares a `display` of its own, so the UA's
+   `[hidden]` rule (0,1,0) already beats the UA's `section { display: block }` (0,0,1). Spelled
+   out so that giving either view a `display` later cannot silently un-hide it — a class rule
+   would tie `[hidden]` on specificity and win on order. */
+.omnia-landing[hidden], .omnia-category[hidden] { display: none; }
+
+.omnia-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 14px;
+  padding: 2px 2px 10px;
+}
+.omnia-tile {
+  position: relative; overflow: hidden; isolation: isolate;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
+  min-height: 168px; padding: 16px 16px 14px;
+  font: inherit; text-align: left; cursor: pointer; color: var(--fg);
+  border: 1px solid var(--card-border); border-radius: 16px;
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+/* The hover glow. `isolation: isolate` makes the tile its own stacking context, so this
+   negative-z-index layer paints over the tile's background but under its text. */
+.omnia-tile::before {
+  content: ""; position: absolute; inset: -50% -40% auto -40%; height: 180%; z-index: -1;
+  background: radial-gradient(58% 58% at 32% 0%, var(--cat-from), transparent 70%);
+  opacity: 0; transform: translateY(-12%) scale(0.92);
+  transition: opacity 0.28s ease, transform 0.7s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.omnia-tile:hover, .omnia-tile:focus-visible {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 28px var(--shadow);
+  border-color: var(--cat-from);
+}
+.omnia-tile:hover::before, .omnia-tile:focus-visible::before {
+  opacity: 0.18; transform: translateY(0) scale(1);
+}
+.omnia-tile:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 2px; }
+.omnia-tile:active { transform: translateY(-1px) scale(0.995); }
+
+.omnia-tile-icon, .omnia-cat-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; border-radius: 12px; color: #fff;
+  background: linear-gradient(135deg, var(--cat-from), var(--cat-to));
+  box-shadow: 0 6px 16px var(--shadow);
+}
+.omnia-tile-icon svg, .omnia-cat-icon svg { width: 20px; height: 20px; }
+.omnia-tile-name { font-size: 15.5px; font-weight: 700; letter-spacing: 0.1px; }
+.omnia-tile-blurb { color: var(--muted); line-height: 1.4; font-size: 13px; }
+.omnia-tile-count {
+  margin-top: auto; align-self: flex-start;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 650; color: var(--muted);
+  border: 1px solid var(--card-border); background: var(--card-top);
+  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
+}
+.omnia-tile.omnia-on .omnia-tile-count {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(90deg, var(--cat-from), var(--cat-to));
+}
+.omnia-empty { color: var(--muted); padding: 28px 2px; text-align: center; }
+
+/* ======================================================================================
+   Category view — the cards of one category, opened from a tile.
+   ====================================================================================== */
+
+/* Opening a category moves focus to its heading (tabindex="-1"), so a keyboard or screen-reader
+   user lands on the name of the place they arrived at rather than at the top of the document.
+   No ring for a mouse click; a deliberate accent one when the browser decides the focus was
+   keyboard-driven. */
+.omnia-cat-name:focus { outline: none; }
+.omnia-cat-name:focus-visible {
+  outline: 2px solid var(--cat-from); outline-offset: 6px; border-radius: 8px;
+}
+.omnia-cat-head { display: flex; align-items: flex-start; gap: 12px; margin: 2px 0 16px; }
+.omnia-back {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  padding: 7px 13px 7px 11px; font: inherit; font-size: 13px; cursor: pointer;
+  color: var(--fg); border: 1px solid var(--card-border); border-radius: 10px;
+  background: var(--card-top);
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.omnia-back:hover { border-color: var(--cat-from); }
+.omnia-back:active { transform: scale(0.97); }
+.omnia-back-arrow { transition: transform 0.15s ease; }
+.omnia-back:hover .omnia-back-arrow { transform: translateX(-2px); }
+.omnia-cat-heading { min-width: 0; }
+.omnia-cat-name {
+  display: flex; align-items: center; gap: 10px; margin: 0;
+  font-size: 18px; font-weight: 700;
+}
+.omnia-cat-icon { width: 32px; height: 32px; border-radius: 10px; }
+.omnia-cat-icon svg { width: 17px; height: 17px; }
+.omnia-cat-blurb { color: var(--muted); margin-top: 5px; line-height: 1.4; }
+
+/* ======================================================================================
+   Motion. Only opacity and transform are animated, so every frame stays on the compositor.
+   ====================================================================================== */
+
+@keyframes omnia-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes omnia-slide-in {
+  from { opacity: 0; transform: translateX(14px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes omnia-slide-back {
+  from { opacity: 0; transform: translateX(-14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The fill mode is `backwards`, and must stay that way: a filled-forward animation keeps its
+   last keyframe's transform applied for good, which then outranks `.omnia-card:hover`'s
+   translateY and silently kills the hover lift. `backwards` only holds the FIRST keyframe
+   during the stagger delay and hands the property back when the animation ends. */
+.omnia-landing.omnia-enter {
+  animation: omnia-slide-back 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+.omnia-category.omnia-enter {
+  animation: omnia-slide-in 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+.omnia-landing.omnia-enter .omnia-tile,
+.omnia-category.omnia-enter .omnia-card {
+  animation: omnia-rise 0.42s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omnia-landing.omnia-enter,
+  .omnia-category.omnia-enter,
+  .omnia-landing.omnia-enter .omnia-tile,
+  .omnia-category.omnia-enter .omnia-card { animation: none; }
+  .omnia-tile, .omnia-tile::before, .omnia-tile-count,
+  .omnia-card, .omnia-configure, .omnia-back, .omnia-back-arrow,
+  .omnia-slider, .omnia-slider::before, .omnia-tip { transition: none; }
+}

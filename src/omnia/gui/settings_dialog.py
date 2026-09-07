@@ -9,12 +9,14 @@ handles the two ``pycmd`` ops (``toggle`` / ``configure``). Only loaded inside A
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from aqt.theme import theme_manager
 
 from omnia.core.manager import grouped_plugins
 from omnia.gui.config_form import PluginConfigDialog
+from omnia.gui.settings_categories import category_order
 from omnia.gui.settings_html import PluginCardModel, build_settings_html, status_text
 from omnia.gui.web_dialog import WebDialog
 
@@ -33,14 +35,14 @@ class SettingsDialog(WebDialog):
             title="Omnia — All-in-One Toolkit",
             html=self._render(),
             handlers={"toggle": self._on_toggle, "configure": self._on_configure},
-            width=620,
-            height=580,
+            width=720,
+            height=620,
         )
 
     def _render(self) -> str:
         groups = [
             (name, [self._card(plugin) for plugin in plugins])
-            for name, plugins in grouped_plugins(self._manager)
+            for name, plugins in grouped_plugins(self._manager, order=category_order())
         ]
         return build_settings_html(groups, dark=theme_manager.night_mode)
 
@@ -96,6 +98,7 @@ class SettingsDialog(WebDialog):
             dialog = plugin.custom_config_dialog(self._manager.config, self)
             if dialog is not None and dialog.exec():
                 self._manager.reload(plugin.id)
+                self._push_card_state(plugin.id)
             return
         settings = self._manager.config.feature_settings(plugin.id)
         current = settings.dict() if settings is not None else {}
@@ -105,3 +108,24 @@ class SettingsDialog(WebDialog):
         if dialog.exec():
             self._manager.config.update_section(plugin.id, dialog.values())
             self._manager.reload(plugin.id)  # re-apply with the new settings if active
+            self._push_card_state(plugin.id)
+
+    def _push_card_state(self, plugin_id: str) -> None:
+        """Re-state one card in the open page after its config changed.
+
+        A reload can fail — a setting the plugin refuses leaves it inactive — and the page has
+        no idea, so the card would keep saying "active" and its category tile would keep
+        counting it. Re-rendering the whole page would work but would throw the reader back to
+        the landing, so only the card that was configured is pushed.
+        """
+        enabled = self._manager.config.is_enabled(plugin_id)
+        active = self._manager.is_active(plugin_id)
+        state = json.dumps(
+            {
+                "id": plugin_id,
+                "enabled": enabled,
+                "active": active,
+                "status": status_text(enabled=enabled, active=active),
+            }
+        )
+        self.eval_js(f"window.omniaSettings.setCardState({state});")
