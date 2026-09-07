@@ -42,6 +42,10 @@ class CategoryStyle:
 # Insertion order IS the section order on the landing page (see ``category_order``); a group
 # nobody lists here still renders, after these, with ``DEFAULT_CATEGORY_STYLE``.
 #
+# ``docs/guide.md`` §2.1 lists these categories for the user. Nothing checks that it agrees —
+# pinning prose against a table costs more than the drift does — so editing here means editing
+# there, and this line is the only reminder there is.
+#
 # There is deliberately no "Integrations" here. Smart Notes has a tab by that name — the clipper
 # cards, their install buttons and their per-clipper "Lookup…" settings — and a category on this
 # grid sharing the word read as the same place while being an unrelated plugin bucket holding a

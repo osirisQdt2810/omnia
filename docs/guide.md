@@ -65,15 +65,20 @@ see §8.1.
 
 ### 2.1 Opening it
 
-**Tools → Omnia**. The window is a list of feature **cards**, grouped into sections:
+**Tools → Omnia**. The window opens on a grid of **category tiles**, each showing how many of
+its features are on. Click one to see that category's feature **cards**; **Back**, or Escape,
+returns to the grid.
 
-| Section | Features |
+| Category | Features |
 |---|---|
-| Reviewing | Auto Flip, Display Interval |
+| Reviewing | Auto Flip, Display Interval, Audio Speed |
 | Grading | Typing Accuracy, Overdue Guard |
 | AI | Smart Notes |
 | Editing | Note Maintenance |
-| Integrations | Word Lookup |
+| General | Word Lookup |
+
+> There is no **Integrations** category here. That word belongs to a tab *inside* Smart Notes
+> (§5) — the clipper cards and their settings — and the grid deliberately does not reuse it.
 
 ### 2.2 How features work
 
@@ -87,7 +92,8 @@ Each card has two controls: a **toggle switch** and a **Configure…** button.
 | Feature | Configure… opens |
 |---|---|
 | Auto Flip, Display Interval, Typing Accuracy, Overdue Guard | A generic options form — changes apply on **OK**, Cancel discards them |
-| Smart Notes, Note Maintenance, Word Lookup | A purpose-built panel of their own |
+| Smart Notes, Note Maintenance | A purpose-built panel of their own |
+| Word Lookup | A small form with the loopback **port** and the clipper **token**. What each clipper searches and shows is set per clipper instead, from its own **Lookup…** button in Smart Notes → Integrations (§5) |
 
 Smart Notes' panel is the largest, and has its own **⚙ Options** modal inside it (§3.1) — which
 is why its settings are two levels deep rather than one.
@@ -105,7 +111,7 @@ reproduce what a new user sees.
 
 ## 3. Connecting an AI provider
 
-Only **Smart Notes** (§4.7) and the clippers need this. Every other feature works with no
+Only **Smart Notes** (§4.8) and the clippers need this. Every other feature works with no
 account and no network.
 
 ### 3.1 Where keys are entered
@@ -175,7 +181,7 @@ Do not skip **Image** if you generate picture fields — it is a first-class rul
 text and TTS, with its own provider and model.
 
 These set the *defaults*. Each individual rule row can override the provider and model for
-itself (§4.7).
+itself (§4.8).
 
 The five tabs of the Options modal overall are **General**, **Usage & Keys**, **Tools**,
 **Integrations** and **Advanced**.
@@ -235,7 +241,46 @@ a card template rather than take the default position.
 
 **Try it:** answer any card. The predicted next interval appears with the buttons.
 
-### 4.3 Typing Accuracy
+### 4.3 Audio Speed
+
+Plays a card's audio faster or slower, with a **separate speed for the front and the back** —
+a one-word prompt and a long example sentence rarely want the same one.
+
+**Turn on:** tick *Audio Speed*. Seven actions appear under **Tools**, all with shortcuts you
+can change:
+
+| Shortcut | What it moves |
+|---|---|
+| `]` / `[` | Both sides, one step each — a difference you set between them is kept |
+| `Ctrl+]` | Both sides back to 1× |
+| `Alt+]` / `Alt+[` | The front only |
+| `Shift+]` / `Shift+[` | The back only |
+
+Pressing a per-side shortcut while the other side is on screen is fine: the speed is stored and
+takes effect at the flip, and the tooltip names the side it moved so it does not look like the
+key did nothing.
+
+It covers both players a card can use — `[sound:]` tags, which Anki plays through mpv, and any
+`<audio>`/`<video>` the card template plays itself. That second half is the one per-element
+speed add-ons miss, because Anki renders the answer side fresh and a rate set on the question
+side's elements is gone by then.
+
+**Options**
+
+| Option | Meaning |
+|---|---|
+| `rate` / `answer_rate` | The two speeds, saved between sessions |
+| `step` | How far one press moves a rate |
+| `min_rate` / `max_rate` | The window the shortcuts stay inside |
+| `remember_rate` | Off = every launch starts at 1× |
+| `show_tooltip` | Flash the new speed on each change |
+| the six shortcut fields | Qt key sequences; change them if your layout does not deliver one |
+
+> On Windows a **video** `[sound:clip.mp4]` is played by a separate process the speed does not
+> reach, so the clip stays at 1× while the tooltip reports the new rate. Audio files are
+> unaffected.
+
+### 4.4 Typing Accuracy
 
 For typed cards: grades from **how accurately you typed** rather than from the button you press,
 and adds an interactive accuracy panel to the Statistics screen.
@@ -253,7 +298,7 @@ and adds an interactive accuracy panel to the Statistics screen.
 **Try it:** study a typed card and deliberately mistype one letter. The grade reflects the
 accuracy, not the button. Then open **Statistics** to see the panel.
 
-### 4.4 Overdue Guard
+### 4.5 Overdue Guard
 
 Forces very overdue cards down to Hard/Again no matter which button you press — so a card you
 have not seen in months cannot jump straight back to a long interval.
@@ -273,7 +318,7 @@ have not seen in months cannot jump straight back to a long interval.
 > Typing Accuracy and Overdue Guard both rewrite the grade. They cooperate rather than fight —
 > both register on one shared pipeline instead of each patching Anki separately.
 
-### 4.5 Note Maintenance
+### 4.6 Note Maintenance
 
 Cleans and reformats text your notes **already contain** with deterministic, provider-free
 tasks — no tokens, no network, no provider configured. It is the complement to Smart Notes, not
@@ -284,15 +329,18 @@ a cheaper version of it.
 **Try it on a copy first.** It edits notes in place. Select a handful in the Browser and run it
 there before pointing it at a whole deck.
 
-### 4.6 Word Lookup
+### 4.7 Word Lookup
 
-Runs a small local service so the Desktop Clipper can ask *"is this word already in my
-collection?"* and show you the matching notes.
+Runs a small local service so a clipper — Desktop **or** Web — can ask *"is this word already
+in my collection?"*, show you the matching notes, and offer to regenerate their fields.
 
 **Turn on:** tick *Word Lookup*. It only listens on `127.0.0.1` — nothing is exposed to your
-network.
+network. It keeps working with Smart Notes switched off; searching needs no AI. What stops
+then is regeneration, and the panel says so.
 
-**Options**
+**What each clipper searches and shows is set per clipper**, from that clipper's **Lookup…**
+button in Smart Notes → Integrations (§5) — a browser panel a few centimetres wide and a
+desktop panel with a note switcher rarely want the same fields back. Each profile holds:
 
 | Option | Meaning |
 |---|---|
@@ -300,12 +348,21 @@ network.
 | `search_fields` / `display_fields` | Fields to search in; fields to show |
 | `match_word_forms` | Match "running" against "run" |
 | `hidden_fields` | Never show these |
-| `max_results`, `max_fields` | Result limits |
-| `port` | Default `8766` — change only on a conflict |
+| `max_results`, `max_fields` | Result limits. A note type with more fields than fit keeps a
+  quarter of the budget for empty ones, so a field worth generating stays visible |
+
+This feature's own **Configure…** holds only what belongs to the service rather than to a
+clipper:
+
+| Option | Meaning |
+|---|---|
+| `port` | Default `8766` — change only on a conflict, and restart Anki afterwards |
+| `token` | Issued automatically. A clipper must present it to regenerate anything, because that
+  request changes notes and spends provider credits |
 
 **Try it:** see §6.3, which uses it from the Desktop Clipper.
 
-### 4.7 Smart Notes
+### 4.8 Smart Notes
 
 The AI feature: generates note fields (text and images) and audio, from an LLM/TTS provider.
 Needs §3 done first.
@@ -424,7 +481,7 @@ The tray menu's **Capture now** does the same as the capture hotkey.
 On a successful gesture a small overlay appears next to the selection with two actions:
 
 - **(+)** — send the selection to Anki as a new note.
-- **(search)** — look the word up in your collection first (needs §4.6 on).
+- **(search)** — look the word up in your collection first (needs §4.7 on).
 
 The clipper also captures the **surrounding context**, so the card carries the sentence the word
 appeared in — including inside PDF viewers.
@@ -455,6 +512,23 @@ If an image still does not appear, the message now tells you which failure it wa
 | *Image format not supported* | The file arrived, but Qt has no plugin for that format |
 
 The audio button behaves the same way; hover it for the reason.
+
+**Regenerating from the panel.** Every field in that panel carries a small generate button, and
+the note carries a **Generate all**. They ask Omnia to run this note's Smart Notes rules again
+and write the result straight into the panel you are looking at — which is the point: a note
+whose Audio was never filled, or whose Definition needs redoing, no longer means leaving the
+clipper for Anki's browser.
+
+- Fields that are **empty** are shown too. They used to be dropped, which hid exactly the ones
+  worth generating.
+- A field that **cannot** be generated keeps its button and says why when you press it — no
+  rule targets it, its Generate box is unticked, a field it depends on has not been made yet.
+  "Generate all" runs to the end and reports the ones it could not do.
+- Regenerating **overwrites**. That is why it has its own switch: **Smart Notes → ⚙ Options →
+  General → "Regenerate from clippers"**, on by default. Turn it off and the buttons dim and
+  say so.
+- With **Smart Notes disabled**, searching still works and only the generating stops — the
+  panel says that instead of pointing at a checkbox you cannot reach.
 
 ---
 
