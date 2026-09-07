@@ -182,9 +182,9 @@ class RegenerationService:
         try:
             snapshot = self._read_note(note_id)
             config = self._config_for(snapshot)
-            order, refusals, candidates = self._classify(
-                config, snapshot, list(snapshot.fields)
-            )
+            # ``None`` = every field of the note, resolved in ONE place (see :meth:`_classify`),
+            # so this preview and the run it previews cannot drift into different field lists.
+            order, refusals, candidates = self._classify(config, snapshot, None)
             blocked = self._predicted_blocks(config, snapshot, candidates)
             return {
                 name: (
@@ -205,7 +205,7 @@ class RegenerationService:
     def regenerate(
         self, note_id: int, fields: Optional[Sequence[str]] = None
     ) -> list[FieldOutcome]:
-        """Regenerate ``fields`` of the note (all of its generatable fields when ``None``).
+        """Regenerate ``fields`` of the note (every field it has when ``None``).
 
         **Always overwrites.** This entry point exists to make a field AGAIN, so the per-field
         ``overwrite`` flag — which protects an automatic batch from clobbering work already
@@ -216,9 +216,10 @@ class RegenerationService:
         among whatever was requested, so a field asked for together with the field it reads sees
         the fresh value, while a field asked for ALONE reads its dependency as the note holds it.
 
-        Returns one :class:`FieldOutcome` per requested field, always, in the requested order
-        (the note type's configured order when ``fields`` is ``None``). One field failing never
-        stops another, and no per-field problem is raised — it is reported.
+        Returns one :class:`FieldOutcome` per requested field, always, in the requested order —
+        and for ``fields=None`` that is every field the NOTE has, in the note type's own order,
+        exactly the list :meth:`field_states` previews. One field failing never stops another,
+        and no per-field problem is raised — it is reported.
 
         Raises:
             Exception: Only when the note itself cannot be read (it was deleted, or Anki's main
@@ -271,12 +272,20 @@ class RegenerationService:
 
         Returns ``(order, refusals, candidates)``: which field names to report on and in what
         order, the finished outcome of each one that will not be attempted, and the names that
-        will. ``requested`` of ``None`` means "every generatable field the note actually has" —
-        a row targeting a field the note type no longer carries is simply not offered, since
-        there would be nowhere to write it.
+        will.
+
+        ``requested`` of ``None`` means "every field the NOTE has", which is the same list
+        :meth:`field_states` asks about — deliberately, because the two must agree. Deriving it
+        from the CONFIG instead is how "one status per field, always" quietly stopped holding
+        for a whole-note request: an unconfigured note type collapsed to no fields at all (so
+        the run answered ``[]`` while the preview reported ``no_rule`` for every field, and the
+        clipper had nothing to render and nothing to say), and ``generatable_fields()`` filtered
+        out exactly the rows whose ``rule_off``/``not_generatable`` refusal is the one thing the
+        user needed to read. A note-derived order can emit the whole vocabulary; a
+        config-derived one cannot.
         """
+        order = requested if requested is not None else list(snapshot.fields)
         if config is None:
-            order = requested if requested is not None else []
             return (
                 order,
                 {
@@ -291,15 +300,6 @@ class RegenerationService:
             )
         generatable = {row.field for row in config.generatable_fields()}
         rows = {row.field: row for row in config.fields}
-        order = (
-            requested
-            if requested is not None
-            else [
-                row.field
-                for row in config.generatable_fields()
-                if row.field in snapshot.fields
-            ]
-        )
         # Deck scope is a property of the whole config, not of one field, so it refuses every
         # candidate at once: the rules do not apply to the deck this note lives in.
         in_scope = not config.decks or any(

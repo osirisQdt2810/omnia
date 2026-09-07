@@ -75,6 +75,22 @@ service worker's POST does carry one.
 made the very fields most in need of regeneration invisible. They come back with `text: ""` and an
 `empty` flag, ordered after fields that have content so a blank never takes a `max_fields` slot.
 
+*What an integration review across the three repos changed, because none of it was visible from
+inside one lane.* A whole-note request derived its field list from the note-type config and an
+unconfigured note type has none, so "Generate all" answered `{"results": []}` — one client did
+nothing and said nothing, the other reported every row as unanswered. The order comes from the
+NOTE now, which is also what makes `field_states` and `regenerate` agree about the same note.
+Saving a lookup profile did nothing until Anki restarted, because the plugin trusted the settings
+snapshot `PluginManager` caches at enable time and the dialog no longer went through the path that
+reloads it; settings are read per request now, and `port` — bound at socket-bind time — says in its
+own description that it still needs a restart. A read-back after generating used the READ path's
+5-second main-thread budget, so a busy main thread turned a completed, paid-for generation into a
+503; it degrades to "no stored text" instead. And a failed `field_states` was reported as
+`no_rule`, telling users to add a rule that already existed — a failure is `unavailable`.
+`/lookup` also gained `regenerate_reason`, because `can_regenerate: false` could not tell "the
+option is off" from "Smart Notes is disabled", and both clients were sending people to a checkbox
+they could not reach.
+
 ## 2026-09-07 — Settings dialog opens on plugin categories, not one long list
 
 **What:** the Omnia settings dialog now opens on a grid of category tiles — icon, one-line blurb,

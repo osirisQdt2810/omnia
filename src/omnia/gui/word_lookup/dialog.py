@@ -79,7 +79,11 @@ class WordLookupSettingsDialog(QDialog):
         self.setWindowTitle(f"Word Lookup — {who}")
         self.resize(760, 520)
 
-        settings = repo.feature_settings(_PLUGIN_ID) or WordLookupSettings()
+        # Kept for the save: rebuilding this client's entry from what the form renders would
+        # drop the settings it does not (``hidden_fields``, anything a newer Omnia added), so
+        # ``store_profile`` seeds the entry from what this client is served today.
+        self._settings = repo.feature_settings(_PLUGIN_ID) or WordLookupSettings()
+        settings = self._settings
         profile = settings.profile_for(self._client)
         self._search_fields: dict[str, list[str]] = {
             k: list(v) for k, v in dict(profile.search_fields).items()
@@ -344,6 +348,7 @@ class WordLookupSettingsDialog(QDialog):
             self._client,
             profile,
             port=self._port.value(),
+            settings=self._settings,
         )
         try:
             self._repo.update_section(_PLUGIN_ID, section)

@@ -59,6 +59,14 @@ REGENERATION_SERVICE = "smart_notes.regeneration"
 STATE_UNAVAILABLE = "unavailable"
 STATE_NO_RULE = "no_rule"
 
+# The top-level ``regenerate_reason`` vocabulary: WHY a client may not ask for a regeneration.
+# Two different problems used to reach the user as one message ("turn on Regenerate from
+# clippers"), and only one of them names a box they can actually reach — the other is Smart
+# Notes being off, where that box does not exist. Wire format, like the field states above.
+# Nothing publishes regeneration at all (Smart Notes is off, or this build has no seam).
+REASON_UNAVAILABLE = "unavailable"
+REASON_OFF = "off"  # it is there, and the user unticked its clipper switch
+
 # 32 bytes of entropy, url-safe (43 characters) — long enough that guessing it over loopback is
 # not a threat model, short enough to paste into the web clipper's options page.
 _TOKEN_BYTES = 32
@@ -132,28 +140,53 @@ class RegenerationGateway:
 
     def can_regenerate(self) -> bool:
         """Whether a client may ask for a regeneration right now (the user's own switch)."""
+        return not self.regenerate_reason()
+
+    def regenerate_reason(self) -> str:
+        """Why a client may not ask for a regeneration — ``""`` when it may.
+
+        :meth:`can_regenerate` is derived from this rather than the other way round, so the flag
+        and the reason a client shows for it can never disagree.
+
+        Returns:
+            :data:`REASON_UNAVAILABLE` (nobody publishes regeneration, or asking failed — either
+            way there is no box to tick), :data:`REASON_OFF` (it is published and the user
+            unticked "Regenerate from clippers"), or ``""``.
+        """
         if self._service is None:
-            return False
+            return REASON_UNAVAILABLE
         try:
-            return bool(self._service.can_regenerate())
+            enabled = bool(self._service.can_regenerate())
         except Exception:
+            # A broken provider is not the user's setting: telling them to tick a box would be
+            # a positive claim about a switch we never managed to read.
             logger.exception("word_lookup: can_regenerate failed")
-            return False
+            return REASON_UNAVAILABLE
+        return "" if enabled else REASON_OFF
 
     def field_states(self, note_id: int, field_names: Sequence[str]) -> dict[str, str]:
         """Return one generation state per name in ``field_names``.
 
         Total by construction: every requested name gets a state, so a client never has to
-        interpret a missing key. A name smart_notes did not report is one it knows no rule for.
+        interpret a missing key. A name smart_notes reported on gets its state; the rest fall
+        back to :data:`STATE_NO_RULE` when smart_notes ANSWERED and :data:`STATE_UNAVAILABLE`
+        when it did not — because ``no_rule`` is a positive claim about the user's config ("add
+        a rule in Anki"), and making it about a field whose rule exists sends them to fix
+        something that is not broken.
         """
         if self._service is None:
             return dict.fromkeys(field_names, STATE_UNAVAILABLE)
+        reported: dict[str, str] = {}
         try:
             reported = dict(self._service.field_states(int(note_id)) or {})
         except Exception:
             logger.exception("word_lookup: field_states failed for note %s", note_id)
-            reported = {}
-        return {name: str(reported.get(name) or STATE_NO_RULE) for name in field_names}
+        # An EMPTY map is smart_notes' own failure value, not an answer: its ``field_states``
+        # catches everything and degrades to ``{}`` rather than raising, while a successful call
+        # reports one state per field of the note — and a note type with no fields does not
+        # exist. So "it said nothing" and "it broke" are the same case, and neither is a rule.
+        fallback = STATE_NO_RULE if reported else STATE_UNAVAILABLE
+        return {name: str(reported.get(name) or fallback) for name in field_names}
 
     def regenerate(self, note_id: int, fields: Optional[Sequence[str]]) -> list[Any]:
         """Regenerate ``fields`` (``None`` = all) and return smart_notes' per-field outcomes.
@@ -189,7 +222,9 @@ class WordLookupPlugin(FeaturePlugin):
         "• Runs a tiny service on 127.0.0.1 (loopback only — never reachable from the "
         "network).\n"
         "• Each clipper gets its own profile: the note types it searches, the fields it "
-        "shows, how many hits it gets.\n"
+        "shows, how many hits it gets. Edit it in Tools → Omnia → Smart Notes → "
+        "Integrations, with that clipper's “Lookup…” button — Configure here only holds the "
+        "port and the token, which are shared by every clipper.\n"
         "• A matching note is returned display-ready: fields keep the note type's own order, "
         "the ones with nothing in them sort last (so a clipper can offer to fill them), and "
         "the card's state (new/learning/review + interval, reps, lapses) comes along.\n"
@@ -303,11 +338,14 @@ class WordLookupPlugin(FeaturePlugin):
                 that sends none) resolves to the settings saved before profiles existed.
 
         Returns:
-            ``{"word", "found", "truncated", "can_regenerate", "cards": [...]}`` where each card
-            carries its title, triaged fields, deck, tags and scheduling state.
+            ``{"word", "found", "truncated", "can_regenerate", "regenerate_reason",
+            "cards": [...]}`` where each card carries its title, triaged fields, deck, tags and
+            scheduling state. ``regenerate_reason`` is why ``can_regenerate`` is false, so a
+            client renders one message per cause instead of guessing at the commoner one.
         """
         profile = self._settings().profile_for(client)
         gateway = RegenerationGateway.resolve()
+        reason = gateway.regenerate_reason()
         query = build_query(
             word,
             tuple(profile.note_types),
@@ -328,7 +366,8 @@ class WordLookupPlugin(FeaturePlugin):
             "word": word,
             "found": bool(ranked),
             "truncated": len(note_ids) > limit,
-            "can_regenerate": gateway.can_regenerate(),
+            "can_regenerate": not reason,
+            "regenerate_reason": reason,
             "cards": [self._card_payload(card, gateway) for card in ranked],
         }
 
@@ -369,9 +408,48 @@ class WordLookupPlugin(FeaturePlugin):
         }
 
     def _settings(self) -> WordLookupSettings:
-        """The plugin's settings, falling back to defaults when it is not enabled."""
-        settings = getattr(self._ctx, "settings", None) if self._ctx else None
-        return settings if settings is not None else WordLookupSettings()
+        """The plugin's settings, RE-READ from config on every request.
+
+        Not ``ctx.settings``: that is the snapshot ``PluginManager`` took at enable time, which
+        only ``manager.reload()`` refreshes — so a lookup profile saved from a clipper's
+        “Lookup…” dialog was not served until Anki restarted, while the smart_notes settings the
+        very same panel depends on applied at once (its store re-reads per request). One feature
+        whose two settings behave differently is the defect; both are read-through now.
+
+        The one setting this cannot make live is ``port``: it is bound to a socket at enable
+        time, so its description says a change needs a restart rather than pretending otherwise.
+
+        Falls back to the enable-time snapshot (then to the defaults) when the read fails — a
+        config that cannot be parsed must degrade to a stale lookup, never to no lookup.
+        """
+        ctx = self._ctx
+        fresh = self._read_settings(ctx)
+        if fresh is not None:
+            return fresh
+        snapshot = getattr(ctx, "settings", None) if ctx is not None else None
+        return (
+            snapshot
+            if isinstance(snapshot, WordLookupSettings)
+            else WordLookupSettings()
+        )
+
+    def _read_settings(
+        self, ctx: Optional[PluginContext]
+    ) -> Optional[WordLookupSettings]:
+        """Read this plugin's settings through the config repository (``None`` on any failure)."""
+        config = getattr(ctx, "config", None) if ctx is not None else None
+        if config is None:
+            return None
+        try:
+            settings = config.feature_settings(self.id)
+        except Exception:
+            # Boundary: a config the models cannot parse (hand-edited, or written by a newer
+            # Omnia) must not take the lookup service down with it.
+            logger.exception(
+                "word_lookup: could not re-read settings; using the snapshot"
+            )
+            return None
+        return settings if isinstance(settings, WordLookupSettings) else None
 
     def _stored_fields(self, note_id: int) -> dict[str, LookupField]:
         """The note's fields as STORED, keyed by name and cleaned the way ``/lookup`` cleans.
@@ -379,6 +457,13 @@ class WordLookupPlugin(FeaturePlugin):
         Read AFTER generating, so what the clipper renders is what the note now holds — not
         what the generator believed it wrote. Marshalled onto the Qt main thread through the
         service (a collection read), and empty when the note has since been deleted.
+
+        NEVER raises. By the time this runs the note has already been rewritten and the
+        provider budget has already been spent, so a read-back that cannot get the main thread
+        inside the READ path's 5 s budget (a sync, the Browser opening) must not turn a finished,
+        paid-for generation into a 503 the clients render as "Smart Notes is not available right
+        now". An empty map degrades to what the generator reported (see
+        :meth:`_outcome_payload`), so every outcome still reaches the client.
         """
 
         def read() -> dict[str, LookupField]:
@@ -391,7 +476,15 @@ class WordLookupPlugin(FeaturePlugin):
             }
 
         service = self._service
-        return service.call_on_main(read) if service is not None else read()
+        if service is None:
+            return read()
+        try:
+            return service.call_on_main(read)
+        except Exception:
+            logger.exception(
+                "word_lookup: could not read note %s back after generating", note_id
+            )
+            return {}
 
     @staticmethod
     def _outcome_payload(

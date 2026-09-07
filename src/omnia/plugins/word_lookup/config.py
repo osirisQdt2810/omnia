@@ -139,7 +139,10 @@ class WordLookupSettings(PersistedModel):
             "Loopback port the clippers call to run a lookup.\n"
             "• Bound to 127.0.0.1 ONLY — never reachable from the network.\n"
             "• One server for every client, so this is deliberately NOT a per-client setting.\n"
-            "• Change it only if another program already uses this port."
+            "• Change it only if another program already uses this port.\n"
+            "• Takes effect after Anki restarts (or after you switch Word Lookup off and on "
+            "again) — the port is bound to a socket when the feature starts. Every other "
+            "lookup setting applies to the very next lookup."
         ),
     )
     token: str = Field(
@@ -201,6 +204,7 @@ def store_profile(
     profile: dict[str, Any],
     *,
     port: int,
+    settings: WordLookupSettings,
 ) -> dict[str, Any]:
     """Build the section update that saves ONE client's lookup profile.
 
@@ -210,20 +214,34 @@ def store_profile(
     delete every other clipper's profile, including a client key a newer build added that this
     one cannot name (ADR-010, one layer above the models). So it starts from what is stored.
 
+    The same rule applies INSIDE one client's entry, which is why ``settings`` is needed. The
+    dialog renders six of :class:`LookupProfile`'s seven settings, so an entry rebuilt from what
+    it posts drops ``hidden_fields`` — and any per-profile setting a newer Omnia added — on
+    every save. The entry is therefore seeded with what this client RESOLVES to today (its
+    stored entry, else the flat pre-profile settings it is currently served from) and the
+    posted keys are written over that: keep what you could not render.
+
+    The no-``client`` branch needs no seeding: it writes the six keys as top-level settings, and
+    ``update_section`` merges top-level keys, so a flat ``hidden_fields`` is left alone.
+
     Args:
         raw: The section exactly as stored (``ConfigRepository.raw_section``).
         client: The clipper this profile belongs to. Empty edits the flat fallback that older
             clipper builds — the ones that send no ``client`` — are still served from.
-        profile: The seven content settings.
+        profile: The content settings the dialog rendered.
         port: The server's port. Top level however this was reached: there is one server and
             both clippers talk to it, so a per-client port could not mean anything.
+        settings: The plugin's settings as loaded, for the fallback this client is served from
+            when it has no stored entry yet.
 
     Returns:
         The mapping to hand to ``update_section``.
     """
     if client:
         clients = dict(raw.get("clients") or {})
-        clients[client] = dict(profile)
+        entry = dict(clients.get(client) or settings.legacy_profile().dict())
+        entry.update(profile)
+        clients[client] = entry
         section: dict[str, Any] = {"clients": clients}
     else:
         section = dict(profile)

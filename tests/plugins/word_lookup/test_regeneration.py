@@ -37,6 +37,7 @@ from omnia.plugins.word_lookup import (
 )
 from omnia.plugins.word_lookup.config import WEB_CLIPPER, WordLookupSettings
 from omnia.plugins.word_lookup.service import (
+    LookupService,
     RegenerationDisabledError,
     RegenerationUnavailableError,
 )
@@ -248,7 +249,29 @@ class TestPerFieldState:
         payload = plugin.lookup("plunge", WEB_CLIPPER)
 
         assert payload["found"] is True
-        assert all(f["state"] == STATE_NO_RULE for f in payload["cards"][0]["fields"])
+        # NOT ``no_rule``: that is a positive claim about the user's config, and the web clipper
+        # renders it as "Smart Notes has no rule that fills this field. Add one in Anki" — said
+        # about a field whose rule exists and whose state we simply failed to read.
+        assert all(
+            f["state"] == STATE_UNAVAILABLE for f in payload["cards"][0]["fields"]
+        )
+
+    def test_an_empty_answer_is_a_failure_not_a_verdict(
+        self, plugin, publish_regeneration
+    ):
+        """``RegenerationService.field_states`` swallows everything and returns ``{}``.
+
+        So ``{}`` is the COMMON way this fails — it never reaches the ``except`` above — and a
+        successful call always reports one state per field of the note. Reading it as "no field
+        has a rule" is the same wrong claim, arrived at more often.
+        """
+        publish_regeneration(FakeRegenerationService(states={}))
+
+        payload = plugin.lookup("plunge", WEB_CLIPPER)
+
+        assert all(
+            f["state"] == STATE_UNAVAILABLE for f in payload["cards"][0]["fields"]
+        )
 
     def test_a_failing_can_regenerate_call_reads_as_off(
         self, plugin, publish_regeneration
@@ -268,6 +291,56 @@ class TestPerFieldState:
 
         assert fields["Audio"]["empty"] is True
         assert fields["Definition"]["empty"] is False
+
+
+class TestWhyARegenerationIsRefused:
+    """Both clippers printed "Turn on 'Regenerate from clippers'" for two different problems.
+
+    One of them is a checkbox the user cannot reach: with Smart Notes off there is no Smart
+    Notes panel to tick it in. The cause is on the wire so each client can key one message off
+    one field instead of guessing at the commoner cause.
+    """
+
+    def test_the_switch_being_off_is_off(self, plugin, publish_regeneration):
+        publish_regeneration(FakeRegenerationService(enabled=False))
+
+        payload = plugin.lookup("plunge", WEB_CLIPPER)
+
+        assert payload["regenerate_reason"] == "off"
+        assert payload["can_regenerate"] is False
+
+    def test_smart_notes_being_off_is_unavailable(self, plugin, hide_regeneration):
+        payload = plugin.lookup("plunge", WEB_CLIPPER)
+
+        assert payload["regenerate_reason"] == "unavailable"
+        assert payload["can_regenerate"] is False
+
+    def test_a_broken_service_is_unavailable_not_a_setting_to_tick(
+        self, plugin, publish_regeneration
+    ):
+        publish_regeneration(
+            FakeRegenerationService(can_regenerate_error=RuntimeError("boom"))
+        )
+
+        assert (
+            plugin.lookup("plunge", WEB_CLIPPER)["regenerate_reason"] == "unavailable"
+        )
+
+    def test_nothing_is_wrong_when_it_can_regenerate(
+        self, plugin, publish_regeneration
+    ):
+        publish_regeneration(FakeRegenerationService(enabled=True))
+
+        payload = plugin.lookup("plunge", WEB_CLIPPER)
+
+        assert payload["regenerate_reason"] == ""
+        assert payload["can_regenerate"] is True
+
+    def test_the_flag_is_derived_from_the_reason_so_they_cannot_disagree(self):
+        gateway = RegenerationGateway(FakeRegenerationService(enabled=False))
+
+        assert gateway.regenerate_reason() == "off"
+        assert gateway.can_regenerate() is False
 
 
 class TestGenerating:
@@ -382,6 +455,61 @@ class TestGenerating:
             plugin.generate(WEB_CLIPPER, _NOTE_ID, None)
 
 
+class TestAFinishedGenerationIsNeverThrownAway:
+    """The write path budgets 30 s because the credits are already spent; the read-back does not.
+
+    ``RegenerationService`` waits 30 s for the Qt main thread deliberately — by the time the
+    write-back runs the provider has ALREADY been paid, so abandoning the result to keep an HTTP
+    response snappy would charge the user for nothing. The read-back that follows goes through
+    the lookup service, whose budget is the READ path's 5 s: a main thread busy for five seconds
+    right after a successful generation (a sync, the Browser opening) turned a finished,
+    paid-for write into a 503 that both clients render as "Smart Notes is not available right
+    now" — while the note HAD been changed. Drop the fallback and this fails with TimeoutError.
+    """
+
+    @pytest.fixture
+    def wedged(self, plugin, monkeypatch):
+        """The plugin with a real service whose main thread never answers."""
+        monkeypatch.setattr(
+            "omnia.plugins.word_lookup.service._MAIN_THREAD_TIMEOUT_SECONDS", 0.05
+        )
+        plugin._service = LookupService(
+            lambda word, client: {},
+            run_on_main=lambda runner: None,  # handed over, and never run
+        )
+        return plugin
+
+    def test_the_outcomes_still_reach_the_client(self, wedged, publish_regeneration):
+        publish_regeneration(
+            FakeRegenerationService(
+                outcomes=[FakeOutcome("Definition", text="<b>to dive</b>")]
+            )
+        )
+
+        results = wedged.generate(WEB_CLIPPER, _NOTE_ID, ["Definition"])["results"]
+
+        assert [(r["field"], r["status"]) for r in results] == [
+            ("Definition", "generated")
+        ]
+        # No stored value to report, so it falls back to what the generator said it wrote.
+        assert results[0]["text"] == "to dive"
+
+    def test_every_field_is_still_accounted_for(self, wedged, publish_regeneration):
+        publish_regeneration(
+            FakeRegenerationService(
+                outcomes=[
+                    FakeOutcome("Definition", status="generated"),
+                    FakeOutcome("Audio", status="error", message="TTS refused"),
+                ]
+            )
+        )
+
+        results = wedged.generate(WEB_CLIPPER, _NOTE_ID, None)["results"]
+
+        assert [r["field"] for r in results] == ["Definition", "Audio"]
+        assert results[1]["message"] == "TTS refused"
+
+
 class TestTheTokenFile:
     def test_it_holds_the_token(self, tmp_path):
         path = write_token_file(tmp_path, "s3cret")
@@ -409,12 +537,92 @@ class TestTheTokenFile:
         assert path.read_text(encoding="utf-8") == "new"
 
 
+def _shows(payload: dict) -> list[str]:
+    """The field names the first card of a lookup payload shows."""
+    return [field["name"] for field in payload["cards"][0]["fields"]]
+
+
+def _profile_settings(fields: list[str]) -> WordLookupSettings:
+    """Settings whose web-clipper profile shows exactly ``fields`` of the fake note type."""
+    return WordLookupSettings.parse_obj(
+        {"clients": {WEB_CLIPPER: {"display_fields": {"Vocabulary": fields}}}}
+    )
+
+
+class TestSettingsAreReadPerRequest:
+    """A profile saved from a clipper's “Lookup…” dialog must reach the very NEXT lookup.
+
+    ``ctx.settings`` is the snapshot ``PluginManager`` took at enable time, and only
+    ``manager.reload()`` refreshes it — so a lookup profile saved from Integrations was not
+    served until Anki restarted, while ``regenerate_from_clippers``, saved in the same panel,
+    applied at once (smart_notes re-reads its store per request). One feature whose two settings
+    behave differently is the defect. Read ``ctx.settings`` again and these fail.
+    """
+
+    @pytest.fixture
+    def served(self, monkeypatch, config_repo):
+        """A plugin wired as ``PluginManager`` wires one: a snapshot PLUS the live repo."""
+        monkeypatch.setattr(anki_compat, "find_note_ids", lambda query: [_NOTE_ID])
+        monkeypatch.setattr(anki_compat, "get_note", lambda nid: FakeNote(_FIELDS))
+        instance = WordLookupPlugin()
+        instance._ctx = SimpleNamespace(
+            settings=config_repo.feature_settings("word_lookup"),
+            config=config_repo,
+        )
+        return instance
+
+    def test_a_profile_saved_after_enable_is_served_without_a_reload(
+        self, served, config_repo
+    ):
+        assert _shows(served.lookup("plunge", WEB_CLIPPER)) == ["Definition", "Audio"]
+
+        config_repo.update_section(
+            "word_lookup",
+            {"clients": {WEB_CLIPPER: {"display_fields": {"Vocabulary": ["Audio"]}}}},
+        )
+
+        assert _shows(served.lookup("plunge", WEB_CLIPPER)) == ["Audio"]
+
+    def test_the_enable_time_snapshot_does_not_win(self, served, config_repo):
+        served._ctx.settings = _profile_settings(["Definition"])
+        config_repo.update_section(
+            "word_lookup",
+            {"clients": {WEB_CLIPPER: {"display_fields": {"Vocabulary": ["Audio"]}}}},
+        )
+
+        assert _shows(served.lookup("plunge", WEB_CLIPPER)) == ["Audio"]
+
+    def test_a_config_read_that_raises_falls_back_to_the_snapshot(self, monkeypatch):
+        """A stale lookup beats no lookup: an unreadable config must not take the feature down."""
+
+        def explode(_plugin_id: str) -> WordLookupSettings:
+            raise ValueError("this section does not parse")
+
+        monkeypatch.setattr(anki_compat, "find_note_ids", lambda query: [_NOTE_ID])
+        monkeypatch.setattr(anki_compat, "get_note", lambda nid: FakeNote(_FIELDS))
+        instance = WordLookupPlugin()
+        instance._ctx = SimpleNamespace(
+            settings=_profile_settings(["Audio"]),
+            config=SimpleNamespace(feature_settings=explode),
+        )
+
+        assert _shows(instance.lookup("plunge", WEB_CLIPPER)) == ["Audio"]
+
+
 class _FakeConfig:
-    """Records what the plugin persisted (the repository's shallow-merge write)."""
+    """Records what the plugin persisted (the repository's shallow-merge write).
+
+    ``feature_settings`` answers ``None`` — the repository's own answer for a section it has
+    nothing stored for — so the plugin's read-through falls back to its enable-time snapshot,
+    which is what these tests set up.
+    """
 
     def __init__(self, fail: bool = False) -> None:
         self.writes: list[tuple[str, dict]] = []
         self._fail = fail
+
+    def feature_settings(self, _plugin_id: str) -> None:
+        return None
 
     def update_section(self, section: str, values: dict) -> None:
         if self._fail:

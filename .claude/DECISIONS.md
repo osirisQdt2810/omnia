@@ -1968,7 +1968,12 @@ the name string is a contract that no type checker will police — it is pinned 
 side instead. The registry is process-global mutable state, which is exactly the shape that
 leaks between tests; it needs a fixture that clears it, and `revoke` has to be idempotent so a
 double teardown is harmless. It is also read from a non-Qt HTTP worker thread while written from
-the Qt main thread, so it carries a lock rather than relying on dict atomicity by accident.
+the Qt main thread, and it carries NO lock: each of `provide`/`revoke`/`lookup` performs exactly
+one dict operation, and a single dict get/setitem/pop is atomic in CPython, so a reader sees
+either the previous object or the new one and never a half-written map. `core/services.py` states
+that reasoning where the decision lives. (Corrected 2026-09-07: this sentence previously claimed
+the opposite of the code it describes. The decision itself is unchanged — only this factual
+account of the implementation.)
 
 **A limit worth stating.** This is a registry, not an event bus and not a plugin API. It holds
 objects one feature hands another; it does not broadcast, queue, or version. If a second and

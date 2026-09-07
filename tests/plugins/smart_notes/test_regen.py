@@ -405,12 +405,16 @@ class TestRegenerateGenerated:
         note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": "", "Example": ""})
         service, compat = _build(monkeypatch, note, _settings())
         outcomes = service.regenerate(1)
+        # One status per field of the NOTE — the base field included, saying why it is not
+        # generated. See TestAWholeNoteRequestAnswersForEveryField for why that matters.
         assert _statuses(outcomes) == {
+            "Word": "no_rule",
             "Definition": "generated",
             "Example": "generated",
         }
-        assert [outcome.text for outcome in outcomes] == ["generated", "generated"]
-        assert [outcome.message for outcome in outcomes] == ["", ""]
+        generated = [o for o in outcomes if o.status == "generated"]
+        assert [outcome.text for outcome in generated] == ["generated", "generated"]
+        assert [outcome.message for outcome in generated] == ["", ""]
         assert note["Definition"] == "generated"
         assert compat.updated == [1]
 
@@ -422,6 +426,7 @@ class TestRegenerateGenerated:
         )
         service, _ = _build(monkeypatch, note, _settings())
         assert _statuses(service.regenerate(1)) == {
+            "Word": "no_rule",
             "Definition": "generated",
             "Example": "generated",
         }
@@ -454,10 +459,10 @@ class TestRegenerateGenerated:
         service, compat = _build(
             monkeypatch, note, _settings(config), tts=FakeTTSProvider()
         )
-        outcomes = service.regenerate(1)
+        outcomes = {outcome.field: outcome for outcome in service.regenerate(1)}
         assert compat.media == ["omnia-1-Audio.mp3"]
         assert note["Audio"] == "[sound:omnia-1-Audio.mp3]"
-        assert outcomes[0].text == "[sound:omnia-1-Audio.mp3]"
+        assert outcomes["Audio"].text == "[sound:omnia-1-Audio.mp3]"
 
 
 class TestRegenerateHonoursTheEnabledCheckbox:
@@ -498,7 +503,13 @@ class TestRegenerateHonoursTheEnabledCheckbox:
         assert note["Definition"] == ""
         assert note["Example"] == "generated"
 
-    def test_regenerate_all_never_offers_a_disabled_field(self, monkeypatch):
+    def test_regenerate_all_reports_a_disabled_field_rather_than_dropping_it(
+        self, monkeypatch
+    ):
+        # It is still not generated — that is the rule this class protects. What changed is
+        # that a whole-note request now SAYS so: the order used to be built from
+        # ``generatable_fields()``, which filters ``enabled`` first, so the one field the user
+        # needed an explanation for was the one silently missing from the answer.
         config = _config(
             fields=[
                 _row("Definition", prompt="define {{Word}}", enabled=False),
@@ -507,7 +518,58 @@ class TestRegenerateHonoursTheEnabledCheckbox:
         )
         note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": "", "Example": ""})
         service, _ = _build(monkeypatch, note, _settings(config))
-        assert [outcome.field for outcome in service.regenerate(1)] == ["Example"]
+        assert _statuses(service.regenerate(1)) == {
+            "Word": "no_rule",
+            "Definition": "rule_off",
+            "Example": "generated",
+        }
+        assert note["Definition"] == ""
+
+
+class TestAWholeNoteRequestAnswersForEveryField:
+    """ "Generate all" must report on the same fields ``field_states`` previewed — or say nothing.
+
+    The order for ``fields=None`` used to be derived from the CONFIG, and both ways it could be
+    empty while ``field_states`` reported on every field of the note: no config at all gave
+    ``[]``, and a config with every Generate box unticked gave ``[]`` too, because
+    ``generatable_fields()`` filters ``enabled`` before the order is built. A clipper then got
+    ``200 {"results": []}`` for a button it had just been told to show — nothing rendered, and
+    nothing said. Revert the note-derived order in ``_classify`` and every test here fails.
+    """
+
+    def test_an_unconfigured_note_type_answers_for_every_field(self, monkeypatch):
+        note = _FakeNote(1, "Other", {"Front": "cat", "Back": ""})
+        service, _ = _build(monkeypatch, note, _settings())
+        outcomes = service.regenerate(1)
+        assert _statuses(outcomes) == {"Front": "no_rule", "Back": "no_rule"}
+        assert "no Smart Notes configuration" in outcomes[0].message
+
+    def test_a_config_with_every_row_disabled_answers_rule_off(self, monkeypatch):
+        config = _config(
+            fields=[
+                _row("Definition", prompt="define {{Word}}", enabled=False),
+                _row("Example", prompt="use {{Word}}", enabled=False),
+            ]
+        )
+        note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": "", "Example": ""})
+        service, compat = _build(monkeypatch, note, _settings(config))
+        outcomes = {outcome.field: outcome for outcome in service.regenerate(1)}
+        assert _statuses(outcomes.values()) == {
+            "Word": "no_rule",
+            "Definition": "rule_off",
+            "Example": "rule_off",
+        }
+        assert "tick it" in outcomes["Definition"].message
+        assert compat.updated == []
+
+    def test_it_reports_on_exactly_what_field_states_previewed(self, monkeypatch):
+        # The two are one promise, so they are pinned against each other rather than against a
+        # literal: whatever the panel drew a button for, the run has an answer for.
+        note = _FakeNote(1, "Other", {"Front": "cat", "Back": "", "Extra": ""})
+        service, _ = _build(monkeypatch, note, _settings())
+        assert [outcome.field for outcome in service.regenerate(1)] == list(
+            service.field_states(1)
+        )
 
 
 class TestRegenerateRefusals:
@@ -546,9 +608,13 @@ class TestRegenerateRefusals:
         service, compat = _build(
             monkeypatch, note, _settings(regenerate_from_clippers=False)
         )
-        outcomes = service.regenerate(1)
-        assert _statuses(outcomes) == {"Definition": "blocked", "Example": "blocked"}
-        assert "switched off" in outcomes[0].message
+        outcomes = {outcome.field: outcome for outcome in service.regenerate(1)}
+        assert _statuses(outcomes.values()) == {
+            "Word": "no_rule",  # the switch does not relabel a field that has no rule
+            "Definition": "blocked",
+            "Example": "blocked",
+        }
+        assert "switched off" in outcomes["Definition"].message
         assert compat.updated == []
 
     def test_the_switch_does_not_relabel_a_field_that_has_no_rule(self, monkeypatch):
@@ -644,6 +710,7 @@ class TestRegenerateRunOutcomes:
             monkeypatch, note, _settings(config), llm=_BrokenLLM("use", "HTTP 500")
         )
         assert _statuses(service.regenerate(1)) == {
+            "Word": "no_rule",
             "Definition": "generated",
             "Example": "error",
             "Synonyms": "generated",
@@ -670,6 +737,7 @@ class TestRegenerateDependencies:
         llm.generate_text = lambda prompt, **kw: (seen.append(prompt), "fresh")[1]
         service, _ = _build(monkeypatch, note, _settings(config), llm=llm)
         assert _statuses(service.regenerate(1)) == {
+            "Word": "no_rule",
             "Definition": "generated",
             "Example": "generated",
         }
@@ -730,6 +798,28 @@ class TestPluginPublishesTheCapability:
         finally:
             plugin.on_disable(ctx)
             services.revoke(REGENERATION_SERVICE)
+
+    # The next two are ONE check, split across the boundary they are about: a registry entry
+    # must not outlive the test that made it. Nothing else can express that — the subject is
+    # what happens BETWEEN two tests — so they run in definition order (pytest's default; this
+    # suite has no shuffling plugin) and the second is the assertion.
+    def test_a_publication_that_is_never_revoked_still_resolves(self):
+        # What an ``on_enable`` whose ``on_disable`` is never reached leaves behind — the two
+        # tests above only stay clean because each one revokes in a ``finally``.
+        from omnia.core import services
+
+        services.provide(REGENERATION_SERVICE, object())
+
+        assert services.lookup(REGENERATION_SERVICE) is not None
+
+    def test_and_the_next_test_finds_the_registry_clean(self):
+        # ADR-019 promised "a fixture that clears it"; the only one lived in
+        # tests/core/test_services.py, i.e. the single file no other test could dirty. Without
+        # the autouse fixture in tests/conftest.py the publication above is still resolvable
+        # here — and in every later test asserting a consumer degrades when NOBODY provides.
+        from omnia.core import services
+
+        assert services.lookup(REGENERATION_SERVICE) is None
 
 
 class TestThreading:
