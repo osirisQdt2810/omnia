@@ -17,6 +17,17 @@ ratio = 0.8                    # lateness / interval at/above which a card count
 min_days = 2                   # minimum days late before the guard can trigger
 force_again_after_days = 7     # if the Hard interval would exceed this, force Again (0 = off)
 
+[audio_speed]
+rate = 1.0                     # current speed multiplier; the shortcuts write it back here
+step = 0.1                     # how much one press moves the rate
+min_rate = 0.5                 # slowest the shortcuts will go
+max_rate = 3.0                 # fastest the shortcuts will go (must not be below min_rate)
+remember_rate = true           # keep the speed across sessions (off = every launch starts at 1.0)
+show_tooltip = true            # flash the new speed each time a shortcut changes it
+speed_up_shortcut = "]"        # Qt key sequences
+slow_down_shortcut = "["
+reset_shortcut = "Ctrl+]"
+
 # display_interval has no options.
 
 # Maintenance settings are PER NOTE TYPE — a task option that names a field can only mean

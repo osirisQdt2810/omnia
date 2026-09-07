@@ -12,7 +12,7 @@ and it is the thing the third-party add-on this replaces never did.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, validator
 
 from omnia.core.config.base import PersistedModel
 
@@ -48,6 +48,23 @@ class AudioSpeedSettings(PersistedModel):
         le=4.0,
         description="Fastest speed the shortcuts will go to.",
     )
+
+    @validator("max_rate")
+    def _max_not_below_min(cls, value: float, values: dict) -> float:
+        """Reject a crossed pair here, where the settings form can show the error.
+
+        Each bound is range-checked on its own, but the PAIR is what ``SpeedBounds`` refuses.
+        Without this the save succeeds and the failure surfaces one layer down, inside
+        ``on_enable``, where the manager's isolation boundary logs it and the user is left
+        with a ticked plugin that silently does nothing.
+        """
+        minimum = values.get("min_rate")
+        if minimum is not None and value < minimum:
+            raise ValueError(
+                f"max_rate ({value}) must not be below min_rate ({minimum})"
+            )
+        return value
+
     remember_rate: bool = Field(
         True,
         description=(

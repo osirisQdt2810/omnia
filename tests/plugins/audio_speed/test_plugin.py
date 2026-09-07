@@ -222,6 +222,19 @@ class TestDisable:
         assert anki.removed == anki.actions
         assert anki.mpv[-1] == 1.0
 
+    def test_it_hands_the_live_page_back_at_normal_speed(self, anki):
+        # Dropping the injector entry only stops FUTURE renders from carrying a rate. The
+        # applier already installed in the page on screen keeps forcing the old rate onto every
+        # <audio> the template creates — the exact answer-side case this plugin exists to fix —
+        # until the reviewer webview is rebuilt. Disable has to push 1.0 into it.
+        plugin = AudioSpeedPlugin()
+        ctx = _ctx(rate=2.0)
+        plugin.on_enable(ctx)
+
+        plugin.on_disable(ctx)
+
+        assert anki.evals[-1] == push_rate_js(1.0)
+
     def test_a_shortcut_fired_after_disable_is_a_no_op(self, anki):
         plugin = AudioSpeedPlugin()
         ctx = _ctx()
@@ -233,6 +246,30 @@ class TestDisable:
         up.callback(False)
 
         assert anki.mpv == before
+
+
+class TestPersistence:
+    def test_a_press_that_actually_moves_the_rate_is_saved(self, anki):
+        config = _Config()
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(_ctx(config=config, rate=1.0, step=0.1, max_rate=3.0))
+
+        _action(anki, "Audio: speed up").callback(False)
+
+        assert config.writes == [("audio_speed", {"rate": 1.1})]
+
+    def test_a_press_at_the_ceiling_writes_nothing(self, anki):
+        # Auto-repeat: holding the key at a bound clamps to the same rate over and over, and
+        # every save is a collection-backed write that syncs. Nothing changed, so nothing is
+        # written.
+        config = _Config()
+        plugin = AudioSpeedPlugin()
+        plugin.on_enable(_ctx(config=config, rate=3.0, step=0.1, max_rate=3.0))
+
+        for _ in range(5):
+            _action(anki, "Audio: speed up").callback(False)
+
+        assert config.writes == []
 
 
 class TestPushJs:

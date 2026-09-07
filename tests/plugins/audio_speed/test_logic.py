@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
+from omnia.plugins.audio_speed.config import AudioSpeedSettings
 from omnia.plugins.audio_speed.logic import (
     NORMAL_RATE,
     SpeedBounds,
@@ -109,3 +111,21 @@ class TestFormatting:
 
     def test_never_shows_float_noise(self):
         assert format_rate(1.9999999999999998) == "2×"
+
+
+class TestSettingsValidation:
+    """The settings model rejects what ``SpeedBounds`` would refuse one layer down."""
+
+    def test_a_max_below_the_min_is_refused_at_save_time(self):
+        # Each bound is in range on its own; the PAIR is the problem. Caught here, the settings
+        # form shows the error; caught in on_enable, the manager logs it and the user is left
+        # with a ticked plugin that silently does nothing.
+        with pytest.raises(ValidationError):
+            AudioSpeedSettings(min_rate=2.0, max_rate=1.0)
+
+    def test_min_equal_to_max_is_allowed(self):
+        assert AudioSpeedSettings(min_rate=1.5, max_rate=1.5).max_rate == 1.5
+
+    def test_the_default_pair_is_valid(self):
+        settings = AudioSpeedSettings()
+        assert settings.min_rate <= settings.max_rate

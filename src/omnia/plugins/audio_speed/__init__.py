@@ -146,6 +146,11 @@ class AudioSpeedPlugin(FeaturePlugin):
         for action in self._actions:
             anki_compat.remove_tools_menu_action(action)
         self._actions = []
+        # Both players have to be handed back, not just mpv. Dropping the injector entry only
+        # stops FUTURE renders from carrying a rate; the applier installed in the page that is
+        # on screen right now keeps forcing the old rate on every <audio> the template creates,
+        # until the reviewer webview is rebuilt. Pushing 1.0 makes it inert immediately.
+        self._push_rate(1.0)
         # Leave mpv the way Anki expects it; a disabled speed plugin must not keep 1.7×.
         anki_compat.set_mpv_speed(1.0)
         self._controller = None
@@ -161,9 +166,13 @@ class AudioSpeedPlugin(FeaturePlugin):
         def handler(_checked: bool = False) -> None:
             if self._controller is None:
                 return
+            before = self._controller.rate
             change(self._controller)
             self._apply(announce=True)
-            self._persist()
+            # Holding the key auto-repeats; at a bound every repeat clamps to the same rate,
+            # and each save is a collection-backed write that syncs. Only save a real change.
+            if self._controller.rate != before:
+                self._persist()
 
         return handler
 
@@ -173,15 +182,19 @@ class AudioSpeedPlugin(FeaturePlugin):
             return
         rate = self._controller.rate
         mpv_ok = anki_compat.set_mpv_speed(rate)
-        try:
-            anki_compat.reviewer_eval(push_rate_js(rate))
-        except Exception:  # no reviewer up yet; the next render's dynamic JS carries it
-            logger.debug("audio_speed: no reviewer webview to push %s× into", rate)
+        self._push_rate(rate)
         if announce and self._show_tooltip:
             suffix = (
                 "" if mpv_ok else " (HTML audio only — mpv is not the active player)"
             )
             anki_compat.show_tooltip(f"Audio speed {format_rate(rate)}{suffix}")
+
+    def _push_rate(self, rate: float) -> None:
+        """Feed a rate to the applier in the page that is on screen, if there is one."""
+        try:
+            anki_compat.reviewer_eval(push_rate_js(rate))
+        except Exception:  # no reviewer up yet; the next render's dynamic JS carries it
+            logger.debug("audio_speed: no reviewer webview to push %s× into", rate)
 
     def _persist(self) -> None:
         """Write the rate back so the next session starts here; a shallow one-key merge."""
