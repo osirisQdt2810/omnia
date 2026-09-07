@@ -215,7 +215,11 @@ class WordLookupPlugin(FeaturePlugin):
 
     name = "Word Lookup"
     description = "Let the clippers look a word up in your collection."
-    group = "Integrations"
+    # NOT "Integrations": that word belongs to the Smart Notes tab holding the clipper cards,
+    # and a same-named category on the main grid read as that place while being somewhere else.
+    # Not "AI" either, tempting as sitting beside Smart Notes is — lookup reads the collection
+    # and calls no model, and that category is described as generating fields with one.
+    group = "General"
     tooltip = (
         "Answers a clipper's magnifier: “is this word already in my collection?”\n"
         "\n"
