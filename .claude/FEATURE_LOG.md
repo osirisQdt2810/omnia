@@ -66,7 +66,9 @@ the answer would have. That is why a masked source still needs `word_field`, and
 message says so when it is empty.
 
 Any word token carrying an underscore counts as a mask — requiring two in a row missed `c_t` and
-the `_p` tail of `g___ _p` — and `letters_first_last` now falls back to first-letter-only below
+the `_p` tail of `g___ _p`. Adjacent masked tokens merge into one hole, but never more of them
+than the headword has words: `g___ _p` is two tokens for one answer, while `v___ v___` is two
+answers, and merging those would cut a gap half as long as the words it replaced.  and `letters_first_last` now falls back to first-letter-only below
 four letters, because `"cat"` shown as `"c_t"` is the answer with a letter missing, not a hint.
 
 The mask keeps spaces, hyphens and apostrophes, so `give up` reads `g___ __` rather than

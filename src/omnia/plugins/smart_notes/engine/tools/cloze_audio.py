@@ -311,16 +311,24 @@ class ClozeMaskPlanner:
     def _masked_holes(self, text: str) -> list[_Hole]:
         """Holes the ``cloze`` tool already cut, measured against the headword.
 
-        Neighbouring masked tokens separated only by whitespace become ONE hole: a two-word
-        headword is masked as ``"g___ _p"``, which is two tokens for one answer, and measuring
-        each against the whole headword would cut a gap twice as long as the phrase.
+        Neighbouring masked tokens separated only by whitespace become ONE hole — but never
+        more of them than the headword has words. A two-word headword is masked as ``"g___
+        _p"``, which is two tokens for ONE answer, and leaving them apart would cut two gaps of
+        a whole phrase each. Merging without the limit has the mirror problem: ``"It was v___
+        v___ good."`` is two separate answers, and one merged hole measured against ``"very"``
+        runs half as long as the words it replaced, so the sentence resumes early.
         """
+        words = max(1, len(self._word.split()))
         holes: list[_Hole] = []
+        merged = 0
         for found in MASKED_RUN_RE.finditer(text):
-            if holes and not text[holes[-1].end : found.start()].strip():
+            adjacent = bool(holes) and not text[holes[-1].end : found.start()].strip()
+            if adjacent and merged < words:
                 holes[-1] = _Hole(holes[-1].start, found.end(), self._word)
+                merged += 1
             else:
                 holes.append(_Hole(found.start(), found.end(), self._word))
+                merged = 1
         return holes
 
     def _word_holes(self, text: str) -> list[_Hole]:
@@ -724,7 +732,7 @@ class ClozeAudioTool(Tool):
         if speech is None:
             raise ToolError(
                 f"cloze_audio found nothing to hide in {source_field!r}: no {{{{c1::…}}}} "
-                "marker, no ``______`` run left by the cloze tool, and "
+                "marker, no ______ run left by the cloze tool, and "
                 + (
                     f"{word!r} does not occur in it"
                     if word

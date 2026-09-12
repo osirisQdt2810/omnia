@@ -448,6 +448,26 @@ class TestASourceTheClozeToolAlreadyMasked:
         assert plan.hidden == ("g___ _p",)
         assert plan.measures == ("give up",)
 
+    def test_the_same_word_twice_over_is_two_holes(self):
+        # The merge is right for "g___ _p" — two tokens, one answer — and wrong here: "very
+        # very" is two answers, and one merged hole measured against "very" would run half as
+        # long as the words it replaced and let the sentence resume early. The headword's own
+        # word count is what tells the two apart.
+        masked = ClozeRewriter("very").rewrite("It was very very good.")
+
+        plan = ClozeMaskPlanner("very").plan(masked)
+
+        assert plan.hidden == ("v___", "v___")
+        assert plan.measures == ("very", "very")
+
+    def test_a_three_word_headword_is_still_one_hole(self):
+        masked = ClozeRewriter("out of hand").rewrite("It got out of hand.")
+
+        plan = ClozeMaskPlanner("out of hand").plan(masked)
+
+        assert plan.hidden == ("o__ __ ____",)
+        assert plan.measures == ("out of hand",)
+
     def test_the_hole_is_measured_against_the_headword(self):
         # NOT against the mask: "s______" is six underscores, and a voice reads those as
         # anything from silence to six seconds. The invariant is the word's own length.
