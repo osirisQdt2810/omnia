@@ -101,6 +101,14 @@ _HEADWORD_DEINFLECTOR = Deinflector(irregular=UNAMBIGUOUS_IRREGULAR)
 # to be a barrier instead, or the same transparency glues two separate words together:
 # `<div>the cat</div><div>another cat</div>` read as "...the catanother cat...", the boundary
 # `\bcat\b` needs vanished, and the first occurrence was silently left unmasked.
+#
+# The list is HTML's own block-level set plus the flow containers Anki's editor emits, and the
+# question to ask of a candidate is only ever "does a browser start a new line at it?" — not
+# whether it is common in a note. Anything left out is merely transparent, which is the safe
+# default for the tags that matter here (`b`, `i`, `u`, `span`, `ruby`, `font`): a word wrapped
+# in one still reads as that word. `option`, `caption` and `legend` are absent for that reason
+# — they cannot occur in a field this tool rewrites without the table or form that carries
+# them, whose own tags are here.
 _BLOCK_TAGS = frozenset(
     [
         "br",
@@ -484,16 +492,18 @@ class ClozeRewriter:
         ``"g______"`` — which the reader needs, and which is also what lets ``cloze_audio``
         recognise each masked word as its own hole.
 
-        A one- or two-letter word is masked completely whichever mode is asked for: showing
-        both of its letters would give the answer away, which is the one thing a hint must not
-        do.
+        A hint never leaves fewer than two letters hidden. A one- or two-letter word is masked
+        completely, and a THREE-letter one falls back to the first letter alone even when both
+        ends were asked for: ``"cat"`` shown as ``"c_t"`` is not a cloze, it is the answer with
+        one letter missing.
         """
         letters = [index for index, char in enumerate(surface) if char.isalnum()]
+        both_ends = mask == MASK_HINT_FIRST_LAST and len(letters) >= 4
         if len(letters) <= 2:
             # Mask every letter and keep everything else: a two-letter word gives itself away
             # if either of its letters is shown, whichever mode was asked for.
             keep = set()
-        elif mask == MASK_HINT_FIRST_LAST:
+        elif both_ends:
             keep = {letters[0], letters[-1]}
         else:
             keep = {letters[0]}

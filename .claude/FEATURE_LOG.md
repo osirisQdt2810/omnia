@@ -41,13 +41,27 @@ masked sentence renders on any template and carries no answer at all.
 pytest tests/plugins/smart_notes/test_cloze.py -q     # 88 tests
 ```
 
-**Notes / rollback:** `cloze_audio` gained a third source for "what to hide", and it had to. Its
+**Notes / rollback:** `cloze_audio` reads a second source for "what to hide", and it had to. Its
 documented natural chain — a cloze TEXT field feeding a cloze AUDIO field — went through the
 `{{cN::…}}` markers, so removing them broke it outright; and because a `cloze_audio` failure does
 not stop the chain, a `[cloze_audio, ai]` field would have fallen through to `ai` and spoken the
 sentence with the answer in it, which is the one thing that tool exists to prevent. It now reads a
 masked run (`s______`) as the hole, which is a stronger position than before: the answer is not in
-the text at all. Order is markers → masked runs → headword.
+the text at all.
+
+That source is UNIONED with the headword matcher, not tried before it — a priority order looked
+right and leaked. `ClozeRewriter` drops an occurrence a tag reads across, so the text tool's own
+output can arrive half-masked, and returning at the first masked run meant the matcher never
+covered the other half, which then got spoken. The union also makes a stray `____` in a
+hand-written sentence harmless rather than decisive. An already-masked hole is measured against
+the HEADWORD, never against the mask: asking a voice for `"s______"` returns anything from
+nothing to several seconds to a refusal, and the gap's whole job is to last exactly as long as
+the answer would have. That is why a masked source still needs `word_field`, and why the failure
+message says so when it is empty.
+
+Any word token carrying an underscore counts as a mask — requiring two in a row missed `c_t` and
+the `_p` tail of `g___ _p` — and `hint_first_last` now falls back to first-letter-only below four
+letters, because `"cat"` shown as `"c_t"` is the answer with a letter missing, not a hint.
 
 The mask keeps spaces, hyphens and apostrophes, so `give up` reads `g___ __` rather than
 `g______` — visibly two words, which the reader needs and which is also what lets the audio tool
