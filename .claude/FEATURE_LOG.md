@@ -21,6 +21,37 @@ Format for each entry:
 
 ---
 
+## 2026-09-08 — The cloze tool hides a word behind a letter hint, not behind {{c1::…}}
+
+**What:** the `cloze` builtin no longer emits Anki cloze markup. It replaces the word in the
+sentence with a letter hint, in one of two modes: `hint_first` (`s______`) or `hint_first_last`
+(`s_____e`). The underscore count is the letter count. `separate_cards` is gone with the c1/c2
+cards it numbered, and there is no "show it as-is" mode — leaving the word in place hides nothing.
+
+**Why:** `{{c1::…}}` made the field readable only by a cloze template, and left the answer sitting
+in the text for anything that unwrapped it — `strip_markup` does exactly that before anything
+reaches a provider, which is why speaking such a field needed the separate `cloze_audio` tool. The
+masked sentence renders on any template and carries no answer at all.
+
+**Files:** `plugins/smart_notes/engine/tools/cloze.py`, `tests/plugins/smart_notes/test_cloze.py`,
+`tests/gui/test_smart_notes_dialog_deps.py`, `README.md`, `docs/README.md`.
+
+**How to verify:**
+```
+pytest tests/plugins/smart_notes/test_cloze.py -q     # 88 tests
+```
+
+**Notes / rollback:** the new property found a matcher bug the old one structurally could not.
+Every HTML tag was transparent in the match projection — right for `<b>run</b>ning`, which must
+read as one word — but that also glued words across a BLOCK tag, so
+`<div>the cat</div><div>another cat</div>` projected to "the catanother cat", the word boundary
+vanished, and the FIRST occurrence was silently left unmasked. The old test asserted the output
+round-tripped through `strip_markup`, which a half-masked value does. Block tags are barriers now,
+inline tags stay transparent. `cloze_audio` is unaffected as normally configured: it masks by WORD
+as well as by marker, so it reads the ORIGINAL sentence field; pointed at this tool's output it
+reports that there is nothing left to hide, which is true. A stored `mask: "none"` from an older
+release degrades to `hint_first` rather than raising (ADR-010).
+
 ## 2026-09-07 — Audio Speed keeps a separate rate for the front and the back
 
 **What:** the plugin now holds two rates instead of one. `]` / `[` still move both — by one step

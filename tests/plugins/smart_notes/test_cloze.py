@@ -89,15 +89,11 @@ class TestClozeToolContract:
         assert entry["kinds"] == ["text"]
         assert entry["unavailable_reason"] is None
         properties = entry["params_schema"]["properties"]
-        assert set(properties) == {
-            "sentence_field",
-            "word_field",
-            "separate_cards",
-            "mask",
-        }
+        # `separate_cards` is gone with the c1/c2 cards it numbered.
+        assert set(properties) == {"sentence_field", "word_field", "mask"}
         # The picker renders a dropdown from the enum, while the model itself stays a tolerant
         # str so a mask value from a newer release doesn't break the tool (ADR-010).
-        assert properties["mask"]["enum"] == ["none", "hint_first_last"]
+        assert properties["mask"]["enum"] == ["hint_first", "hint_first_last"]
 
     def test_params_naming_fields_become_hard_prerequisites(self):
         rule = _rule(params={"sentence_field": "Sentence", "word_field": "Word"})
@@ -110,12 +106,14 @@ class TestClozeToolContract:
         assert ClozeTool.referenced_fields({"sentence_field": "  "}) == []
 
     def test_an_unknown_param_value_does_not_break_the_tool(self):
-        # ADR-010: a newer release's mask mode loads and simply wraps without a hint.
+        # ADR-010: a mask a newer release added — or the "none" an older one wrote, which no
+        # longer means anything — loads and falls back to the first-letter hint. It must not
+        # leave the word in place: that would hide nothing at all.
         text = _clozed(
             {"Word": "survive", "Sentence": "They survive."},
             params={"sentence_field": "Sentence", "mask": "hint_syllables"},
         )
-        assert text == "They {{c1::survive}}."
+        assert text == "They s______."
 
 
 class TestInflectionMatrix:
@@ -129,18 +127,18 @@ class TestInflectionMatrix:
     @pytest.mark.parametrize(
         ("word", "sentence", "expected"),
         [
-            ("survive", "They survived the crash.", "They {{c1::survived}} the crash."),
+            ("survive", "They survived the crash.", "They s_______ the crash."),
             (
                 "survived",
                 "They survive every winter.",
-                "They {{c1::survive}} every winter.",
+                "They s______ every winter.",
             ),
-            ("run", "She is running fast.", "She is {{c1::running}} fast."),
-            ("running", "She likes to run.", "She likes to {{c1::run}}."),
-            ("study", "He studies hard.", "He {{c1::studies}} hard."),
-            ("stop", "The bus stopped here.", "The bus {{c1::stopped}} here."),
-            ("happy", "She is happier now.", "She is {{c1::happier}} now."),
-            ("go", "He goes home.", "He {{c1::goes}} home."),
+            ("run", "She is running fast.", "She is r______ fast."),
+            ("running", "She likes to run.", "She likes to r__."),
+            ("study", "He studies hard.", "He s______ hard."),
+            ("stop", "The bus stopped here.", "The bus s______ here."),
+            ("happy", "She is happier now.", "She is h______ now."),
+            ("go", "He goes home.", "He g___ home."),
         ],
     )
     def test_a_word_form_is_found_in_either_direction(self, word, sentence, expected):
@@ -157,14 +155,14 @@ class TestInflectionMatrix:
             {"Word": "survive", "Sentence": "He survived."},
             params={"sentence_field": "Sentence"},
         )
-        assert "{{c1::survived}}" in text and "survive}}" not in text
+        assert "s_______" in text and "survive}}" not in text
 
     def test_matching_is_case_insensitive_and_preserves_case(self):
         text = _clozed(
             {"Word": "survive", "Sentence": "Survived, he said."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "{{c1::Survived}}, he said."
+        assert text == "S_______, he said."
 
     def test_word_forms_are_always_matched(self):
         # Deliberately no longer configurable (was: `match_word_forms=False` declined here).
@@ -176,7 +174,7 @@ class TestInflectionMatrix:
             {"Word": "survive", "Sentence": "He survived."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "He {{c1::survived}}."
+        assert text == "He s_______."
 
     def test_a_substring_is_never_a_match(self):
         outcome = _run(
@@ -190,7 +188,7 @@ class TestInflectionMatrix:
             {"Word": "give up", "Sentence": "Don't give up now."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "Don't {{c1::give up}} now."
+        assert text == "Don't g______ now."
 
 
 class TestMarkupSafety:
@@ -201,11 +199,11 @@ class TestMarkupSafety:
             {"Word": "cat", "Sentence": "The <b>cat</b> sat."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "The <b>{{c1::cat}}</b> sat."
+        assert text == "The <b>c__</b> sat."
 
     def test_a_match_never_spans_a_tag(self):
         # "sur<b>vived</b>" is one word on screen but two text runs in the field; wrapping it
-        # would produce "{{c1::sur<b>vived}}</b>" — broken HTML and a broken cloze.
+        # would produce "s__________</b>" — broken HTML and a broken cloze.
         outcome = _run(
             {"Word": "survive", "Sentence": "He sur<b>vived</b>."},
             params={"sentence_field": "Sentence"},
@@ -217,35 +215,35 @@ class TestMarkupSafety:
             {"Word": "cat", "Sentence": '<img src="cat.png"> A cat.'},
             params={"sentence_field": "Sentence"},
         )
-        assert text == '<img src="cat.png"> A {{c1::cat}}.'
+        assert text == '<img src="cat.png"> A c__.'
 
     def test_a_sound_reference_is_left_alone(self):
         text = _clozed(
             {"Word": "run", "Sentence": "[sound:run-away.mp3] I run."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "[sound:run-away.mp3] I {{c1::run}}."
+        assert text == "[sound:run-away.mp3] I r__."
 
     def test_an_entity_is_not_read_as_a_word(self):
         text = _clozed(
             {"Word": "nbsp", "Sentence": "a&nbsp;nbsp here"},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "a&nbsp;{{c1::nbsp}} here"
+        assert text == "a&nbsp;n___ here"
 
     def test_an_existing_cloze_is_not_nested(self):
         text = _clozed(
-            {"Word": "cat", "Sentence": "The {{c1::cat}} and a cat."},
+            {"Word": "cat", "Sentence": "The c__ and a cat."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "The {{c1::cat}} and a {{c1::cat}}."
+        assert text == "The c__ and a c__."
 
     def test_the_word_field_may_itself_carry_markup(self):
         text = _clozed(
             {"Word": "<b>cat</b>[sound:cat.mp3]", "Sentence": "A cat."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "A {{c1::cat}}."
+        assert text == "A c__."
 
 
 class TestMultipleOccurrences:
@@ -257,21 +255,21 @@ class TestMultipleOccurrences:
             {"Word": "run", "Sentence": "I run, you run, we ran."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "I {{c1::run}}, you {{c1::run}}, we {{c1::ran}}."
+        assert text == "I r__, you r__, we r__."
 
     def test_separate_cards_numbers_each_occurrence(self):
         text = _clozed(
             {"Word": "run", "Sentence": "I run, you run."},
             params={"sentence_field": "Sentence", "separate_cards": True},
         )
-        assert text == "I {{c1::run}}, you {{c2::run}}."
+        assert text == "I r__, you r__."
 
     def test_numbering_continues_across_markup_runs(self):
         text = _clozed(
             {"Word": "cat", "Sentence": "<i>cat</i> and cat"},
             params={"sentence_field": "Sentence", "separate_cards": True},
         )
-        assert text == "<i>{{c1::cat}}</i> and {{c2::cat}}"
+        assert text == "<i>c__</i> and c__"
 
 
 class TestMask:
@@ -280,7 +278,7 @@ class TestMask:
             {"Word": "survive", "Sentence": "They survived."},
             params={"sentence_field": "Sentence", "mask": "hint_first_last"},
         )
-        assert text == "They {{c1::survived::s______d}}."
+        assert text == "They s______d."
 
     def test_a_two_letter_word_is_masked_completely(self):
         # "g_" would give the answer away, which is the one thing a hint must not do.
@@ -288,7 +286,7 @@ class TestMask:
             {"Word": "go", "Sentence": "I go home."},
             params={"sentence_field": "Sentence", "mask": "hint_first_last"},
         )
-        assert text == "I {{c1::go::__}} home."
+        assert text == "I __ home."
 
 
 class TestDeclines:
@@ -326,7 +324,7 @@ class TestFieldResolution:
             {"Word": "cat", "Sentence": "A cat."},
             prompt="Cloze the word in {{Sentence}}",
         )
-        assert text == "A {{c1::cat}}."
+        assert text == "A c__."
 
     def test_the_word_defaults_to_the_note_types_base_field(self):
         # No word_field param: the compiled rule's base_field is what makes this resolvable.
@@ -348,42 +346,61 @@ class TestFieldResolution:
         )
         outcome = ClozeTool().run(request, _ctx())
         assert isinstance(outcome, Produced)
-        assert outcome.result.text == "A {{c1::cat}}."
+        assert outcome.result.text == "A c__."
 
     def test_a_field_name_is_matched_case_insensitively(self):
         text = _clozed(
             {"Word": "cat", "Sentence": "A cat."},
             params={"sentence_field": "sentence", "word_field": "word"},
         )
-        assert text == "A {{c1::cat}}."
+        assert text == "A c__."
 
 
-class TestClozeIsReversible:
-    """Property: stripping the wrappers off the output gives the input back, verbatim."""
+class TestTheAnswerIsGone:
+    """The property that replaced reversibility, and the reason for the change.
 
-    @pytest.mark.parametrize(
-        "sentence",
-        [
-            "The cat sat on the mat.",
-            "A <b>cat</b> and a cat, plus [sound:cat.mp3].",
-            "Cats! CAT? cat…",
-            "<div>the cat</div><div>another cat</div>",
-            "a&nbsp;cat &amp; a cat",
-        ],
-    )
-    @pytest.mark.parametrize("separate_cards", [False, True])
-    @pytest.mark.parametrize("mask", ["none", "hint_first_last"])
-    def test_unwrapping_the_output_returns_the_input(
-        self, sentence, separate_cards, mask
-    ):
-        clozed = ClozeRewriter("cat", separate_cards=separate_cards, mask=mask).rewrite(
-            sentence
-        )
+    While this tool emitted ``{{c1::cat}}`` the answer was still sitting in the text, and
+    ``strip_markup`` — which the engine runs before anything reaches a provider — unwrapped it
+    straight back. That is why speaking such a field needed a whole separate tool. What the
+    tool writes now contains no answer to recover, from any code path, which is a stronger
+    guarantee than "it round-trips".
+    """
+
+    SENTENCES = [
+        "The cat sat on the mat.",
+        "A <b>cat</b> and a cat, plus [sound:cat.mp3].",
+        "Cats! CAT? cat…",
+        "<div>the cat</div><div>another cat</div>",
+        "a&nbsp;cat &amp; a cat",
+    ]
+
+    @pytest.mark.parametrize("sentence", SENTENCES)
+    @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
+    def test_the_word_does_not_survive_in_any_form(self, sentence, mask):
+        clozed = ClozeRewriter("cat", mask=mask).rewrite(sentence)
         assert clozed is not None
-        assert _CLOZE_OPEN in clozed
-        # strip_markup unwraps a cloze to its ANSWER (dropping any hint), so the two texts must
-        # agree once both sides go through it — that is the invariant: only wrappers were added.
-        assert strip_markup(clozed) == strip_markup(sentence)
+        assert "cat" not in strip_markup(clozed).lower()
+
+    @pytest.mark.parametrize("sentence", SENTENCES)
+    @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
+    def test_no_anki_cloze_markup_is_emitted(self, sentence, mask):
+        # The field must render on an ordinary template, not only a cloze one.
+        clozed = ClozeRewriter("cat", mask=mask).rewrite(sentence)
+        assert "{{c" not in clozed
+
+    @pytest.mark.parametrize("sentence", SENTENCES)
+    @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
+    def test_everything_around_the_word_is_untouched(self, sentence, mask):
+        # Only the matched surfaces change: the markup, entities and media around them survive
+        # exactly as written.
+        clozed = ClozeRewriter("cat", mask=mask).rewrite(sentence)
+        assert len(clozed) == len(sentence)
+        for original, masked in zip(sentence, clozed, strict=True):
+            assert (
+                masked == original
+                or masked == "_"
+                or original.lower() != masked.lower()
+            )
 
 
 class _CountingLLM(FakeLLMProvider):
@@ -451,7 +468,7 @@ class TestClozeThenAiChain:
 
         assert failed == []
         assert [rule.target_field for rule, _ in results] == ["Cloze"]
-        assert results[0][1].text == "They {{c1::survived}}."
+        assert results[0][1].text == "They s_______."
         assert llm.prompts == []  # the token saving this plan exists for
 
     def test_a_miss_falls_through_to_the_llm(self):
@@ -500,7 +517,7 @@ class TestTheChainIsNotStoppedByABadRewrite:
             {"Word": "toes", "Sentence": "I stubbed my toes on the way to work."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "I stubbed my {{c1::toes}} on the way to work."
+        assert text == "I stubbed my t___ on the way to work."
 
     def test_a_headword_that_is_itself_a_function_word_still_clozes(self):
         # The filter above must never silence the user's own word.
@@ -508,7 +525,7 @@ class TestTheChainIsNotStoppedByABadRewrite:
             {"Word": "to", "Sentence": "I want to go."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "I want {{c1::to}} go."
+        assert text == "I want __ go."
 
     def test_a_real_short_base_is_still_reachable_through_a_token(self):
         # "goes" -> "go" is the same shape as "toes" -> "to"; only the word list separates them.
@@ -516,7 +533,7 @@ class TestTheChainIsNotStoppedByABadRewrite:
             {"Word": "goes", "Sentence": "He goes and they go."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "He {{c1::goes}} and they {{c1::go}}."
+        assert text == "He g___ and they __."
 
     def test_a_word_split_by_a_tag_is_not_clozed_as_a_fragment(self):
         # finditer(value, start, end) treats end as a truncation, so \b matched at the span's
@@ -531,7 +548,7 @@ class TestTheChainIsNotStoppedByABadRewrite:
 
     def test_the_same_field_cannot_be_both_the_sentence_and_the_word(self):
         # Both params default independently and can land on the same field; clozing a word
-        # inside itself yields "{{c1::word}}", which is not a card.
+        # inside itself yields "w___", which is not a card.
         assert isinstance(
             _run(
                 {"Word": "cat"},
@@ -555,12 +572,12 @@ class TestIrregularFormsMeetTheFunctionWordFilter:
             (
                 "run",
                 "I run now, we ran then.",
-                "I {{c1::run}} now, we {{c1::ran}} then.",
+                "I r__ now, we r__ then.",
             ),
-            ("eat", "They ate it.", "They {{c1::ate}} it."),
-            ("go", "She went home.", "She {{c1::went}} home."),
-            ("child", "The children left.", "The {{c1::children}} left."),
-            ("good", "This is better.", "This is {{c1::better}}."),
+            ("eat", "They ate it.", "They a__ it."),
+            ("go", "She went home.", "She w___ home."),
+            ("child", "The children left.", "The c_______ left."),
+            ("good", "This is better.", "This is b_____."),
         ],
     )
     def test_an_irregular_form_is_clozed(self, word, sentence, expected):
@@ -579,7 +596,7 @@ class TestIrregularFormsMeetTheFunctionWordFilter:
             {"Word": "be", "Sentence": "He was happy and will be fine."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "He {{c1::was}} happy and will {{c1::be}} fine."
+        assert text == "He w__ happy and will __ fine."
 
     def test_the_table_does_not_reopen_the_speculative_stem_hole(self):
         # "bees" strips to the stem "be", which the table now also knows as a real base. The
@@ -588,7 +605,7 @@ class TestIrregularFormsMeetTheFunctionWordFilter:
             {"Word": "bees", "Sentence": "The bees can be loud."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "The {{c1::bees}} can be loud."
+        assert text == "The b___ can be loud."
 
 
 class TestAnAmbiguousIrregularNeverHidesADifferentWord:
@@ -606,22 +623,22 @@ class TestAnAmbiguousIrregularNeverHidesADifferentWord:
             (
                 "left",
                 "Please leave your coat on the left.",
-                "Please leave your coat on the {{c1::left}}.",
+                "Please leave your coat on the l___.",
             ),
             (
                 "rose",
                 "The rose bloomed as prices rise.",
-                "The {{c1::rose}} bloomed as prices rise.",
+                "The r___ bloomed as prices rise.",
             ),
             (
                 "saw",
                 "I saw it and want to see it.",
-                "I {{c1::saw}} it and want to see it.",
+                "I s__ it and want to see it.",
             ),
             (
                 "found",
                 "They found what they came to find.",
-                "They {{c1::found}} what they came to find.",
+                "They f____ what they came to find.",
             ),
         ],
     )
@@ -637,9 +654,9 @@ class TestAnAmbiguousIrregularNeverHidesADifferentWord:
     @pytest.mark.parametrize(
         ("word", "sentence", "expected"),
         [
-            ("leave", "He left yesterday.", "He {{c1::left}} yesterday."),
-            ("see", "I saw it.", "I {{c1::saw}} it."),
-            ("find", "They found it.", "They {{c1::found}} it."),
+            ("leave", "He left yesterday.", "He l___ yesterday."),
+            ("see", "I saw it.", "I s__ it."),
+            ("find", "They found it.", "They f____ it."),
         ],
     )
     def test_the_safe_direction_is_untouched(self, word, sentence, expected):

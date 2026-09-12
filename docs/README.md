@@ -49,7 +49,7 @@ This is what separates Omnia from a plain "call ChatGPT" add-on. Every generated
 
 | Tool | Cost | What it does |
 |---|---|---|
-| `cloze` | free | Wraps the target word in its example sentence as `{{c1::…}}`, matching inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
+| `cloze` | free | Hides the target word in its example sentence behind a letter hint — `s______` or `s_____e` — matching inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
 | `cloze_audio` | TTS only | Speaks the sentence with the answer replaced by silence or a beep — a listening cloze. It never speaks the answer: if it cannot mask it, it fails rather than giving the answer away. |
 | `ai` | tokens | The LLM path. |
 | `user:<yours>` | free | A tool you describe once in plain words. The generated Python is shown to you, tested, and saved as a file that then runs offline forever. |
