@@ -270,7 +270,8 @@ class ClozeParams(PersistedModel):
     inside the field row's persisted chain and therefore sync between devices on different
     Omnia releases: an option a NEWER release added must not turn this tool into an error
     attempt on an older one (ADR-010). Unknown values of a KNOWN option are neutralised where
-    they are consumed instead — an unrecognised ``mask`` simply wraps without a hint.
+    they are consumed instead — an unrecognised ``mask``, and the ``"none"`` an older release
+    wrote, both fall back to :data:`MASK_DEFAULT`.
     """
 
     sentence_field: str = Field(
@@ -356,9 +357,9 @@ class ClozeRewriter:
             return None
         pieces: list[str] = []
         cursor = 0
-        for occurrence, (match_start, match_end, surface) in enumerate(hits, start=1):
+        for match_start, match_end, surface in hits:
             pieces.append(value[cursor:match_start])
-            pieces.append(self._wrap(surface, occurrence))
+            pieces.append(self._wrap(surface))
             cursor = match_end
         pieces.append(value[cursor:])
         return "".join(pieces)
@@ -466,14 +467,8 @@ class ClozeRewriter:
                     terms.add(lowered)
         return sorted((term for term in terms if term), key=lambda t: (-len(t), t))
 
-    def _wrap(self, surface: str, occurrence: int) -> str:
-        """Replace one matched surface form with its masked shape.
-
-        ``occurrence`` is accepted and ignored: it numbered the ``c1``/``c2`` cards this tool
-        used to emit, and there are no cards to number now — every occurrence is masked the
-        same way, in place.
-        """
-        del occurrence
+    def _wrap(self, surface: str) -> str:
+        """Replace one matched surface form with its masked shape."""
         return self._hint(surface, self._mask)
 
     @staticmethod
@@ -484,15 +479,28 @@ class ClozeRewriter:
         under :data:`MASK_HINT_FIRST_LAST`. The underscore count is the letter count, so the
         length of the word is itself part of the hint.
 
+        Only letters and digits are masked; a space, hyphen or apostrophe is kept. A multi-word
+        headword therefore stays visibly multi-word — ``"give up"`` becomes ``"g___ __"``, not
+        ``"g______"`` — which the reader needs, and which is also what lets ``cloze_audio``
+        recognise each masked word as its own hole.
+
         A one- or two-letter word is masked completely whichever mode is asked for: showing
         both of its letters would give the answer away, which is the one thing a hint must not
         do.
         """
-        if len(surface) <= 2:
-            return "_" * len(surface)
-        if mask == MASK_HINT_FIRST_LAST:
-            return surface[0] + "_" * (len(surface) - 2) + surface[-1]
-        return surface[0] + "_" * (len(surface) - 1)
+        letters = [index for index, char in enumerate(surface) if char.isalnum()]
+        if len(letters) <= 2:
+            # Mask every letter and keep everything else: a two-letter word gives itself away
+            # if either of its letters is shown, whichever mode was asked for.
+            keep = set()
+        elif mask == MASK_HINT_FIRST_LAST:
+            keep = {letters[0], letters[-1]}
+        else:
+            keep = {letters[0]}
+        return "".join(
+            char if (not char.isalnum() or index in keep) else "_"
+            for index, char in enumerate(surface)
+        )
 
 
 @register_tool("cloze")

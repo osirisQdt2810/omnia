@@ -41,7 +41,19 @@ masked sentence renders on any template and carries no answer at all.
 pytest tests/plugins/smart_notes/test_cloze.py -q     # 88 tests
 ```
 
-**Notes / rollback:** the new property found a matcher bug the old one structurally could not.
+**Notes / rollback:** `cloze_audio` gained a third source for "what to hide", and it had to. Its
+documented natural chain — a cloze TEXT field feeding a cloze AUDIO field — went through the
+`{{cN::…}}` markers, so removing them broke it outright; and because a `cloze_audio` failure does
+not stop the chain, a `[cloze_audio, ai]` field would have fallen through to `ai` and spoken the
+sentence with the answer in it, which is the one thing that tool exists to prevent. It now reads a
+masked run (`s______`) as the hole, which is a stronger position than before: the answer is not in
+the text at all. Order is markers → masked runs → headword.
+
+The mask keeps spaces, hyphens and apostrophes, so `give up` reads `g___ __` rather than
+`g______` — visibly two words, which the reader needs and which is also what lets the audio tool
+see two holes.
+
+The new property found a matcher bug the old one structurally could not.
 Every HTML tag was transparent in the match projection — right for `<b>run</b>ning`, which must
 read as one word — but that also glued words across a BLOCK tag, so
 `<div>the cat</div><div>another cat</div>` projected to "the catanother cat", the word boundary

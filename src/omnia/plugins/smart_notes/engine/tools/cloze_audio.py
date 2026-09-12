@@ -1,10 +1,9 @@
 """The ``cloze_audio`` tool: speak a sentence with the answer replaced by silence or a beep.
 
-A listening-cloze card is a sentence you hear with a hole in it. Plain TTS cannot make one:
-:func:`omnia.core.lang.text.strip_markup` unwraps ``{{c1::survive}}`` to ``survive`` before the text
-reaches a provider, so pointing a TTS field at a cloze field produces audio that **reads the
-answer out loud**. This tool exists to close that hole, and its whole design follows from one
-rule:
+A listening-cloze card is a sentence you hear with a hole in it. Plain TTS cannot make one: it
+speaks whatever text it is given, so pointing a TTS field at a sentence produces audio that
+**reads the answer out loud**. This tool exists to close that hole, and its whole design follows
+from one rule:
 
     **The answer is never spoken. Ever.**
 
@@ -29,14 +28,17 @@ Three consequences, each visible in the code below:
    audible. That is the cost of the rule, and it is a configuration decision: put nothing after
    ``cloze_audio`` on a field whose answer must stay hidden. The tool's own guarantee is
    narrower and absolute — *it* never speaks the answer.
-2. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
-   cloze markers that say what to hide. A source that already carries ``{{cN::…}}`` (the
-   natural chain: a "Definition (cloze)" text field feeding a "Definition (cloze audio)" sound
-   field) masks exactly those; otherwise the word is located with
-   :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher the
-   ``cloze`` tool uses, so the text card and its audio hide the same words. (Inflected forms
-   are always matched — the option that used to make that configurable was removed, because
-   missing an inflection here means speaking the answer.)
+2. **What to hide comes from three places, in order.** A value carrying ``{{cN::…}}`` markers
+   masks exactly those — Anki's own markup, which a user may have written by hand and which
+   older notes still hold. Failing that, a value the ``cloze`` tool has already MASKED
+   (``They s______ the crash.``) is read around its underscore runs: that is the natural chain
+   — a "Definition (cloze)" text field feeding a "Definition (cloze audio)" sound field — and
+   it is the case where the answer is not in the text at all. Failing both, the word is located
+   with :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher
+   the ``cloze`` tool uses, so the text card and its audio hide the same words, and this is the
+   path taken when ``source_field`` points at the ORIGINAL sentence. (Inflected forms are
+   always matched — the option that used to make that configurable was removed, because missing
+   an inflection here means speaking the answer.)
 3. **The hidden word is measured, not estimated.** It is synthesized once and the mask is built
    to its exact frame count, so the gap lasts as long as the word would have — the invariant a
    listening cloze is built on. A guessed "~90 ms per character" gap gives the answer's length
@@ -54,6 +56,7 @@ Pure logic — no ``aqt``/``anki`` imports.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Optional
@@ -193,12 +196,21 @@ class MaskedSpeech:
         return " ".join(segment for segment in self.segments if segment).strip()
 
 
+#: A word the ``cloze`` tool has already masked: a token carrying two or more underscores in a
+#: row, such as ``s______`` or ``g___``. That masked run IS the hole — the answer is not in the
+#: text at all — so speaking around it is exactly what a listening cloze needs, and it is what
+#: keeps the documented "cloze field feeds cloze-audio field" chain working now that the text
+#: tool emits no ``{{cN::…}}`` markers.
+MASKED_RUN_RE = re.compile(r"[^\s<>]*_{2,}[^\s<>]*")
+
+
 class ClozeMaskPlanner:
     """Works out which parts of a field value must not be spoken.
 
-    Owns one decision with two sources, in priority order: the ``{{cN::…}}`` markers the value
-    already carries, else the occurrences of a headword. Constructed per run from the word, so
-    the (expensive) word-form derivation happens once.
+    Owns one decision with three sources, in priority order: the ``{{cN::…}}`` markers the value
+    already carries, else runs the ``cloze`` tool has already masked, else the occurrences of a
+    headword. Constructed per run from the word, so the (expensive) word-form derivation happens
+    once.
     """
 
     def __init__(self, word: str) -> None:
@@ -227,6 +239,20 @@ class ClozeMaskPlanner:
             # MARKER PATH — offsets into the RAW value, because strip_markup unwraps a cloze to
             # its answer and would destroy the very positions this needs.
             return self._split(value, marked, spoken=self._spoken)
+        speech_probe = self._spoken(value)
+        masked = [
+            (found.start(), found.end())
+            for found in MASKED_RUN_RE.finditer(speech_probe)
+        ]
+        if masked:
+            # MASKED PATH — the text has already had its answer removed by the `cloze` tool, so
+            # the holes are literally there to be read around. Taking this before the word path
+            # matters: the headword is no longer IN the text, so the word path would find
+            # nothing and this tool would raise, which on a [cloze_audio, ai] chain hands the
+            # field to a tool that speaks the sentence.
+            return self._split(
+                speech_probe, masked, spoken=lambda fragment: fragment.strip()
+            )
         if not self._word:
             return None
         # WORD PATH — matched on the text that will actually be SPOKEN, where markup has already
@@ -236,12 +262,13 @@ class ClozeMaskPlanner:
         # here that would leave "She sur<b>vived</b>" unmasked and then speak it, because
         # strip_markup re-joins the pieces. This tool never edits markup, so it can simply look
         # at the stripped text, where the word is whole. See ADR-011.
-        speech = self._spoken(value)
         spans = [
             (start, end)
-            for start, end, _ in ClozeRewriter(self._word).occurrences(speech)
+            for start, end, _ in ClozeRewriter(self._word).occurrences(speech_probe)
         ]
-        return self._split(speech, spans, spoken=lambda fragment: fragment.strip())
+        return self._split(
+            speech_probe, spans, spoken=lambda fragment: fragment.strip()
+        )
 
     @staticmethod
     def _split(
@@ -492,9 +519,10 @@ class ClozeAudioTool(Tool):
     #
     # A required param becomes a HARD prerequisite (`tool_referenced_fields` →
     # `rule_prerequisites`), and a blank hard prerequisite BLOCKS the field. `word_field` is
-    # read only when the source carries no ``{{cN::…}}`` marker, so requiring it would block
-    # generation on every note where it happens to be empty — including the natural chain,
-    # where the source already has markers and the param is never looked at.
+    # read only when the source carries neither a ``{{cN::…}}`` marker nor an already-masked
+    # run, so requiring it would block generation on every note where it happens to be empty —
+    # including the natural chain, where the source is the `cloze` tool's own output and the
+    # param is never looked at.
     #
     # Nothing is risked by leaving it optional: a blank or wrong `word_field` cannot make this
     # tool speak the answer. With no marker and no match, `plan` returns None and `run` raises
@@ -614,9 +642,11 @@ class ClozeAudioTool(Tool):
         speech = ClozeMaskPlanner(word).plan(source)
         if speech is None:
             raise ToolError(
-                f"cloze_audio found nothing to hide in {source_field!r}: it carries no "
-                f"{{{{c1::…}}}} marker and {word or 'the word field'} does not occur in it. "
-                "It produced nothing rather than speak the sentence with the answer in it; a tts "
+                f"cloze_audio found nothing to hide in {source_field!r}: no ``_____`` run left "
+                f"by the cloze tool, no {{{{c1::…}}}} marker, and "
+                f"{word or 'the word field'} does not occur in it. Point source_field either at "
+                "the cloze tool's output or at the sentence the word really appears in. It "
+                "produced nothing rather than speak the sentence with the answer in it; a tts "
                 "tool after it in the chain would speak it."
             )
         # PAST THIS LINE THERE IS AN ANSWER TO PROTECT, so every remaining failure RAISES —

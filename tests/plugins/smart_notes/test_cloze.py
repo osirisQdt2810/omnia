@@ -188,7 +188,9 @@ class TestInflectionMatrix:
             {"Word": "give up", "Sentence": "Don't give up now."},
             params={"sentence_field": "Sentence"},
         )
-        assert text == "Don't g______ now."
+        assert (
+            text == "Don't g___ __ now."
+        )  # the space is kept: still visibly two words
 
 
 class TestMarkupSafety:
@@ -257,14 +259,14 @@ class TestMultipleOccurrences:
         )
         assert text == "I r__, you r__, we r__."
 
-    def test_separate_cards_numbers_each_occurrence(self):
+    def test_a_legacy_separate_cards_param_changes_nothing(self):
         text = _clozed(
             {"Word": "run", "Sentence": "I run, you run."},
             params={"sentence_field": "Sentence", "separate_cards": True},
         )
         assert text == "I r__, you r__."
 
-    def test_numbering_continues_across_markup_runs(self):
+    def test_every_occurrence_is_masked_the_same_way_across_markup(self):
         text = _clozed(
             {"Word": "cat", "Sentence": "<i>cat</i> and cat"},
             params={"sentence_field": "Sentence", "separate_cards": True},
@@ -390,17 +392,45 @@ class TestTheAnswerIsGone:
 
     @pytest.mark.parametrize("sentence", SENTENCES)
     @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
-    def test_everything_around_the_word_is_untouched(self, sentence, mask):
-        # Only the matched surfaces change: the markup, entities and media around them survive
-        # exactly as written.
-        clozed = ClozeRewriter("cat", mask=mask).rewrite(sentence)
-        assert len(clozed) == len(sentence)
-        for original, masked in zip(sentence, clozed, strict=True):
-            assert (
-                masked == original
-                or masked == "_"
-                or original.lower() != masked.lower()
+    def test_only_the_matched_spans_change(self, sentence, mask):
+        # Built from the matcher's own hit ranges rather than asserted loosely: splice the mask
+        # into the original at exactly those offsets and the whole value must come out equal.
+        # The looser "same length, not a case change" version passed for any substitution.
+        rewriter = ClozeRewriter("cat", mask=mask)
+        hits = rewriter.occurrences(sentence)
+        assert hits, "the fixture sentences all contain the word"
+        expected, cursor = [], 0
+        for start, end, surface in hits:
+            expected.append(sentence[cursor:start])
+            expected.append(rewriter._hint(surface, mask))
+            cursor = end
+        expected.append(sentence[cursor:])
+
+        assert rewriter.rewrite(sentence) == "".join(expected)
+
+
+class TestAMultiWordHeadword:
+    """A two-word headword stays visibly two words — the space is not part of the answer."""
+
+    def test_the_space_is_kept(self):
+        assert (
+            ClozeRewriter("give up", mask="hint_first").rewrite("Don't give up now.")
+            == "Don't g___ __ now."
+        )
+
+    def test_the_last_letter_of_the_last_word_is_the_one_shown(self):
+        assert (
+            ClozeRewriter("give up", mask="hint_first_last").rewrite(
+                "Don't give up now."
             )
+            == "Don't g___ _p now."
+        )
+
+    def test_a_hyphen_is_kept_too(self):
+        assert (
+            ClozeRewriter("well-known", mask="hint_first").rewrite("It is well-known.")
+            == "It is w___-_____."
+        )
 
 
 class _CountingLLM(FakeLLMProvider):
