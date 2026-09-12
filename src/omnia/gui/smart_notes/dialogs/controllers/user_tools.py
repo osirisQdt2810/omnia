@@ -32,10 +32,7 @@ from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.plugins.smart_notes.engine import LanguageDetector
 from omnia.plugins.smart_notes.engine.tools import (
     INPUT_KIND_EXTENSIONS,
-    OVERRIDE_DIRNAME,
     TEXT_INPUT,
-    BuiltinOverrideLoader,
-    BuiltinOverrideStore,
     ReviewGate,
     ToolContext,
     UserToolError,
@@ -44,13 +41,12 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolSource,
     UserToolStore,
     UserToolTester,
-    builtin_tool_source,
     declared_inputs,
-    overridable_tools,
+    is_user_tool,
+    registered_tools,
     risky_operations,
     slugify,
     user_tool_name,
-    validate_builtin_name,
     validate_slug,
 )
 from omnia.plugins.smart_notes.engine.tools.media_sample import (
@@ -85,26 +81,13 @@ class UserToolsController:
     """
 
     def __init__(
-        self,
-        ctx: SmartNotesContext,
-        loader: Optional[UserToolLoader] = None,
-        overrides: Optional[BuiltinOverrideLoader] = None,
+        self, ctx: SmartNotesContext, loader: Optional[UserToolLoader] = None
     ) -> None:
         self._ctx = ctx
         self._loader = (
             loader
             if loader is not None
             else UserToolLoader(UserToolStore(addon_user_files_dir() / "tools"))
-        )
-        # The edited builtins, under the same folder the user tools live in. Derived from the
-        # user-tool store's directory rather than resolved again, so an injected test store
-        # carries its overrides with it instead of reaching into the real profile.
-        self._overrides = (
-            overrides
-            if overrides is not None
-            else BuiltinOverrideLoader(
-                BuiltinOverrideStore(self._loader.store.directory / OVERRIDE_DIRNAME)
-            )
         )
         self._gate = ReviewGate()
         # Session-scoped, like the gate: closing the dialog disposes it, so a browsed file
@@ -129,63 +112,7 @@ class UserToolsController:
             "user_tool_inputs": self.on_inputs,
             "user_tool_play_output": self.on_play_output,
             "user_tool_risks": self.on_risks,
-            "builtin_tool_open": self.on_builtin_open,
-            "builtin_tool_save": self.on_builtin_save,
-            "builtin_tool_restore": self.on_builtin_restore,
         }
-
-    # -- editing a builtin ---------------------------------------------------------------
-
-    def on_builtin_open(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Return a builtin's code for the editor: the user's version if there is one.
-
-        The override is offered first because it is what is RUNNING — opening the shipped source
-        over the top of an edit the user made would look like the edit had been lost, and Save
-        would then quietly undo it.
-        """
-        try:
-            name = validate_builtin_name(str(data.get("name", "")).strip())
-            source = self._overrides.store.read(name)
-            code = source.code if source is not None else builtin_tool_source(name)
-        except UserToolError as exc:
-            return {"error": str(exc)}
-        return {
-            "name": name,
-            "source": code,
-            "risks": risky_operations(code),
-            "overridden": source is not None,
-        }
-
-    def on_builtin_save(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Write an edited builtin and load it over the shipped class.
-
-        No review gate here, and not by omission. The gate exists because an LLM wrote the code
-        and the user had not read it; this code started as the add-on's own, the user edited it
-        in front of them, and no model was involved. What replaces it is a compile: the loader
-        refuses to write a file it could not load, so a broken edit leaves the builtin running.
-        """
-        try:
-            name = validate_builtin_name(str(data.get("name", "")).strip())
-            self._overrides.save(
-                UserToolSource(slug=name, code=str(data.get("source", "")))
-            )
-        except UserToolError as exc:
-            return {"error": str(exc)}
-        except (
-            Exception
-        ) as exc:  # a module that raises while executing is the user's code
-            logger.exception("smart_notes: could not save the edited builtin")
-            return {"error": f"could not save it: {exc}"}
-        return {"ok": True, "name": name}
-
-    def on_builtin_restore(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Delete a builtin's override and put the shipped class back."""
-        try:
-            name = validate_builtin_name(str(data.get("name", "")).strip())
-            existed = self._overrides.restore(name)
-        except UserToolError as exc:
-            return {"error": str(exc)}
-        return {"ok": True, "name": name, "restored": existed}
 
     def on_risks(self, data: dict[str, Any]) -> dict[str, Any]:
         """Return what the CURRENT editor contents reach for.
@@ -354,15 +281,6 @@ class UserToolsController:
         picks up a file dropped into the folder by hand.
         """
         self._load_all()
-        self._load_overrides()
-
-    def _load_overrides(self) -> dict[str, UserToolLoad]:
-        """Reload the edited builtins, by name ({} when the folder itself is unreadable)."""
-        try:
-            return {load.slug: load for load in self._overrides.load_all()}
-        except Exception:  # boundary: an edited builtin must not close the tab
-            logger.exception("smart_notes: could not load the edited builtins")
-            return {}
 
     def _load_all(self) -> list[UserToolLoad]:
         """Reload every tool file, returning one outcome per file ([] if the folder is broken).
@@ -389,11 +307,6 @@ class UserToolsController:
         error instead of silently vanishing from the list.
         """
         loads = {load.slug: load for load in self._load_all()}
-        overrides = self._load_overrides()
-        # Two different facts, and a card that conflated them lied in both directions. A file
-        # can exist and not load (the builtin, or a previous override, is what runs), and a
-        # class can be displaced with no file left (nothing, now that the sweep is shared).
-        displaced = set(self._overrides.overridden())
         tools: list[dict[str, Any]] = []
         for source in self._loader.store.list():
             load = loads.get(source.slug)
@@ -416,16 +329,9 @@ class UserToolsController:
         return {
             "tools": tools,
             "builtins": [
-                {
-                    **self._described(name),
-                    # What the card needs to offer Edit / Restore: whether a file of the user's
-                    # exists, whether their class is the one RUNNING, and why not when it
-                    # failed to load.
-                    "overridden": name in overrides,
-                    "displaced": name in displaced,
-                    "error": overrides[name].error if name in overrides else "",
-                }
-                for name in overridable_tools()
+                self._described(name)
+                for name in registered_tools()
+                if not is_user_tool(name)
             ],
             # Two forms on purpose. `directory` is the absolute path — correct on every
             # platform because it is derived from the installed package's own location, never
@@ -481,34 +387,23 @@ class UserToolsController:
     def on_test(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Compile the posted source and run it once on the user's sample, OFF the main thread.
 
-        Off-thread because a tool file is arbitrary Python: however well-behaved the code looks,
-        the Qt main thread must not be the one to find out — which matters MORE for an edited
-        builtin, where this is the first time the edit runs at all (there is no authoring gate
-        to have run it already). The gate is marked from the success callback whenever the tool
-        actually RAN — a decline or even a raise is a result the user saw, and saving a tool
-        that declines is their call to make.
-
-        A builtin is compiled through the OVERRIDE loader, because only that one expects the
-        file to claim the builtin's own name: put through the user-tool loader, the module's
-        ``@register_tool("cloze")`` collides with the registered builtin and every run of every
-        builtin failed with "Tool name 'cloze' already registered to ClozeTool" — before the
-        edit was ever executed. ``cloze_audio`` also lost its underscore on the way, since a
-        user-tool slug may not hold one.
+        Off-thread because a user tool is arbitrary Python: however well-behaved the generated
+        code looks, the Qt main thread must not be the one to find out. The gate is marked from
+        the success callback whenever the tool actually RAN — a decline or even a raise is a
+        result the user saw, and saving a tool that declines is their call to make.
         """
         code = str(data.get("source", ""))
         inputs = self._posted_inputs(data)
         params = dict(data.get("params", {}) or {})
-        builtin = str(data.get("builtin", "")).strip()
-        loader: UserToolLoader = self._overrides if builtin else self._loader
         try:
-            slug = validate_builtin_name(builtin) if builtin else self._slug_from(data)
+            slug = self._slug_from(data)
         except UserToolError as exc:
             return {"error": str(exc)}
         if not code.strip():
             return {"error": "Generate (or paste) the tool's code first."}
 
         def work() -> ToolTestResult:
-            cls = loader.compile_tool(UserToolSource(slug=slug, code=code))
+            cls = self._loader.compile_tool(UserToolSource(slug=slug, code=code))
             return self._tester.run(
                 cls, inputs=inputs, params=params, ctx=self._tool_context()
             )
