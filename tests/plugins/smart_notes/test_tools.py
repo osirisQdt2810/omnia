@@ -368,10 +368,13 @@ class TestPipelineMatrix:
         assert _trace(result) == [("t_junk", "error"), ("t_produce", "produced")]
         assert "not a ToolOutcome" in result.attempts[0].detail
 
-    def test_single_attempt_summary_has_no_tool_prefix(self, fake_tools):
-        # The legacy one-tool chain must surface the provider's own message verbatim.
+    def test_even_a_lone_tool_names_itself(self, fake_tools):
+        # It used to render the bare "kaput" so a legacy one-`ai` field read exactly like the
+        # provider's own message. But a reader of that message has to be told WHICH tool gave
+        # up before they can go and change anything, and a one-tool chain is the case where
+        # the message carries the least — often only "the tool did not apply to this field".
         result = GenerationPipeline(_ctx()).run(_rule("t_boom"), {})
-        assert result.summary == "kaput"
+        assert result.summary == "t_boom: kaput"
 
 
 class TestEveryFailureFallsThroughToTheNextTool:
@@ -409,7 +412,7 @@ class TestEveryFailureFallsThroughToTheNextTool:
         result = GenerationPipeline(_ctx()).run(_rule("t_terminal"), {})
 
         assert result.errored is True
-        assert result.summary == "would leak the answer"
+        assert result.summary == "t_terminal: would leak the answer"
 
     def test_the_service_raises_the_failure_as_the_chain_error_cause(self, fake_tools):
         service = GenerationService(providers=None)
@@ -688,7 +691,7 @@ class TestServiceOnChains:
         assert results == []
         assert blocked == []
         assert [(item.field, item.kind, item.error) for item in failed] == [
-            ("Def", "unproductive", "no match")
+            ("Def", "unproductive", "t_decline: no match")
         ]
 
     def test_generate_note_marks_a_broken_chain_errored(self, fake_tools):

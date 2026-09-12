@@ -142,7 +142,7 @@ class TestGenerateGolden:
         )
         with pytest.raises(ProviderError) as excinfo:
             service.generate(rule, {"Word": "cat"})
-        assert str(excinfo.value) == "provider exploded on 'boom cat'"
+        assert str(excinfo.value) == "ai: provider exploded on 'boom cat'"
 
 
 class TestGenerateNoteGolden:
@@ -199,7 +199,7 @@ class TestGenerateNoteGolden:
 
         # Boom's provider raised → isolated as a failure carrying the provider's message.
         assert [item.field for item in failed] == ["Boom"]
-        assert failed[0].error == "provider exploded on 'boom cat'"
+        assert failed[0].error == "ai: provider exploded on 'boom cat'"
         # …and its hard dependent blocks transitively; the note is not aborted.
         assert [(item.target_field, item.missing) for item in blocked] == [
             ("Dependent", ["Boom"])
