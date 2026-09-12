@@ -79,8 +79,13 @@ other tool file, and `cloze_audio` imports all three. Both `omnia.core.providers
 listed in full rather than by prefix, so the package holding the credentials stays closed.
 
 There is no test-run gate on saving a builtin. The gate exists because an LLM wrote the code and
-the user had not read it; here the code started as the add-on's own and no model is involved. The
-compile is what replaces it.
+the user had not read it; here the code started as the add-on's own and no model is involved. What
+replaces it is the compile-before-write, plus **Run**, which works on a builtin: its source is
+compiled through the OVERRIDE loader, the only one that expects a file to claim a builtin's name.
+Through the user-tool loader — which is where it went first — every run of every builtin died on a
+name clash with the builtin itself, before the edit was executed at all, and `cloze_audio` lost
+its underscore to `slugify` on the way. That also keeps the first execution of an edit OFF the Qt
+main thread, which is where `on_test` already runs.
 
 
 ## 2026-09-12 — A failure names the field it happened to and the tool that gave up

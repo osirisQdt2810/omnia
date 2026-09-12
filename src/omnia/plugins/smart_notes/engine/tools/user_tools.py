@@ -469,6 +469,10 @@ class UserToolStore:
             raise UserToolError(f"could not read {path.name}: {exc}") from exc
         return UserToolSource.parse(slug, text)
 
+    #: What one file in this directory IS, for the log line a subclass would otherwise inherit
+    #: wholesale ("could not read the user tool 'cloze'" about an edited builtin).
+    NOUN: ClassVar[str] = "user tool"
+
     def list(self) -> list[UserToolSource]:
         """Return every readable tool in the directory, in slug order.
 
@@ -479,7 +483,9 @@ class UserToolStore:
             try:
                 source = self.read(slug)
             except UserToolError:
-                logger.exception("smart_notes: could not read the user tool %r", slug)
+                logger.exception(
+                    "smart_notes: could not read the %s %r", self.NOUN, slug
+                )
                 continue
             if source is not None:
                 sources.append(source)

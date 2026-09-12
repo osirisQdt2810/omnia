@@ -71,6 +71,7 @@ from omnia.plugins.smart_notes.config import (  # noqa: E402
 from omnia.plugins.smart_notes.engine.tools import (  # noqa: E402
     INPUT_KIND_EXTENSIONS,
     TOOL_REGISTRY,
+    ClozeTool,
     UserToolLoader,
     UserToolSource,
     UserToolStore,
@@ -1380,6 +1381,50 @@ class TestEditingABuiltin:
 
         assert "error" in result
         assert not list(tmp_path.rglob("*evil*"))
+
+    def test_a_builtin_can_be_run_before_it_is_saved(self, controller):
+        # The compensating control for dropping the review gate: you can try the edit without
+        # putting it over the tool every field uses. It used to fail on a name clash with the
+        # builtin ITSELF — "Tool name 'cloze' already registered to ClozeTool" — because the
+        # source went through the user-tool loader, which expects `user:<slug>`.
+        ctrl, _ctx, pushed = controller
+        code = ctrl.on_builtin_open({"name": "cloze"})["source"]
+
+        ctrl.on_test({"builtin": "cloze", "source": code, "inputs": {"Sample": "cat"}})
+
+        payload = json.loads(
+            pushed[-1].split("window.__snUserToolTested(", 1)[1][:-2].split(", ", 1)[1]
+        )
+        assert "already registered" not in json.dumps(payload)
+        assert payload.get("error", "") == ""
+        assert get_tool("cloze") is ClozeTool  # compiling a candidate registers nothing
+
+    def test_running_a_builtin_whose_name_holds_an_underscore(self, controller):
+        # `cloze_audio` went through slugify() and came out as "cloze-audio", so the file it
+        # compiled could never have claimed the name it registers.
+        ctrl, _ctx, pushed = controller
+        code = ctrl.on_builtin_open({"name": "cloze_audio"})["source"]
+
+        ctrl.on_test(
+            {"builtin": "cloze_audio", "source": code, "inputs": {"Sample": "cat"}}
+        )
+
+        payload = json.loads(
+            pushed[-1].split("window.__snUserToolTested(", 1)[1][:-2].split(", ", 1)[1]
+        )
+        assert "already registered" not in json.dumps(payload)
+        assert payload.get("error", "") == ""
+
+    def test_a_broken_edit_reports_from_the_run_not_from_the_save(self, controller):
+        ctrl, _ctx, pushed = controller
+
+        ctrl.on_test({"builtin": "cloze", "source": "not python", "inputs": {}})
+
+        payload = json.loads(
+            pushed[-1].split("window.__snUserToolTested(", 1)[1][:-2].split(", ", 1)[1]
+        )
+        assert payload["error"]
+        assert get_tool("cloze") is ClozeTool
 
     def test_the_ops_are_routed(self, controller):
         ctrl, _ctx, _pushed = controller

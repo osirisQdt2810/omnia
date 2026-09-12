@@ -14,6 +14,7 @@ written back to notes + media on the main thread. The pure logic lives in the ``
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Optional
 
 from omnia.core import anki_compat, services
@@ -183,7 +184,7 @@ class SmartNotesPlugin(FeaturePlugin):
             f", skipped {failed}" if failed else "",
         )
 
-    def _load_tool_overrides(self, directory: Any) -> None:
+    def _load_tool_overrides(self, directory: Path) -> None:
         """Load each edited builtin over its shipped class (see ``engine.tools.overrides``).
 
         A failure here leaves the shipped builtins registered, which is the whole point of the

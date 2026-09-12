@@ -475,23 +475,34 @@ class UserToolsController:
     def on_test(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Compile the posted source and run it once on the user's sample, OFF the main thread.
 
-        Off-thread because a user tool is arbitrary Python: however well-behaved the generated
-        code looks, the Qt main thread must not be the one to find out. The gate is marked from
-        the success callback whenever the tool actually RAN — a decline or even a raise is a
-        result the user saw, and saving a tool that declines is their call to make.
+        Off-thread because a tool file is arbitrary Python: however well-behaved the code looks,
+        the Qt main thread must not be the one to find out — which matters MORE for an edited
+        builtin, where this is the first time the edit runs at all (there is no authoring gate
+        to have run it already). The gate is marked from the success callback whenever the tool
+        actually RAN — a decline or even a raise is a result the user saw, and saving a tool
+        that declines is their call to make.
+
+        A builtin is compiled through the OVERRIDE loader, because only that one expects the
+        file to claim the builtin's own name: put through the user-tool loader, the module's
+        ``@register_tool("cloze")`` collides with the registered builtin and every run of every
+        builtin failed with "Tool name 'cloze' already registered to ClozeTool" — before the
+        edit was ever executed. ``cloze_audio`` also lost its underscore on the way, since a
+        user-tool slug may not hold one.
         """
         code = str(data.get("source", ""))
         inputs = self._posted_inputs(data)
         params = dict(data.get("params", {}) or {})
+        builtin = str(data.get("builtin", "")).strip()
+        loader: UserToolLoader = self._overrides if builtin else self._loader
         try:
-            slug = self._slug_from(data)
+            slug = validate_builtin_name(builtin) if builtin else self._slug_from(data)
         except UserToolError as exc:
             return {"error": str(exc)}
         if not code.strip():
             return {"error": "Generate (or paste) the tool's code first."}
 
         def work() -> ToolTestResult:
-            cls = self._loader.compile_tool(UserToolSource(slug=slug, code=code))
+            cls = loader.compile_tool(UserToolSource(slug=slug, code=code))
             return self._tester.run(
                 cls, inputs=inputs, params=params, ctx=self._tool_context()
             )

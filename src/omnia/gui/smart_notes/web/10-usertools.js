@@ -155,9 +155,11 @@
     const card = document.createElement("div");
     card.className = "sn-ut-card" + (tool.error ? " sn-ut-card-broken" : "");
     const head = toolCardHead(tool);
-    if (tool.overridden) {
+    if (tool.overridden && !tool.error) {
       // The card has to say so: the code that runs is no longer the code that shipped, and
-      // nothing else on this page would tell the reader that.
+      // nothing else on this page would tell the reader that. NOT while it failed to load,
+      // though — the sentence below says the built-in is running, and a badge claiming the
+      // opposite next to it is worse than no badge.
       const badge = document.createElement("span");
       badge.className = "sn-tool-chip sn-ut-edited";
       badge.textContent = "your version";
@@ -649,6 +651,10 @@
     send(
       "user_tool_test",
       {
+        // "" for a user tool. It routes the compile to the loader that expects this file to
+        // claim a builtin's name; without it every Run on a builtin failed on a name clash
+        // with the builtin itself, before the edit ran at all.
+        builtin: utBuiltin,
         slug: utSlug,
         label: utLabelEl.value,
         source: utSourceEl.value,

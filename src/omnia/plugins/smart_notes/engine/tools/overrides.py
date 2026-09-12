@@ -159,6 +159,8 @@ class BuiltinOverrideStore(UserToolStore):
     the override — with the one difference that its file names are builtin names.
     """
 
+    NOUN: ClassVar[str] = "edited builtin"
+
     def path_for(self, name: str) -> Path:
         """Return the file path for ``name`` (validated, so it cannot escape the directory)."""
         return self.directory / f"{validate_builtin_name(name)}.py"
