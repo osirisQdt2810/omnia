@@ -21,6 +21,40 @@ Format for each entry:
 
 ---
 
+## 2026-09-12 — A failure names the field it happened to and the tool that gave up
+
+**What:** two changes, both about the same sentence. `summarize_attempts` now prefixes EVERY
+attempt with its tool, single-tool chains included; and the batch summary carries up to two
+`"<field> — <chain trace>"` examples for its field-error and no-applicable-tool counts, the same
+shape the blocked count already used. The per-field log line moved off DEBUG: WARNING when a tool
+broke, INFO when every tool merely declined.
+
+**Why:** a clip whose generation produced nothing reported `2 field(s) had no applicable tool`.
+Every noun in that sentence is missing: not which field, not which tool, not what it wanted. The
+detail existed — the chain trace is built for every failed field — and was thrown away one layer
+below the tooltip, then logged at a level that is off in a normal profile.
+
+**Files:** `plugins/smart_notes/engine/tools/pipeline.py` (`summarize_attempts`),
+`plugins/smart_notes/integration/batch.py` (`_example`, `_examples`, `_merge_examples`,
+`_suffix`, `BatchSummary.error_examples` / `.unfilled_examples`),
+`tests/plugins/smart_notes/test_batch.py`.
+
+**How to verify:**
+```
+pytest tests/plugins/smart_notes -q
+```
+In Anki: clip a word whose sentence does not contain it, and the tooltip now reads
+`… 1 field(s) had no applicable tool (Definition (cloze audio) — cloze_audio: …)`.
+
+**Notes / rollback:** the single-attempt chain used to render with no tool prefix so a legacy
+one-`ai` field's message stayed byte-identical to the provider's own. That rule is gone, and it
+is the change most likely to be noticed elsewhere: a preview failure now reads `ai: HTTP 401`.
+`ToolChainError.cause` still carries the original exception, so status-code handling upstream is
+untouched — only the display string gained four characters. Examples are deduped and clipped to
+90 characters: a batch is many notes of one note type, so without the dedupe both slots go to the
+first field, and a provider's full error body would otherwise turn a tooltip into a wall.
+
+
 ## 2026-09-07 — Audio Speed keeps a separate rate for the front and the back
 
 **What:** the plugin now holds two rates instead of one. `]` / `[` still move both — by one step
