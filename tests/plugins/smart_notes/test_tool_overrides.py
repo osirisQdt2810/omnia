@@ -33,6 +33,9 @@ from omnia.plugins.smart_notes.engine.tools import (
     builtin_tool_source,
     get_tool,
     overridable_tools,
+)
+from omnia.plugins.smart_notes.engine.tools import overrides as overrides_module
+from omnia.plugins.smart_notes.engine.tools import (
     validate_builtin_name,
 )
 
@@ -60,11 +63,18 @@ class MyCloze(Tool):
 
 @pytest.fixture
 def registry_guard():
-    """Restore the tool registry after a test that loads tools into it."""
+    """Restore the tool registry — and the displaced-builtin memory — after a test.
+
+    ``_SHIPPED`` is module state for the same reason the registry is, so a test that overrides
+    a builtin has to put both back or the next one starts with a lie about what shipped.
+    """
     before = dict(TOOL_REGISTRY)
+    shipped = dict(overrides_module._SHIPPED)
     yield
     TOOL_REGISTRY.clear()
     TOOL_REGISTRY.update(before)
+    overrides_module._SHIPPED.clear()
+    overrides_module._SHIPPED.update(shipped)
 
 
 @pytest.fixture
@@ -186,6 +196,75 @@ class TestRestoring:
         assert get_tool("cloze") is ClozeTool
         assert get_tool("ai") is not None
         assert loader.overridden() == ()
+
+
+class TestTwoLoadersOneRegistry:
+    """A running Anki has TWO: the plugin builds one at enable, the dialog one when it opens.
+
+    They bind the same registry, so the memory of what an override displaced cannot live on
+    either instance. Held per loader, the one that restores is not the one that displaced —
+    and every assertion below passed while that was the case, because a single-loader fixture
+    cannot see it.
+    """
+
+    def _second(self, store):
+        """A second loader over the same folder — the dialog's, to the plugin's."""
+        return BuiltinOverrideLoader(store, log=logging.getLogger("omnia.test"))
+
+    def test_restore_from_the_dialog_undoes_the_plugins_load(self, loader, store):
+        # 1. Anki starts with an override on disk, 2. the dialog opens and reloads the same
+        # file, 3. the user presses Restore built-in.
+        store.write(UserToolSource(slug="cloze", code=OVERRIDE_CODE))
+        loader.load_all()
+        dialog = self._second(store)
+        dialog.load_all()
+
+        dialog.restore("cloze")
+
+        # It used to re-register the DIALOG's own copy of the user's class: the card said the
+        # builtin was back and every generation for the rest of the session ran deleted code.
+        assert get_tool("cloze") is ClozeTool
+        assert store.slugs() == []
+
+    def test_disabling_restores_an_override_saved_in_the_dialog(self, loader, store):
+        # The plugin's loader never hears about a save made through the dialog's, so a teardown
+        # keyed on its own bookkeeping walked an empty set and left the user's class running
+        # with the feature switched off.
+        dialog = self._second(store)
+        dialog.save(UserToolSource(slug="cloze", code=OVERRIDE_CODE))
+
+        loader.unload_all()
+
+        assert get_tool("cloze") is ClozeTool
+
+    def test_both_loaders_report_the_same_overridden_set(self, loader, store):
+        dialog = self._second(store)
+        dialog.save(UserToolSource(slug="cloze", code=OVERRIDE_CODE))
+
+        assert loader.overridden() == ("cloze",)
+        assert dialog.overridden() == ("cloze",)
+
+    def test_a_user_tool_and_an_override_of_the_same_name_keep_their_modules(
+        self, tmp_path, store, registry_guard
+    ):
+        # Both files are called "cloze.py", in different folders. One sys.modules key for both
+        # would make a class's __module__ — and so the source the editor shows — point at
+        # whichever loaded last.
+        user_loader = UserToolLoader(
+            UserToolStore(tmp_path / "tools"), log=logging.getLogger("omnia.test")
+        )
+        user_code = OVERRIDE_CODE.replace(
+            'register_tool("cloze")', 'register_tool("user:cloze")'
+        )
+        user_loader.store.write(UserToolSource(slug="cloze", code=user_code))
+        override_loader = BuiltinOverrideLoader(store)
+        override_loader.store.write(UserToolSource(slug="cloze", code=OVERRIDE_CODE))
+
+        user_loader.load_all()
+        override_loader.load_all()
+
+        assert get_tool("user:cloze").__module__ != get_tool("cloze").__module__
+        assert "class MyCloze" in builtin_tool_source("cloze")
 
 
 class TestLoadingAtStartup:

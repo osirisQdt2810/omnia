@@ -34,11 +34,10 @@ Pure logic — no ``aqt``/``anki`` imports.
 from __future__ import annotations
 
 import inspect
-import logging
 import re
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, ClassVar, Optional
 
 from omnia.plugins.smart_notes.engine.tools.registry import (
     get_tool,
@@ -47,7 +46,6 @@ from omnia.plugins.smart_notes.engine.tools.registry import (
     unregister_tool,
 )
 from omnia.plugins.smart_notes.engine.tools.user_tools import (
-    ImportGuard,
     UserToolError,
     UserToolLoader,
     UserToolSource,
@@ -133,6 +131,27 @@ def builtin_tool_source(name: str) -> str:
         raise UserToolError(f"could not read the source of {name!r}: {exc}") from exc
 
 
+#: The shipped classes overrides have displaced, by builtin name.
+#:
+#: MODULE scope, because what it shadows is module scope. Two loaders exist in a running Anki —
+#: the plugin builds one at enable, the settings dialog builds another when it opens — and both
+#: bind the SAME registry. Held per instance, the memory belonged to whichever loader displaced
+#: the class first, so the OTHER one restored nothing: Restore built-in re-registered the
+#: dialog's own copy of the user's class, and disabling the feature left an override saved in
+#: this session still running. (``UserToolLoader.unload_all`` documents having hit the same
+#: shape of bug from the other side, which is why it keys on the namespace rather than on its
+#: own bookkeeping. An override has no namespace to key on — this dict is its equivalent.)
+#:
+#: Written only at the FIRST displacement of a name, so restoring lands on the class that
+#: shipped rather than on an earlier override.
+_SHIPPED: dict[str, Optional[type[Tool]]] = {}
+
+
+def displaced_builtins() -> tuple[str, ...]:
+    """The builtin names an override is currently loaded over, sorted."""
+    return tuple(sorted(_SHIPPED))
+
+
 class BuiltinOverrideStore(UserToolStore):
     """``user_files/tools/builtin/``: one file per overridden builtin, named after it.
 
@@ -162,41 +181,42 @@ class BuiltinOverrideLoader(UserToolLoader):
     the name a file claims (its own stem, not ``user:<stem>``) and what registering it displaces.
     """
 
-    def __init__(
-        self,
-        store: BuiltinOverrideStore,
-        *,
-        guard: Optional[ImportGuard] = None,
-        log: Optional[logging.Logger] = None,
-    ) -> None:
-        super().__init__(store, guard=guard, log=log)
-        # The classes this loader displaced, by name. Populated at the FIRST override of a name
-        # and never overwritten, so re-saving an override twice still restores the shipped class
-        # rather than the previous override.
-        self._shipped: dict[str, Optional[type[Tool]]] = {}
+    #: Its own ``sys.modules`` namespace, so an override OF ``cloze`` and a user tool CALLED
+    #: ``cloze`` cannot land on the same key — which would make a class's ``__module__``, and
+    #: therefore :func:`builtin_tool_source`, point at whichever loaded last.
+    MODULE_PREFIX: ClassVar[str] = "omnia_builtin_override_"
 
     def name_for(self, slug: str) -> str:
         """An override file claims the builtin's own name — that is the whole point of it."""
         return validate_builtin_name(slug)
 
     def overridden(self) -> tuple[str, ...]:
-        """The builtin names this loader currently has an override registered for."""
-        return self.loaded
+        """The builtin names an override is currently loaded over (see :data:`_SHIPPED`).
+
+        Deliberately NOT this loader's own ``loaded``: what the caller wants to know is whether
+        the tool running under that name is the user's, and the dialog's loader and the
+        plugin's each see only the files they themselves loaded.
+        """
+        return displaced_builtins()
 
     def unload_all(self) -> None:
-        """Restore every builtin this loader displaced (the plugin's disable teardown).
+        """Restore every displaced builtin (the plugin's disable teardown).
 
-        Keyed on this loader's own bookkeeping, unlike the user-tool loader's namespace sweep:
-        there is no prefix marking an override in the registry, and iterating the builtins would
-        unregister tools nothing here ever touched.
+        Keyed on :data:`_SHIPPED` rather than on this loader's own bookkeeping, and not on the
+        registry either: there is no prefix marking an override, so sweeping names would
+        unregister builtins nothing ever touched. The shared dict is the only thing that knows
+        which ones were displaced — including by a loader that is not this one, which is exactly
+        the case that used to leave an override saved in the dialog running after the feature
+        was switched off.
         """
-        for name in tuple(self._loaded):
+        for name in displaced_builtins():
             self._unregister(name)
+        self._loaded.clear()
 
     def _register(self, name: str, cls: type[Tool]) -> None:
         """Bind ``name`` to the override, remembering what it displaced."""
-        if name not in self._shipped:
-            self._shipped[name] = get_tool(name)
+        if name not in _SHIPPED:
+            _SHIPPED[name] = get_tool(name)
         unregister_tool(name)
         register_tool(name)(cls)
         self._loaded.add(name)
@@ -210,9 +230,9 @@ class BuiltinOverrideLoader(UserToolLoader):
         whose file was deleted by hand, both come through here.
         """
         self._loaded.discard(name)
-        if name not in self._shipped:
+        if name not in _SHIPPED:
             return
-        shipped = self._shipped.pop(name)
+        shipped = _SHIPPED.pop(name)
         unregister_tool(name)
         if shipped is not None:
             register_tool(name)(shipped)

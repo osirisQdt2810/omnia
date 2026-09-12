@@ -46,8 +46,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolTester,
     builtin_tool_source,
     declared_inputs,
-    is_user_tool,
-    registered_tools,
+    overridable_tools,
     risky_operations,
     slugify,
     user_tool_name,
@@ -420,8 +419,7 @@ class UserToolsController:
                     "overridden": name in overrides,
                     "error": overrides[name].error if name in overrides else "",
                 }
-                for name in registered_tools()
-                if not is_user_tool(name)
+                for name in overridable_tools()
             ],
             # Two forms on purpose. `directory` is the absolute path — correct on every
             # platform because it is derived from the installed package's own location, never

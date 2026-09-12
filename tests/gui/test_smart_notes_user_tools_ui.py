@@ -76,6 +76,9 @@ from omnia.plugins.smart_notes.engine.tools import (  # noqa: E402
     UserToolStore,
     get_tool,
 )
+from omnia.plugins.smart_notes.engine.tools import (  # noqa: E402
+    overrides as overrides_module,
+)
 from omnia.plugins.smart_notes.engine.tools.media_sample import (  # noqa: E402
     media_family,
 )
@@ -126,11 +129,18 @@ def _fake_ctx(**overrides: Any) -> types.SimpleNamespace:
 
 @pytest.fixture
 def registry_guard():
-    """Restore the tool registry after a test that loads tools into it."""
+    """Restore the tool registry — and the displaced-builtin memory — after a test.
+
+    ``_SHIPPED`` is module state for the same reason the registry is, so a test that overrides
+    a builtin has to put both back or the next one starts with a lie about what shipped.
+    """
     before = dict(TOOL_REGISTRY)
+    shipped = dict(overrides_module._SHIPPED)
     yield
     TOOL_REGISTRY.clear()
     TOOL_REGISTRY.update(before)
+    overrides_module._SHIPPED.clear()
+    overrides_module._SHIPPED.update(shipped)
 
 
 @pytest.fixture

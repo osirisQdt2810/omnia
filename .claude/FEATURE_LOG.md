@@ -58,8 +58,20 @@ override loader overrides it.
 Three failure paths, all pinned by tests that were checked by reverting the fix: the file is
 compiled BEFORE it is written (a broken edit never reaches disk), a file that fails to load at
 startup leaves the shipped class registered and reports the error on its card, and disabling the
-feature restores every displaced builtin — keyed on the loader's own bookkeeping, since sweeping
-the namespace the way the user-tool loader does would unregister the builtins themselves.
+feature restores every displaced builtin.
+
+The memory of WHAT was displaced is module scope (`_SHIPPED`), because what it shadows — the tool
+registry — is module scope too. A running Anki has two loaders over the same folder (the plugin
+builds one at enable, the settings dialog another when it opens) and they bind the same registry,
+so per-instance memory meant the loader that restored was not the loader that displaced: Restore
+built-in re-registered the dialog's own copy of the user's class, and an override saved in the
+dialog survived disabling the feature. Both are two-loader bugs a single-loader fixture cannot
+see, and both now have a test. Sweeping the registry instead is not an option — an override
+carries no namespace to key on, so the shared dict is its equivalent of the `user:` prefix.
+
+Each loader also execs its files into its own `sys.modules` prefix, so an override OF `cloze` and
+a user tool CALLED `cloze` cannot collide on one key and make a class's `__module__` — and with
+it the source the editor shows — point at whichever loaded last.
 
 The import allowlist gained `abc`, `omnia.core.providers.errors` and
 `omnia.core.providers.tts.registry`: a copy of a shipped tool has to pass the same guard as any

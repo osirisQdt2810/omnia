@@ -75,7 +75,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Optional
 
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.config import SmartNotesFieldRule
@@ -560,6 +560,12 @@ class UserToolLoader:
         self._log = log if log is not None else logger
         self._loaded: set[str] = set()
 
+    #: Prefix for the synthetic module each file is executed into. Per-loader, because two
+    #: directories can hold a file of the same stem — a user tool called ``cloze`` and an
+    #: override OF ``cloze`` — and one ``sys.modules`` key for both would make a class's
+    #: ``__module__`` point at whichever was loaded last.
+    MODULE_PREFIX: ClassVar[str] = _MODULE_PREFIX
+
     @property
     def store(self) -> UserToolStore:
         """The store this loader reads from."""
@@ -650,7 +656,7 @@ class UserToolLoader:
         """
         name = self.name_for(source.slug)
         self._guard.check(source.code)
-        module = ModuleType(_MODULE_PREFIX + source.slug.replace("-", "_"))
+        module = ModuleType(self.MODULE_PREFIX + source.slug.replace("-", "_"))
         module.__file__ = filename or f"<omnia user tool {source.slug}>"
         before = dict(TOOL_REGISTRY)
         TOOL_REGISTRY.pop(name, None)  # a reload must not read as a name conflict
