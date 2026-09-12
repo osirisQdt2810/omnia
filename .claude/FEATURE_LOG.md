@@ -21,6 +21,83 @@ Format for each entry:
 
 ---
 
+## 2026-09-13 — A builtin tool can be edited, and the edit is what runs
+
+**What:** the Tools tab's builtin cards gained **Edit** and, once edited, **Restore built-in**.
+Edit opens the tool's REAL shipped source in the same editor user tools use; saving writes it to
+`user_files/tools/builtin/<name>.py`, where a new `BuiltinOverrideLoader` loads it over the
+shipped class — under the builtin's own name, so every field already configured with that tool
+runs the user's version with nothing to re-pick. Restore deletes the file and puts back the exact
+class that shipped.
+
+**Why:** a tool is a small readable class, and params alone cannot say "decline differently",
+"hint differently", "call the provider differently". A copy under a second name would have been
+easier and would have looked, to the user, like the edit had done nothing.
+
+**Files:** `plugins/smart_notes/engine/tools/overrides.py` (new),
+`plugins/smart_notes/engine/tools/user_tools.py` (`UserToolLoader.name_for`, the allowlist),
+`plugins/smart_notes/__init__.py`, `gui/smart_notes/dialogs/controllers/user_tools.py` (three
+ops), `gui/smart_notes/web/10-usertools.js`, `page.html`, `page.css`,
+`tests/plugins/smart_notes/test_tool_overrides.py` (new), `tests/gui/test_smart_notes_user_tools_ui.py`.
+
+**How to verify:**
+```
+pytest tests/plugins/smart_notes/test_tool_overrides.py tests/gui/test_smart_notes_user_tools_ui.py -q
+```
+In Anki: Smart Notes → Configure → Tools → any builtin → Edit → change its `description` → Save.
+The card shows "your version" and the new description; Restore built-in puts the original back.
+
+**Notes / rollback:** the user-tool loader's rule that a file may only register its OWN name is
+deliberately NOT relaxed — it exists so a tool from the `user:` namespace cannot silently shadow
+`ai`. An override claims a builtin's name because that IS the request, from a directory that
+exists for nothing else, written by a user who opened the tool and read its source. What made it
+a small change is that the loader already did the compile-guard-isolate dance; only two things
+vary, so `name_for()` is now the single place the file-name → registry-name rule lives and the
+override loader overrides it.
+
+Three failure paths, all pinned by tests that were checked by reverting the fix: the file is
+compiled BEFORE it is written (a broken edit never reaches disk), a file that fails to load at
+startup leaves the shipped class registered and reports the error on its card, and disabling the
+feature restores every displaced builtin.
+
+The memory of WHAT was displaced is module scope (`_SHIPPED`), because what it shadows — the tool
+registry — is module scope too. A running Anki has two loaders over the same folder (the plugin
+builds one at enable, the settings dialog another when it opens) and they bind the same registry,
+so per-instance memory meant the loader that restored was not the loader that displaced: Restore
+built-in re-registered the dialog's own copy of the user's class, and an override saved in the
+dialog survived disabling the feature. Both are two-loader bugs a single-loader fixture cannot
+see, and both now have a test. Sweeping the registry instead is not an option — an override
+carries no namespace to key on, so the shared dict is its equivalent of the `user:` prefix.
+
+The stale-file sweep in `load_all` is keyed on the same dict, through a `claimed()` hook: the
+dialog builds a fresh loader whose own bookkeeping is empty, so an override file deleted by hand
+was never swept and the deleted class went on serving every field using that tool — with no badge
+and no Restore button, because the card derived "overridden" from the load results.
+
+The card now carries two facts instead of one: `overridden` (a file of the user's exists) and
+`displaced` (their class is the one RUNNING). Conflating them lied in both directions — a file
+that fails to RELOAD leaves the user's previous version running, and the card said the built-in
+was.
+
+Each loader also execs its files into its own `sys.modules` prefix, so an override OF `cloze` and
+a user tool CALLED `cloze` cannot collide on one key and make a class's `__module__` — and with
+it the source the editor shows — point at whichever loaded last.
+
+The import allowlist gained `abc`, `omnia.core.providers.errors` and
+`omnia.core.providers.tts.registry`: a copy of a shipped tool has to pass the same guard as any
+other tool file, and `cloze_audio` imports all three. Both `omnia.core.providers` entries are
+listed in full rather than by prefix, so the package holding the credentials stays closed.
+
+There is no test-run gate on saving a builtin. The gate exists because an LLM wrote the code and
+the user had not read it; here the code started as the add-on's own and no model is involved. What
+replaces it is the compile-before-write, plus **Run**, which works on a builtin: its source is
+compiled through the OVERRIDE loader, the only one that expects a file to claim a builtin's name.
+Through the user-tool loader — which is where it went first — every run of every builtin died on a
+name clash with the builtin itself, before the edit was executed at all, and `cloze_audio` lost
+its underscore to `slugify` on the way. That also keeps the first execution of an edit OFF the Qt
+main thread, which is where `on_test` already runs.
+
+
 ## 2026-09-12 — A failure names the field it happened to and the tool that gave up
 
 **What:** two changes, both about the same sentence. `summarize_attempts` now prefixes EVERY

@@ -344,11 +344,15 @@
           </label>
           <span id="sn-ut-slug" class="sn-ut-slug"></span>
         </div>
-        <div class="sn-label">What should it do?</div>
-        <textarea id="sn-ut-prompt" class="sn-ut-textarea" rows="3" placeholder="From the audio filename in a field, output just the extension (mp3, wav…)."></textarea>
-        <div class="sn-ut-row">
-          <button id="sn-ut-generate" class="sn-btn sn-btn-magic" type="button">✨ Write the tool</button>
-          <span id="sn-ut-genmsg" class="sn-msg"></span>
+        <!-- Hidden while a BUILTIN is open: its code is the add-on's own and is edited by
+             hand, so there is no description to write it from. -->
+        <div id="sn-ut-describe">
+          <div class="sn-label">What should it do?</div>
+          <textarea id="sn-ut-prompt" class="sn-ut-textarea" rows="3" placeholder="From the audio filename in a field, output just the extension (mp3, wav…)."></textarea>
+          <div class="sn-ut-row">
+            <button id="sn-ut-generate" class="sn-btn sn-btn-magic" type="button">✨ Write the tool</button>
+            <span id="sn-ut-genmsg" class="sn-msg"></span>
+          </div>
         </div>
         <div class="sn-label">The tool's code — read it before you save it</div>
         <textarea id="sn-ut-source" class="sn-ut-source" rows="16" spellcheck="false" placeholder="The generated Python appears here in full. You can edit it; testing it again re-arms Save."></textarea>

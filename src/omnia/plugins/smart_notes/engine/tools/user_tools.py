@@ -75,7 +75,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Optional
 
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.config import SmartNotesFieldRule
@@ -320,6 +320,7 @@ class ImportGuard:
             # than rewrites — pull the audio out of a video, resize a picture — has to reach
             # the file the note refers to, and everything short of that produced tools that
             # renamed a string and pretended.
+            "abc",
             "io",
             "os",
             "pathlib",
@@ -333,6 +334,11 @@ class ImportGuard:
             # The media folder's location and the audio runtime, so a tool does not have to
             # guess either.
             "omnia.core.audio",
+            # The provider layer's ERRORS and its TTS registry — what a shipped tool imports to
+            # raise the right exception and to ask which voices exist. Both are listed in full:
+            # neither opens `omnia.core.providers` itself, where the credentials live.
+            "omnia.core.providers.errors",
+            "omnia.core.providers.tts.registry",
             "pydantic",
             "omnia.core.config.base",
             "omnia.core.lang",
@@ -463,6 +469,10 @@ class UserToolStore:
             raise UserToolError(f"could not read {path.name}: {exc}") from exc
         return UserToolSource.parse(slug, text)
 
+    #: What one file in this directory IS, for the log line a subclass would otherwise inherit
+    #: wholesale ("could not read the user tool 'cloze'" about an edited builtin).
+    NOUN: ClassVar[str] = "user tool"
+
     def list(self) -> list[UserToolSource]:
         """Return every readable tool in the directory, in slug order.
 
@@ -473,7 +483,9 @@ class UserToolStore:
             try:
                 source = self.read(slug)
             except UserToolError:
-                logger.exception("smart_notes: could not read the user tool %r", slug)
+                logger.exception(
+                    "smart_notes: could not read the %s %r", self.NOUN, slug
+                )
                 continue
             if source is not None:
                 sources.append(source)
@@ -554,6 +566,12 @@ class UserToolLoader:
         self._log = log if log is not None else logger
         self._loaded: set[str] = set()
 
+    #: Prefix for the synthetic module each file is executed into. Per-loader, because two
+    #: directories can hold a file of the same stem — a user tool called ``cloze`` and an
+    #: override OF ``cloze`` — and one ``sys.modules`` key for both would make a class's
+    #: ``__module__`` point at whichever was loaded last.
+    MODULE_PREFIX: ClassVar[str] = _MODULE_PREFIX
+
     @property
     def store(self) -> UserToolStore:
         """The store this loader reads from."""
@@ -563,6 +581,37 @@ class UserToolLoader:
     def loaded(self) -> tuple[str, ...]:
         """The registry names this loader currently has registered, sorted."""
         return tuple(sorted(self._loaded))
+
+    def claimed(self) -> tuple[str, ...]:
+        """The registry names this loader may drop when their file is gone.
+
+        Its own bookkeeping here, which is all a user-tool loader can know. It is a HOOK
+        because a loader binding a shared name needs a shared answer: two loaders over one
+        directory (the plugin's and the settings dialog's) each see only the files they
+        themselves loaded, so a file deleted by hand between them would otherwise stay
+        registered forever — see
+        :meth:`~omnia.plugins.smart_notes.engine.tools.overrides.BuiltinOverrideLoader.claimed`.
+        """
+        return tuple(self._loaded)
+
+    def name_for(self, slug: str) -> str:
+        """The registry name a file called ``<slug>.py`` in this store must claim.
+
+        The one place the file name → registry name mapping lives, so a loader over a DIFFERENT
+        directory (the builtin overrides in
+        :mod:`~omnia.plugins.smart_notes.engine.tools.overrides`) changes the rule by overriding
+        this rather than by copying the compile-and-register dance below.
+
+        Args:
+            slug: The file's stem.
+
+        Returns:
+            The registry name.
+
+        Raises:
+            UserToolError: When the stem is not a legal name here.
+        """
+        return user_tool_name(validate_slug(slug))
 
     def load_all(self) -> list[UserToolLoad]:
         """Load every tool file in the store, skipping (and logging) the ones that break.
@@ -575,8 +624,9 @@ class UserToolLoader:
             One :class:`UserToolLoad` per file, in slug order.
         """
         slugs = self._store.slugs()
-        for name in tuple(self._loaded):
-            if name[len(USER_TOOL_PREFIX) :] not in slugs:
+        live = {self.name_for(slug) for slug in slugs}
+        for name in self.claimed():
+            if name not in live:
                 self._unregister(name)
         return [self.load(slug) for slug in slugs]
 
@@ -594,7 +644,7 @@ class UserToolLoader:
             if source is None:
                 raise UserToolError(f"no tool file for {slug!r}")
             cls = self.compile_tool(source, filename=str(self._store.path_for(slug)))
-            self._register(source.name, cls)
+            self._register(self.name_for(slug), cls)
         except (
             Exception
         ) as exc:  # one broken file must never break startup or its siblings
@@ -622,10 +672,9 @@ class UserToolLoader:
             UserToolError: When the guard refuses it, the module raises while executing, or it
                 did not register exactly ``user:<slug>``.
         """
-        validate_slug(source.slug)
+        name = self.name_for(source.slug)
         self._guard.check(source.code)
-        name = source.name
-        module = ModuleType(_MODULE_PREFIX + source.slug.replace("-", "_"))
+        module = ModuleType(self.MODULE_PREFIX + source.slug.replace("-", "_"))
         module.__file__ = filename or f"<omnia user tool {source.slug}>"
         before = dict(TOOL_REGISTRY)
         TOOL_REGISTRY.pop(name, None)  # a reload must not read as a name conflict
@@ -636,7 +685,7 @@ class UserToolLoader:
             added = set(TOOL_REGISTRY) - baseline
             if added != {name}:
                 raise UserToolError(
-                    f"a user tool must register exactly {name!r}; this one registered "
+                    f"the file must register exactly {name!r}; this one registered "
                     + (", ".join(repr(other) for other in sorted(added)) or "nothing")
                 )
             cls = TOOL_REGISTRY[name]

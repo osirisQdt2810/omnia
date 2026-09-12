@@ -14,6 +14,7 @@ written back to notes + media on the main thread. The pure logic lives in the ``
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Optional
 
 from omnia.core import anki_compat, services
@@ -26,7 +27,13 @@ from omnia.plugins.smart_notes.engine import (
     GenerationResult,
     GenerationService,
 )
-from omnia.plugins.smart_notes.engine.tools import UserToolLoader, UserToolStore
+from omnia.plugins.smart_notes.engine.tools import (
+    OVERRIDE_DIRNAME,
+    BuiltinOverrideLoader,
+    BuiltinOverrideStore,
+    UserToolLoader,
+    UserToolStore,
+)
 from omnia.plugins.smart_notes.integration import (
     BatchGenerator,
     BatchSummary,
@@ -90,6 +97,7 @@ class SmartNotesPlugin(FeaturePlugin):
         self._gateway: Optional[IntegrationGateway] = None
         self._store: Optional[SmartNotesStore] = None
         self._user_tools: Optional[UserToolLoader] = None
+        self._tool_overrides: Optional[BuiltinOverrideLoader] = None
         self._regen: Optional[RegenerationService] = None
 
     def on_enable(self, ctx: PluginContext) -> None:
@@ -134,6 +142,10 @@ class SmartNotesPlugin(FeaturePlugin):
             # offered by the picker and stop resolving in a chain (the pipeline degrades the
             # name to `unknown_tool`, exactly as on a device that never had the file).
             self._user_tools.unload_all()
+        if self._tool_overrides is not None:
+            # …and an edited builtin goes back to the shipped class, rather than leaving the
+            # user's code registered under a name the rest of Anki can still reach.
+            self._tool_overrides.unload_all()
         self._ctx = None
         self._service = None
         self._review = None
@@ -153,10 +165,12 @@ class SmartNotesPlugin(FeaturePlugin):
         """
         from omnia import addon_user_files_dir
 
+        tools_dir = addon_user_files_dir() / "tools"
+        # Its own guarded step, so an unreadable tools folder cannot also cost the edited
+        # builtins, nor a broken override the user tools.
+        self._load_tool_overrides(tools_dir / OVERRIDE_DIRNAME)
         try:
-            self._user_tools = UserToolLoader(
-                UserToolStore(addon_user_files_dir() / "tools")
-            )
+            self._user_tools = UserToolLoader(UserToolStore(tools_dir))
             loads = self._user_tools.load_all()
         except Exception:  # boundary: never block enabling on the tools folder
             logger.exception("smart_notes: could not load user-authored tools")
@@ -166,6 +180,29 @@ class SmartNotesPlugin(FeaturePlugin):
         failed = [load.slug for load in loads if not load.ok]
         logger.info(
             "smart_notes: loaded %d user tool(s)%s",
+            sum(1 for load in loads if load.ok),
+            f", skipped {failed}" if failed else "",
+        )
+
+    def _load_tool_overrides(self, directory: Path) -> None:
+        """Load each edited builtin over its shipped class (see ``engine.tools.overrides``).
+
+        A failure here leaves the shipped builtins registered, which is the whole point of the
+        override design: the worst case is a tool that behaves as it always did.
+        """
+        try:
+            self._tool_overrides = BuiltinOverrideLoader(
+                BuiltinOverrideStore(directory)
+            )
+            loads = self._tool_overrides.load_all()
+        except Exception:  # boundary: never block enabling on an edited builtin
+            logger.exception("smart_notes: could not load the edited builtins")
+            return
+        if not loads:
+            return
+        failed = [load.slug for load in loads if not load.ok]
+        logger.info(
+            "smart_notes: %d builtin tool(s) running the user's own version%s",
             sum(1 for load in loads if load.ok),
             f", skipped {failed}" if failed else "",
         )
