@@ -190,3 +190,143 @@ class TestProgressLabel:
         monkeypatch.setattr(aqt, "mw", None, raising=False)
 
         window.taskman.pending[0]()  # must not raise
+
+
+class TestTheToolsMenuSeam:
+    """What the main window still holds after a plugin has been torn down.
+
+    ``QWidget.removeAction`` detaches an action from the MENU and leaves it parented to the
+    window. Every action here is created with ``mw`` as its parent, so without disposal a
+    plugin toggled ten times leaves seventy behind — and anything that asks the window what it
+    contains then sees a plugin's own retired actions. That is not hypothetical: the clash
+    check below reported them as the thing holding the plugin's keys, and told the user to
+    uninstall the add-on it is part of.
+    """
+
+    @staticmethod
+    def _window(monkeypatch):
+        import aqt
+        from aqt.qt import FakeMainWindow
+
+        window = FakeMainWindow()
+        monkeypatch.setattr(aqt, "mw", window, raising=False)
+        return window
+
+    def test_a_removed_action_is_no_longer_on_the_window(self, monkeypatch):
+        from aqt.qt import QAction
+
+        from omnia.core.anki_compat import (
+            add_tools_menu_action,
+            remove_tools_menu_action,
+        )
+
+        window = self._window(monkeypatch)
+        action = add_tools_menu_action("Omnia · Test", lambda _c: None, shortcut="]")
+        assert window.findChildren(QAction) == [action]
+
+        remove_tools_menu_action(action)
+
+        assert window.findChildren(QAction) == []
+
+    def test_teardown_and_re_enable_does_not_accumulate(self, monkeypatch):
+        from aqt.qt import QAction
+
+        from omnia.core.anki_compat import (
+            add_tools_menu_action,
+            remove_tools_menu_action,
+        )
+
+        window = self._window(monkeypatch)
+        for _ in range(5):
+            action = add_tools_menu_action(
+                "Omnia · Test", lambda _c: None, shortcut="]"
+            )
+            remove_tools_menu_action(action)
+
+        assert window.findChildren(QAction) == []
+
+    def test_removing_nothing_is_harmless(self, monkeypatch):
+        from omnia.core.anki_compat import remove_tools_menu_action
+
+        self._window(monkeypatch)
+        remove_tools_menu_action(None)  # must not raise
+
+
+class TestShortcutAlreadyTaken:
+    """Whether a key sequence is spoken for, asked before a plugin binds its own."""
+
+    @staticmethod
+    def _window(monkeypatch):
+        import aqt
+        from aqt.qt import FakeMainWindow
+
+        window = FakeMainWindow()
+        monkeypatch.setattr(aqt, "mw", window, raising=False)
+        return window
+
+    def test_a_free_sequence_is_reported_free(self, monkeypatch):
+        from omnia.core.anki_compat import shortcut_already_taken
+
+        self._window(monkeypatch)
+        assert shortcut_already_taken("]") == []
+
+    def test_it_names_the_action_holding_the_key(self, monkeypatch):
+        from omnia.core.anki_compat import add_tools_menu_action, shortcut_already_taken
+
+        self._window(monkeypatch)
+        add_tools_menu_action("Speed Up Audio", lambda _c: None, shortcut="]")
+
+        assert shortcut_already_taken("]") == ["Speed Up Audio"]
+
+    def test_a_different_key_is_not_a_clash(self, monkeypatch):
+        from omnia.core.anki_compat import add_tools_menu_action, shortcut_already_taken
+
+        self._window(monkeypatch)
+        add_tools_menu_action("Speed Up Audio", lambda _c: None, shortcut="]")
+
+        assert shortcut_already_taken("[") == []
+
+    def test_an_ampersand_accelerator_is_not_part_of_the_name(self, monkeypatch):
+        # Qt menu text carries "&" to mark the Alt accelerator; it is not part of what the
+        # user sees, and printing it back at them reads as a typo.
+        from omnia.core.anki_compat import add_tools_menu_action, shortcut_already_taken
+
+        self._window(monkeypatch)
+        add_tools_menu_action("&Speed Up", lambda _c: None, shortcut="]")
+
+        assert shortcut_already_taken("]") == ["Speed Up"]
+
+    def test_an_empty_sequence_matches_nothing(self, monkeypatch):
+        # Most actions have no shortcut at all; treating "" as a match would name every one.
+        from omnia.core.anki_compat import add_tools_menu_action, shortcut_already_taken
+
+        self._window(monkeypatch)
+        add_tools_menu_action("No Shortcut", lambda _c: None)
+
+        assert shortcut_already_taken("") == []
+
+    def test_a_retired_action_is_not_reported(self, monkeypatch):
+        # The defect this whole class exists for: reconfiguring a plugin tears its actions
+        # down and re-enables it, and the check ran against the corpses.
+        from omnia.core.anki_compat import (
+            add_tools_menu_action,
+            remove_tools_menu_action,
+            shortcut_already_taken,
+        )
+
+        self._window(monkeypatch)
+        action = add_tools_menu_action(
+            "Omnia · Audio: speed up", lambda _c: None, shortcut="]"
+        )
+        remove_tools_menu_action(action)
+
+        assert shortcut_already_taken("]") == []
+
+    def test_no_main_window_is_answered_not_raised(self, monkeypatch):
+        # A diagnostic that breaks the feature it is diagnosing is worse than no diagnostic.
+        import aqt
+
+        from omnia.core.anki_compat import shortcut_already_taken
+
+        monkeypatch.setattr(aqt, "mw", None, raising=False)
+        assert shortcut_already_taken("]") == []

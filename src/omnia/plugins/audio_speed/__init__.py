@@ -230,13 +230,11 @@ class AudioSpeedPlugin(FeaturePlugin):
             for key, names in sorted(clashes.items())
         )
         logger.warning("audio_speed: shortcut(s) already bound — %s", detail)
-        try:
-            anki_compat.show_tooltip(
-                f"Audio Speed: {detail}. Those keys will do nothing until the other add-on "
-                "is removed — Tools → Add-ons."
-            )
-        except Exception:
-            logger.debug("audio_speed: could not show the shortcut-clash tooltip")
+        # No guard: show_tooltip already swallows everything it can raise.
+        anki_compat.show_tooltip(
+            f"Audio Speed: {detail}. Those keys will do nothing until the other add-on is "
+            "removed — Tools → Add-ons."
+        )
 
     # -- the one write path --------------------------------------------------------------
 

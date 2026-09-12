@@ -139,6 +139,12 @@ _REACH_HINT = {
     "win32": (
         "In that window, paste the path into the address bar at the top and press Enter."
     ),
+    # Anything else: say what to do without claiming anything about a file picker we have never
+    # seen, or about where the folder sits on a system we do not know.
+    "other": (
+        "If that window does not show the folder, paste the path into it directly &mdash; "
+        "most file pickers accept a typed or pasted path."
+    ),
     "linux": (
         "In that window press <kbd>Ctrl</kbd><kbd>L</kbd>, paste the path, then press Enter. "
         "The folder is inside a hidden <code>.local</code>, so browsing to it will not work."
@@ -147,12 +153,19 @@ _REACH_HINT = {
 
 
 def _reach_hint(platform: str) -> str:
-    """The hint for ``platform``; an unknown one gets the neutral "paste it" advice."""
+    """The hint for ``platform``, or a neutral one where we cannot know the file picker.
+
+    The neutral branch is not decoration: the Linux text asserts the folder "is inside a hidden
+    ``.local``", which is false on a platform we have not thought about, and a wrong reason is
+    worse than none when it is the only instruction on the page.
+    """
     if platform.startswith("win"):
         return _REACH_HINT["win32"]
     if platform.startswith("darwin"):
         return _REACH_HINT["darwin"]
-    return _REACH_HINT["linux"]
+    if platform.startswith("linux"):
+        return _REACH_HINT["linux"]
+    return _REACH_HINT["other"]
 
 
 def render_install_page(
