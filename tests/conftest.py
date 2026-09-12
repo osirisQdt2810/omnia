@@ -161,12 +161,78 @@ def _install_anki_stubs() -> None:
         def setShortcut(self, value) -> None:
             self._shortcut = value
 
+        # The three below exist so `anki_compat.shortcut_already_taken` can run for real
+        # instead of being monkeypatched away: it reads a shortcut off every QAction on the
+        # main window and prints the action's text.
+        def shortcut(self):
+            return self._shortcut
+
+        def text(self) -> str:
+            return self.label
+
+        def setParent(self, parent) -> None:
+            self.parent = parent
+            if parent is None and self in _FakeMainWindow.registry:
+                _FakeMainWindow.registry.remove(self)
+
+        def deleteLater(self) -> None:
+            self.setParent(None)
+
         def trigger(self) -> None:
             for handler in list(self._handlers):
                 handler()
 
+    class _FakeKeySequence:
+        """Enough of ``QKeySequence`` to be compared and asked whether it is empty.
+
+        The previous stub was ``lambda value: value``, which made the real
+        ``shortcut_already_taken`` raise on ``.isEmpty()`` and fall into its own blanket
+        ``except`` — so the seam looked tested while nothing but the fixture's lambda ran.
+        """
+
+        def __init__(self, value="") -> None:
+            self.value = "" if value is None else str(value)
+
+        def isEmpty(self) -> bool:
+            return not self.value
+
+        def __eq__(self, other) -> bool:
+            return isinstance(other, _FakeKeySequence) and other.value == self.value
+
+        def __hash__(self) -> int:
+            return hash(self.value)
+
+        def __repr__(self) -> str:
+            return f"_FakeKeySequence({self.value!r})"
+
+    class _FakeMainWindow:
+        """A stand-in ``mw`` whose Tools menu records actions, like the real parenting does."""
+
+        registry: list = []
+
+        def __init__(self) -> None:
+            type(self).registry = []
+            menu = types.SimpleNamespace(
+                addAction=self._add, removeAction=self._remove, actions=list
+            )
+            self.form = types.SimpleNamespace(menuTools=menu)
+
+        def _add(self, action) -> None:
+            action.parent = self
+            type(self).registry.append(action)
+
+        def _remove(self, action) -> None:
+            # Qt's removeAction detaches from the MENU and leaves the action parented to the
+            # window — which is exactly the leak the disposal in remove_tools_menu_action
+            # exists to close, so the fake must not tidy up on its own.
+            pass
+
+        def findChildren(self, _cls) -> list:
+            return list(type(self).registry)
+
     qt_mod.QAction = _FakeAction
-    qt_mod.QKeySequence = lambda value: value
+    qt_mod.QKeySequence = _FakeKeySequence
+    qt_mod.FakeMainWindow = _FakeMainWindow
 
     class _FakeTimer:
         """Stand-in for ``aqt.qt.QTimer``: ``singleShot`` runs the closure inline in tests."""

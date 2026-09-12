@@ -705,11 +705,64 @@ def add_tools_menu_action(
     return action
 
 
+def shortcut_already_taken(shortcut: str) -> list[str]:
+    """Return the labels of the main window's actions already bound to ``shortcut``.
+
+    Qt does not resolve a collision, it refuses one: two actions carrying the same key
+    sequence in overlapping contexts make the shortcut *ambiguous*, and Qt then fires
+    NEITHER. To the user that is not a conflict, it is a dead key — no menu entry reacts, no
+    message appears, and nothing in either add-on has said anything. Silence is the worst
+    failure a keyboard shortcut can have, so a caller that binds one can ask first and say
+    something instead.
+
+    Only ``QAction`` shortcuts are visible here. An add-on that registers its keys through
+    ``state_shortcuts_will_change`` — the reviewer's own list of plain key/callable pairs —
+    is invisible to this, and its clash is still a dead key with no explanation. The add-on
+    that motivated this check happens to do both, which is why it is caught.
+
+    Args:
+        shortcut: The key sequence to look for, in Qt's own spelling.
+
+    Returns:
+        The other actions' texts, empty when the sequence is free. Never raises: a diagnostic
+        that breaks the feature it is diagnosing is worse than no diagnostic.
+    """
+    try:
+        from aqt.qt import QAction, QKeySequence
+
+        wanted = QKeySequence(shortcut)
+        if wanted.isEmpty():
+            return []
+        clashes = []
+        for action in main_window().findChildren(QAction):
+            if action.shortcut() != wanted:
+                continue
+            text = str(action.text() or "").replace("&", "").strip()
+            clashes.append(text or "an unnamed action")
+        return clashes
+    except Exception:
+        from omnia.core.logging import get_logger
+
+        get_logger().debug("could not check whether %r is already bound", shortcut)
+        return []
+
+
 def remove_tools_menu_action(action: Any) -> None:
-    """Remove an action created by :func:`add_tools_menu_action` from the Tools menu."""
+    """Remove an action created by :func:`add_tools_menu_action`, and dispose of it.
+
+    ``QWidget.removeAction`` detaches an action from the MENU; it does not reparent or destroy
+    it. Every action here was created with ``mw`` as its parent, so without the disposal below
+    each one outlives its plugin as a child of the main window — a plugin toggled or
+    reconfigured ten times leaves seventy of them behind. They hold no active shortcut, so
+    nothing misbehaves, but anything that ASKS the window what it contains sees them: the
+    clash check in :func:`shortcut_already_taken` reported a plugin's own retired actions as
+    the thing holding its keys, and told the user to uninstall the add-on it is part of.
+    """
     if action is None:
         return
     main_window().form.menuTools.removeAction(action)
+    action.setParent(None)
+    action.deleteLater()
 
 
 # --- Reviewer.onEnterKey wrap (used by auto_flip's two-stage Enter cancel) --------------

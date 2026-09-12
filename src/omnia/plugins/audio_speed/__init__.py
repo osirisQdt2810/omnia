@@ -45,13 +45,19 @@ from omnia.plugins.audio_speed.logic import (
 
 logger = logging.getLogger(__name__)
 
-_ACTION_SPEED_UP = "Audio: speed up"
-_ACTION_SLOW_DOWN = "Audio: slow down"
-_ACTION_RESET = "Audio: reset speed"
-_ACTION_FRONT_UP = "Audio: speed up (front side)"
-_ACTION_FRONT_DOWN = "Audio: slow down (front side)"
-_ACTION_BACK_UP = "Audio: speed up (back side)"
-_ACTION_BACK_DOWN = "Audio: slow down (back side)"
+# Every entry this plugin puts in Anki's Tools menu carries the add-on's name, because that
+# menu belongs to Anki and to every add-on the user has installed: seven bare "Audio: …" lines
+# in it say nothing about where they came from or which settings screen turns them off. Matches
+# the shape Auto-Flip already uses.
+_MENU_PREFIX = "Omnia · Audio"
+
+_ACTION_SPEED_UP = f"{_MENU_PREFIX}: speed up"
+_ACTION_SLOW_DOWN = f"{_MENU_PREFIX}: slow down"
+_ACTION_RESET = f"{_MENU_PREFIX}: reset speed"
+_ACTION_FRONT_UP = f"{_MENU_PREFIX}: speed up (front side)"
+_ACTION_FRONT_DOWN = f"{_MENU_PREFIX}: slow down (front side)"
+_ACTION_BACK_UP = f"{_MENU_PREFIX}: speed up (back side)"
+_ACTION_BACK_DOWN = f"{_MENU_PREFIX}: slow down (back side)"
 
 
 def build_speed_js() -> str:
@@ -163,6 +169,16 @@ class AudioSpeedPlugin(FeaturePlugin):
             (_ACTION_BACK_UP, ANSWER, "up", settings.answer_up_shortcut),
             (_ACTION_BACK_DOWN, ANSWER, "down", settings.answer_down_shortcut),
         ]
+        # Ask BEFORE binding: a sequence another add-on already holds is not a conflict Qt
+        # resolves, it is one Qt refuses — both actions go ambiguous and neither fires. The
+        # user then has a dead key and nothing anywhere says why. The add-on this plugin
+        # replaces ships `]` and `[` as its own defaults, so anyone who has not removed it yet
+        # lands exactly here.
+        taken = {
+            shortcut: anki_compat.shortcut_already_taken(shortcut)
+            for _label, _target, _move, shortcut in moves
+            if shortcut
+        }
         self._actions = [
             anki_compat.add_tools_menu_action(
                 label,
@@ -171,6 +187,7 @@ class AudioSpeedPlugin(FeaturePlugin):
             )
             for label, target, move, shortcut in moves
         ]
+        self._warn_about_taken_shortcuts(taken)
         # mpv keeps this until told otherwise; set once here, then per render and per change.
         self._apply(BOTH, announce=False)
 
@@ -195,6 +212,29 @@ class AudioSpeedPlugin(FeaturePlugin):
         self._speeds = None
         self._side = QUESTION
         self._ctx = None
+
+    @staticmethod
+    def _warn_about_taken_shortcuts(taken: dict[str, list[str]]) -> None:
+        """Tell the user which shortcuts will not work, and who is holding them.
+
+        Said once, at enable, because there is no later moment: pressing the key produces
+        nothing at all, so a user who has not been told has no thread to pull. The message
+        names the other action rather than guessing at an add-on, since that is the only thing
+        Qt actually knows.
+        """
+        clashes = {key: names for key, names in taken.items() if names}
+        if not clashes:
+            return
+        detail = "; ".join(
+            f"{key} is already used by {' and '.join(names)}"
+            for key, names in sorted(clashes.items())
+        )
+        logger.warning("audio_speed: shortcut(s) already bound — %s", detail)
+        # No guard: show_tooltip already swallows everything it can raise.
+        anki_compat.show_tooltip(
+            f"Audio Speed: {detail}. Those keys will do nothing until the other add-on is "
+            "removed — Tools → Add-ons."
+        )
 
     # -- the one write path --------------------------------------------------------------
 
