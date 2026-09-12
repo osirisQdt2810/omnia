@@ -689,7 +689,9 @@ class TestRegenerateRunOutcomes:
         )
         outcome = service.regenerate(1, ["Definition"])[0]
         assert outcome.status == "error"
-        assert outcome.message == "HTTP 401"
+        assert (
+            outcome.message == "ai: HTTP 401"
+        )  # the field row names the field; this names the tool
         assert compat.updated == []
 
     def test_one_failing_field_does_not_stop_the_others(self, monkeypatch):

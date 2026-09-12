@@ -61,9 +61,9 @@ AttemptStatus = Literal[
 
 # What a status MEANS, for the times an attempt carries no detail of its own. These strings
 # reach the USER: an exhausted chain becomes a ToolChainError, which SmartNotesContext.friendly()
-# prints verbatim in the preview, the prompt palette and the account dialog. So the raw status
-# token — a config-level enum value — must never be shown on its own. (The batch summary renders
-# only a COUNT of failed fields; it is not this string's consumer.)
+# prints verbatim in the preview, the prompt palette and the account dialog, and the batch
+# summary names a couple of them under their field. So the raw status token — a config-level
+# enum value — must never be shown on its own.
 _STATUS_SENTENCES: dict[str, str] = {
     "not_applicable": "the tool did not apply to this field",
     "empty": "the tool ran but produced nothing",
@@ -98,17 +98,18 @@ class ToolAttempt:
 def summarize_attempts(attempts: tuple[ToolAttempt, ...]) -> str:
     """Render a chain trace as one line: ``"cloze: word not found; ai: HTTP 401"``.
 
-    A SINGLE-attempt chain renders as just that attempt's reason, with no ``"<tool>: "``
-    prefix. That is deliberate: every field configured before tool chains existed compiles to
-    the lone ``"ai"`` tool, so its failure message stays byte-identical to the message the
-    provider itself raised — the prefix only earns its place once there is a chain to
-    disambiguate. An attempt with no detail of its own falls back to a sentence rather than to
-    its status token (see :attr:`ToolAttempt.text`).
+    EVERY attempt is named, single-tool chains included. A one-tool chain used to render as
+    the bare reason so a legacy one-``ai`` field's message stayed byte-identical to the
+    provider's own — but that is exactly the shape a user cannot act on: "the tool did not
+    apply to this field" names neither the tool that declined nor, once it reaches a summary,
+    the field it declined for. Naming the tool costs six characters of an already-visible
+    message and is the only part of it the user can go and change.
+
+    An attempt with no detail of its own falls back to a sentence rather than to its status
+    token (see :attr:`ToolAttempt.text`).
     """
     if not attempts:
         return "no tools configured for this field"
-    if len(attempts) == 1:
-        return attempts[0].text
     return "; ".join(f"{attempt.tool}: {attempt.text}" for attempt in attempts)
 
 

@@ -559,8 +559,10 @@ class TestToolChainCounters:
         )
 
         assert (outcome.field_failures, outcome.unfilled) == (0, 1)
+        # The count alone sent the reader looking through a note type's twenty fields for a
+        # tool they were never told the name of. The trace is the only actionable half.
         assert self._apply([outcome]).message() == (
-            "Processed 0 note(s), 1 field(s) had no applicable tool."
+            "Processed 0 note(s), 1 field(s) had no applicable tool (Def — cloze: no match)."
         )
 
     def test_a_broken_chain_still_counts_as_a_field_error(self):
@@ -569,7 +571,75 @@ class TestToolChainCounters:
         outcome = self._generate_one([], [FailedField("Def", "ai: HTTP 401", "error")])
 
         assert (outcome.field_failures, outcome.unfilled) == (1, 0)
-        assert "1 field error(s)" in self._apply([outcome]).message()
+        assert (
+            "1 field error(s) (Def — ai: HTTP 401)" in self._apply([outcome]).message()
+        )
+
+    def test_a_broken_field_and_a_declined_one_are_reported_apart(self):
+        # The two halves used to collapse into two bare counts, which read as one problem.
+        from omnia.plugins.smart_notes.engine import FailedField
+
+        outcome = self._generate_one(
+            [],
+            [
+                FailedField("Def", "ai: HTTP 401", "error"),
+                FailedField("Audio", "cloze_audio: nothing to hide", "unproductive"),
+            ],
+        )
+
+        message = self._apply([outcome]).message()
+
+        assert "1 field error(s) (Def — ai: HTTP 401)" in message
+        assert (
+            "1 field(s) had no applicable tool (Audio — cloze_audio: nothing to hide)"
+            in message
+        )
+
+    def test_an_unproductive_field_is_named_even_behind_two_errors(self):
+        # The examples are picked per KIND. Slicing the failures first (the obvious way to
+        # bound them) let two errored fields use up the budget and left the declined one
+        # counted but unnamed — the exact report that sent the user hunting.
+        from omnia.plugins.smart_notes.engine import FailedField
+
+        outcome = self._generate_one(
+            [],
+            [
+                FailedField("A", "ai: HTTP 401", "error"),
+                FailedField("B", "ai: HTTP 401", "error"),
+                FailedField("C", "cloze: no match", "unproductive"),
+            ],
+        )
+
+        assert "(C — cloze: no match)" in self._apply([outcome]).message()
+
+    def test_the_same_failure_on_many_notes_is_named_once(self):
+        # A batch is many notes of ONE type, so the same field fails the same way every time.
+
+        summary = self._apply(
+            [
+                self._outcome(
+                    nid,
+                    unfilled=1,
+                    unfilled_examples=["Def — cloze: no match"],
+                )
+                for nid in (1, 2, 3)
+            ]
+        )
+
+        assert summary.unfilled_examples == ["Def — cloze: no match"]
+        assert "3 field(s) had no applicable tool (Def — cloze: no match)" in (
+            summary.message()
+        )
+
+    def test_a_long_provider_body_is_clipped_to_tooltip_length(self):
+        from omnia.plugins.smart_notes.engine import FailedField
+
+        outcome = self._generate_one(
+            [], [FailedField("Def", "ai: " + "x" * 400, "error")]
+        )
+
+        (example,) = self._apply([outcome]).error_examples
+        assert len(example) < 120 and example.endswith("…")
 
     def test_a_note_whose_fields_all_declined_is_not_counted_as_skipped(self):
         from omnia.plugins.smart_notes.engine import FailedField

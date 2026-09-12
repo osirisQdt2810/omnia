@@ -26,6 +26,7 @@ that to the threading + progress + media-write seams in ``core/anki_compat``.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -81,8 +82,33 @@ class _NotePlan:
     fields: dict[str, str]
 
 
-# How many "<field> needs <prereq>" examples the summary tooltip names before it just counts.
-_MAX_BLOCKED_EXAMPLES = 2
+# How many named examples ("<field> needs <prereq>", "<field> — <chain trace>") the summary
+# tooltip carries per category before it falls back to the count alone. The tooltip is read in
+# passing, so this stays small on purpose.
+_MAX_EXAMPLES = 2
+# How much of one example's detail survives. A chain trace can run to a provider's full error
+# body; past this the reader is scrolling a tooltip instead of reading it.
+_MAX_EXAMPLE_CHARS = 90
+
+
+def _example(field_name: str, detail: str) -> str:
+    """Render one "<field> — <why>" example, clipped so a tooltip stays a tooltip."""
+    text = " ".join(detail.split()) or "produced nothing"
+    if len(text) > _MAX_EXAMPLE_CHARS:
+        text = text[: _MAX_EXAMPLE_CHARS - 1].rstrip() + "…"
+    return f"{field_name} — {text}"
+
+
+def _merge_examples(into: list[str], examples: list[str]) -> None:
+    """Add ``examples`` to ``into``, deduplicated and bounded by :data:`_MAX_EXAMPLES`.
+
+    A batch is many notes of ONE note type, so the same field fails the same way on note after
+    note; without the dedupe the two slots would both go to the first field and every other
+    failing field would be invisible behind the count.
+    """
+    for example in examples:
+        if example not in into and len(into) < _MAX_EXAMPLES:
+            into.append(example)
 
 
 @dataclass
@@ -114,6 +140,11 @@ class BatchSummary:
     # Per-field generation errors across all notes (a single field raising), distinct from
     # ``failed`` (a whole note that could not be processed/written at all).
     field_failures: int = 0
+    # A few "<field> — <chain trace>" strings for the two lists below. A bare count says a
+    # field failed somewhere in a note type with twenty of them; the trace says which field it
+    # was and which tool in its chain gave up, which is the whole of what the reader can act on.
+    error_examples: list[str] = field(default_factory=list)
+    unfilled_examples: list[str] = field(default_factory=list)
     # Fields whose tool chain ran to the end and produced nothing WITHOUT anything breaking —
     # every tool simply declined. Counted apart from ``field_failures`` because nothing is
     # wrong: there was just nothing to make (a cloze whose word isn't in the sentence).
@@ -135,13 +166,19 @@ class BatchSummary:
             # Name the first blocked field(s) and what they were waiting for: "1 blocked" alone
             # leaves the user with no idea which field, or that the fix is a config one (the
             # prerequisite field is usually just switched off).
-            detail = "; ".join(self.blocked_examples[:_MAX_BLOCKED_EXAMPLES])
-            suffix = f" ({detail})" if detail else ""
-            parts.append(f"{self.blocked} blocked — missing prerequisites{suffix}")
+            parts.append(
+                f"{self.blocked} blocked — missing prerequisites"
+                f"{_suffix(self.blocked_examples)}"
+            )
         if self.field_failures:
-            parts.append(f"{self.field_failures} field error(s)")
+            parts.append(
+                f"{self.field_failures} field error(s){_suffix(self.error_examples)}"
+            )
         if self.unfilled:
-            parts.append(f"{self.unfilled} field(s) had no applicable tool")
+            parts.append(
+                f"{self.unfilled} field(s) had no applicable tool"
+                f"{_suffix(self.unfilled_examples)}"
+            )
         if self.tool_fallbacks:
             parts.append(f"{self.tool_fallbacks} field(s) fell back to a later tool")
         if self.errored_note_ids:
@@ -150,6 +187,22 @@ class BatchSummary:
             parts.append(f"kept {len(self.errored_note_ids)} note(s) for retry")
         prefix = "Cancelled — " if self.cancelled else ""
         return prefix + ", ".join(parts) + "."
+
+
+def _examples(failed: list[Any], kind: str) -> list[str]:
+    """The bounded "<field> — <why>" examples among ``failed`` of one kind.
+
+    ``kind`` is matched as "error" vs everything else, mirroring ``FailedField.kind``: a chain
+    that BROKE is a different report from one where every tool simply declined.
+    """
+    wanted = [item for item in failed if (item.kind == "error") == (kind == "error")]
+    return [_example(item.field, item.error) for item in wanted[:_MAX_EXAMPLES]]
+
+
+def _suffix(examples: list[str]) -> str:
+    """Render the bounded "(<example>; <example>)" tail of a summary part, or ""."""
+    detail = "; ".join(examples[:_MAX_EXAMPLES])
+    return f" ({detail})" if detail else ""
 
 
 def _unmaterialized(rule: Any, result: GenerationResult) -> str:
@@ -188,6 +241,10 @@ class _NoteOutcome:
     )
     blocked: int = 0
     blocked_examples: list[str] = field(default_factory=list)
+    # "<field> — <chain trace>" for this note's failed/unproductive fields (bounded; see
+    # ``BatchSummary``), so the summary can name one instead of only counting it.
+    error_examples: list[str] = field(default_factory=list)
+    unfilled_examples: list[str] = field(default_factory=list)
     # Count of this note's fields whose generation raised and was isolated (siblings still ran).
     field_failures: int = 0
     # Count of this note's fields whose chain declined all the way through (nothing broke).
@@ -266,8 +323,12 @@ class _LiveNote:
                 failed=True,
             )
         for item in failed:
-            logger.debug(
-                "smart_notes: field %r produced nothing on note %s (%s): %s",
+            # WARNING for a chain that BROKE, INFO for one that merely declined — and never
+            # DEBUG, which is off in a normal profile. The summary tooltip names two of these;
+            # the log is where the user goes for the rest, so it has to be there to find.
+            logger.log(
+                logging.WARNING if item.kind == "error" else logging.INFO,
+                "smart_notes: field %r on note %s produced nothing (%s) — %s",
                 item.field,
                 self.plan.nid,
                 item.kind,
@@ -280,8 +341,12 @@ class _LiveNote:
             blocked=len(blocked),
             blocked_examples=[
                 f"{item.target_field} needs {', '.join(item.missing)}"
-                for item in blocked[:_MAX_BLOCKED_EXAMPLES]
+                for item in blocked[:_MAX_EXAMPLES]
             ],
+            # Sliced AFTER the kind filter, not before: a note whose first two failures are
+            # errors still has to be able to name an unproductive field further down the list.
+            error_examples=_examples(failed, "error"),
+            unfilled_examples=_examples(failed, "unproductive"),
             # A chain that ended empty-handed is only an ERROR when a tool actually broke;
             # "every tool declined" is its own, blameless outcome.
             field_failures=sum(1 for item in failed if item.kind == "error"),
@@ -616,12 +681,9 @@ class BatchGenerator:
                 summary.failed += 1
                 continue
             summary.blocked += outcome.blocked
-            for example in outcome.blocked_examples:
-                if (
-                    example not in summary.blocked_examples
-                    and len(summary.blocked_examples) < _MAX_BLOCKED_EXAMPLES
-                ):
-                    summary.blocked_examples.append(example)
+            _merge_examples(summary.blocked_examples, outcome.blocked_examples)
+            _merge_examples(summary.error_examples, outcome.error_examples)
+            _merge_examples(summary.unfilled_examples, outcome.unfilled_examples)
             summary.field_failures += outcome.field_failures
             summary.unfilled += outcome.unfilled
             summary.tool_fallbacks += outcome.tool_fallbacks
