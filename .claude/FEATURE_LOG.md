@@ -21,6 +21,56 @@ Format for each entry:
 
 ---
 
+## 2026-09-13 — A builtin tool can be edited, and the edit is what runs
+
+**What:** the Tools tab's builtin cards gained **Edit** and, once edited, **Restore built-in**.
+Edit opens the tool's REAL shipped source in the same editor user tools use; saving writes it to
+`user_files/tools/builtin/<name>.py`, where a new `BuiltinOverrideLoader` loads it over the
+shipped class — under the builtin's own name, so every field already configured with that tool
+runs the user's version with nothing to re-pick. Restore deletes the file and puts back the exact
+class that shipped.
+
+**Why:** a tool is a small readable class, and params alone cannot say "decline differently",
+"hint differently", "call the provider differently". A copy under a second name would have been
+easier and would have looked, to the user, like the edit had done nothing.
+
+**Files:** `plugins/smart_notes/engine/tools/overrides.py` (new),
+`plugins/smart_notes/engine/tools/user_tools.py` (`UserToolLoader.name_for`, the allowlist),
+`plugins/smart_notes/__init__.py`, `gui/smart_notes/dialogs/controllers/user_tools.py` (three
+ops), `gui/smart_notes/web/10-usertools.js`, `page.html`, `page.css`,
+`tests/plugins/smart_notes/test_tool_overrides.py` (new), `tests/gui/test_smart_notes_user_tools_ui.py`.
+
+**How to verify:**
+```
+pytest tests/plugins/smart_notes/test_tool_overrides.py tests/gui/test_smart_notes_user_tools_ui.py -q
+```
+In Anki: Smart Notes → Configure → Tools → any builtin → Edit → change its `description` → Save.
+The card shows "your version" and the new description; Restore built-in puts the original back.
+
+**Notes / rollback:** the user-tool loader's rule that a file may only register its OWN name is
+deliberately NOT relaxed — it exists so a tool from the `user:` namespace cannot silently shadow
+`ai`. An override claims a builtin's name because that IS the request, from a directory that
+exists for nothing else, written by a user who opened the tool and read its source. What made it
+a small change is that the loader already did the compile-guard-isolate dance; only two things
+vary, so `name_for()` is now the single place the file-name → registry-name rule lives and the
+override loader overrides it.
+
+Three failure paths, all pinned by tests that were checked by reverting the fix: the file is
+compiled BEFORE it is written (a broken edit never reaches disk), a file that fails to load at
+startup leaves the shipped class registered and reports the error on its card, and disabling the
+feature restores every displaced builtin — keyed on the loader's own bookkeeping, since sweeping
+the namespace the way the user-tool loader does would unregister the builtins themselves.
+
+The import allowlist gained `abc`, `omnia.core.providers.errors` and
+`omnia.core.providers.tts.registry`: a copy of a shipped tool has to pass the same guard as any
+other tool file, and `cloze_audio` imports all three. Both `omnia.core.providers` entries are
+listed in full rather than by prefix, so the package holding the credentials stays closed.
+
+There is no test-run gate on saving a builtin. The gate exists because an LLM wrote the code and
+the user had not read it; here the code started as the add-on's own and no model is involved. The
+compile is what replaces it.
+
+
 ## 2026-09-12 — A failure names the field it happened to and the tool that gave up
 
 **What:** two changes, both about the same sentence. `summarize_attempts` now prefixes EVERY

@@ -26,6 +26,7 @@
   const utEditor = document.getElementById("sn-ut-editor");
   const utNewBtn = document.getElementById("sn-ut-new");
   const utLabelEl = document.getElementById("sn-ut-label");
+  const utDescribeEl = document.getElementById("sn-ut-describe");
   const utSlugEl = document.getElementById("sn-ut-slug");
   const utPromptEl = document.getElementById("sn-ut-prompt");
   const utGenBtn = document.getElementById("sn-ut-generate");
@@ -49,6 +50,10 @@
   // The slug being edited ("" = a new tool, so the name box picks it) and the source text the
   // last successful test ran against — Save is armed only while the box still holds THAT text.
   let utSlug = "";
+  // The builtin currently open in the editor ("" while a user tool, or nothing, is open). It
+  // decides three things: which save op runs, whether Save waits for a test run, and whether
+  // the "what should it do?" box is shown at all.
+  let utBuiltin = "";
   let utTestedSource = null;
 
   // The Try-it form, one entry per input the draft declares:
@@ -142,19 +147,86 @@
   }
 
   /**
-   * One built-in tool, read-only.
-   * @param {!Object} tool {name, label, description, kinds}.
+   * One built-in tool: what it is, plus Edit — and Restore once it has been edited.
+   * @param {!Object} tool {name, label, description, kinds, overridden, error}.
    * @return {!HTMLElement}
    */
   function builtinToolCard(tool) {
     const card = document.createElement("div");
-    card.className = "sn-ut-card";
-    card.appendChild(toolCardHead(tool));
+    card.className = "sn-ut-card" + (tool.error ? " sn-ut-card-broken" : "");
+    const head = toolCardHead(tool);
+    if (tool.overridden) {
+      // The card has to say so: the code that runs is no longer the code that shipped, and
+      // nothing else on this page would tell the reader that.
+      const badge = document.createElement("span");
+      badge.className = "sn-tool-chip sn-ut-edited";
+      badge.textContent = "your version";
+      head.appendChild(badge);
+    }
+    card.appendChild(head);
+
     const desc = document.createElement("div");
     desc.className = "sn-ut-desc";
-    desc.textContent = tool.description || "";
+    desc.textContent = tool.error
+      ? "Your version could not be loaded, so the built-in is running: " + tool.error
+      : tool.description || "";
     card.appendChild(desc);
+
+    const actions = document.createElement("div");
+    actions.className = "sn-ut-actions";
+    actions.appendChild(
+      utButton("Edit", "Read and change this tool's own code", function () {
+        openBuiltinTool(tool.name);
+      })
+    );
+    if (tool.overridden) {
+      actions.appendChild(
+        utButton("Restore built-in", "Throw away your version of this tool", function () {
+          restoreBuiltinTool(tool.name);
+        })
+      );
+    }
+    card.appendChild(actions);
     return card;
+  }
+
+  /**
+   * Open a built-in's code in the editor — the user's version of it when there is one.
+   * @param {string} name The builtin's registry name.
+   */
+  function openBuiltinTool(name) {
+    send("builtin_tool_open", {name: name}, function (res) {
+      const result = res || {};
+      if (result.error) {
+        setMsg(result.error, true);
+        return;
+      }
+      openUserTool({
+        builtin: name,
+        label: name,
+        source: result.source,
+        risks: result.risks
+      });
+    });
+  }
+
+  /**
+   * Delete the user's version of a built-in and go back to the shipped one.
+   * @param {string} name The builtin's registry name.
+   */
+  function restoreBuiltinTool(name) {
+    send("builtin_tool_restore", {name: name}, function (res) {
+      const result = res || {};
+      if (result.error) {
+        setMsg(result.error, true);
+        return;
+      }
+      if (utBuiltin === name) {
+        utEditor.hidden = true;
+        utBuiltin = "";
+      }
+      loadUserTools();
+    });
   }
 
   /**
@@ -205,9 +277,15 @@
    */
   function openUserTool(tool) {
     const data = tool || {};
+    utBuiltin = data.builtin || "";
     utSlug = data.slug || "";
     utLabelEl.value = data.label || "";
-    utLabelEl.disabled = !!utSlug;  // the slug IS the file name; renaming is a new tool
+    // The slug IS the file name, so renaming is a new tool; a builtin's name is not the user's
+    // to change at all.
+    utLabelEl.disabled = !!utSlug || !!utBuiltin;
+    // A builtin's code is the add-on's own and is edited by hand — there is no description to
+    // write it from, and offering ✨ over it would overwrite the tool with a guess at it.
+    utDescribeEl.hidden = !!utBuiltin;
     utPromptEl.value = data.prompt || "";
     utSourceEl.value = data.source || "";
     utOutEl.hidden = true;
@@ -238,6 +316,10 @@
 
   /** Show the slug the tool will be saved under (its file name and its name in a chain). */
   function refreshUserToolSlug() {
+    if (utBuiltin) {
+      utSlugEl.textContent = utBuiltin;
+      return;
+    }
     const slug = utSlug || slugifyName(utLabelEl.value);
     utSlugEl.textContent = slug ? "user:" + slug : "";
   }
@@ -259,6 +341,15 @@
 
   /** Enable Save only while the box holds exactly the source a test run came back for. */
   function refreshSaveState() {
+    if (utBuiltin) {
+      // No test-run gate on a builtin. That gate is there because an LLM wrote the code and
+      // the user had not read it; here the code started as the add-on's own and the user is
+      // editing it in front of them. Python still refuses to write a file it cannot load, so a
+      // broken edit leaves the built-in running rather than taking it away.
+      utSaveBtn.disabled = !utSourceEl.value.trim();
+      utSaveBtn.title = "Save your version of this built-in tool on this computer";
+      return;
+    }
     const tested = utTestedSource !== null && utTestedSource === utSourceEl.value;
     utSaveBtn.disabled = !tested;
     utSaveBtn.title = tested
@@ -787,6 +878,23 @@
   /** Persist the reviewed + tested source as a file on this computer. */
   function saveUserTool() {
     utSaveMsg.textContent = "Saving…";
+    if (utBuiltin) {
+      send(
+        "builtin_tool_save",
+        {name: utBuiltin, source: utSourceEl.value},
+        function (res) {
+          const result = res || {};
+          if (result.error) {
+            utSaveMsg.textContent = result.error;
+            return;
+          }
+          utSaveMsg.textContent =
+            "Saved — every field using " + result.name + " now runs your version.";
+          loadUserTools();
+        }
+      );
+      return;
+    }
     send(
       "user_tool_save",
       {

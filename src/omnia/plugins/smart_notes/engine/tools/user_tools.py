@@ -320,6 +320,7 @@ class ImportGuard:
             # than rewrites — pull the audio out of a video, resize a picture — has to reach
             # the file the note refers to, and everything short of that produced tools that
             # renamed a string and pretended.
+            "abc",
             "io",
             "os",
             "pathlib",
@@ -333,6 +334,11 @@ class ImportGuard:
             # The media folder's location and the audio runtime, so a tool does not have to
             # guess either.
             "omnia.core.audio",
+            # The provider layer's ERRORS and its TTS registry — what a shipped tool imports to
+            # raise the right exception and to ask which voices exist. Both are listed in full:
+            # neither opens `omnia.core.providers` itself, where the credentials live.
+            "omnia.core.providers.errors",
+            "omnia.core.providers.tts.registry",
             "pydantic",
             "omnia.core.config.base",
             "omnia.core.lang",
@@ -564,6 +570,25 @@ class UserToolLoader:
         """The registry names this loader currently has registered, sorted."""
         return tuple(sorted(self._loaded))
 
+    def name_for(self, slug: str) -> str:
+        """The registry name a file called ``<slug>.py`` in this store must claim.
+
+        The one place the file name → registry name mapping lives, so a loader over a DIFFERENT
+        directory (the builtin overrides in
+        :mod:`~omnia.plugins.smart_notes.engine.tools.overrides`) changes the rule by overriding
+        this rather than by copying the compile-and-register dance below.
+
+        Args:
+            slug: The file's stem.
+
+        Returns:
+            The registry name.
+
+        Raises:
+            UserToolError: When the stem is not a legal name here.
+        """
+        return user_tool_name(validate_slug(slug))
+
     def load_all(self) -> list[UserToolLoad]:
         """Load every tool file in the store, skipping (and logging) the ones that break.
 
@@ -575,8 +600,9 @@ class UserToolLoader:
             One :class:`UserToolLoad` per file, in slug order.
         """
         slugs = self._store.slugs()
+        live = {self.name_for(slug) for slug in slugs}
         for name in tuple(self._loaded):
-            if name[len(USER_TOOL_PREFIX) :] not in slugs:
+            if name not in live:
                 self._unregister(name)
         return [self.load(slug) for slug in slugs]
 
@@ -594,7 +620,7 @@ class UserToolLoader:
             if source is None:
                 raise UserToolError(f"no tool file for {slug!r}")
             cls = self.compile_tool(source, filename=str(self._store.path_for(slug)))
-            self._register(source.name, cls)
+            self._register(self.name_for(slug), cls)
         except (
             Exception
         ) as exc:  # one broken file must never break startup or its siblings
@@ -622,9 +648,8 @@ class UserToolLoader:
             UserToolError: When the guard refuses it, the module raises while executing, or it
                 did not register exactly ``user:<slug>``.
         """
-        validate_slug(source.slug)
+        name = self.name_for(source.slug)
         self._guard.check(source.code)
-        name = source.name
         module = ModuleType(_MODULE_PREFIX + source.slug.replace("-", "_"))
         module.__file__ = filename or f"<omnia user tool {source.slug}>"
         before = dict(TOOL_REGISTRY)
@@ -636,7 +661,7 @@ class UserToolLoader:
             added = set(TOOL_REGISTRY) - baseline
             if added != {name}:
                 raise UserToolError(
-                    f"a user tool must register exactly {name!r}; this one registered "
+                    f"the file must register exactly {name!r}; this one registered "
                     + (", ".join(repr(other) for other in sorted(added)) or "nothing")
                 )
             cls = TOOL_REGISTRY[name]

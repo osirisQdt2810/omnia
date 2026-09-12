@@ -953,6 +953,9 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   background: var(--row-alt); display: flex; flex-direction: column; gap: 4px;
 }
 .sn-ut-card-broken { border-color: var(--fail); }
+/* A builtin whose code the user has edited. Deliberately not the accent the kind chips use:
+   it is a statement about WHERE the code came from, not about what the tool can fill. */
+.sn-ut-edited { color: var(--ok, var(--accent)); border-color: var(--ok, var(--accent)); }
 .sn-ut-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sn-ut-id {
   font-family: ui-monospace, Menlo, Consolas, monospace;

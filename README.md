@@ -55,6 +55,11 @@ of tools**, and the model is only reached when the deterministic ones decline:
 | `ai` | tokens | The LLM path. |
 | `user:<yours>` | free | A tool you describe once in your own words; the generated Python is shown to you, tested, and saved as a file that then runs offline forever. |
 
+Every tool in that table is a small Python class, and the **Tools** tab can open any of them —
+the built-in ones included. **Edit** shows a built-in's real source; saving keeps your version in
+`user_files/tools/builtin/`, where it is loaded over the shipped one, so every field already using
+that tool gets the change with nothing to re-pick. **Restore built-in** throws your version away.
+
 A field configured `cloze → ai` costs nothing when the word really is in the sentence, and only
 reaches the provider when it is not.
 

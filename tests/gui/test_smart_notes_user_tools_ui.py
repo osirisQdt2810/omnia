@@ -1250,6 +1250,137 @@ class TestTheToolsFolderIsNeverHardcoded:
         assert "user_tool_play_output" in ops
 
 
+class TestEditingABuiltin:
+    """The Tools tab can open a shipped tool's own code and save the user's version of it.
+
+    The controller is where the safety lives: a builtin is never taken off the registry for a
+    file that does not load, and "Restore built-in" puts back the class that shipped.
+    """
+
+    OVERRIDE = (
+        "from typing import ClassVar\n"
+        "from omnia.plugins.smart_notes.engine.generators import GenerationResult\n"
+        "from omnia.plugins.smart_notes.engine.tools.base import (\n"
+        "    Produced,\n"
+        "    Tool,\n"
+        "    ToolOutcome,\n"
+        ")\n"
+        "from omnia.plugins.smart_notes.engine.tools.registry import register_tool\n"
+        "\n"
+        "\n"
+        '@register_tool("cloze")\n'
+        "class MyCloze(Tool):\n"
+        '    label: ClassVar[str] = "My cloze"\n'
+        '    description: ClassVar[str] = "The user\'s own version"\n'
+        '    kinds: ClassVar[frozenset] = frozenset({"text"})\n'
+        "    deterministic: ClassVar[bool] = True\n"
+        "\n"
+        "    def run(self, request, ctx) -> ToolOutcome:\n"
+        '        return Produced(GenerationResult("text", text="mine"))\n'
+    )
+
+    def test_open_returns_the_shipped_source(self, controller):
+        ctrl, _ctx, _pushed = controller
+
+        result = ctrl.on_builtin_open({"name": "cloze"})
+
+        assert "class ClozeTool" in result["source"]
+        assert result["overridden"] is False
+
+    def test_open_returns_the_users_version_once_there_is_one(self, controller):
+        # Showing the shipped code over an edit would read as "your change is gone", and
+        # saving from that state would make it true.
+        ctrl, _ctx, _pushed = controller
+        ctrl.on_builtin_save({"name": "cloze", "source": self.OVERRIDE})
+
+        result = ctrl.on_builtin_open({"name": "cloze"})
+
+        assert result["overridden"] is True
+        assert "class MyCloze" in result["source"]
+
+    def test_open_returns_an_override_that_does_not_load(self, controller, tmp_path):
+        # The case where "the file" and "the registered class" disagree, and the only one
+        # where reading the registry instead of the file loses the user's work: a broken
+        # override leaves the BUILTIN registered, so the editor must still open the file —
+        # it is the thing that needs fixing.
+        ctrl, _ctx, _pushed = controller
+        folder = tmp_path / "tools" / "builtin"
+        folder.mkdir(parents=True)
+        (folder / "cloze.py").write_text("raise RuntimeError('boom')", encoding="utf-8")
+
+        result = ctrl.on_builtin_open({"name": "cloze"})
+
+        assert result["overridden"] is True
+        assert result["source"].strip() == "raise RuntimeError('boom')"
+
+    def test_saving_makes_the_builtin_name_resolve_to_it(self, controller):
+        ctrl, _ctx, _pushed = controller
+
+        result = ctrl.on_builtin_save({"name": "cloze", "source": self.OVERRIDE})
+
+        assert result["ok"] is True
+        assert get_tool("cloze").__name__ == "MyCloze"
+
+    def test_code_that_does_not_load_leaves_the_builtin_alone(self, controller):
+        ctrl, _ctx, _pushed = controller
+        shipped = get_tool("cloze")
+
+        result = ctrl.on_builtin_save({"name": "cloze", "source": "not python at all"})
+
+        assert "error" in result
+        assert get_tool("cloze") is shipped
+        assert ctrl.on_builtin_open({"name": "cloze"})["overridden"] is False
+
+    def test_restore_puts_the_shipped_class_back(self, controller):
+        ctrl, _ctx, _pushed = controller
+        shipped = get_tool("cloze")
+        ctrl.on_builtin_save({"name": "cloze", "source": self.OVERRIDE})
+
+        result = ctrl.on_builtin_restore({"name": "cloze"})
+
+        assert result["restored"] is True
+        assert get_tool("cloze") is shipped
+
+    def test_the_list_says_which_builtins_are_edited(self, controller):
+        ctrl, _ctx, _pushed = controller
+        ctrl.on_builtin_save({"name": "cloze", "source": self.OVERRIDE})
+
+        builtins = {tool["name"]: tool for tool in ctrl.on_list({})["builtins"]}
+
+        assert builtins["cloze"]["overridden"] is True
+        assert builtins["ai"]["overridden"] is False
+
+    def test_a_broken_override_is_reported_on_the_card(self, controller, tmp_path):
+        # Written straight into the folder (as a hand edit would be), so the card has to carry
+        # the load error — the save path refuses this, the folder cannot.
+        ctrl, _ctx, _pushed = controller
+        folder = tmp_path / "tools" / "builtin"
+        folder.mkdir(parents=True)
+        (folder / "cloze.py").write_text("raise RuntimeError('boom')", encoding="utf-8")
+
+        builtins = {tool["name"]: tool for tool in ctrl.on_list({})["builtins"]}
+
+        assert "boom" in builtins["cloze"]["error"]
+        assert get_tool("cloze").__name__ == "ClozeTool"
+
+    def test_an_unknown_name_is_refused_rather_than_written(self, controller, tmp_path):
+        ctrl, _ctx, _pushed = controller
+
+        result = ctrl.on_builtin_save({"name": "../../evil", "source": self.OVERRIDE})
+
+        assert "error" in result
+        assert not list(tmp_path.rglob("*evil*"))
+
+    def test_the_ops_are_routed(self, controller):
+        ctrl, _ctx, _pushed = controller
+
+        ops = ctrl.ops()
+
+        assert "builtin_tool_open" in ops
+        assert "builtin_tool_save" in ops
+        assert "builtin_tool_restore" in ops
+
+
 class TestDelete:
     def _settings_with_usage(self) -> SmartNotesSettings:
         return SmartNotesSettings(
