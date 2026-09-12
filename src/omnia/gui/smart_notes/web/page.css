@@ -916,12 +916,27 @@ select:disabled { opacity: 0.7; }
 /* Advice from the tool itself ("MP3 voices need the audio runtime") — informative, not a
    blocker, so it reads as a note rather than as the red "can't use this" line above. */
 .sn-tool-note { font-size: 12px; color: var(--accent); line-height: 1.4; }
+/* `minmax(0, 1fr)`, never a bare `1fr`: a grid track's automatic minimum is min-content, and a
+   <select>'s min-content is its WIDEST OPTION — so one long option (the cloze tool's Format list)
+   stretched its column and pushed the Word and Format controls straight through the right edge of
+   the row. The `min-width: 0` below is the same rule one level down: a flex item defaults to
+   `min-width: auto`, which also refuses to shrink under its content. */
 .sn-tool-params {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 2px;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px;
+  margin-top: 2px;
 }
-.sn-tool-param { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.sn-tool-param-label { color: var(--muted); flex: 1; }
-.sn-tool-param-input { max-width: 55%; }
+.sn-tool-param {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0;
+}
+.sn-tool-param-label {
+  color: var(--muted); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The control keeps its share of the row and truncates inside it rather than growing out of it.
+   Nothing is lost: the row carries the param's full description as its `title`. */
+.sn-tool-param-input {
+  max-width: 55%; min-width: 0; flex: 0 1 auto; text-overflow: ellipsis;
+}
 /* The offending control after a refused Done — the message names the tool, this says which box. */
 .sn-tool-param-missing .sn-tool-param-label { color: var(--fail); font-weight: 700; }
 .sn-tool-param-missing .sn-tool-param-input { border-color: var(--fail); }
@@ -953,9 +968,6 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   background: var(--row-alt); display: flex; flex-direction: column; gap: 4px;
 }
 .sn-ut-card-broken { border-color: var(--fail); }
-/* A builtin whose code the user has edited. Deliberately not the accent the kind chips use:
-   it is a statement about WHERE the code came from, not about what the tool can fill. */
-.sn-ut-edited { color: var(--ok, var(--accent)); border-color: var(--ok, var(--accent)); }
 .sn-ut-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .sn-ut-id {
   font-family: ui-monospace, Menlo, Consolas, monospace;

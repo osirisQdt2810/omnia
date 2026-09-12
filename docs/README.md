@@ -54,8 +54,6 @@ This is what separates Omnia from a plain "call ChatGPT" add-on. Every generated
 | `ai` | tokens | The LLM path. |
 | `user:<yours>` | free | A tool you describe once in plain words. The generated Python is shown to you, tested, and saved as a file that then runs offline forever. |
 
-Every tool in that table is a small Python class, and the **Tools** tab can open any of them — the built-in ones included. **Edit** shows a built-in's real source; saving keeps your version in `user_files/tools/builtin/`, where it is loaded over the shipped one, so every field already using that tool gets the change with nothing to re-pick. **Restore built-in** throws your version away. An edit that does not load is refused, and one that breaks later leaves the built-in running, so the worst case is the tool you already had.
-
 A field configured `cloze → ai` costs **nothing** when the word really is in the sentence, and
 only reaches the provider when it is not.
 

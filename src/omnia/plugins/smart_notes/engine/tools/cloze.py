@@ -101,12 +101,14 @@ _LEGACY_FORMATS = {
     "hint_first_last": FORMAT_ANKI_HINT,
 }
 
-#: Human labels for the picker's dropdown, since the stored values are config tokens.
+#: Human labels for the picker's dropdown, since the stored values are config tokens. Kept short
+#: on purpose: they are read inside a half-width control in a two-column grid, and the example is
+#: the part that has to survive — hence "word" rather than a real headword.
 FORMAT_LABELS = {
-    FORMAT_ANKI: "Anki cloze — {{c1::survived}}",
-    FORMAT_ANKI_HINT: "Anki cloze with a hint — {{c1::survived::s______d}}",
-    FORMAT_LETTERS_FIRST: "Letters, first shown — s_______",
-    FORMAT_LETTERS_FIRST_LAST: "Letters, first and last shown — s______d",
+    FORMAT_ANKI: "Anki cloze — {{c1::word}}",
+    FORMAT_ANKI_HINT: "Anki cloze + hint — {{c1::word::w___d}}",
+    FORMAT_LETTERS_FIRST: "Letters, first — w______",
+    FORMAT_LETTERS_FIRST_LAST: "Letters, first & last — w_____d",
 }
 
 

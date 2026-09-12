@@ -66,6 +66,16 @@ _CLOZE_AI = _chain(
 )
 
 
+def _css_rule(html: str, selector: str) -> str:
+    """The declarations of one CSS rule from the built page, or "" when it has no such rule.
+
+    Scoped on purpose: a bare substring search over the whole document passes on a declaration
+    that lives in some other rule, which is how a layout assertion becomes theatre.
+    """
+    found = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", html)
+    return " ".join(found.group(1).split()) if found else ""
+
+
 def _js(html: str, marker: str, length: int = 1400) -> str:
     """The slice of the built page starting at ``marker`` (a function/handler to inspect)."""
     start = html.index(marker)
@@ -322,6 +332,25 @@ class TestToolsPickerPage:
         html = self._html()
         assert "? prop.enum" in html
         assert '(required ? [] : [""]).concat(fieldNames())' in html
+
+    def test_a_long_option_cannot_widen_the_params_row(self):
+        # Reported as the Word and Format controls hanging past the right edge of the row.
+        # Both are <select>s, and a select's min-content width is its WIDEST OPTION — so the
+        # cloze tool's Format list stretched its grid track, because a bare `1fr` track has an
+        # automatic minimum of min-content. Same story one level down: a flex item defaults to
+        # `min-width: auto`, which also refuses to shrink under its content.
+        html = self._html()
+
+        assert "minmax(0, 1fr)" in _css_rule(html, ".sn-tool-params")
+        assert "min-width: 0" in _css_rule(html, ".sn-tool-param")
+        assert "min-width: 0" in _css_rule(html, ".sn-tool-param-input")
+
+    def test_a_param_control_truncates_instead_of_growing(self):
+        # The cap alone would clip the text mid-glyph; the row's `title` carries the full text.
+        rule = _css_rule(html=self._html(), selector=".sn-tool-param-input")
+
+        assert "max-width: 55%" in rule
+        assert "text-overflow: ellipsis" in rule
 
     def test_no_feature_tools_semantics_live_in_the_picker(self):
         # The first version hard-coded `entry.tool === "cloze_audio"` plus a narrative of that
