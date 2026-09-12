@@ -50,7 +50,7 @@ of tools**, and the model is only reached when the deterministic ones decline:
 
 | Tool | Cost | What it does |
 |---|---|---|
-| `cloze` | free | Wraps the note's word in its example sentence as `{{c1::…}}`, matching inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
+| `cloze` | free | Hides the note's word in its example sentence, in the one format you pick: a letter hint (`s______`, `s_____e`) or Anki's own `{{c1::…}}` markup, with or without the hint. Matches inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
 | `cloze_audio` | TTS only | Speaks the sentence with the answer replaced by silence or a beep — a listening cloze. It **never** speaks the answer: if it cannot mask, it fails rather than falling back to plain speech. |
 | `ai` | tokens | The LLM path. |
 | `user:<yours>` | free | A tool you describe once in your own words; the generated Python is shown to you, tested, and saved as a file that then runs offline forever. |

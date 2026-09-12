@@ -1,4 +1,4 @@
-"""The ``cloze`` tool: turn a sentence into a cloze deletion around a word, with no AI.
+"""The ``cloze`` tool: hide a word inside a sentence, with no AI.
 
 The first deterministic builtin, and the reason the whole tool seam exists: a field configured
 ``[cloze, ai]`` costs nothing when the word really is in the sentence, and only falls through to
@@ -15,13 +15,32 @@ Three details carry the tool's whole value, and each is a documented decision be
   plain-text spans only (see :func:`_plain_spans`), so a match can never start inside an HTML
   tag, a ``[sound:…]`` reference or an existing cloze — and the value that comes back is the
   original markup with only the matched surfaces wrapped.
-* **The SURFACE form is what gets wrapped**, never the lemma: the card must read as the author
-  wrote it, so "survived" stays "survived" inside ``{{c1::…}}``.
+* **The SURFACE form is what gets masked**, never the lemma: the hint must match what the
+  author wrote, so "survived" becomes ``s_______`` (eight letters), not the lemma's seven.
 
-The emitted ``{{c1::…}}`` is inert everywhere else in the engine: the prompt interpolator's
-field-ref regex skips a cloze opener and :func:`omnia.core.lang.text.strip_markup` unwraps one to its
-answer — which is exactly why speaking such a field needs the later ``cloze_audio`` tool rather
-than plain TTS.
+**The ``mask`` param picks ONE output format, and that is the only thing the field gets.** The
+four are two pairs — Anki's ``{{c1::…}}`` markup, with or without a hint, and the word itself
+replaced by a letter hint — and they answer different needs:
+
+===================  ====================================  ==================================
+``mask``             "She survived it." becomes            what it is for
+===================  ====================================  ==================================
+``anki``             ``She {{c1::survived}} it.``          a real cloze CARD; Anki hides it
+``anki_hint``        ``She {{c1::survived::s______d}} it.``the same card, with a letter hint
+``letters_first``    ``She s_______ it.``                  plain text any template renders
+``letters_first_last`` ``She s______d it.``                the same, with the last letter too
+===================  ====================================  ==================================
+
+The two shapes are genuinely different things, which is why this is one choice rather than two
+switches. Anki's markup makes a cloze CARD — the note type has to have a cloze template, the
+answer stays in the text, and anything that unwraps the markup can read it
+(:func:`omnia.core.lang.text.strip_markup` does exactly that, which is why speaking such a
+field needs the ``cloze_audio`` tool). The letter formats make ordinary text: no template
+requirement, nothing to unwrap, and no answer in the field at all.
+
+``cloze_audio`` reads both. It masks at the ``{{cN::…}}`` markers, at the underscore runs the
+letter formats leave, and at the headword's own occurrences — so it can be pointed at either
+this tool's output or the original sentence.
 
 Pure logic — no ``aqt``/``anki`` imports.
 """
@@ -57,9 +76,62 @@ if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
     from omnia.plugins.smart_notes.engine.tools.base import ToolContext, ToolRequest
 
-#: ``mask`` values: wrap the surface as-is, or add a first/last-letter hint.
-MASK_NONE = "none"
-MASK_HINT_FIRST_LAST = "hint_first_last"
+#: ``mask`` values — the four shapes a hidden word can take, described in the module docstring.
+#: Picking one is picking the ONLY thing this tool emits; they never combine.
+FORMAT_ANKI = "anki"
+FORMAT_ANKI_HINT = "anki_hint"
+FORMAT_LETTERS_FIRST = "letters_first"
+FORMAT_LETTERS_FIRST_LAST = "letters_first_last"
+FORMATS = (
+    FORMAT_ANKI,
+    FORMAT_ANKI_HINT,
+    FORMAT_LETTERS_FIRST,
+    FORMAT_LETTERS_FIRST_LAST,
+)
+#: What a fresh field gets. The letter hint, not the markup: it needs no cloze template, so it
+#: is the format that works on the note type the user already has.
+FORMAT_DEFAULT = FORMAT_LETTERS_FIRST
+
+#: What a value an OLDER release wrote means here (ADR-010: it must keep doing what it did,
+#: not fall back to today's default). Both shipped values named a hint STYLE inside the markup,
+#: which is why neither maps to a bare-letters format — a note whose template is a cloze one
+#: would stop having a card at all.
+_LEGACY_FORMATS = {
+    "none": FORMAT_ANKI,
+    "hint_first_last": FORMAT_ANKI_HINT,
+}
+
+#: Human labels for the picker's dropdown, since the stored values are config tokens.
+FORMAT_LABELS = {
+    FORMAT_ANKI: "Anki cloze — {{c1::survived}}",
+    FORMAT_ANKI_HINT: "Anki cloze with a hint — {{c1::survived::s______d}}",
+    FORMAT_LETTERS_FIRST: "Letters, first shown — s_______",
+    FORMAT_LETTERS_FIRST_LAST: "Letters, first and last shown — s______d",
+}
+
+
+def cloze_format(value: object) -> str:
+    """Resolve a stored ``mask`` value to the format this run emits.
+
+    Args:
+        value: Whatever the field's params hold — a current format, a value an older release
+            wrote, or something a NEWER release added that this build has never heard of.
+
+    Returns:
+        One of :data:`FORMATS`: the value itself when it is current, its documented
+        predecessor when it is legacy, and :data:`FORMAT_DEFAULT` when it is neither — a
+        config from the future must degrade to a working tool, never to an error attempt.
+    """
+    text = str(value or "").strip()
+    if text in FORMATS:
+        return text
+    return _LEGACY_FORMATS.get(text, FORMAT_DEFAULT)
+
+
+def _is_marked(mask: str) -> bool:
+    """Whether ``mask`` emits Anki's ``{{cN::…}}`` markup (rather than bare letters)."""
+    return mask in (FORMAT_ANKI, FORMAT_ANKI_HINT)
+
 
 # What the matcher must treat as OPAQUE: a match may never start, end, or run inside one of
 # these. HTML tags and Anki's media/AV references are not words; an HTML entity would otherwise
@@ -79,6 +151,71 @@ _OPAQUE_RE = re.compile(
 # tool writes its output back to the note. The SENTENCE's tokens keep the full table, so a
 # "leave" card still hides the "left" in its example — the safe direction.
 _HEADWORD_DEINFLECTOR = Deinflector(irregular=UNAMBIGUOUS_IRREGULAR)
+
+# Tags that END a run of text. An INLINE tag is transparent in the projection below, so
+# `<b>run</b>ning` reads as one word and `run` does not match a fragment of it. A BLOCK tag has
+# to be a barrier instead, or the same transparency glues two separate words together:
+# `<div>the cat</div><div>another cat</div>` read as "...the catanother cat...", the boundary
+# `\bcat\b` needs vanished, and the first occurrence was silently left unmasked.
+#
+# The list is HTML's own block-level set plus the flow containers Anki's editor emits, and the
+# question to ask of a candidate is only ever "does a browser start a new line at it?" — not
+# whether it is common in a note. Anything left out is merely transparent, which is the safe
+# default for the tags that matter here (`b`, `i`, `u`, `span`, `ruby`, `font`): a word wrapped
+# in one still reads as that word. `option`, `caption` and `legend` are absent for that reason
+# — they cannot occur in a field this tool rewrites without the table or form that carries
+# them, whose own tags are here.
+_BLOCK_TAGS = frozenset(
+    [
+        "br",
+        "div",
+        "p",
+        "hr",
+        "li",
+        "ul",
+        "ol",
+        "dl",
+        "dt",
+        "dd",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "td",
+        "th",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "section",
+        "article",
+        "aside",
+        "nav",
+        "header",
+        "footer",
+        "main",
+        "blockquote",
+        "pre",
+        "figure",
+        "figcaption",
+        "form",
+        "fieldset",
+        "address",
+        "details",
+        "summary",
+    ]
+)
+_TAG_NAME_RE = re.compile(r"^</?\s*([a-zA-Z][a-zA-Z0-9]*)")
+
+
+def _is_block_tag(markup: str) -> bool:
+    """Whether an HTML tag ends the run of text around it."""
+    found = _TAG_NAME_RE.match(markup)
+    return bool(found) and found.group(1).lower() in _BLOCK_TAGS
+
 
 # Word-ish runs used to harvest the sentence's own tokens for the inverse de-inflection.
 _TOKEN_RE = re.compile(r"\w+")
@@ -197,7 +334,8 @@ class ClozeParams(PersistedModel):
     inside the field row's persisted chain and therefore sync between devices on different
     Omnia releases: an option a NEWER release added must not turn this tool into an error
     attempt on an older one (ADR-010). Unknown values of a KNOWN option are neutralised where
-    they are consumed instead — an unrecognised ``mask`` simply wraps without a hint.
+    they are consumed instead — see :func:`cloze_format`, which maps what older releases wrote
+    onto the format that keeps doing what they did.
     """
 
     sentence_field: str = Field(
@@ -214,24 +352,31 @@ class ClozeParams(PersistedModel):
     separate_cards: bool = Field(
         False,
         description=(
-            "Give each occurrence its own card (c1, c2, …) instead of hiding them all "
-            "on c1."
+            "Anki formats only: give each occurrence its own card (c1, c2, …) instead of "
+            "hiding them all on c1. The letter formats make text, not cards, so it does "
+            "nothing there."
         ),
     )
     mask: str = Field(
-        MASK_NONE,
-        description="Show a first/last-letter hint (s___e) in place of the hidden word.",
+        FORMAT_DEFAULT,
+        title="Format",
+        description=(
+            "Which ONE format the field gets: Anki's {{c1::…}} markup (optionally with a "
+            "letter hint), or the word itself replaced by a letter hint."
+        ),
         # Not a Literal: the runtime stays tolerant of a value a newer release added (see the
         # class docstring), while the picker still renders a dropdown from this schema enum.
-        enum=[MASK_NONE, MASK_HINT_FIRST_LAST],
+        enum=list(FORMATS),
+        # Read by the params form, which would otherwise show the raw config tokens.
+        enum_labels=[FORMAT_LABELS[value] for value in FORMATS],
     )
 
 
 class ClozeRewriter:
-    """Wraps every occurrence of one word in a field value as an Anki cloze deletion.
+    """Hides every occurrence of one word in a field value, in one chosen format.
 
-    Owns the whole surgery for one (word, options) pair: which surface forms count as the word,
-    where they sit in the ORIGINAL markup, and how each hit is wrapped. Constructed per run and
+    Owns the whole surgery for one (word, format) pair: which surface forms count as the word,
+    where they sit in the ORIGINAL markup, and what each hit becomes. Constructed per run and
     reusable across values, so the caller never has to re-derive the word's forms.
     """
 
@@ -239,20 +384,21 @@ class ClozeRewriter:
         self,
         word: str,
         *,
+        mask: str = FORMAT_DEFAULT,
         separate_cards: bool = False,
-        mask: str = MASK_NONE,
     ) -> None:
         """Build a rewriter for ``word``.
 
         Args:
             word: The headword to hide (plain text; markup is the caller's problem).
-            separate_cards: Number each occurrence (c1, c2, …) instead of reusing c1.
-            mask: :data:`MASK_HINT_FIRST_LAST` to emit a ``s___e`` hint; anything else wraps
-                the surface with no hint.
+            mask: Which of :data:`FORMATS` to emit; resolved through :func:`cloze_format`, so a
+                legacy or unknown value lands on a working format rather than raising.
+            separate_cards: Number each occurrence (c1, c2, …) instead of reusing c1. Only the
+                Anki formats have cards to number; it is ignored by the letter ones.
         """
         self._word = word.strip()
+        self._mask = cloze_format(mask)
         self._separate_cards = separate_cards
-        self._mask = mask
 
     def occurrences(self, value: str) -> list[tuple[int, int, str]]:
         """Return each occurrence of the word in ``value`` as ``(start, end, surface)``.
@@ -308,10 +454,16 @@ class ClozeRewriter:
         word character sits just past it behind a tag. ``She was <b>run</b>ning fast.`` would
         then cloze the fragment ``run``.
 
-        In the projection an HTML tag is TRANSPARENT (it contributes nothing and joins what is
-        on either side of it, so ``<b>run</b>ning`` reads as the single word ``running`` and no
-        longer matches ``run``), while an entity, a media reference and an existing cloze become
-        one separator character, so a match can never read through them.
+        In the projection an INLINE tag is TRANSPARENT (it contributes nothing and joins what
+        is on either side of it, so ``<b>run</b>ning`` reads as the single word ``running`` and
+        no longer matches ``run``), while an entity, a media reference, an existing cloze — and
+        a BLOCK tag — become one separator character, so a match can never read through them.
+
+        The block/inline split is not decoration. With every tag transparent,
+        ``<div>the cat</div><div>another cat</div>`` projected to ``...the catanother cat...``:
+        the word boundary the pattern needs was gone and the FIRST "cat" was never a candidate,
+        so it stayed unmasked with nothing reported. The old round-trip property could not see
+        it, because unwrapping a half-wrapped value still gave the input back.
 
         A hit is then rejected if its original range is not contiguous — i.e. the match reads
         across a tag. That keeps ``sur<b>vived</b>`` declining, as its own test requires, while
@@ -324,8 +476,10 @@ class ClozeRewriter:
             for index in range(cursor, opaque.start()):
                 plain_chars.append(value[index])
                 offsets.append(index)
-            if not opaque.group(0).startswith("<"):
-                # Not a tag: a real barrier, so nothing may match across it.
+            markup = opaque.group(0)
+            if not markup.startswith("<") or _is_block_tag(markup):
+                # A real barrier: an entity, a media reference, an existing cloze — or a BLOCK
+                # tag, which ends the text around it. Nothing may match across one.
                 plain_chars.append("\x00")
                 offsets.append(opaque.start())
             cursor = opaque.end()
@@ -393,34 +547,72 @@ class ClozeRewriter:
         return sorted((term for term in terms if term), key=lambda t: (-len(t), t))
 
     def _wrap(self, surface: str, occurrence: int) -> str:
-        """Wrap one matched surface form as ``{{cN::surface}}`` (plus a hint when masking)."""
+        """Render one matched surface form in the chosen format.
+
+        Args:
+            surface: The text as the author wrote it — what gets hidden, and what a hint is
+                built from, so an inflected form hints at its own letters and not the lemma's.
+            occurrence: Its 1-based position among the hits, which numbers the Anki cards when
+                ``separate_cards`` is on.
+
+        Returns:
+            The replacement for that stretch of the sentence.
+        """
+        if not _is_marked(self._mask):
+            return self._hint(surface, self._mask)
         index = occurrence if self._separate_cards else 1
         body = surface
-        if self._mask == MASK_HINT_FIRST_LAST:
-            body = f"{surface}::{self._hint(surface)}"
+        if self._mask == FORMAT_ANKI_HINT:
+            # Anki's own "answer::hint" syntax: the hint shows on the QUESTION side in place of
+            # the usual [...], and the answer is what the card reveals.
+            body = f"{surface}::{self._hint(surface, FORMAT_LETTERS_FIRST_LAST)}"
         return "{{c" + str(index) + "::" + body + "}}"
 
     @staticmethod
-    def _hint(surface: str) -> str:
-        """Return the first/last-letter hint for ``surface`` (``"survive"`` → ``"s______e"``).
+    def _hint(surface: str, mask: str) -> str:
+        """Mask ``surface``, keeping one letter or two.
 
-        A one- or two-letter word is masked completely: showing both of its letters would give
-        the answer away, which is the one thing the hint must not do.
+        ``"survive"`` becomes ``"s______"`` under :data:`FORMAT_LETTERS_FIRST` and
+        ``"s_____e"`` under :data:`FORMAT_LETTERS_FIRST_LAST` (the style the ``anki_hint``
+        format puts after the ``::`` too). The underscore count is the letter count, so the
+        length of the word is itself part of the hint.
+
+        Only letters and digits are masked; a space, hyphen or apostrophe is kept. A multi-word
+        headword therefore stays visibly multi-word — ``"give up"`` becomes ``"g___ __"``, not
+        ``"g______"`` — which the reader needs, and which is also what lets ``cloze_audio``
+        recognise each masked word as its own hole.
+
+        A hint never leaves fewer than two letters hidden. A one- or two-letter word is masked
+        completely, and a THREE-letter one falls back to the first letter alone even when both
+        ends were asked for: ``"cat"`` shown as ``"c_t"`` is not a cloze, it is the answer with
+        one letter missing.
         """
-        if len(surface) <= 2:
-            return "_" * len(surface)
-        return surface[0] + "_" * (len(surface) - 2) + surface[-1]
+        letters = [index for index, char in enumerate(surface) if char.isalnum()]
+        both_ends = mask == FORMAT_LETTERS_FIRST_LAST and len(letters) >= 4
+        if len(letters) <= 2:
+            # Mask every letter and keep everything else: a two-letter word gives itself away
+            # if either of its letters is shown, whichever mode was asked for.
+            keep = set()
+        elif both_ends:
+            keep = {letters[0], letters[-1]}
+        else:
+            keep = {letters[0]}
+        return "".join(
+            char if (not char.isalnum() or index in keep) else "_"
+            for index, char in enumerate(surface)
+        )
 
 
 @register_tool("cloze")
 class ClozeTool(Tool):
-    """Hides a word inside a sentence field as a cloze deletion — deterministic, no provider."""
+    """Hides a word inside a sentence field behind a letter hint — deterministic, no provider."""
 
     name: ClassVar[str] = "cloze"
     label: ClassVar[str] = "Cloze"
     description: ClassVar[str] = (
-        "Wrap the word in {{c1::…}} inside a sentence field — no AI call. Declines "
-        "(and lets the next tool try) when the word is not in the sentence."
+        "Hide the word inside a sentence — as a letter hint (s______) or as Anki's "
+        "{{c1::…}} markup, whichever the Format option says. No AI call. Declines (and lets "
+        "the next tool try) when the word is not in the sentence."
     )
     kinds: ClassVar[frozenset[str]] = frozenset({"text"})
     deterministic: ClassVar[bool] = True
@@ -499,8 +691,8 @@ class ClozeTool(Tool):
             )
         clozed = ClozeRewriter(
             word,
+            mask=str(params.get("mask", "") or ""),
             separate_cards=bool(params.get("separate_cards", False)),
-            mask=str(params.get("mask", MASK_NONE) or MASK_NONE),
         ).rewrite(sentence)
         if clozed is None:
             return NotApplicable(

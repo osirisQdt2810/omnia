@@ -770,7 +770,8 @@ class TestPreviewRunsTheRowsToolChain:
         )
 
         assert prompts == []  # the LLM was never asked
-        assert "They {{c1::survived}}." in evals[0]
+        # The mask, not Anki cloze markup: eight letters, first one shown.
+        assert "They s_______." in evals[0]
 
     def test_a_row_with_no_chain_still_previews_through_the_llm(self, monkeypatch):
         evals, prompts = self._preview(monkeypatch, self._row())

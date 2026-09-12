@@ -54,6 +54,79 @@ untouched — only the display string gained four characters. Examples are dedup
 90 characters: a batch is many notes of one note type, so without the dedupe both slots go to the
 first field, and a provider's full error body would otherwise turn a tooltip into a wall.
 
+---
+
+## 2026-09-08 — The cloze tool emits ONE chosen format, and a letter hint is the default
+
+**What:** `mask` picks one of four output formats and the field gets only that one:
+`anki` (`{{c1::survived}}`), `anki_hint` (`{{c1::survived::s______d}}`), `letters_first`
+(`s_______`) or `letters_first_last` (`s______d`). The underscore count is the letter count.
+`separate_cards` still numbers c1/c2/… on the Anki formats and does nothing on the letter ones,
+which make text rather than cards. The picker's dropdown shows a written label per format
+(`enum_labels` on the schema), not the stored token.
+
+**Why:** the two shapes are different things, and a field wants one of them. Anki's markup makes a
+real cloze CARD, but it needs a cloze template, and the answer stays in the text for anything that
+unwraps it — `strip_markup` does exactly that before anything reaches a provider, which is why
+speaking such a field needs the separate `cloze_audio` tool. The letter formats make ordinary text
+that any template renders and that holds no answer at all. The default is `letters_first` because
+it works on the note type the user already has.
+
+**Files:** `plugins/smart_notes/engine/tools/cloze.py`, `tests/plugins/smart_notes/test_cloze.py`,
+`tests/gui/test_smart_notes_dialog_deps.py`, `README.md`, `docs/README.md`.
+
+**How to verify:**
+```
+pytest tests/plugins/smart_notes/test_cloze.py -q     # 99 tests
+```
+In Anki: Smart Notes → a text field → Tools → `cloze` → Format. Each value is one shape; nothing
+combines.
+
+**Notes / rollback:** `cloze_audio` reads a second source for "what to hide", and it had to. Its
+documented natural chain — a cloze TEXT field feeding a cloze AUDIO field — went through the
+`{{cN::…}}` markers, so removing them broke it outright; and because a `cloze_audio` failure does
+not stop the chain, a `[cloze_audio, ai]` field would have fallen through to `ai` and spoken the
+sentence with the answer in it, which is the one thing that tool exists to prevent. It now reads a
+masked run (`s______`) as the hole, which is a stronger position than before: the answer is not in
+the text at all.
+
+That source is UNIONED with the headword matcher, not tried before it — a priority order looked
+right and leaked. `ClozeRewriter` drops an occurrence a tag reads across, so the text tool's own
+output can arrive half-masked, and returning at the first masked run meant the matcher never
+covered the other half, which then got spoken. The union also makes a stray `____` in a
+hand-written sentence harmless rather than decisive. An already-masked hole is measured against
+the HEADWORD, never against the mask: asking a voice for `"s______"` returns anything from
+nothing to several seconds to a refusal, and the gap's whole job is to last exactly as long as
+the answer would have. That is why a masked source still needs `word_field`, and why the failure
+message says so when it is empty.
+
+Any word token carrying an underscore counts as a mask — requiring two in a row missed `c_t` and
+the `_p` tail of `g___ _p`. Adjacent masked tokens merge into one hole, but never more of them
+than the headword has words: `g___ _p` is two tokens for one answer, while `v___ v___` is two
+answers, and merging those would cut a gap half as long as the words it replaced.  and `letters_first_last` now falls back to first-letter-only below
+four letters, because `"cat"` shown as `"c_t"` is the answer with a letter missing, not a hint.
+
+The mask keeps spaces, hyphens and apostrophes, so `give up` reads `g___ __` rather than
+`g______` — visibly two words, which the reader needs and which is also what lets the audio tool
+see two holes.
+
+The new property found a matcher bug the old one structurally could not.
+Every HTML tag was transparent in the match projection — right for `<b>run</b>ning`, which must
+read as one word — but that also glued words across a BLOCK tag, so
+`<div>the cat</div><div>another cat</div>` projected to "the catanother cat", the word boundary
+vanished, and the FIRST occurrence was silently left unmasked. The old test asserted the output
+round-tripped through `strip_markup`, which a half-masked value does. Block tags are barriers now,
+inline tags stay transparent. `cloze_audio` is unaffected as normally configured: it masks by WORD
+as well as by marker, so it reads the ORIGINAL sentence field; pointed at this tool's output it
+masks at the underscore runs instead.
+
+ADR-010: the two values an older release could write both named a hint style INSIDE the markup,
+so `"none"` maps to `anki` and `"hint_first_last"` to `anki_hint` — each keeps doing exactly what
+it did. Mapping either onto a letter format would have quietly taken the CARD away from a note
+whose template is a cloze one: the field would still fill and the card would stop existing. A
+value this build has never seen falls back to the default instead of raising. The one behaviour
+change is for a field that never set `mask` at all: it moves from `{{c1::…}}` to `s_______`, and
+one dropdown puts it back.
 
 ## 2026-09-07 — Audio Speed keeps a separate rate for the front and the back
 

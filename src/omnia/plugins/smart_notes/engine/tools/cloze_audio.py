@@ -1,10 +1,9 @@
 """The ``cloze_audio`` tool: speak a sentence with the answer replaced by silence or a beep.
 
-A listening-cloze card is a sentence you hear with a hole in it. Plain TTS cannot make one:
-:func:`omnia.core.lang.text.strip_markup` unwraps ``{{c1::survive}}`` to ``survive`` before the text
-reaches a provider, so pointing a TTS field at a cloze field produces audio that **reads the
-answer out loud**. This tool exists to close that hole, and its whole design follows from one
-rule:
+A listening-cloze card is a sentence you hear with a hole in it. Plain TTS cannot make one: it
+speaks whatever text it is given, so pointing a TTS field at a sentence produces audio that
+**reads the answer out loud**. This tool exists to close that hole, and its whole design follows
+from one rule:
 
     **The answer is never spoken. Ever.**
 
@@ -29,18 +28,27 @@ Three consequences, each visible in the code below:
    audible. That is the cost of the rule, and it is a configuration decision: put nothing after
    ``cloze_audio`` on a field whose answer must stay hidden. The tool's own guarantee is
    narrower and absolute — *it* never speaks the answer.
-2. **The spans are found in the RAW value.** Stripping the markup first would unwrap the very
-   cloze markers that say what to hide. A source that already carries ``{{cN::…}}`` (the
-   natural chain: a "Definition (cloze)" text field feeding a "Definition (cloze audio)" sound
-   field) masks exactly those; otherwise the word is located with
-   :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher the
-   ``cloze`` tool uses, so the text card and its audio hide the same words. (Inflected forms
-   are always matched — the option that used to make that configurable was removed, because
-   missing an inflection here means speaking the answer.)
+2. **What to hide is the UNION of two sources, not the first that matches.** A value carrying
+   ``{{cN::…}}`` markers is masked at exactly those — Anki's own markup, written by hand or
+   left by the ``cloze`` tool in one of its ``anki`` formats, saying outright what to hide. Every other value is masked at BOTH the
+   runs the ``cloze`` tool already masked (``They s______ the crash.``) and the occurrences of
+   the headword, located with
+   :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher that
+   tool uses. Either source alone leaves the answer audible on a sentence the other covers: the
+   text tool skips an occurrence a tag reads across, so its output can arrive half-masked with
+   the other half intact; and its output no longer contains the headword, so the matcher alone
+   finds nothing and the field fails — which on a ``[cloze_audio, ai]`` chain is rule 1 handing
+   the sentence to a tool that reads it out whole. (Inflected forms are always matched — the
+   option that used to make that configurable was removed, because missing an inflection here
+   means speaking the answer.)
 3. **The hidden word is measured, not estimated.** It is synthesized once and the mask is built
    to its exact frame count, so the gap lasts as long as the word would have — the invariant a
-   listening cloze is built on. A guessed "~90 ms per character" gap gives the answer's length
-   away and desynchronises the sentence.
+   listening cloze is built on. A guessed "~90 ms per character" gap desynchronises the
+   sentence and still leaks the answer's length. What gets measured is the ANSWER, which on an
+   already-masked run is not the text being replaced: ``"s______"`` is six underscores, whose
+   spoken length is somewhere between nothing and six seconds depending on the voice. Those
+   holes are measured against the headword instead, which is why a masked source needs
+   ``word_field`` even though its own text holds no answer to find.
 
 Splicing is 16-bit PCM surgery (:mod:`omnia.core.audio.wav`), which covers the WAV providers
 (piper, viet-tts) with nothing to install. Cloud voices return MP3, which the stdlib cannot
@@ -54,6 +62,7 @@ Pure logic — no ``aqt``/``anki`` imports.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Optional
@@ -169,17 +178,31 @@ class MaskedSpeech:
 
     segments: tuple[str, ...]
     hidden: tuple[str, ...]
+    #: What each hole's LENGTH comes from, one per hidden entry. It is the hidden text itself
+    #: on every path where that text is the answer — and it is not, on the masked path, where
+    #: the hidden text is ``"s______"`` and synthesizing THAT would measure eight underscores
+    #: instead of the word they stand for. Defaults to ``hidden``, so the paths that need no
+    #: distinction never mention it.
+    measures: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        """Enforce the alternating shape.
+        """Enforce the alternating shape and default the measurements to the hidden text.
 
         Raises:
-            ValueError: If ``segments`` is not exactly one longer than ``hidden``.
+            ValueError: If ``segments`` is not exactly one longer than ``hidden``, or
+                ``measures`` is given and does not match ``hidden`` one for one.
         """
         if len(self.segments) != len(self.hidden) + 1:
             raise ValueError(
                 f"a masked sentence needs one more segment than hidden words, got "
                 f"{len(self.segments)} and {len(self.hidden)}"
+            )
+        if not self.measures:
+            object.__setattr__(self, "measures", self.hidden)
+        elif len(self.measures) != len(self.hidden):
+            raise ValueError(
+                f"every hidden word needs exactly one measurement, got "
+                f"{len(self.measures)} for {len(self.hidden)}"
             )
 
     @property
@@ -193,20 +216,59 @@ class MaskedSpeech:
         return " ".join(segment for segment in self.segments if segment).strip()
 
 
+#: A word the ``cloze`` tool has already masked: ANY word token carrying an underscore, such as
+#: ``s______``, ``g___`` or the ``_p`` of ``"g___ _p"``. One underscore is enough on purpose —
+#: requiring two missed the short tails of a multi-word headword and every three-letter word,
+#: and a token with an underscore in it is not prose in the sentences this tool reads. The run
+#: is bounded to word characters so the punctuation beside it keeps being spoken.
+#:
+#: A masked run is a hole whose answer is not in the text at all, which is what keeps a
+#: "cloze field feeds cloze-audio field" chain working now that the text tool emits no
+#: ``{{cN::…}}`` markers.
+MASKED_RUN_RE = re.compile(r"[\w'’\-]*_[\w'’\-]*")
+
+
+@dataclass(frozen=True)
+class _Hole:
+    """One stretch of a text that must not be spoken, and what its length comes from.
+
+    ``measure`` is ``None`` when the hidden stretch IS the answer (the marker and word paths),
+    and carries the headword when it is not (the masked path, where the text holds only
+    ``"s______"``).
+    """
+
+    start: int
+    end: int
+    measure: Optional[str] = None
+
+
 class ClozeMaskPlanner:
     """Works out which parts of a field value must not be spoken.
 
-    Owns one decision with two sources, in priority order: the ``{{cN::…}}`` markers the value
-    already carries, else the occurrences of a headword. Constructed per run from the word, so
-    the (expensive) word-form derivation happens once.
+    Owns one decision. A value carrying ``{{cN::…}}`` markers is masked at exactly those — it
+    is Anki's own markup, written by hand or left by an older note, and it says outright what
+    to hide. Anything else is masked at the UNION of two sources: the runs the ``cloze`` tool
+    has already masked, and the occurrences of the headword.
+
+    The union is the whole point, and it used to be a priority order. Either source alone
+    leaves the answer audible on a sentence the other one covers:
+
+    * only the masked runs: ``ClozeRewriter`` discards an occurrence a tag reads across, so
+      ``"He s______, and she sur<b>vived</b> too."`` comes out of the text tool half-masked and
+      the surviving half gets spoken;
+    * only the headword: a value the text tool has already masked does not contain the word
+      any more, so nothing matches and the tool fails — which, on a ``[cloze_audio, ai]``
+      chain, hands the field to a tool that reads the sentence out whole.
+
+    Constructed per run from the word, so the (expensive) word-form derivation happens once.
     """
 
     def __init__(self, word: str) -> None:
         """Build a planner for ``word``.
 
         Args:
-            word: The headword to hide when the value carries no cloze markers (may be blank,
-                in which case only markers can be masked).
+            word: The headword to hide (may be blank, in which case only ``{{cN::…}}`` markers
+                can be masked — a masked run needs the word to measure its hole against).
         """
         self._word = word
 
@@ -222,54 +284,107 @@ class ClozeMaskPlanner:
             The split sentence, or ``None`` when there is nothing in it to hide (the caller
             turns that into a hard failure — see the module docstring).
         """
-        marked = [(match.start(), match.end()) for match in CLOZE_RE.finditer(value)]
+        marked = [
+            _Hole(match.start(), match.end()) for match in CLOZE_RE.finditer(value)
+        ]
         if marked:
             # MARKER PATH — offsets into the RAW value, because strip_markup unwraps a cloze to
             # its answer and would destroy the very positions this needs.
             return self._split(value, marked, spoken=self._spoken)
         if not self._word:
             return None
-        # WORD PATH — matched on the text that will actually be SPOKEN, where markup has already
-        # vanished. This is what lets an occurrence a tag splits still be hidden: the shared
-        # matcher deliberately DISCARDS a hit reading across a tag (right for the text `cloze`
-        # tool, which must edit the original markup and would otherwise wrap half a word), and
-        # here that would leave "She sur<b>vived</b>" unmasked and then speak it, because
-        # strip_markup re-joins the pieces. This tool never edits markup, so it can simply look
-        # at the stripped text, where the word is whole. See ADR-011.
-        speech = self._spoken(value)
-        spans = [
-            (start, end)
-            for start, end, _ in ClozeRewriter(self._word).occurrences(speech)
+        # Both remaining sources are matched on the text that will actually be SPOKEN, where
+        # markup has already vanished. That is what lets an occurrence a tag splits still be
+        # hidden: the shared matcher deliberately DISCARDS a hit reading across a tag (right
+        # for the text `cloze` tool, which must edit the original markup and would otherwise
+        # wrap half a word), and here that would leave "She sur<b>vived</b>" unmasked and then
+        # speak it, because strip_markup re-joins the pieces. This tool never edits markup, so
+        # it can simply look at the stripped text, where the word is whole. See ADR-011.
+        speech_probe = self._spoken(value)
+        holes = _without_overlaps(
+            self._masked_holes(speech_probe) + self._word_holes(speech_probe)
+        )
+        return self._split(
+            speech_probe, holes, spoken=lambda fragment: fragment.strip()
+        )
+
+    def _masked_holes(self, text: str) -> list[_Hole]:
+        """Holes the ``cloze`` tool already cut, measured against the headword.
+
+        Neighbouring masked tokens separated only by whitespace become ONE hole — but never
+        more of them than the headword has words. A two-word headword is masked as ``"g___
+        _p"``, which is two tokens for ONE answer, and leaving them apart would cut two gaps of
+        a whole phrase each. Merging without the limit has the mirror problem: ``"It was v___
+        v___ good."`` is two separate answers, and one merged hole measured against ``"very"``
+        runs half as long as the words it replaced, so the sentence resumes early.
+        """
+        words = max(1, len(self._word.split()))
+        holes: list[_Hole] = []
+        merged = 0
+        for found in MASKED_RUN_RE.finditer(text):
+            adjacent = bool(holes) and not text[holes[-1].end : found.start()].strip()
+            if adjacent and merged < words:
+                holes[-1] = _Hole(holes[-1].start, found.end(), self._word)
+                merged += 1
+            else:
+                holes.append(_Hole(found.start(), found.end(), self._word))
+                merged = 1
+        return holes
+
+    def _word_holes(self, text: str) -> list[_Hole]:
+        """Holes at the headword's own occurrences, measured against what was matched."""
+        return [
+            _Hole(start, end)
+            for start, end, _ in ClozeRewriter(self._word).occurrences(text)
         ]
-        return self._split(speech, spans, spoken=lambda fragment: fragment.strip())
 
     @staticmethod
     def _split(
         text: str,
-        spans: list[tuple[int, int]],
+        holes: list[_Hole],
         *,
         spoken: Callable[[str], str],
     ) -> Optional[MaskedSpeech]:
-        """Cut ``text`` at ``spans`` into spoken segments and hidden answers."""
+        """Cut ``text`` at ``holes`` into spoken segments, hidden answers and measurements."""
         segments: list[str] = []
         hidden: list[str] = []
+        measures: list[str] = []
         cursor = 0
-        for start, end in spans:
-            answer = spoken(text[start:end])
+        for hole in holes:
+            answer = spoken(text[hole.start : hole.end])
             if not answer:
                 continue  # a degenerate "{{c1::}}" hides nothing; leave the text as it is
-            segments.append(spoken(text[cursor:start]))
+            segments.append(spoken(text[cursor : hole.start]))
             hidden.append(answer)
-            cursor = end
+            measures.append(hole.measure or answer)
+            cursor = hole.end
         if not hidden:
             return None
         segments.append(spoken(text[cursor:]))
-        return MaskedSpeech(tuple(segments), tuple(hidden))
+        return MaskedSpeech(tuple(segments), tuple(hidden), tuple(measures))
 
     @staticmethod
     def _spoken(fragment: str) -> str:
         """Return one slice of the raw value as the words a voice would read from it."""
         return strip_markup(fragment, keep_line_breaks=False).strip()
+
+
+def _without_overlaps(holes: list[_Hole]) -> list[_Hole]:
+    """Order ``holes`` by position and drop any that starts inside the one before it.
+
+    The two sources genuinely overlap — a masked run and a headword occurrence can cover the
+    same stretch when a sentence carries both — and :meth:`ClozeMaskPlanner._split` walks a
+    single cursor forward, so an overlap would cut a negative-length segment and scramble the
+    sentence. Earlier wins, which is the masked run: it is the source that knows the answer is
+    already gone.
+    """
+    ordered = sorted(holes, key=lambda hole: (hole.start, hole.end))
+    kept: list[_Hole] = []
+    for hole in ordered:
+        if kept and hole.start < kept[-1].end:
+            continue
+        kept.append(hole)
+    return kept
 
 
 class SpeechCodec(ABC):
@@ -413,7 +528,9 @@ class MaskedAudioBuilder:
             if index < len(speech.hidden):
                 # Measure the answer by synthesizing it, then throw the audio away and keep
                 # only its length: the gap must last exactly as long as the word would have.
-                pieces.append(self._mask(self._speak(speech.hidden[index])))
+                # ``measures`` — not ``hidden`` — because on the masked path the hidden text is
+                # "s______" and its length is the length of six underscores, not of a word.
+                pieces.append(self._mask(self._speak(speech.measures[index])))
         if not pieces:
             raise ToolError(
                 "cloze_audio produced no audio for this sentence (the voice returned nothing)."
@@ -492,9 +609,9 @@ class ClozeAudioTool(Tool):
     #
     # A required param becomes a HARD prerequisite (`tool_referenced_fields` →
     # `rule_prerequisites`), and a blank hard prerequisite BLOCKS the field. `word_field` is
-    # read only when the source carries no ``{{cN::…}}`` marker, so requiring it would block
-    # generation on every note where it happens to be empty — including the natural chain,
-    # where the source already has markers and the param is never looked at.
+    # read on every path but the `{{cN::…}}` markers, so requiring it would block generation on
+    # every marker note where it happens to be empty — and a blocked field is a worse report
+    # than a failed one, because it never runs at all.
     #
     # Nothing is risked by leaving it optional: a blank or wrong `word_field` cannot make this
     # tool speak the answer. With no marker and no match, `plan` returns None and `run` raises
@@ -614,10 +731,17 @@ class ClozeAudioTool(Tool):
         speech = ClozeMaskPlanner(word).plan(source)
         if speech is None:
             raise ToolError(
-                f"cloze_audio found nothing to hide in {source_field!r}: it carries no "
-                f"{{{{c1::…}}}} marker and {word or 'the word field'} does not occur in it. "
-                "It produced nothing rather than speak the sentence with the answer in it; a tts "
-                "tool after it in the chain would speak it."
+                f"cloze_audio found nothing to hide in {source_field!r}: no {{{{c1::…}}}} "
+                "marker, no ______ run left by the cloze tool, and "
+                + (
+                    f"{word!r} does not occur in it"
+                    if word
+                    else f"{word_field or 'word_field'} is empty, so there is no word to look "
+                    "for — set it, since even an already-masked run needs the answer to "
+                    "measure its gap against"
+                )
+                + ". It produced nothing rather than speak the sentence with the answer in "
+                "it; a tts tool after it in the chain would speak it."
             )
         # PAST THIS LINE THERE IS AN ANSWER TO PROTECT, so every remaining failure RAISES —
         # including ones raised by code this tool merely calls (an unconfigured Auto-detect

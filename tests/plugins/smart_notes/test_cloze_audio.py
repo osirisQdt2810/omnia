@@ -41,6 +41,7 @@ from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
 from omnia.plugins.smart_notes.engine.tools import (
     ClozeAudioTool,
     ClozeMaskPlanner,
+    ClozeRewriter,
     GenerationPipeline,
     MaskedAudioBuilder,
     MaskedSpeech,
@@ -388,6 +389,98 @@ class TestSpanFinding:
         assert plan.detection_text == "The cat on the mat."
 
 
+class TestASourceTheClozeToolAlreadyMasked:
+    """The chain a "Definition (cloze)" field feeds: the answer is not in the text at all.
+
+    The two sources are UNIONED rather than tried in order. Each one alone leaves a sentence
+    the other covers half spoken, and this tool's one rule has no room for half.
+    """
+
+    def test_a_masked_run_is_the_hole(self):
+        plan = ClozeMaskPlanner("survive").plan("They s______ the crash.")
+
+        assert plan.hidden == ("s______",)
+        assert plan.segments == ("They", "the crash.")
+
+    def test_a_half_masked_source_hides_the_half_the_text_tool_missed(self):
+        # ClozeRewriter discards an occurrence a tag reads across, so its own output can carry
+        # one masked and one intact. Reading the masked runs ALONE used to return here and
+        # speak "survived" out loud — on the very chain this tool documents.
+        plan = ClozeMaskPlanner("survive").plan(
+            "He s______, and she sur<b>vived</b> too."
+        )
+
+        assert plan.hidden == ("s______", "survived")
+        assert "survived" not in " ".join(plan.segments)
+
+    def test_a_stray_blank_in_the_sentence_does_not_hide_the_word(self):
+        # A hand-written fill-in-the-blank line pointed at source_field: the "____" is taken
+        # for a hole, which is harmless, but it must not be taken INSTEAD of the answer.
+        plan = ClozeMaskPlanner("survive").plan(
+            "Fill in: he ____ it. They survived the crash."
+        )
+
+        assert plan.hidden == ("____", "survived")
+
+    def test_a_three_letter_word_survives_the_round_trip(self):
+        # "cat" under hint_first_last once left "c_t" — one underscore, which the planner did
+        # not recognise, and the word is no longer in the text either. plan() returned None,
+        # the tool raised, and a [cloze_audio, ai] chain spoke the sentence. Every three-letter
+        # headword: cat, run, eat, saw, see, ran.
+        masked = ClozeRewriter("cat", mask="letters_first_last").rewrite(
+            "The cat sat on the mat."
+        )
+
+        plan = ClozeMaskPlanner("cat").plan(masked)
+
+        assert plan.hidden == ("c__",)
+        assert plan.segments == ("The", "sat on the mat.")
+
+    def test_a_two_word_headword_is_one_hole(self):
+        # "g___ _p" is two tokens for one answer; two holes would cut a gap twice as long as
+        # the phrase, and the second token is the one the old pattern could not see at all.
+        masked = ClozeRewriter("give up", mask="letters_first_last").rewrite(
+            "Don't give up now."
+        )
+
+        plan = ClozeMaskPlanner("give up").plan(masked)
+
+        assert plan.hidden == ("g___ _p",)
+        assert plan.measures == ("give up",)
+
+    def test_the_same_word_twice_over_is_two_holes(self):
+        # The merge is right for "g___ _p" — two tokens, one answer — and wrong here: "very
+        # very" is two answers, and one merged hole measured against "very" would run half as
+        # long as the words it replaced and let the sentence resume early. The headword's own
+        # word count is what tells the two apart.
+        masked = ClozeRewriter("very").rewrite("It was very very good.")
+
+        plan = ClozeMaskPlanner("very").plan(masked)
+
+        assert plan.hidden == ("v___", "v___")
+        assert plan.measures == ("very", "very")
+
+    def test_a_three_word_headword_is_still_one_hole(self):
+        masked = ClozeRewriter("out of hand").rewrite("It got out of hand.")
+
+        plan = ClozeMaskPlanner("out of hand").plan(masked)
+
+        assert plan.hidden == ("o__ __ ____",)
+        assert plan.measures == ("out of hand",)
+
+    def test_the_hole_is_measured_against_the_headword(self):
+        # NOT against the mask: "s______" is six underscores, and a voice reads those as
+        # anything from silence to six seconds. The invariant is the word's own length.
+        plan = ClozeMaskPlanner("survive").plan("They s______ the crash.")
+
+        assert plan.measures == ("survive",)
+
+    def test_a_masked_source_with_no_headword_plans_nothing(self):
+        # Without the word there is no way to measure the gap, so the tool fails loudly rather
+        # than cut a hole of a length it made up.
+        assert ClozeMaskPlanner("").plan("They s______ the crash.") is None
+
+
 class TestNeverSpeaksTheAnswer:
     """The rule the whole tool exists for, asserted on the produced audio itself."""
 
@@ -410,6 +503,25 @@ class TestNeverSpeaksTheAnswer:
         assert "sat" not in _decoded_text(clip)
         assert _decoded_text(clip) == "The catdown."
         assert ctx.providers.llm_calls == 0  # deterministic: no LLM spend, ever
+
+    def test_a_masked_source_measures_the_word_not_the_mask(self):
+        # The gap's length comes from synthesizing the answer. On this path the text holds
+        # "s______", and asking a real voice for THAT returns anything from nothing (a voice
+        # that skips underscores, so the hole vanishes and the sentence runs together) to
+        # several seconds (one that reads each underscore out) to a ProviderError.
+        #
+        # Asserted on the TEXT the voice was asked for, not on the frame count: the mask has
+        # exactly one character per character of the word, so the fake voice — whose length is
+        # per character — measures both to the same number of frames. Only a real voice can
+        # tell them apart, which is precisely why this has to be pinned here.
+        voice = _FakeWavTTS()
+        _produced_clip(
+            {"Word": "survive", "Sentence": "They s______ the crash."},
+            tts=voice,
+            params={"source_field": "Sentence"},
+        )
+
+        assert voice.spoken == ["They", "survive", "the crash."]
 
     def test_the_masked_region_is_silence(self):
         clip = _produced_clip(
