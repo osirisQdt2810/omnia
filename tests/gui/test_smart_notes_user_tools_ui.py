@@ -1374,6 +1374,40 @@ class TestEditingABuiltin:
         assert "boom" in builtins["cloze"]["error"]
         assert get_tool("cloze").__name__ == "ClozeTool"
 
+    def test_a_card_for_a_hand_deleted_override_offers_the_way_back(
+        self, controller, tmp_path
+    ):
+        # The state the sweep bug left behind: the class displaced, the file gone. The card
+        # must still show it as the user's and still offer Restore, or there is no route back
+        # from the UI at all.
+        ctrl, _ctx, _pushed = controller
+        ctrl.on_builtin_save({"name": "cloze", "source": self.OVERRIDE})
+        (tmp_path / "tools" / "builtin" / "cloze.py").unlink()
+
+        builtins = {tool["name"]: tool for tool in ctrl.on_list({})["builtins"]}
+
+        # The reload puts the builtin back by itself now, which is the real fix; what this
+        # pins is that the card never reports a state the user cannot act on.
+        assert builtins["cloze"]["displaced"] is False
+        assert get_tool("cloze") is ClozeTool
+
+    def test_a_reload_failure_says_the_previous_version_is_still_running(
+        self, controller, tmp_path
+    ):
+        ctrl, _ctx, _pushed = controller
+        ctrl.on_builtin_save({"name": "cloze", "source": self.OVERRIDE})
+        (tmp_path / "tools" / "builtin" / "cloze.py").write_text(
+            "raise RuntimeError('boom')", encoding="utf-8"
+        )
+
+        builtins = {tool["name"]: tool for tool in ctrl.on_list({})["builtins"]}
+
+        # Both flags, because the card phrases the sentence from them: a file that exists and
+        # does not load, over a class of the user's that is still the one running.
+        assert builtins["cloze"]["error"]
+        assert builtins["cloze"]["displaced"] is True
+        assert get_tool("cloze").__name__ == "MyCloze"
+
     def test_an_unknown_name_is_refused_rather_than_written(self, controller, tmp_path):
         ctrl, _ctx, _pushed = controller
 

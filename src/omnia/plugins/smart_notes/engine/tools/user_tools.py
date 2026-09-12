@@ -582,6 +582,18 @@ class UserToolLoader:
         """The registry names this loader currently has registered, sorted."""
         return tuple(sorted(self._loaded))
 
+    def claimed(self) -> tuple[str, ...]:
+        """The registry names this loader may drop when their file is gone.
+
+        Its own bookkeeping here, which is all a user-tool loader can know. It is a HOOK
+        because a loader binding a shared name needs a shared answer: two loaders over one
+        directory (the plugin's and the settings dialog's) each see only the files they
+        themselves loaded, so a file deleted by hand between them would otherwise stay
+        registered forever — see
+        :meth:`~omnia.plugins.smart_notes.engine.tools.overrides.BuiltinOverrideLoader.claimed`.
+        """
+        return tuple(self._loaded)
+
     def name_for(self, slug: str) -> str:
         """The registry name a file called ``<slug>.py`` in this store must claim.
 
@@ -613,7 +625,7 @@ class UserToolLoader:
         """
         slugs = self._store.slugs()
         live = {self.name_for(slug) for slug in slugs}
-        for name in tuple(self._loaded):
+        for name in self.claimed():
             if name not in live:
                 self._unregister(name)
         return [self.load(slug) for slug in slugs]

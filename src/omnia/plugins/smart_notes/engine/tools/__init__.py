@@ -46,6 +46,7 @@ from omnia.plugins.smart_notes.engine.tools.overrides import (
     BuiltinOverrideLoader,
     BuiltinOverrideStore,
     builtin_tool_source,
+    displaced_builtins,
     overridable_tools,
     validate_builtin_name,
 )
@@ -141,6 +142,7 @@ __all__ = [
     "cloze",
     "cloze_audio",
     "declared_inputs",
+    "displaced_builtins",
     "get_tool",
     "is_user_tool",
     "overridable_tools",

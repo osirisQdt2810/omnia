@@ -155,11 +155,10 @@
     const card = document.createElement("div");
     card.className = "sn-ut-card" + (tool.error ? " sn-ut-card-broken" : "");
     const head = toolCardHead(tool);
-    if (tool.overridden && !tool.error) {
-      // The card has to say so: the code that runs is no longer the code that shipped, and
-      // nothing else on this page would tell the reader that. NOT while it failed to load,
-      // though — the sentence below says the built-in is running, and a badge claiming the
-      // opposite next to it is worse than no badge.
+    if (tool.displaced) {
+      // Keyed on what is RUNNING, not on whether a file exists. A file that fails to load
+      // leaves the built-in running and gets no badge; a file that fails to RELOAD leaves the
+      // user's previous version running and keeps it, because it is still true.
       const badge = document.createElement("span");
       badge.className = "sn-tool-chip sn-ut-edited";
       badge.textContent = "your version";
@@ -170,7 +169,9 @@
     const desc = document.createElement("div");
     desc.className = "sn-ut-desc";
     desc.textContent = tool.error
-      ? "Your version could not be loaded, so the built-in is running: " + tool.error
+      ? (tool.displaced
+          ? "Your version could not be RELOADED, so the one from before is still running: "
+          : "Your version could not be loaded, so the built-in is running: ") + tool.error
       : tool.description || "";
     card.appendChild(desc);
 
@@ -181,7 +182,7 @@
         openBuiltinTool(tool.name);
       })
     );
-    if (tool.overridden) {
+    if (tool.overridden || tool.displaced) {
       actions.appendChild(
         utButton("Restore built-in", "Throw away your version of this tool", function () {
           restoreBuiltinTool(tool.name);

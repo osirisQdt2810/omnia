@@ -31,6 +31,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     UserToolSource,
     UserToolStore,
     builtin_tool_source,
+    displaced_builtins,
     get_tool,
     overridable_tools,
 )
@@ -243,6 +244,40 @@ class TestTwoLoadersOneRegistry:
 
         assert loader.overridden() == ("cloze",)
         assert dialog.overridden() == ("cloze",)
+
+    def test_a_file_deleted_by_hand_stops_running_for_the_next_loader(
+        self, loader, store
+    ):
+        # The folder IS the database, so deleting the file removes the override — including
+        # between the plugin's loader and the dialog's. Swept per instance, the dialog's fresh
+        # loader had an empty set to walk, so the DELETED class kept serving every field using
+        # that tool, with no badge and no Restore button to undo it.
+        store.write(UserToolSource(slug="cloze", code=OVERRIDE_CODE))
+        loader.load_all()
+        store.path_for("cloze").unlink()
+
+        self._second(store).load_all()
+
+        assert get_tool("cloze") is ClozeTool
+        assert displaced_builtins() == ()
+
+    def test_a_file_that_stops_compiling_leaves_the_previous_version_running(
+        self, loader, store
+    ):
+        # Nothing else can happen — the compile fails, so there is no new class to bind — but
+        # the card must not then say "the built-in is running", which is what `displaced` is
+        # for.
+        store.write(UserToolSource(slug="cloze", code=OVERRIDE_CODE))
+        loader.load_all()
+        store.path_for("cloze").write_text(
+            "raise RuntimeError('boom')", encoding="utf-8"
+        )
+
+        (load,) = self._second(store).load_all()
+
+        assert not load.ok
+        assert get_tool("cloze").__name__ == "MyCloze"
+        assert displaced_builtins() == ("cloze",)
 
     def test_a_user_tool_and_an_override_of_the_same_name_keep_their_modules(
         self, tmp_path, store, registry_guard

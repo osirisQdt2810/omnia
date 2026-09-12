@@ -69,6 +69,16 @@ dialog survived disabling the feature. Both are two-loader bugs a single-loader 
 see, and both now have a test. Sweeping the registry instead is not an option — an override
 carries no namespace to key on, so the shared dict is its equivalent of the `user:` prefix.
 
+The stale-file sweep in `load_all` is keyed on the same dict, through a `claimed()` hook: the
+dialog builds a fresh loader whose own bookkeeping is empty, so an override file deleted by hand
+was never swept and the deleted class went on serving every field using that tool — with no badge
+and no Restore button, because the card derived "overridden" from the load results.
+
+The card now carries two facts instead of one: `overridden` (a file of the user's exists) and
+`displaced` (their class is the one RUNNING). Conflating them lied in both directions — a file
+that fails to RELOAD leaves the user's previous version running, and the card said the built-in
+was.
+
 Each loader also execs its files into its own `sys.modules` prefix, so an override OF `cloze` and
 a user tool CALLED `cloze` cannot collide on one key and make a class's `__module__` — and with
 it the source the editor shows — point at whichever loaded last.

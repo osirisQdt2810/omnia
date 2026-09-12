@@ -192,6 +192,17 @@ class BuiltinOverrideLoader(UserToolLoader):
         """An override file claims the builtin's own name — that is the whole point of it."""
         return validate_builtin_name(slug)
 
+    def claimed(self) -> tuple[str, ...]:
+        """Every displaced builtin, not just the ones THIS loader displaced.
+
+        The reason is the reason :data:`_SHIPPED` exists at all. The settings dialog builds its
+        own loader, whose ``_loaded`` starts empty; an override file deleted by hand while Anki
+        ran would then never be swept, so the deleted class kept serving every field configured
+        with that tool — and the card, deriving "overridden" from the load results, showed
+        neither a badge nor a Restore button to undo it.
+        """
+        return displaced_builtins()
+
     def overridden(self) -> tuple[str, ...]:
         """The builtin names an override is currently loaded over (see :data:`_SHIPPED`).
 

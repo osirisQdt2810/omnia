@@ -390,6 +390,10 @@ class UserToolsController:
         """
         loads = {load.slug: load for load in self._load_all()}
         overrides = self._load_overrides()
+        # Two different facts, and a card that conflated them lied in both directions. A file
+        # can exist and not load (the builtin, or a previous override, is what runs), and a
+        # class can be displaced with no file left (nothing, now that the sweep is shared).
+        displaced = set(self._overrides.overridden())
         tools: list[dict[str, Any]] = []
         for source in self._loader.store.list():
             load = loads.get(source.slug)
@@ -414,9 +418,11 @@ class UserToolsController:
             "builtins": [
                 {
                     **self._described(name),
-                    # What the card needs to offer Edit / Restore: whether the user's own
-                    # version is the one running, and why it is not when it failed to load.
+                    # What the card needs to offer Edit / Restore: whether a file of the user's
+                    # exists, whether their class is the one RUNNING, and why not when it
+                    # failed to load.
                     "overridden": name in overrides,
+                    "displaced": name in displaced,
                     "error": overrides[name].error if name in overrides else "",
                 }
                 for name in overridable_tools()
