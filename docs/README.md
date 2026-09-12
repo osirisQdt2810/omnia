@@ -49,7 +49,7 @@ This is what separates Omnia from a plain "call ChatGPT" add-on. Every generated
 
 | Tool | Cost | What it does |
 |---|---|---|
-| `cloze` | free | Hides the target word in its example sentence behind a letter hint — `s______` or `s_____e` — matching inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
+| `cloze` | free | Hides the target word in its example sentence, in the one format you pick: a letter hint (`s______`, `s_____e`) or Anki's own `{{c1::…}}` markup, with or without the hint. Matches inflections both ways (`run` ⇄ `ran`, `survive` ⇄ `survived`). |
 | `cloze_audio` | TTS only | Speaks the sentence with the answer replaced by silence or a beep — a listening cloze. It never speaks the answer: if it cannot mask it, it fails rather than giving the answer away. |
 | `ai` | tokens | The LLM path. |
 | `user:<yours>` | free | A tool you describe once in plain words. The generated Python is shown to you, tested, and saved as a file that then runs offline forever. |
@@ -61,7 +61,7 @@ only reaches the provider when it is not.
 
 ![The dependency graph](images/smart-notes-graph.png)
 
-The example sentence needs the word; the cloze needs the example; the audio needs the cloze — it reads the masked sentence and stays silent over the hole.
+The example sentence needs the word; the cloze needs the example; the audio needs the cloze — it reads whichever format the cloze left and stays silent over the hole.
 The **Dependencies** tab turns that into something you draw: drag from a field's border onto
 another to connect them, click an edge to toggle it between required (red) and optional
 (green), and Omnia works out the order and generates in waves. **Preview gen order** shows you

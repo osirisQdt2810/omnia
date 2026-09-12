@@ -514,8 +514,12 @@
         placeholder.disabled = true;
         input.appendChild(placeholder);
       }
-      values.forEach(function (value) {
-        const shown = value === "" ? "(default)" : value;
+      // A schema may ship `enum_labels` alongside `enum`, one per value: the stored values are
+      // config tokens ("letters_first_last"), and a dropdown is the one place a reader has to
+      // understand them without the docstring next to it.
+      const labels = Array.isArray(prop.enum_labels) ? prop.enum_labels : [];
+      values.forEach(function (value, position) {
+        const shown = value === "" ? "(default)" : labels[position] || value;
         input.appendChild(opt(value, shown, value === current));
         matched = matched || value === current;
       });

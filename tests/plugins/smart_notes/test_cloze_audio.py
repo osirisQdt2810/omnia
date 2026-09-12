@@ -427,7 +427,7 @@ class TestASourceTheClozeToolAlreadyMasked:
         # not recognise, and the word is no longer in the text either. plan() returned None,
         # the tool raised, and a [cloze_audio, ai] chain spoke the sentence. Every three-letter
         # headword: cat, run, eat, saw, see, ran.
-        masked = ClozeRewriter("cat", mask="hint_first_last").rewrite(
+        masked = ClozeRewriter("cat", mask="letters_first_last").rewrite(
             "The cat sat on the mat."
         )
 
@@ -439,7 +439,7 @@ class TestASourceTheClozeToolAlreadyMasked:
     def test_a_two_word_headword_is_one_hole(self):
         # "g___ _p" is two tokens for one answer; two holes would cut a gap twice as long as
         # the phrase, and the second token is the one the old pattern could not see at all.
-        masked = ClozeRewriter("give up", mask="hint_first_last").rewrite(
+        masked = ClozeRewriter("give up", mask="letters_first_last").rewrite(
             "Don't give up now."
         )
 

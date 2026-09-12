@@ -32,6 +32,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     Produced,
     ToolContext,
     ToolRequest,
+    cloze_format,
     tools_catalog,
 )
 
@@ -89,11 +90,23 @@ class TestClozeToolContract:
         assert entry["kinds"] == ["text"]
         assert entry["unavailable_reason"] is None
         properties = entry["params_schema"]["properties"]
-        # `separate_cards` is gone with the c1/c2 cards it numbered.
-        assert set(properties) == {"sentence_field", "word_field", "mask"}
+        assert set(properties) == {
+            "sentence_field",
+            "word_field",
+            "separate_cards",
+            "mask",
+        }
         # The picker renders a dropdown from the enum, while the model itself stays a tolerant
         # str so a mask value from a newer release doesn't break the tool (ADR-010).
-        assert properties["mask"]["enum"] == ["hint_first", "hint_first_last"]
+        assert properties["mask"]["enum"] == [
+            "anki",
+            "anki_hint",
+            "letters_first",
+            "letters_first_last",
+        ]
+        # …and a label per value, because "letters_first_last" is a config token, not a choice
+        # anyone should have to read in a dropdown.
+        assert len(properties["mask"]["enum_labels"]) == 4
 
     def test_params_naming_fields_become_hard_prerequisites(self):
         rule = _rule(params={"sentence_field": "Sentence", "word_field": "Word"})
@@ -259,7 +272,9 @@ class TestMultipleOccurrences:
         )
         assert text == "I r__, you r__, we r__."
 
-    def test_a_legacy_separate_cards_param_changes_nothing(self):
+    def test_separate_cards_does_nothing_to_a_letter_format(self):
+        # It numbers Anki cards, and a letter format makes text, not cards. Ignored rather than
+        # refused: it is a legal setting on the same tool, just not on this format.
         text = _clozed(
             {"Word": "run", "Sentence": "I run, you run."},
             params={"sentence_field": "Sentence", "separate_cards": True},
@@ -274,11 +289,87 @@ class TestMultipleOccurrences:
         assert text == "<i>c__</i> and c__"
 
 
+class TestOneFormatAtATime:
+    """``mask`` picks ONE shape. Whatever a field asks for is the only thing it gets."""
+
+    SENTENCE = {"Word": "survive", "Sentence": "She survived it."}
+
+    def test_anki_wraps_the_word_in_its_own_markup(self):
+        text = _clozed(
+            self.SENTENCE, params={"sentence_field": "Sentence", "mask": "anki"}
+        )
+        assert text == "She {{c1::survived}} it."
+
+    def test_anki_hint_puts_the_letters_after_the_answer(self):
+        # Anki's "answer::hint" syntax: the hint is what the QUESTION side shows.
+        text = _clozed(
+            self.SENTENCE, params={"sentence_field": "Sentence", "mask": "anki_hint"}
+        )
+        assert text == "She {{c1::survived::s______d}} it."
+
+    def test_a_letter_format_emits_no_markup_at_all(self):
+        text = _clozed(
+            self.SENTENCE,
+            params={"sentence_field": "Sentence", "mask": "letters_first"},
+        )
+        assert text == "She s_______ it."
+
+    def test_separate_cards_numbers_each_occurrence_of_an_anki_format(self):
+        text = _clozed(
+            {"Word": "run", "Sentence": "I run, you run."},
+            params={
+                "sentence_field": "Sentence",
+                "mask": "anki",
+                "separate_cards": True,
+            },
+        )
+        assert text == "I {{c1::run}}, you {{c2::run}}."
+
+    def test_all_occurrences_share_one_card_by_default(self):
+        text = _clozed(
+            {"Word": "run", "Sentence": "I run, you run."},
+            params={"sentence_field": "Sentence", "mask": "anki"},
+        )
+        assert text == "I {{c1::run}}, you {{c1::run}}."
+
+
+class TestWhatAnOlderReleaseWrote:
+    """ADR-010: a stored value must keep doing what it did, not adopt today's default.
+
+    Both values an older release could write named a hint STYLE *inside* Anki's markup. Mapping
+    either onto a bare-letters format would quietly take the cloze card away from a note whose
+    template is a cloze one — the field would still fill, and the card would stop existing.
+    """
+
+    def test_none_is_the_plain_anki_cloze_it_always_was(self):
+        assert cloze_format("none") == "anki"
+        text = _clozed(
+            {"Word": "survive", "Sentence": "She survived it."},
+            params={"sentence_field": "Sentence", "mask": "none"},
+        )
+        assert text == "She {{c1::survived}} it."
+
+    def test_hint_first_last_keeps_its_markup(self):
+        assert cloze_format("hint_first_last") == "anki_hint"
+        text = _clozed(
+            {"Word": "survive", "Sentence": "She survived it."},
+            params={"sentence_field": "Sentence", "mask": "hint_first_last"},
+        )
+        assert text == "She {{c1::survived::s______d}} it."
+
+    def test_a_value_from_the_future_falls_back_to_the_default(self):
+        # A newer release's format reaching an older one must leave a WORKING tool, not an
+        # error attempt: the field still fills, in the shape this build knows.
+        assert cloze_format("holographic") == "letters_first"
+        assert cloze_format("") == "letters_first"
+        assert cloze_format(None) == "letters_first"
+
+
 class TestMask:
     def test_hint_shows_only_the_first_and_last_letter(self):
         text = _clozed(
             {"Word": "survive", "Sentence": "They survived."},
-            params={"sentence_field": "Sentence", "mask": "hint_first_last"},
+            params={"sentence_field": "Sentence", "mask": "letters_first_last"},
         )
         assert text == "They s______d."
 
@@ -286,7 +377,7 @@ class TestMask:
         # "g_" would give the answer away, which is the one thing a hint must not do.
         text = _clozed(
             {"Word": "go", "Sentence": "I go home."},
-            params={"sentence_field": "Sentence", "mask": "hint_first_last"},
+            params={"sentence_field": "Sentence", "mask": "letters_first_last"},
         )
         assert text == "I __ home."
 
@@ -377,21 +468,21 @@ class TestTheAnswerIsGone:
     ]
 
     @pytest.mark.parametrize("sentence", SENTENCES)
-    @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
+    @pytest.mark.parametrize("mask", ["letters_first", "letters_first_last"])
     def test_the_word_does_not_survive_in_any_form(self, sentence, mask):
         clozed = ClozeRewriter("cat", mask=mask).rewrite(sentence)
         assert clozed is not None
         assert "cat" not in strip_markup(clozed).lower()
 
     @pytest.mark.parametrize("sentence", SENTENCES)
-    @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
+    @pytest.mark.parametrize("mask", ["letters_first", "letters_first_last"])
     def test_no_anki_cloze_markup_is_emitted(self, sentence, mask):
         # The field must render on an ordinary template, not only a cloze one.
         clozed = ClozeRewriter("cat", mask=mask).rewrite(sentence)
         assert "{{c" not in clozed
 
     @pytest.mark.parametrize("sentence", SENTENCES)
-    @pytest.mark.parametrize("mask", ["hint_first", "hint_first_last"])
+    @pytest.mark.parametrize("mask", ["letters_first", "letters_first_last"])
     def test_only_the_matched_spans_change(self, sentence, mask):
         # Built from the matcher's own hit ranges rather than asserted loosely: splice the mask
         # into the original at exactly those offsets and the whole value must come out equal.
@@ -414,13 +505,13 @@ class TestAMultiWordHeadword:
 
     def test_the_space_is_kept(self):
         assert (
-            ClozeRewriter("give up", mask="hint_first").rewrite("Don't give up now.")
+            ClozeRewriter("give up", mask="letters_first").rewrite("Don't give up now.")
             == "Don't g___ __ now."
         )
 
     def test_the_last_letter_of_the_last_word_is_the_one_shown(self):
         assert (
-            ClozeRewriter("give up", mask="hint_first_last").rewrite(
+            ClozeRewriter("give up", mask="letters_first_last").rewrite(
                 "Don't give up now."
             )
             == "Don't g___ _p now."
@@ -428,7 +519,9 @@ class TestAMultiWordHeadword:
 
     def test_a_hyphen_is_kept_too(self):
         assert (
-            ClozeRewriter("well-known", mask="hint_first").rewrite("It is well-known.")
+            ClozeRewriter("well-known", mask="letters_first").rewrite(
+                "It is well-known."
+            )
             == "It is w___-_____."
         )
 

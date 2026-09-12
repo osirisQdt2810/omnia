@@ -27,9 +27,11 @@ from omnia.plugins.smart_notes.engine.tools.base import (
     resolve_media_dir,
 )
 from omnia.plugins.smart_notes.engine.tools.cloze import (
+    FORMATS,
     ClozeParams,
     ClozeRewriter,
     ClozeTool,
+    cloze_format,
 )
 from omnia.plugins.smart_notes.engine.tools.cloze_audio import (
     ClozeAudioParams,
@@ -83,6 +85,7 @@ from omnia.plugins.smart_notes.engine.tools.user_tools import (
 )
 
 __all__ = [
+    "FORMATS",
     "GENERATION_KINDS",
     "INPUT_KINDS",
     "INPUT_KIND_EXTENSIONS",
@@ -128,6 +131,7 @@ __all__ = [
     "ai",
     "cloze",
     "cloze_audio",
+    "cloze_format",
     "declared_inputs",
     "get_tool",
     "is_user_tool",

@@ -30,7 +30,7 @@ Three consequences, each visible in the code below:
    narrower and absolute — *it* never speaks the answer.
 2. **What to hide is the UNION of two sources, not the first that matches.** A value carrying
    ``{{cN::…}}`` markers is masked at exactly those — Anki's own markup, written by hand or
-   left by an older note, saying outright what to hide. Every other value is masked at BOTH the
+   left by the ``cloze`` tool in one of its ``anki`` formats, saying outright what to hide. Every other value is masked at BOTH the
    runs the ``cloze`` tool already masked (``They s______ the crash.``) and the occurrences of
    the headword, located with
    :class:`~omnia.plugins.smart_notes.engine.tools.cloze.ClozeRewriter`, the same matcher that
