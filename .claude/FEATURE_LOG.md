@@ -52,10 +52,14 @@ declared on both sides as a literal — the same way word_lookup declares smart_
 an import would bind the module for the life of the process and a feature the user switched off
 would go on answering.
 
-Not fixed here, and still true: `window.omniaIntervals`, the same preview handed to card
-templates, is PREPENDED into the answer HTML before the measurement exists, so template JS
-branching on `next_seconds` sees the ungraded Good. A redraw cannot reach a script that has
-already run; giving templates an event to subscribe to is its own change.
+`window.omniaIntervals` — the same preview handed to card templates — gets the correction too.
+The prepend cannot carry a measurement that has not been taken, so a template reading the global
+synchronously sees the ungraded Good; the redraw sets it again and fires `omnia:intervals` a
+second time, which is the event the contract already defined. A template that must be right about
+a mistyped answer listens for the event instead of reading once at load — documented in the
+module docstring with the two-line shape that does it. Both publishes go through one
+`_intervals_js(payload)` builder, so a field added to the prepend cannot go missing from the
+correction.
 
 
 ## 2026-09-13 — Builtin tools are not editable (the Edit path is removed)
