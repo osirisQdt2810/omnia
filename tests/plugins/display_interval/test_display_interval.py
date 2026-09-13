@@ -238,6 +238,122 @@ class TestEnableDisable:
         assert any("__TA_NEXT_IVL" in js for js in evals)
 
 
+class TestTemplatesHearTheCorrection:
+    """``window.omniaIntervals`` is prepended before the typing grade exists — so it is said again.
+
+    The prepend cannot carry a measurement that has not happened: typed_accuracy reports after
+    the answer is on screen. A template branching on ``next_seconds`` ("read the definition
+    aloud while the answer is still shaky") therefore saw the ungraded Good in exactly the case
+    it exists for. A redraw cannot reach a script that already ran, but it can set the global
+    again and fire the event the contract already defines.
+    """
+
+    def _plugin(self, ease, monkeypatch, staged, expose=True):
+        import types as _t
+
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, e: e * 86_400
+        )
+        monkeypatch.setattr(anki_compat, "reviewer_side", lambda: "answer")
+        monkeypatch.setattr(anki_compat, "current_card", lambda: FakeCard(id=1, ivl=6))
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", lambda _js: None)
+        ease.add_transformer("typed", lambda card, e: staged.get("ease"), priority=100)
+        plugin = DisplayIntervalPlugin()
+        plugin._ctx = _t.SimpleNamespace(
+            ease=ease,
+            settings=_t.SimpleNamespace(
+                text_color="#c62828", expose_to_templates=expose
+            ),
+        )
+        return plugin
+
+    def test_the_refresh_republishes_the_value_and_fires_the_event(self, monkeypatch):
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        staged: dict = {}
+        plugin = self._plugin(EasePipeline(), monkeypatch, staged)
+
+        first = plugin._on_card_will_show(
+            "<b>a</b>", FakeCard(id=1, ivl=6), "reviewAnswer"
+        )
+        assert '"next_label": "3d"' in first  # an ungraded Good
+
+        staged["ease"] = 2  # the typing measurement lands: Hard
+        plugin._refresh()
+
+        assert evals, "the card webview was never told"
+        assert '"next_label": "2d"' in evals[-1]
+        assert "window.omniaIntervals = " in evals[-1]
+        assert "omnia:intervals" in evals[-1], "templates listen for this event"
+
+    def test_the_prepend_and_the_correction_say_the_same_shape(self, monkeypatch):
+        # One builder for both, so a field added to the prepend cannot go missing from the
+        # correction — a template reading it on the event would see undefined.
+        import json as _json
+        import re as _re
+
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        staged: dict = {}
+        plugin = self._plugin(EasePipeline(), monkeypatch, staged)
+
+        prepended = plugin._on_card_will_show(
+            "a", FakeCard(id=1, ivl=6), "reviewAnswer"
+        )
+        staged["ease"] = (
+            2  # a value that genuinely differs, or nothing is published at all
+        )
+        plugin._refresh()
+
+        shape = lambda js: sorted(  # noqa: E731
+            _json.loads(_re.search(r"window\.omniaIntervals = (\{.*?\});", js).group(1))
+        )
+        assert shape(prepended) == shape(evals[-1])
+
+    def test_an_unchanged_value_fires_nothing(self, monkeypatch):
+        # A correctly typed answer stages the very Good the preview already showed. The event
+        # means "this changed"; firing it anyway is a duplicate a listener cannot tell apart,
+        # so a template that plays audio on it played twice — on the COMMON case, not the
+        # mistyped one this exists for.
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        plugin = self._plugin(
+            EasePipeline(), monkeypatch, {"ease": 3}
+        )  # == the Good preview
+
+        plugin._on_card_will_show("a", FakeCard(id=1, ivl=6), "reviewAnswer")
+        plugin._refresh()
+
+        assert evals == []
+
+    def test_the_next_card_publishes_from_scratch(self, monkeypatch):
+        # What one card was told must not silence the next: the memory is per card, and the
+        # question hook drops it.
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", lambda _js: None)
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        plugin = self._plugin(EasePipeline(), monkeypatch, {"ease": 2})
+
+        plugin._on_card_will_show("a", FakeCard(id=1, ivl=6), "reviewAnswer")
+        plugin._refresh()
+        assert evals == [], "the prepend already said this"
+
+        plugin._on_question()
+        plugin._refresh()
+
+        assert len(evals) == 1, "the next card was never told"
+
+    def test_nothing_is_pushed_when_templates_are_not_exposed(self, monkeypatch):
+        # The flag means "templates do not get this", and a correction is still that value.
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        plugin = self._plugin(EasePipeline(), monkeypatch, {"ease": 2}, expose=False)
+
+        plugin._refresh()
+
+        assert evals == []
+
+
 class TestTemplateExpose:
     """card_will_show prepends window.omniaIntervals to the ANSWER html for template JS."""
 
