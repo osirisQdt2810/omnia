@@ -1,10 +1,16 @@
 """Display Interval feature: show the predicted next interval in the grading bar.
 
-The label asks the shared ease pipeline (``ctx.ease.compute_ease(card, Good)``) so a
-*synchronous* transformer like overdue_guard is reflected in the shown interval.
-typed_accuracy is NOT reflected: its ease arrives over the async ``pycmd`` bridge after this
-computation has already returned (a documented async limitation — see the module-level note in
-typed_accuracy). Rendered into the reviewer's PERSISTENT bottom (grading) bar webview — the
+The label asks the shared ease pipeline (``ctx.ease.compute_ease(card, Good)``) so every
+transformer is reflected in the shown interval — overdue_guard synchronously, typed_accuracy on
+a second pass. typed_accuracy's grade arrives over the async ``pycmd`` bridge AFTER show-answer
+has already computed and drawn the label, so the first draw cannot see it; the plugin publishes
+:data:`INTERVAL_LABEL_SERVICE` while it is enabled and typed_accuracy asks for a redraw once it
+has staged its ease. Without that the label said "1mo" while the card was about to be graded
+Hard — the number was a correct interval for the ease it was computed with, and a wrong answer
+to the only question the reader is asking it.
+
+The capability is published by NAME (``core.services``) rather than imported, so neither plugin
+knows the other exists and a disabled display_interval simply stops being asked. Rendered into the reviewer's PERSISTENT bottom (grading) bar webview — the
 Again/Hard/Good/Easy button area — as a fixed bottom-right, non-interactive label reading
 ``interval: <X>`` in the configured colour. The label ``<div>`` survives across cards (per-card
 updates only touch an inner element of the bar), so it is driven directly off the reviewer
@@ -24,17 +30,40 @@ import json
 from typing import Any, Optional
 
 import omnia.gui.display_interval as _di_gui
-from omnia.core import anki_compat
+from omnia.core import anki_compat, services
+from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.gui.assets import read_asset
 from omnia.plugins.display_interval.config import DisplayIntervalSettings
 from omnia.plugins.display_interval.logic import format_interval
 
+logger = get_logger()
+
 _EASE_GOOD = 3
+
+#: Published while this plugin is enabled: an object with ``refresh()``, for a plugin whose
+#: ease lands AFTER show-answer (typed_accuracy) to ask for the label to be drawn again.
+INTERVAL_LABEL_SERVICE = "display_interval.interval_label"
 
 # card.type -> template-facing state name (Anki: 0=new 1=learning 2=review 3=relearning).
 _CARD_STATES = {0: "new", 1: "learning", 2: "review", 3: "relearning"}
+
+
+class _IntervalLabel:
+    """What :data:`INTERVAL_LABEL_SERVICE` hands out: one verb, not the plugin.
+
+    A consumer gets the capability it needs and no way to reach into the rest of the feature —
+    and, because the object is withdrawn at ``on_disable``, a stale handle cannot outlive the
+    switch the way an import would.
+    """
+
+    def __init__(self, refresh: Any) -> None:
+        self._refresh = refresh
+
+    def refresh(self) -> None:
+        """Draw the interval label again for the card currently on screen."""
+        self._refresh()
 
 
 def _overlay_section(name: str) -> str:
@@ -72,8 +101,10 @@ class DisplayIntervalPlugin(FeaturePlugin):
         anki_compat.subscribe_hook("reviewer_did_show_answer", self._on_answer)
         # Filter hook: prepend window.omniaIntervals into the answer HTML for templates.
         anki_compat.subscribe_hook("card_will_show", self._on_card_will_show)
+        services.provide(INTERVAL_LABEL_SERVICE, _IntervalLabel(self._refresh))
 
     def on_disable(self, ctx: PluginContext) -> None:
+        services.revoke(INTERVAL_LABEL_SERVICE)
         anki_compat.unsubscribe_hook("reviewer_did_show_question", self._on_question)
         anki_compat.unsubscribe_hook("reviewer_did_show_answer", self._on_answer)
         anki_compat.unsubscribe_hook("card_will_show", self._on_card_will_show)
@@ -85,11 +116,17 @@ class DisplayIntervalPlugin(FeaturePlugin):
         anki_compat.reviewer_bottom_eval(_HIDE_JS)
 
     def _on_answer(self, card: Any, *_args: Any) -> None:
-        # Fold a Good press through the pipeline as a non-destructive PREVIEW (apply=False) so
-        # overdue_guard's (synchronous) adjustment shows WITHOUT consuming typed_accuracy's
-        # staged ease. typed_accuracy stages async over pycmd — see the module docstring.
         # The hook passes the card first; tolerate any extra args Anki may add.
-        if self._ctx is None:
+        self._draw(card)
+
+    def _draw(self, card: Any) -> None:
+        """Compute the label for ``card`` and push it into the bottom bar.
+
+        Folds a Good press through the pipeline as a non-destructive PREVIEW (apply=False) so
+        overdue_guard's adjustment — and typed_accuracy's staged ease, once there is one —
+        show WITHOUT consuming it before the card is actually answered.
+        """
+        if self._ctx is None or card is None:
             return
         effective = self._ctx.ease.compute_ease(card, _EASE_GOOD, apply=False)
         seconds = anki_compat.next_interval_seconds(card, effective)
@@ -98,6 +135,20 @@ class DisplayIntervalPlugin(FeaturePlugin):
         anki_compat.reviewer_bottom_eval(
             self._render_js(f"interval: {format_interval(seconds)}")
         )
+
+    def _refresh(self) -> None:
+        """Draw the label again for the card on screen — the published capability.
+
+        Answer side only. A transformer that stages late has nothing to say about a question
+        the user has not turned over yet, and drawing there would undo the hide the question
+        hook just performed.
+        """
+        try:
+            if anki_compat.reviewer_side() != "answer":
+                return
+            self._draw(anki_compat.current_card())
+        except Exception:  # a redraw is never worth taking the reviewer down for
+            logger.exception("display_interval: could not refresh the interval label")
 
     def _on_card_will_show(self, text: str, card: Any, kind: str) -> str:
         """Prepend ``window.omniaIntervals`` to the ANSWER html for template JS.
