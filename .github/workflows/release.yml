@@ -1,4 +1,9 @@
-# Publish the built `.ankiaddon` for a main commit whose CI went green.
+# Publish the built `.ankiaddon` for a main commit whose CI went green — the FAST lane.
+#
+# These are builds, not releases: one per merge, tagged `build-YY.MM.<run>` and marked
+# pre-release so "latest" keeps pointing at something a person chose to publish. The slow lane is
+# ankiweb.yml, which fires on a `v*` tag and updates the public listing; keeping the two tag
+# namespaces apart is what stops a merge from ever looking like a release.
 #
 # The artifact is the same one `scripts/build_addon.py` produces locally — source package +
 # vendor + config templates, minus the TTS weights — so what a machine installs is what this
@@ -111,11 +116,11 @@ jobs:
         if: steps.scope.outputs.ship == 'true'
         id: name
         run: |
-          # Calendar-versioned like Anki itself (YY.MM), with the run number as the serial so two
-          # merges in one month cannot collide. The MONTH half must be a real month: the AnkiWeb
-          # upload form silently clamps an impossible one and the server then rejects the whole
-          # upload with a 400 and an empty body, which costs hours to diagnose.
-          echo "tag=v$(date -u +%y.%m).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          # `build-` so these can never be mistaken for the `v*` tags that publish to AnkiWeb —
+          # a tag push is the deliberate act, and this one happens on every merge. Calendar
+          # dated like Anki itself, with the run number as the serial so two merges in one month
+          # cannot collide.
+          echo "tag=build-$(date -u +%y.%m).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Build the add-on
         if: steps.scope.outputs.ship == 'true'
@@ -131,7 +136,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.name.outputs.tag }}
         run: |
-          notes="Built from ${BUILT_SHA}.
+          notes="An automatic build of every merge — not a published release. The AnkiWeb
+          listing is updated from a \`v*\` tag instead.
+
+          Built from ${BUILT_SHA}.
 
           $(git log -1 --pretty=%s "${BUILT_SHA}")
 
@@ -148,5 +156,6 @@ jobs:
           gh release create "$TAG" dist/omnia.ankiaddon \
             --target "${BUILT_SHA}" \
             --title "$TAG" \
+            --prerelease \
             --notes "$notes" \
           || gh release upload "$TAG" dist/omnia.ankiaddon --clobber
