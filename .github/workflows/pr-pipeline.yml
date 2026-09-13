@@ -269,6 +269,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write # asks release.yml to run for the commit this job just created
     steps:
       - name: Merge when the automerge label is present
         env:
@@ -284,6 +285,19 @@ jobs:
           if printf '%s\n' "$labels" | grep -qx automerge; then
             gh pr merge "$PR" --repo "$REPO" --merge --match-head-commit "$HEAD_SHA"
             echo "PR #$PR merged at $HEAD_SHA."
+            # A merge made with the repository's own GITHUB_TOKEN starts NO workflow run —
+            # GitHub's recursion guard — so nothing on `push: main` ever fires for an
+            # auto-merged PR. That is why ci.yml had not run on main since 2026-08-24 while a
+            # dozen PRs went in, and why the release has to be asked for here, by hand, with the
+            # commit the merge just produced. Best effort: a PR that merged and then failed to
+            # publish must not report itself as failed — the merge is the thing that had to
+            # happen, and a release can be re-run from the Actions tab.
+            merged=$(gh pr view "$PR" --repo "$REPO" --json mergeCommit --jq '.mergeCommit.oid')
+            if [ -n "$merged" ]; then
+              gh workflow run release.yml --repo "$REPO" --ref main -f sha="$merged" \
+                && echo "Release requested for $merged." \
+                || echo "::warning::merged, but the release could not be requested for $merged"
+            fi
           else
             echo "No automerge label — review is APPROVE but merging is left to a human."
           fi
