@@ -478,7 +478,8 @@ so the copy retries next boot instead of orphaning the old backend's data.
 ## ADR-009: Word lookup is served to the clipper over a read-only loopback endpoint
 
 **Date**: 2026-08-07
-**Status**: Accepted
+**Status**: Accepted — refined by ADR-020 (the loopback rule is this SERVICE's, not the add-on's:
+a listener may bind beyond loopback under the conditions ADR-020 sets out)
 
 ### Context
 The companion desktop clipper (ADR-007) floats a "+" over whatever app the user is reading. We
@@ -1996,3 +1997,105 @@ extension point, not to grow this file.
 - **A `gui`-level bridge**, where only the dialog layer knows both. It works for settings — the
   Smart Notes panel already edits the `word_lookup` config section this way — but generation is
   requested from an HTTP handler with no GUI in the call stack.
+
+---
+
+## ADR-020: A sync listener may leave loopback — under a session, a token, and read-only
+
+**Date**: 2026-09-14
+**Status**: Accepted
+
+### Context
+Two machines, one collection too large to move whole. The user keeps a main machine and a second
+one that must hold only SOME decks, plus all of the Omnia configuration. AnkiWeb already syncs the
+whole collection — note types, decks, cards, media — and Omnia's own settings ride along in it
+(`omnia:config:omnia`, `omnia:config:features` and `omnia:smart_notes` are collection config, not
+files). What AnkiWeb cannot do is take a subset: it is all or nothing, and "all" is the thing
+being avoided. What it deliberately never carries is the provider credentials and the
+user-authored tools.
+
+So the second machine needs a way to PULL a chosen part of the first: selected decks with their
+note types, and the configuration that applies to what arrived. The user's requirement was
+explicit — over the internet, free, and no export-a-file-and-carry-it step.
+
+That lands on a listening socket, and ADR-009 says Omnia does not have one of those off loopback:
+`LookupService.start()` refuses to bind a non-loopback host, on the reasoning that the collection
+must never be exposed to a network.
+
+### Decision
+Omnia gains a **sync service**, separate from the lookup service, that MAY bind beyond loopback.
+Five conditions, all of them enforced in code rather than documented as advice:
+
+1. **Off until the user turns it on.** Nothing binds at startup, at enable, or on a schedule. The
+   source machine serves only while its owner has switched sharing on, and that switch is off in
+   a fresh profile.
+2. **The machine's ID is the key.** Every request carries the key the ID contains, and one that
+   does not is refused before anything reads the collection. The ID is REGENERATED on demand, and
+   that is the revoke: a code someone wrote down last month stops working the moment a new one is
+   made.
+3. **Read-only, always.** The source machine is never written to by a peer. There is no endpoint
+   that mutates anything — the machine being changed is the one that initiated the pull.
+4. **The user only ever handles an ID.** Not an address, not a port, not a token, and not the
+   name of whatever makes the two machines reachable. The ID is one opaque string per machine;
+   the interface asks for the other machine's ID and says nothing else about how it connects.
+5. **It says what it is doing.** The source shows that sharing is on and logs every pull it
+   served.
+
+The ID is stable per machine rather than per session, which is a deliberate trade. A per-session
+token would be tighter, and it would also mean someone has to be sitting at the SOURCE machine to
+read a fresh code out to the target every time — and the shape this feature is for is a second
+machine pulling from a main machine that is simply switched on. A stable ID keeps the user's
+model to the one thing they asked for ("mỗi máy có 1 id, nhập id của máy kia"), and the regenerate
+button is what makes it revocable.
+
+ADR-009 is **refined, not superseded**: its reasoning holds completely for the lookup service,
+which serves a local clipper, has no session, and needs no reachability beyond the machine. What
+stopped holding is the generalisation that grew around it — "Omnia never listens off loopback" —
+which was never a decision anyone took; it was one service's constraint read as the add-on's.
+
+### Rationale
+The alternatives all failed on a requirement the user had already set.
+
+A **rendezvous server** would give the short pairing code the user pictured, and Omnia has no
+server to host one on; renting one to move a user's own decks between their own machines is a
+running cost and a new place their data passes through.
+
+**Carrying a file** is what the Smart Notes transfer already does and it is genuinely safer, but
+the user ruled it out: they want this to work between two machines that are not in the same room.
+
+**AnkiWeb as the carrier** is the thing being escaped. A second AnkiWeb account for the subset
+would work and means maintaining two collections by hand forever.
+
+Direct HTTP costs nothing, needs nothing hosted, and works across the internet as soon as the two
+machines can address each other — which is what a mesh VPN on the free tier already gives this
+user on both machines. Omnia does not depend on any particular one: the pairing code carries a
+host and a port, so a LAN address works identically and no product name is wired into the code
+path or shown in the interface.
+
+### Consequences
+**Positive.** A subset sync becomes possible at all. The transport is dumb — HTTP and JSON — so
+the interesting logic (what is applicable, what gets skipped and why) stays pure and testable.
+Read-only on the source means the worst outcome of a mistake is on the machine the user is
+sitting at, which is also the machine they are watching.
+
+**Negative.** There is now a socket that can be reachable from outside the machine, and that is a
+genuinely larger surface than ADR-009 allowed. It is bounded by the five conditions above, but
+"bounded" is not "absent": an ID pasted into the wrong window is a key handed over, and a stable
+ID stays valid until someone regenerates it. That is the cost of the user only ever handling an
+ID; the mitigations are that sharing is off by default, that the switch is visible on the machine
+serving, and that regenerating takes one click.
+
+A second consequence is a trap worth writing down: if the TARGET profile is signed into the same
+AnkiWeb account, everything pulled into it is pushed up on its next sync and lands back on the
+source — the subset undone, silently, by a mechanism this feature has nothing to do with. The
+target must therefore check for that and say so before writing.
+
+### Alternatives considered
+- **Reuse the lookup service's port and loosen its bind rule.** Rejected: one service would then
+  serve two purposes with two different threat models, and the narrower one would inherit the
+  wider one's exposure.
+- **Push from the source instead of pulling from the target.** Rejected: the machine being
+  modified should be the one driving, and it is also the one that can see the result.
+- **Mutual sync with conflict resolution.** Rejected for now; the user asked for one direction
+  ("máy A cần lấy data và config từ máy B") and two directions cost a per-item version history
+  and a resolution UI that nothing yet needs.
