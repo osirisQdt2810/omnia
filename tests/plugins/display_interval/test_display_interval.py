@@ -12,9 +12,13 @@ import types
 
 from conftest import FakeCard
 
-from omnia.core import anki_compat
+from omnia.core import anki_compat, services
 from omnia.core.reviewer.ease_pipeline import EasePipeline
-from omnia.plugins.display_interval import DisplayIntervalPlugin
+from omnia.plugins.display_interval import (
+    INTERVAL_LABEL_SERVICE,
+    DisplayIntervalPlugin,
+    _IntervalLabel,
+)
 from omnia.plugins.display_interval.logic import format_interval
 
 
@@ -39,6 +43,90 @@ class TestFormatInterval:
         assert format_interval(86_400) == "1d"
         assert format_interval(86_400 * 45) == "2mo"
         assert format_interval(86_400 * 400) == "1.1y"
+
+
+class TestARedrawForAGradeThatLandsLate:
+    """The label is drawn at show-answer; typed_accuracy's ease arrives after that.
+
+    So the plugin publishes a redraw and the late grader asks for it. Before this, a mistyped
+    answer left the bar reading the interval for an ungraded Good next to a button about to
+    grade the card Hard — a correct number for a question nobody was asking.
+    """
+
+    def test_enabling_publishes_it_and_disabling_withdraws_it(self, monkeypatch):
+        # Through the real on_enable/on_disable: a capability nobody publishes is a capability
+        # nobody can ask for, and a handle that outlives the switch is the thing core/services
+        # exists to prevent.
+        monkeypatch.setattr(anki_compat, "subscribe_hook", lambda *_a, **_k: None)
+        monkeypatch.setattr(anki_compat, "unsubscribe_hook", lambda *_a, **_k: None)
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", lambda _js: None)
+        ctx = types.SimpleNamespace(
+            ease=EasePipeline(), settings=types.SimpleNamespace(text_color="#c62828")
+        )
+        plugin = DisplayIntervalPlugin()
+
+        plugin.on_enable(ctx)
+        published = services.lookup(INTERVAL_LABEL_SERVICE)
+
+        assert published is not None
+        assert isinstance(published, _IntervalLabel)
+
+        plugin.on_disable(ctx)
+
+        assert services.lookup(INTERVAL_LABEL_SERVICE) is None
+
+    def test_a_refresh_redraws_with_the_ease_staged_since(self, monkeypatch):
+        evals: list[str] = []
+        staged: dict = {}
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, ease: ease * 86_400
+        )
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", evals.append)
+        monkeypatch.setattr(anki_compat, "reviewer_side", lambda: "answer")
+        monkeypatch.setattr(anki_compat, "current_card", lambda: FakeCard(id=1))
+
+        ease = EasePipeline()
+        # A transformer that stages LATE, the way typed_accuracy's pycmd result does.
+        ease.add_transformer("typed", lambda card, e: staged.get("ease"), priority=100)
+        plugin = _plugin_with_ctx(ease)
+
+        plugin._on_answer(FakeCard(id=1))
+        assert "3d" in evals[-1], evals[-1]  # an ungraded Good
+
+        staged["ease"] = 2  # the typing measurement lands: Hard
+        plugin._refresh()
+
+        assert "2d" in evals[-1], evals[-1]
+
+    def test_a_refresh_on_the_question_side_draws_nothing(self, monkeypatch):
+        # The question hook has just HIDDEN the label; a stale redraw would put the previous
+        # card's interval back on screen over a question the user has not turned over.
+        evals: list[str] = []
+        # Patched so the ONLY thing that can stop a draw here is the side check — without it,
+        # this passed because computing an interval with no Anki simply raised.
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, ease: 3 * 86_400
+        )
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", evals.append)
+        monkeypatch.setattr(anki_compat, "reviewer_side", lambda: "question")
+        monkeypatch.setattr(anki_compat, "current_card", lambda: FakeCard(id=1))
+
+        _plugin_with_ctx(EasePipeline())._refresh()
+
+        assert evals == []
+
+    def test_a_refresh_with_no_card_is_harmless(self, monkeypatch):
+        evals: list[str] = []
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, ease: 3 * 86_400
+        )
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", evals.append)
+        monkeypatch.setattr(anki_compat, "reviewer_side", lambda: "answer")
+        monkeypatch.setattr(anki_compat, "current_card", lambda: None)
+
+        _plugin_with_ctx(EasePipeline())._refresh()
+
+        assert evals == []
 
 
 class TestAnswerLabel:

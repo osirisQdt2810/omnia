@@ -163,6 +163,54 @@ class TestTypedAccuracyPlugin:
         assert plugin._injector is not None
         assert style_hook.count() == before + 1
 
+    def test_staging_asks_for_the_interval_label_to_be_redrawn(self, fake_mw):
+        # The label is computed at show-answer, BEFORE this measurement exists, so a mistyped
+        # answer left the grading bar showing the interval for an ungraded Good next to a
+        # button about to grade the card Hard.
+        from omnia.core import services
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        redraws: list[int] = []
+        services.provide(
+            "display_interval.interval_label",
+            types.SimpleNamespace(refresh=lambda: redraws.append(1)),
+        )
+        try:
+            ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
+            TypedAccuracyPlugin().on_enable(ctx)
+            ctx.web._router.dispatch(
+                build_message(
+                    "typed_accuracy",
+                    "rated",
+                    {"ratio": 0.1, "hasGood": False, "hasBad": True, "hasMiss": False},
+                ),
+                None,
+            )
+        finally:
+            services.revoke("display_interval.interval_label")
+
+        assert redraws == [1], "the staged grade never reached the label"
+
+    def test_no_display_interval_is_not_a_failure(self, fake_mw):
+        # Nobody offering the capability is the normal state with that plugin switched off:
+        # the grade still stages and the answer still comes back ok.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
+        TypedAccuracyPlugin().on_enable(ctx)
+
+        handled, result = ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.1, "hasGood": False, "hasBad": True, "hasMiss": False},
+            ),
+            None,
+        )
+
+        assert handled is True and result["ok"] is True
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 2  # still forced Hard
+
     def test_preview_peeks_without_consuming_staged_ease(self, fake_mw):
         # A preview (display_interval's label) calls compute_ease(apply=False): it must PEEK
         # the staged ease repeatedly without consuming it, so the real grade still gets it.

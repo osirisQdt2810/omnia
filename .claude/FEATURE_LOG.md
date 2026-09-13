@@ -21,6 +21,43 @@ Format for each entry:
 
 ---
 
+## 2026-09-13 — The interval label reflects the typing grade, not an ungraded Good
+
+**What:** display_interval publishes `display_interval.interval_label` (an object with
+`refresh()`) while it is enabled, and typed_accuracy asks for a redraw the moment it stages its
+ease. The label is answer-side only, so a redraw on the question side is refused.
+
+**Why:** the label is computed at `reviewer_did_show_answer`. typed_accuracy's JS measures the
+typed markup and reports over `pycmd` AFTER that, so the first draw could never see it: a
+mistyped answer showed the interval for an ungraded Good — "1mo" next to a button about to grade
+the card Hard. The number was a correct interval for the ease it was computed with and a wrong
+answer to the only question the reader asks it. overdue_guard was always reflected because it is
+synchronous.
+
+**Files:** `plugins/display_interval/__init__.py` (`INTERVAL_LABEL_SERVICE`, `_IntervalLabel`,
+`_draw`/`_refresh`), `plugins/typed_accuracy/__init__.py` (`_refresh_interval_label`),
+`tests/plugins/display_interval/test_display_interval.py`,
+`tests/plugins/typed_accuracy/test_typed_accuracy.py`.
+
+**How to verify:**
+```
+pytest tests/plugins/display_interval tests/plugins/typed_accuracy -q
+```
+In Anki, with typed-accuracy on and display_interval on: mistype an answer badly. The label
+updates from the Good interval to the Hard one a moment after the answer appears, and the card
+then grades at exactly that.
+
+**Notes / rollback:** the two plugins still do not know each other exists. The service NAME is
+declared on both sides as a literal — the same way word_lookup declares smart_notes' — because
+an import would bind the module for the life of the process and a feature the user switched off
+would go on answering.
+
+Not fixed here, and still true: `window.omniaIntervals`, the same preview handed to card
+templates, is PREPENDED into the answer HTML before the measurement exists, so template JS
+branching on `next_seconds` sees the ungraded Good. A redraw cannot reach a script that has
+already run; giving templates an event to subscribe to is its own change.
+
+
 ## 2026-09-13 — Builtin tools are not editable (the Edit path is removed)
 
 **What:** the Edit / Restore built-in buttons, the three `builtin_tool_*` ops, the

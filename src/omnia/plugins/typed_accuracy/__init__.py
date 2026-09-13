@@ -8,6 +8,12 @@ that ease (cooperating with overdue_guard via the shared ease pipeline at priori
 Every outcome is also logged (good/bad/miss/empty) to a SQLite table in the collection, which
 an interactive donut panel on the Statistics screen queries.
 
+The grade lands LATE, and that is visible. The JS measures on the answer side and reports over
+``pycmd``, which is after ``reviewer_did_show_answer`` — so display_interval has already drawn
+its "interval: …" label for an ungraded Good by the time the ease is staged. Staging therefore
+asks that label to be drawn again (``core.services``, by name — plugins never import each
+other), and with display_interval switched off nobody answers and nothing happens.
+
 Single-application note: the cooperative ease pipeline is the one place an answer's ease is
 rewritten. Pressing any review button (Enter included — Anki maps it to a button) routes
 through the wrapped ``_answerCard``, where the staged ease is substituted; ``auto_answer="no"``
@@ -23,6 +29,7 @@ from typing import Any, Optional
 
 import omnia.gui.typed_accuracy.stats_injector as _ta_gui
 from omnia.core import anki_compat
+from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.core.reviewer.web_injector import WebAsset
@@ -32,7 +39,16 @@ from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 from omnia.plugins.typed_accuracy.logic import decide_ease, result_code
 from omnia.plugins.typed_accuracy.store import SessionTracker, TypedAnswerLog
 
+logger = get_logger()
+
 _PRIORITY = 100  # before overdue_guard (200), which may then cap this grade
+
+# display_interval's redraw, asked for by NAME (core.services) once this plugin has staged its
+# ease. The string is repeated here rather than imported: a plugin may not import a sibling —
+# an import would bind the module for the life of the process, so a feature the user switched
+# off would still answer. The name IS the contract (see core/services.py), and word_lookup
+# declares smart_notes' service name the same way.
+_INTERVAL_LABEL_SERVICE = "display_interval.interval_label"
 
 # The panel's web assets now live in the feature GUI package's ``web/`` folder
 # (``gui/typed_accuracy/web/``) and are read directly off disk (module-relative paths, not
@@ -45,6 +61,23 @@ _WEB_DIR = Path(_ta_gui.__file__).resolve().parent / "web"
 # Non-type-answer cards (no #typeans) report nothing, so they are unaffected. The script body
 # lives in the GUI package's ``web/answer.js``.
 _ANSWER_JS = read_asset(_ta_gui.__file__, "web", "answer.js").strip()
+
+
+def _refresh_interval_label() -> None:
+    """Ask display_interval to redraw its label, if that plugin is enabled right now.
+
+    A ``None`` from ``lookup`` is the whole answer: nobody is offering the capability, which is
+    the normal state when display_interval is switched off. Nothing here is worth an exception
+    reaching the pycmd handler that grades the card.
+    """
+    try:
+        from omnia.core import services
+
+        label = services.lookup(_INTERVAL_LABEL_SERVICE)
+        if label is not None:
+            label.refresh()
+    except Exception:
+        logger.exception("typed_accuracy: could not refresh the interval label")
 
 
 @register("typed_accuracy")
@@ -139,6 +172,12 @@ class TypedAccuracyPlugin(FeaturePlugin):
         else:
             # auto_answer == "no": stage nothing so the user's own press stands.
             self._pending.pop(cid, None)
+
+        # The label in the grading bar was drawn at show-answer, BEFORE this measurement
+        # existed, so it is showing the interval for an ungraded Good. Ask for it to be drawn
+        # again now that the real ease is staged; without this a mistyped answer read "1mo"
+        # next to a button about to grade the card Hard.
+        _refresh_interval_label()
 
         result = result_code(
             bool(data.get("hasGood")),
