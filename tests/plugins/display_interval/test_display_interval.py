@@ -294,10 +294,14 @@ class TestTemplatesHearTheCorrection:
 
         evals: list[str] = []
         monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
-        plugin = self._plugin(EasePipeline(), monkeypatch, {"ease": 3})
+        staged: dict = {}
+        plugin = self._plugin(EasePipeline(), monkeypatch, staged)
 
         prepended = plugin._on_card_will_show(
             "a", FakeCard(id=1, ivl=6), "reviewAnswer"
+        )
+        staged["ease"] = (
+            2  # a value that genuinely differs, or nothing is published at all
         )
         plugin._refresh()
 
@@ -305,6 +309,39 @@ class TestTemplatesHearTheCorrection:
             _json.loads(_re.search(r"window\.omniaIntervals = (\{.*?\});", js).group(1))
         )
         assert shape(prepended) == shape(evals[-1])
+
+    def test_an_unchanged_value_fires_nothing(self, monkeypatch):
+        # A correctly typed answer stages the very Good the preview already showed. The event
+        # means "this changed"; firing it anyway is a duplicate a listener cannot tell apart,
+        # so a template that plays audio on it played twice — on the COMMON case, not the
+        # mistyped one this exists for.
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        plugin = self._plugin(
+            EasePipeline(), monkeypatch, {"ease": 3}
+        )  # == the Good preview
+
+        plugin._on_card_will_show("a", FakeCard(id=1, ivl=6), "reviewAnswer")
+        plugin._refresh()
+
+        assert evals == []
+
+    def test_the_next_card_publishes_from_scratch(self, monkeypatch):
+        # What one card was told must not silence the next: the memory is per card, and the
+        # question hook drops it.
+        evals: list[str] = []
+        monkeypatch.setattr(anki_compat, "reviewer_bottom_eval", lambda _js: None)
+        monkeypatch.setattr(anki_compat, "reviewer_eval", evals.append)
+        plugin = self._plugin(EasePipeline(), monkeypatch, {"ease": 2})
+
+        plugin._on_card_will_show("a", FakeCard(id=1, ivl=6), "reviewAnswer")
+        plugin._refresh()
+        assert evals == [], "the prepend already said this"
+
+        plugin._on_question()
+        plugin._refresh()
+
+        assert len(evals) == 1, "the next card was never told"
 
     def test_nothing_is_pushed_when_templates_are_not_exposed(self, monkeypatch):
         # The flag means "templates do not get this", and a correction is still that value.

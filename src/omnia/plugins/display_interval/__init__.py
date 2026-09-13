@@ -23,16 +23,23 @@ definition aloud while the answer is still shaky, the example once it is well le
 Injected by PREPENDING a ``<script>`` through the ``card_will_show`` filter (answer side only),
 which runs before any of the template's own scripts — deterministic, no polling handshake.
 
-It is published TWICE on a card that typed_accuracy grades. The prepend cannot carry a
-measurement that has not been taken yet, so a template reading the global synchronously sees
-the ungraded Good — on a mistyped answer, the case the branch exists for. The redraw sets the
-global again with the corrected value and fires ``omnia:intervals`` a second time, so:
+It is published TWICE on a card whose ease a late grader CHANGES. The prepend cannot carry a
+measurement that has not been taken yet, so the first value is the ungraded Good; when
+typed_accuracy stages a different one, the global is set again and ``omnia:intervals`` fires
+with the corrected payload as its ``detail``. A template that must be right in both cases reads
+what is already there AND listens:
 
 .. code-block:: javascript
 
-    document.addEventListener("omnia:intervals", () => decide(window.omniaIntervals));
+    const decide = () => { /* branch on window.omniaIntervals */ };
+    if (window.omniaIntervals) decide();                   // the prepend already ran
+    document.addEventListener("omnia:intervals", decide);  // and the correction, if one comes
 
-is the shape that is right in both cases, and reading once at load is the shape that is not.
+Listening ALONE is not enough: the prepend's script runs before the template's own, so its
+event has already fired by the time a listener could be registered, and a ``CustomEvent`` is
+not sticky. The correction is suppressed when the payload is unchanged — a correctly typed
+answer stages the same Good the preview already showed — so a listener that plays audio does
+not play it twice on the common case.
 """
 
 from __future__ import annotations
@@ -83,10 +90,11 @@ def _intervals_js(payload: dict) -> str:
     Shared by the prepend and the redraw so the two can never drift into announcing different
     shapes for the same thing.
     """
+    encoded = json.dumps(payload)
     return (
-        "window.omniaIntervals = "
-        + json.dumps(payload)
-        + '; document.dispatchEvent(new CustomEvent("omnia:intervals"));'
+        f"window.omniaIntervals = {encoded}; "
+        'document.dispatchEvent(new CustomEvent("omnia:intervals", '
+        f"{{detail: {encoded}}}));"
     )
 
 
@@ -118,6 +126,11 @@ class DisplayIntervalPlugin(FeaturePlugin):
 
     def __init__(self) -> None:
         self._ctx: Optional[PluginContext] = None
+        # The template payload already on screen, by card id. A redraw that would publish the
+        # same thing publishes nothing: the event is how a template knows something CHANGED,
+        # and a correctly typed answer stages the very Good the preview already showed — so
+        # firing anyway made a listener that plays audio play it twice, on the common case.
+        self._published: dict[Any, dict] = {}
 
     def on_enable(self, ctx: PluginContext) -> None:
         self._ctx = ctx
@@ -136,7 +149,9 @@ class DisplayIntervalPlugin(FeaturePlugin):
         self._ctx = None
 
     def _on_question(self, *_args: Any) -> None:
-        # Question side: hide the previous card's label until this answer's interval is known.
+        # Question side: hide the previous card's label until this answer's interval is known,
+        # and forget what the last card was told — a new card publishes from scratch.
+        self._published = {}
         anki_compat.reviewer_bottom_eval(_HIDE_JS)
 
     def _on_answer(self, card: Any, *_args: Any) -> None:
@@ -183,15 +198,23 @@ class DisplayIntervalPlugin(FeaturePlugin):
             logger.exception("display_interval: could not refresh the interval label")
 
     def _push_intervals(self, card: Any) -> None:
-        """Re-publish ``window.omniaIntervals`` into the card webview and fire its event.
+        """Re-publish ``window.omniaIntervals`` into the card webview — only if it changed.
 
-        Same payload and same event name as the prepend, so a template that already listens
-        needs no change: it reads the global the way it did on the first fire and gets the
-        value that reflects the grade the card is about to receive.
+        Same payload and same event as the prepend, so a template reads the global the way it
+        did on the first fire and gets the value that reflects the grade the card is about to
+        receive. Silent when the value is identical, because the event means "this changed"
+        and firing it for an unchanged value is a duplicate the listener cannot tell apart.
         """
         payload = self._payload(card)
-        if payload is not None:
-            anki_compat.reviewer_eval(_intervals_js(payload))
+        if payload is None or payload == self._published.get(getattr(card, "id", None)):
+            return
+        self._remember(card, payload)
+        anki_compat.reviewer_eval(_intervals_js(payload))
+
+    def _remember(self, card: Any, payload: Optional[dict]) -> None:
+        """Record what the card on screen has been told (one card at a time)."""
+        cid = getattr(card, "id", None)
+        self._published = {cid: payload} if payload is not None else {}
 
     def _payload(self, card: Any) -> Optional[dict]:
         """The template-facing preview for ``card``, or None when there is nothing to say.
@@ -246,6 +269,7 @@ class DisplayIntervalPlugin(FeaturePlugin):
         payload = self._payload(card)
         if payload is None:
             return text
+        self._remember(card, payload)
         return f"<script>{_intervals_js(payload)}</script>" + text
 
     def _render_js(self, text: str) -> str:

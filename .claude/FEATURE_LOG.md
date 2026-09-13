@@ -52,7 +52,14 @@ declared on both sides as a literal — the same way word_lookup declares smart_
 an import would bind the module for the life of the process and a feature the user switched off
 would go on answering.
 
-`window.omniaIntervals` — the same preview handed to card templates — gets the correction too.
+`window.omniaIntervals` — the same preview handed to card templates — gets the correction too,
+but only when there IS one: the payload is remembered per card, and a redraw that would publish
+the same value publishes nothing. A correctly typed answer stages the very Good the preview
+already showed, so firing anyway made a template that plays audio on the event play it twice, on
+the common case rather than the mistyped one. The event also carries the payload as `detail` now.
+Listening alone is not enough either, and the docstring says so: the prepend's script runs before
+the template's own, so its event has already fired by the time a listener could be registered —
+read what is there AND listen.
 The prepend cannot carry a measurement that has not been taken, so a template reading the global
 synchronously sees the ungraded Good; the redraw sets it again and fires `omnia:intervals` a
 second time, which is the event the contract already defined. A template that must be right about
