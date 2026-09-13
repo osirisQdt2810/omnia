@@ -17,8 +17,8 @@ name: CI
 on:
   push:
     branches: [main]
-  # A rebuild of the current main without a new commit — it re-runs the suite too, which is the
-  # point: the publish job below refuses to ship anything the suite has not just passed.
+  # A rebuild of the current main without a new commit. release.yml keys off this workflow
+  # finishing, so a dispatch here re-runs the suite AND republishes.
   workflow_dispatch:
 
 concurrency:
@@ -114,114 +114,3 @@ jobs:
           done
           echo "coverage.json is not readable on the badges branch"
           exit 1
-
-  publish:
-    # Publishes the built `.ankiaddon` so another machine can install it without anyone
-    # assembling a folder by hand — which is how a test machine ends up running something that
-    # is not what the repo builds.
-    #
-    # It lives HERE, behind `needs: test`, rather than in a workflow of its own. A separate
-    # workflow on `push: main` would start in parallel with the suite and finish first (zip +
-    # upload is about a minute; the Windows leg is five), so a one-liner pushed straight to main
-    # — which CLAUDE.md explicitly allows for small edits, bypassing the PR pipeline — could be
-    # the newest Release before its own test run went red. The machine that then installs it is
-    # the test box this exists for.
-    #
-    # It does NOT upload to AnkiWeb. AnkiWeb has no public upload API; automating its private
-    # endpoint means driving a login session from CI, and an Anki maintainer has said on the
-    # official forum that the Terms do not currently permit third-party API access. That is the
-    # account owner's call to take deliberately, not something to arrange quietly in a workflow.
-    # A Release is also additive where AnkiWeb is not: it keeps exactly one published build per
-    # branch, so an upload replaces what every existing user gets on their next update check.
-    name: Publish the add-on
-    needs: test
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    concurrency:
-      # NOT the workflow's `cancel-in-progress` group: a newer push may supersede a test run
-      # mid-flight harmlessly, but cancelling this one between creating a release and uploading
-      # its asset leaves a tag with nothing on it.
-      group: release-main
-      cancel-in-progress: false
-    permissions:
-      contents: write # creates the release and uploads the asset
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Two commits, so a push can be diffed against what it replaced. LFS is deliberately
-          # OFF: the only LFS files are the `.onnx` voice weights, which the build excludes —
-          # pulling 60 MB to throw it away would cost every run.
-          fetch-depth: 2
-          lfs: false
-
-      - name: Decide whether there is anything to publish
-        id: scope
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "ship=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null || git diff --name-only HEAD~1 HEAD)
-          echo "Changed files:"; echo "$changed"
-          # Anything outside these paths ends up in the add-on a user runs. The `.md` rule is
-          # deliberately TOP-LEVEL only (`^[^/]*\.md$`): `models/piper/README.md` and
-          # `vendor/README.md` are packaged, and the first is where the hand-drop-an-`.onnx`
-          # workaround is written down — a build that shipped a stale copy of that would be a
-          # build that lies about how to fix a broken voice.
-          shipped=$(printf '%s\n' "$changed" | grep -vE '^(tests/|docs/|\.claude/|\.github/|requirements/|deploy/)|^[^/]*\.md$' || true)
-          if [ -z "$shipped" ]; then
-            echo "Only docs/tests changed — nothing to publish."
-            echo "ship=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ship=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/setup-python@v5
-        if: steps.scope.outputs.ship == 'true'
-        with:
-          python-version: "3.13"
-
-      - name: Name the release
-        if: steps.scope.outputs.ship == 'true'
-        id: name
-        run: |
-          # Calendar-versioned like Anki itself (YY.MM), with the run number as the serial so two
-          # merges in one month cannot collide. The MONTH half must be a real month: the AnkiWeb
-          # upload form silently clamps an impossible one and the server then rejects the whole
-          # upload with a 400 and an empty body, which costs hours to diagnose.
-          echo "tag=v$(date -u +%y.%m).${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-
-      - name: Build the add-on
-        if: steps.scope.outputs.ship == 'true'
-        env:
-          # Stamped into the shipped manifest as `human_version`, which is what Anki shows beside
-          # the add-on — the only way someone at another machine can tell which build they have.
-          OMNIA_BUILD_VERSION: ${{ steps.name.outputs.tag }}
-        run: python scripts/build_addon.py
-
-      - name: Publish the release
-        if: steps.scope.outputs.ship == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.name.outputs.tag }}
-        run: |
-          notes="Built from ${{ github.sha }}.
-
-          $(git log -1 --pretty=%s ${{ github.sha }})
-
-          Install: Anki → Tools → Add-ons → Install from file… and pick \`omnia.ankiaddon\`."
-          # --target pins the tag to the commit this job BUILT. Without it `gh` creates the tag
-          # from whatever main points at when the call lands, so a merge that arrived while this
-          # run was working would leave the tag resolving to code the asset does not contain —
-          # and the next person bisecting a bad build reads the wrong diff.
-          #
-          # The `||` branch makes a re-run idempotent. `run_number` is fixed across re-runs, so
-          # "Re-run failed jobs" after a transient upload failure would otherwise hit
-          # "release already exists" forever, and the only way out would be deleting the release
-          # by hand — exactly the manual step this exists to remove.
-          gh release create "$TAG" dist/omnia.ankiaddon \
-            --target "${{ github.sha }}" \
-            --title "$TAG" \
-            --notes "$notes" \
-          || gh release upload "$TAG" dist/omnia.ankiaddon --clobber
