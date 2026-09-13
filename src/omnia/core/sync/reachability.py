@@ -56,8 +56,14 @@ _MESH_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 #: dropped, unlike loopback: it is not impossible for one of these to be somebody's real LAN, and
 #: ranked last is enough when the caller takes the first.
 _VIRTUAL = (
-    ipaddress.ip_network("172.17.0.0/16"),  # docker0, the default bridge
-    ipaddress.ip_network("172.18.0.0/15"),  # docker's next allocations
+    # Docker's default address pool is 172.17.0.0/16 through 172.31.0.0/16 — every bridge it
+    # creates after docker0 comes from there. Spelled as the four networks that cover exactly
+    # that span rather than as 172.16.0.0/12, which would also swallow a real LAN someone
+    # genuinely runs on 172.16.
+    ipaddress.ip_network("172.17.0.0/16"),
+    ipaddress.ip_network("172.18.0.0/15"),
+    ipaddress.ip_network("172.20.0.0/14"),
+    ipaddress.ip_network("172.24.0.0/13"),
     ipaddress.ip_network("192.168.56.0/24"),  # VirtualBox host-only
     ipaddress.ip_network("10.211.55.0/24"),  # Parallels host-only
     ipaddress.ip_network("10.37.129.0/24"),  # Parallels shared
@@ -91,6 +97,11 @@ _PROBES = (
     (socket.AF_INET, "8.8.8.8"),
     (socket.AF_INET6, "2001:4860:4860::8888"),
 )
+
+#: The one seam the probe opens a socket through, so a test can replace it without reaching
+#: into the stdlib module and handing a fake to everything else in the process that happens to
+#: open a socket while the test runs.
+_socket_factory = socket.socket
 
 
 @dataclass(frozen=True)
@@ -156,8 +167,18 @@ def rank_addresses(candidates: Iterable[str]) -> list[Address]:
 
 
 def _probe(family: int, target: str) -> Optional[str]:
-    """The source address this machine would use to reach ``target``, or None when no route."""
-    sock = socket.socket(family, socket.SOCK_DGRAM)
+    """The source address this machine would use to reach ``target``, or None when no route.
+
+    CONSTRUCTION is inside the guard, not only the connect. A machine with IPv6 unbound — a
+    Windows adapter with the box unticked, a Linux box booted ``ipv6.disable=1`` — raises
+    ``EAFNOSUPPORT`` from ``socket()`` itself, before there is anything to connect. Left
+    outside, that exception escaped past the IPv4 answer already found and reached a dialog
+    whose job was to print an address the machine plainly had.
+    """
+    try:
+        sock = _socket_factory(family, socket.SOCK_DGRAM)
+    except OSError:
+        return None  # the family is not configured on this machine at all
     try:
         sock.connect((target, 9))  # the discard port; a UDP connect sends no packet
         return str(sock.getsockname()[0])

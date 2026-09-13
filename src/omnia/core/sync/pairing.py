@@ -43,7 +43,9 @@ TOKEN_CHARS = 32
 GROUP = 5
 
 _TOKEN_RE = re.compile(rf"^[0-9a-f]{{{TOKEN_CHARS}}}$")
-_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]{1,64}$")
+# 253 is the maximum length of a DNS name; a shorter cap refuses a legitimate long hostname
+# with "not a usable address" and nothing the user could do about it.
+_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]{1,253}$")
 _SEPARATOR = "|"
 
 
