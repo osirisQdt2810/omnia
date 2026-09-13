@@ -30,6 +30,8 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -74,13 +76,21 @@ def _is_live_toml(path: Path) -> bool:
     return path.suffix == ".toml" and not path.name.endswith(".example.toml")
 
 
-def _add_tree(zf: zipfile.ZipFile, root: Path, prefix: str) -> int:
+def _add_tree(
+    zf: zipfile.ZipFile,
+    root: Path,
+    prefix: str,
+    skip: frozenset[str] = frozenset(),
+) -> int:
     """Zip every shippable file under ``root`` at archive path ``prefix`` and return the count.
 
     Args:
         zf: The open zip archive.
         root: The directory whose contents are added.
         prefix: The archive-relative prefix (``""`` for the root, ``"vendor"`` etc. otherwise).
+        skip: Archive paths this tree must NOT write, because the caller writes them itself.
+            A zip can hold two members of one name and readers disagree about which wins, so
+            "write it twice and hope" is not an option.
 
     Returns:
         The number of files written.
@@ -91,9 +101,31 @@ def _add_tree(zf: zipfile.ZipFile, root: Path, prefix: str) -> int:
             continue
         rel = path.relative_to(root).as_posix()
         arcname = f"{prefix}/{rel}" if prefix else rel
+        if arcname in skip:
+            continue
         zf.write(path, arcname)
         count += 1
     return count
+
+
+def _stamped_manifest(version: str) -> bytes:
+    """Return ``manifest.json`` with ``human_version`` set, for the archive.
+
+    The repo's copy carries no version: there is nothing local to number, and a number
+    committed by hand goes stale the moment someone forgets. The BUILD knows which one it is,
+    so it writes it in — and Anki shows ``human_version`` next to the add-on in its list, which
+    is the only way a person sitting at another machine can answer "am I on the latest build?"
+    without comparing file dates.
+
+    Args:
+        version: What to stamp (the release tag, or "dev" for a local build).
+
+    Returns:
+        The manifest bytes to store in the archive. The file on disk is not touched.
+    """
+    data = json.loads((ADDON_DIR / "manifest.json").read_text(encoding="utf-8"))
+    data["human_version"] = version
+    return json.dumps(data, indent=2).encode("utf-8")
 
 
 def build() -> Path:
@@ -110,9 +142,17 @@ def build() -> Path:
     if OUTPUT.exists():
         OUTPUT.unlink()
 
+    # Set by the release workflow to the tag it is publishing; "dev" everywhere else, so a
+    # hand-built package never claims to be a release.
+    version = os.environ.get("OMNIA_BUILD_VERSION", "dev").strip() or "dev"
+
     count = 0
     with zipfile.ZipFile(OUTPUT, "w", zipfile.ZIP_DEFLATED) as zf:
-        count += _add_tree(zf, ADDON_DIR, "")
+        # The manifest is written from memory with the version stamped in, so the tree must
+        # not also write the flat copy from disk.
+        count += _add_tree(zf, ADDON_DIR, "", skip=frozenset({"manifest.json"}))
+        zf.writestr("manifest.json", _stamped_manifest(version))
+        count += 1
         count += _add_tree(zf, VENDOR_DIR, "vendor")
         if MODELS_DIR.is_dir():
             count += _add_tree(zf, MODELS_DIR, "models")
@@ -120,7 +160,7 @@ def build() -> Path:
             # Only the tracked templates ship (live *.toml are excluded by _is_live_toml).
             count += _add_tree(zf, CONFIG_DIR, "config")
 
-    print(f"Built {OUTPUT} ({count} files)")
+    print(f"Built {OUTPUT} ({count} files, version {version})")
     return OUTPUT
 
 

@@ -17,6 +17,9 @@ name: CI
 on:
   push:
     branches: [main]
+  # A rebuild of the current main without a new commit. release.yml keys off this workflow
+  # finishing, so a dispatch here re-runs the suite AND republishes.
+  workflow_dispatch:
 
 concurrency:
   group: ci-main
