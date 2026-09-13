@@ -4,6 +4,13 @@
 # vendor + config templates, minus the TTS weights — so what a machine installs is what this
 # repo builds, not a hand-assembled folder someone copied over.
 #
+# **Why it is also dispatchable.** A PR merged by the auto-merge job is pushed with the
+# repository's own `GITHUB_TOKEN`, and GitHub deliberately does not start workflow runs for
+# events that token causes — the recursion guard. So `push: main` fires for a human's merge and
+# never for the bot's, which is why `ci.yml` had not run on main since 2026-08-24 while a dozen
+# PRs went in. The auto-merge job therefore calls this workflow itself with the commit it just
+# created; see `pr-pipeline.yml`.
+#
 # **Why `workflow_run` and not `push`.** A `push: main` trigger would start this alongside the
 # suite and finish first (zip + upload is about a minute; the Windows leg of CI is five), so a
 # one-liner pushed straight to main — which CLAUDE.md allows for small edits, bypassing the PR
@@ -34,6 +41,14 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  # Called by the auto-merge job with the merge commit it just made, because a bot merge starts
+  # no push-triggered run of its own.
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: The commit to build and tag (defaults to this branch's tip)
+        required: false
+        type: string
 
 concurrency:
   group: release-main
@@ -48,19 +63,21 @@ jobs:
     # Only for a green CI run on main. A red run means the commit is not shippable, and a green
     # one on a branch is not what anyone installs.
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # The commit CI actually tested. `github.sha` in a workflow_run is the default branch's
-      # tip at dispatch time, which drifts the moment another merge lands — the asset and the
-      # tag would then describe different code.
-      BUILT_SHA: ${{ github.event.workflow_run.head_sha }}
+      # The commit that was actually tested — the input when dispatched, the run's head
+      # otherwise. NOT `github.sha`: in a workflow_run that is the default branch's tip at
+      # dispatch time, which drifts the moment another merge lands, and the asset and the tag
+      # would then describe different code.
+      BUILT_SHA: ${{ inputs.sha || github.event.workflow_run.head_sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ inputs.sha || github.event.workflow_run.head_sha || github.sha }}
           # Two commits, so the push can be diffed against what it replaced. LFS is deliberately
           # OFF: the only LFS files are the `.onnx` voice weights, which the build excludes —
           # pulling 60 MB to throw it away would cost every run.
