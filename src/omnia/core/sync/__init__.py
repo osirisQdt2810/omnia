@@ -6,14 +6,32 @@ applies to the target, and what has to be skipped and why.
 
 This package holds the parts that need no Anki:
 
-* :mod:`.pairing` — the code one machine shows and the other types in (address + session key);
-* :mod:`.reachability` — which of this machine's addresses another one could actually dial.
+* :mod:`.pairing` — the ID one machine shows and the other types in (address + machine key);
+* :mod:`.reachability` — which of this machine's addresses another one could actually dial;
+* :mod:`.inventory` — what a source offers, as data;
+* :mod:`.service` — the source's read-only session (ADR-020's five conditions, in code);
+* :mod:`.client` — the target's side, whose whole job is that every failure names its own fix.
 
-Nothing here imports ``aqt`` or ``anki``.
+Nothing here imports ``aqt`` or ``anki``: the service takes a callable that reads the collection,
+and marshalling that onto the Qt main thread is the caller's job.
 """
 
 from __future__ import annotations
 
+from omnia.core.sync.client import (
+    TIMEOUT_SECONDS,
+    SyncClient,
+    SyncError,
+    check,
+)
+from omnia.core.sync.inventory import (
+    PROTOCOL,
+    ConfigSummary,
+    DeckEntry,
+    Inventory,
+    InventoryError,
+    NoteTypeEntry,
+)
 from omnia.core.sync.pairing import (
     GROUP,
     TOKEN_CHARS,
@@ -33,18 +51,38 @@ from omnia.core.sync.reachability import (
     local_addresses,
     rank_addresses,
 )
+from omnia.core.sync.service import (
+    HELLO_PATH,
+    INVENTORY_PATH,
+    TOKEN_HEADER,
+    Session,
+)
 
 __all__ = [
     "GROUP",
+    "HELLO_PATH",
+    "INVENTORY_PATH",
     "KIND_LAN",
     "KIND_MESH",
     "KIND_OTHER",
     "KIND_ULA",
     "KIND_VIRTUAL",
+    "PROTOCOL",
+    "TIMEOUT_SECONDS",
     "TOKEN_CHARS",
+    "TOKEN_HEADER",
     "Address",
+    "ConfigSummary",
+    "DeckEntry",
+    "Inventory",
+    "InventoryError",
+    "NoteTypeEntry",
     "PairingAddress",
     "PairingError",
+    "Session",
+    "SyncClient",
+    "SyncError",
+    "check",
     "format_pairing_code",
     "local_addresses",
     "new_token",
