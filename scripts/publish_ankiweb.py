@@ -63,14 +63,20 @@ SUPPORT_URL = "https://github.com/osirisQdt2810/omnia"
 #: which is indistinguishable from every other rejection and cost hours once already.
 MIN_POINT_VERSION = 250900
 
-#: And NO ceiling. 260900 is not "the 26.09 series", it is exactly 26.9.0 — a strict cap one
-#: patch above the Anki this was last tested on, so the first upload would have published a
-#: listing AnkiWeb refuses to serve to anyone on 26.9.1, with no signal anywhere: the upload
-#: returns 200 and the users simply stop getting updates. A cap pinned to the month you happened
-#: to publish in expires by the next release, and `docs/ankiweb.md` promises "25.09 or newer"
-#: with no upper bound. Zero is proto3's default, so `_uint` drops the field entirely — which is
-#: what a blank maximum on the upload form means.
-MAX_POINT_VERSION = 0
+#: The ceiling, NEGATIVE, which is how AnkiWeb spells "and everything newer".
+#:
+#: Read out of the upload page's own code rather than guessed. ``max_version`` is a SIGNED int32
+#: (``{no:2,name:"max_version",kind:"scalar",T:5}``), the page renders a negative with a leading
+#: minus and parses one back, and its "Add New Branch" button flips the previous branch's
+#: negative max positive before opening the next — which only makes sense if a negative max is
+#: the open-ended one.
+#:
+#: Zero does NOT mean "no maximum". Zero is proto3's default, so the field is dropped from the
+#: wire entirely, and the server answers 400 with an empty body — the same silent rejection that
+#: cost hours over an impossible month once before. A positive ceiling is worse than either: it
+#: is an exact version, so ``260900`` blocks every Anki from 26.9.1 on, and users simply stop
+#: getting updates with no signal anywhere.
+MAX_POINT_VERSION = -260900
 
 #: The listing's description, kept in the repo. AnkiWeb's request carries the description on
 #: every upload, and proto3 cannot tell "unset" from "empty" — so omitting it would blank the
@@ -109,6 +115,18 @@ def _uint(field: int, value: int) -> bytes:
     return b"" if not value else _tag(field, 0) + _varint(value)
 
 
+def _int(field: int, value: int) -> bytes:
+    """A signed ``int32`` field, which proto3 encodes as a 64-bit two's complement varint.
+
+    Not zig-zag — that is ``sint32``, a different wire encoding — so a negative always costs ten
+    bytes. Getting this wrong is not a size bug: the server would read a wildly large positive
+    version and the listing would be published with a ceiling nobody could reach.
+    """
+    if not value:
+        return b""
+    return _tag(field, 0) + _varint(value & 0xFFFFFFFFFFFFFFFF)
+
+
 def _delimited(field: int, payload: bytes) -> bytes:
     """A length-delimited field: string, bytes, or a nested message."""
     return _tag(field, 2) + _varint(len(payload)) + payload
@@ -120,8 +138,12 @@ def _text(field: int, value: str) -> bytes:
 
 
 def addon_branch(min_version: int, max_version: int) -> bytes:
-    """Encode one ``AddonBranch``."""
-    return _uint(1, min_version) + _uint(2, max_version)
+    """Encode one ``AddonBranch``.
+
+    ``max_version`` goes through :func:`_int`, not :func:`_uint`: it is a signed field and the
+    value that means "and everything newer" is negative.
+    """
+    return _uint(1, min_version) + _int(2, max_version)
 
 
 def addon_info(

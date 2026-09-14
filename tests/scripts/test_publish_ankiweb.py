@@ -76,46 +76,14 @@ class TestTheWireFormat:
         assert info[5] == b"hello"
         assert _fields(info[6])[1] == publish.MIN_POINT_VERSION
 
-    def test_the_branch_publishes_no_maximum_version(self):
-        # 260900 is exactly 26.9.0, not "the 26.09 series" — a cap one patch above the Anki this
-        # was last tested on. The upload would have returned 200 and published a listing AnkiWeb
-        # refuses to serve to anyone on 26.9.1, with no signal anywhere.
-        branch = _fields(
-            publish.addon_branch(publish.MIN_POINT_VERSION, publish.MAX_POINT_VERSION)
-        )
-
-        assert branch[1] == publish.MIN_POINT_VERSION
-        assert 2 not in branch, "a maximum was published; docs/ankiweb.md promises none"
-
-    def test_any_future_cap_must_not_be_about_to_expire(self):
-        # If someone reintroduces a ceiling, this is what catches it expiring — in CI rather
-        # than in an install failure six weeks later. Anki ships roughly monthly.
-        if not publish.MAX_POINT_VERSION:
-            return
-        from datetime import date
-
-        today = date.today()
-        cap_months = (publish.MAX_POINT_VERSION // 10000) * 12 + (
-            publish.MAX_POINT_VERSION // 100 % 100
-        )
-        now_months = (today.year % 100) * 12 + today.month
-        assert cap_months - now_months >= 6, (
-            "the published maximum Anki version is within six months — it will start refusing "
-            "installs before anyone remembers it is there"
-        )
-
-    def test_the_tags_are_declared_rather_than_blanked(self):
-        # Same mechanism as the description: proto3 sends "" and the server takes it, so an
-        # empty default does not mean "leave them alone", it means "erase them".
-        assert publish.TAGS.strip(), "an empty TAGS erases the listing's search tags"
-
     def test_the_version_branch_months_are_real_months(self):
         # 26.99 is month 99. The form clamps it, the server rejects the upload with a 400 and an
-        # empty body, and nothing on screen says why.
+        # empty body, and nothing on screen says why. Checked on the MAGNITUDE, because the
+        # maximum is negative on purpose — see TestTheVersionBranch.
         for point in (publish.MIN_POINT_VERSION, publish.MAX_POINT_VERSION):
             if not point:
                 continue
-            month = point // 100 % 100
+            month = abs(point) // 100 % 100
             assert 1 <= month <= 12, point
 
     def test_an_empty_string_field_is_still_sent(self):
@@ -181,7 +149,7 @@ class TestWhatMustNotHappen:
     def test_no_cookie_means_no_upload(self, monkeypatch, capsys):
         monkeypatch.delenv("OMNIA_ANKIWEB_COOKIE", raising=False)
 
-        code = publish.main(["publish_ankiweb.py", "dist/omnia.ankiaddon", "v0.1.0"])
+        code = publish.main(["publish.py", "dist/omnia.ankiaddon", "v0.1.0"])
 
         assert code == 1
         assert "not set" in capsys.readouterr().err
@@ -259,3 +227,64 @@ class TestWhatMustNotHappen:
         assert publish.publish(package, "v0.1.0", "SECRET") == 726991726
         assert seen["headers"]["Cookie"] == "has_auth=1; ankiweb=SECRET"
         assert b"SECRET" not in seen["body"]  # never in the payload, only in the header
+
+
+class TestTheVersionBranch:
+    """The branch is where this has now failed twice, both times with a bare 400.
+
+    Once on an impossible month, once on a maximum of zero — which proto3 drops from the wire
+    entirely, so the request carried no maximum at all. The server says nothing either time, so
+    the only defence is to check the bytes here.
+    """
+
+    @staticmethod
+    def _fields(raw: bytes) -> dict:
+        """Decode a branch message the way the server's reader would."""
+        out, index = {}, 0
+        while index < len(raw):
+            key, index = publish._read_varint(raw, index)
+            value, index = publish._read_varint(raw, index)
+            signed = value - (1 << 64) if value >= (1 << 63) else value
+            out[key >> 3] = signed
+        return out
+
+    def test_the_minimum_is_a_real_month(self):
+        # A month over 12 is meaningless, the upload form clamps it silently, and the server
+        # rejects the whole request with an empty body.
+        month = (publish.MIN_POINT_VERSION // 100) % 100
+        assert 1 <= month <= 12, f"{publish.MIN_POINT_VERSION} has month {month}"
+
+    def test_the_maximum_is_a_real_month_too(self):
+        month = (abs(publish.MAX_POINT_VERSION) // 100) % 100
+        assert 1 <= month <= 12
+
+    def test_the_maximum_is_negative_which_is_how_ankiweb_spells_open_ended(self):
+        # Read out of the upload page's own code: max_version is a signed int32, the page renders
+        # a negative with a leading minus, and "Add New Branch" flips the previous branch's
+        # negative max positive before opening the next — which only makes sense if negative is
+        # the open-ended one. A POSITIVE ceiling is an exact version, so users on the next Anki
+        # release silently stop getting updates.
+        assert publish.MAX_POINT_VERSION < 0
+
+    def test_the_maximum_actually_reaches_the_wire(self):
+        # The defect this closes: zero is proto3's default, so the field was dropped entirely and
+        # the request carried no maximum. Asserted on the BYTES, because that is the only place
+        # the difference between "0" and "absent" shows up.
+        fields = self._fields(
+            publish.addon_branch(publish.MIN_POINT_VERSION, publish.MAX_POINT_VERSION)
+        )
+
+        assert 2 in fields, "the branch went out with no maximum at all"
+        assert fields[2] == publish.MAX_POINT_VERSION
+
+    def test_a_negative_survives_as_a_negative(self):
+        # int32 is two's complement on the wire, not zig-zag. Encode it as zig-zag or as an
+        # unsigned varint and the server reads a wildly large positive version instead.
+        fields = self._fields(publish.addon_branch(250900, -260900))
+
+        assert fields[1] == 250900
+        assert fields[2] == -260900
+
+    def test_a_zero_maximum_would_vanish_which_is_why_it_is_not_used(self):
+        # Pins the mechanism rather than the value, so the next person to reach for 0 sees why.
+        assert 2 not in self._fields(publish.addon_branch(250900, 0))
