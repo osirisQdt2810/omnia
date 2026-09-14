@@ -6,6 +6,7 @@ import re
 
 from omnia.gui.settings_categories import CATEGORY_STYLES, DEFAULT_CATEGORY_STYLE
 from omnia.gui.settings_html import (
+    HEADER_ACTIONS,
     PluginCardModel,
     build_settings_html,
     category_models,
@@ -116,9 +117,36 @@ class TestLandingView:
             [("Reviewing", [_card("auto_flip")]), ("AI", [_card("smart_notes")])],
             dark=False,
         )
+        # Two categories, each appearing as a tile and as the section it opens — and nothing
+        # else. Omnia's own actions are not categories and are not tiles; they sit on the header
+        # row, because a tile in this grid that opens a window instead of a section implies it
+        # is one of the features you turn on.
         assert html.count('<button type="button" class="omnia-tile') == 2
         assert 'data-category="reviewing-0"' in html
         assert 'data-category="ai-1"' in html
+
+    def test_omnias_own_action_sits_on_the_header_row_not_in_the_grid(self):
+        html = build_settings_html([("Reviewing", [_card("auto_flip")])], dark=False)
+
+        assert 'class="omnia-header-actions"' in html
+        assert 'data-action="sync"' in html
+        # Beside the title, before the grid opens — and never inside the tiles.
+        assert html.index('data-action="sync"') < html.index(
+            'data-category="reviewing-0"'
+        )
+        assert 'class="omnia-tile" data-action' not in html
+        # NOT data-category: the JS pairs a category handle with the section carrying the same
+        # one, so an action wearing that attribute would look for a view that does not exist.
+        assert 'data-action="sync" data-category' not in html
+
+    def test_the_script_binds_actions_by_attribute_not_by_where_they_sit(self):
+        # The wiring this pins: the handler used to be bound to `.omnia-tile`, so the moment Sync
+        # became a header button instead of a tile the click stopped reaching Python — a live,
+        # visible control that silently did nothing, with every test still green.
+        html = build_settings_html([("Reviewing", [_card("auto_flip")])], dark=False)
+
+        assert 'querySelectorAll("[data-action]")' in html
+        assert '<section class="omnia-category" data-action' not in html
 
     def test_tile_carries_the_name_blurb_and_counts(self):
         html = build_settings_html(
@@ -150,11 +178,20 @@ class TestLandingView:
         assert "--i:0;--cat-from:" in html
         assert "--i:1;--cat-from:" in html
 
-    def test_empty_state_when_there_are_no_plugins(self):
+    def test_no_plugins_still_shows_what_omnia_itself_offers(self):
+        # The empty state was written when the grid was only ever plugin groups. An Omnia-level
+        # feature belongs to no plugin, so "no feature plugins are installed" is no longer the
+        # same statement as "there is nothing here".
         html = build_settings_html([], dark=False)
+
+        # What Omnia itself does is still reachable...
+        assert 'data-action="sync"' in html
+        # ...and the grid says plainly that the rest is missing, rather than being blank.
         assert "No feature plugins are installed." in html
-        assert 'class="omnia-tile' not in html
-        assert 'class="omnia-category"' not in html
+        # Counted on the rendered MARKUP — `data-category="` also appears inside settings.js,
+        # which the page inlines, so a bare substring search can never be zero.
+        assert html.count('<button type="button" class="omnia-tile') == 0
+        assert html.count('<section class="omnia-category"') == 0
 
     def test_data_total_matches_the_switches_the_view_renders(self):
         # refreshCount divides the live checked count by this attribute; if they ever disagree
@@ -394,3 +431,34 @@ class TestPageAssets:
         # The flat-list markup is gone; its rules must not linger as dead weight.
         css = _page_css(build_settings_html([], dark=False))
         assert "omnia-section" not in css
+
+
+class TestEveryTileIsWiredToSomething:
+    """An advertised control that does nothing is worse than one that is not there."""
+
+    @staticmethod
+    def _dialog():
+        """The dialog CLASS, never an instance — there is no Qt here to build one with."""
+        from aqt_stubs import install_gui_stubs
+
+        install_gui_stubs()
+        from omnia.gui.settings_dialog import HANDLERS, SettingsDialog
+
+        return HANDLERS, SettingsDialog
+
+    def test_every_action_tile_has_a_handler_on_the_dialog(self):
+        # WebDialog drops a message whose op it does not know, without a word — no dialog, no
+        # error, no log line. The Sync tile shipped that way: rendered, clickable, inert.
+        HANDLERS, SettingsDialog = self._dialog()
+
+        for op, name, _icon in HEADER_ACTIONS:
+            assert (
+                op in HANDLERS
+            ), f"the {name} tile sends {op!r} and nothing answers it"
+            assert callable(getattr(SettingsDialog, HANDLERS[op], None))
+
+    def test_the_handler_map_names_methods_that_exist(self):
+        HANDLERS, SettingsDialog = self._dialog()
+
+        for op, method in HANDLERS.items():
+            assert hasattr(SettingsDialog, method), f"{op!r} names a missing {method}"

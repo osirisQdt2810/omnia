@@ -11,44 +11,16 @@ symbols the controllers import at module load are stubbed here before importing 
 
 from __future__ import annotations
 
-import sys
 import types
 from typing import Any
 
 # --- stub the extra aqt symbols the dialogs package imports at module load ----------------
 # Importing any ``dialogs.controllers.*`` submodule first runs the ``dialogs`` package
-# __init__, which loads studio.py + prompt.py (and web_dialog.py) — so stub the
-# Qt symbols all of those import at module top.
-_theme_mod = types.ModuleType("aqt.theme")
-_theme_mod.theme_manager = types.SimpleNamespace(night_mode=False)
-sys.modules.setdefault("aqt.theme", _theme_mod)
+# __init__, which loads studio.py + prompt.py (and web_dialog.py) — so the Qt symbols all of
+# those import at module top have to be in place before the import below runs.
+from aqt_stubs import install_gui_stubs
 
-_qt = sys.modules.get("aqt.qt") or types.ModuleType("aqt.qt")
-for _name in (
-    "QCloseEvent",
-    "QComboBox",
-    "QDialog",
-    "QDialogButtonBox",
-    "QLabel",
-    "QPlainTextEdit",
-    "QPushButton",
-    "Qt",
-    "QVBoxLayout",
-    "QWebEngineView",
-    "QWidget",
-):
-    if not hasattr(_qt, _name):
-        setattr(_qt, _name, type(_name, (), {}))
-sys.modules["aqt.qt"] = _qt
-import aqt  # noqa: E402  (the conftest stub package)
-
-aqt.qt = _qt
-aqt.theme = _theme_mod
-
-_webview_mod = types.ModuleType("aqt.webview")
-_webview_mod.AnkiWebView = type("AnkiWebView", (), {})
-sys.modules.setdefault("aqt.webview", _webview_mod)
-aqt.webview = _webview_mod
+install_gui_stubs()
 
 from conftest import FakeLLMProvider as _FakeLLMProvider  # noqa: E402
 

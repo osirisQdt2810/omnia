@@ -310,6 +310,11 @@ class ConfigRepository:
             return "providers.toml"
         if section in ("log_level", "plugins"):
             return "omnia.toml"
+        if section == "sync":
+            # Per-machine, and it has to stay that way: features.toml lives in the collection,
+            # so a synced sharing switch would turn sharing on over there too, and a synced
+            # machine key would give two machines one identity.
+            return "machine.toml"
         return "features.toml"
 
     def _reload(self) -> None:

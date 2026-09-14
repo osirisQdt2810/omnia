@@ -104,9 +104,13 @@ class BaseConfigLoader(ABC):
 
 
 class TomlConfigLoader(BaseConfigLoader):
-    """File backend: all three domains live in live TOML files under ``config_dir``."""
+    """File backend: every domain lives in a live TOML file under ``config_dir``."""
 
-    LIVE_FILES = ("omnia.toml", "features.toml", "providers.toml")
+    #: ``machine.toml`` is here as well as in the collection backend's merge order. Listing it
+    #: in only one of the two is a silent bug rather than a missing feature: the section would
+    #: be WRITTEN and never read back, so the machine key would be minted fresh on every read
+    #: and every ID handed out would stop working the moment the panel was reopened.
+    LIVE_FILES = ("omnia.toml", "features.toml", "machine.toml", "providers.toml")
 
     def __init__(self, config_dir: Path, *, template_dir: Path | None = None) -> None:
         """Initialise the loader.
@@ -177,7 +181,12 @@ class CollectionConfigLoader(BaseConfigLoader):
     """
 
     _DB_FILES = ("omnia.toml", "features.toml")
-    _MERGE_ORDER = ("omnia.toml", "features.toml", "providers.toml")
+    #: ``machine.toml`` is on DISK on purpose, like the credentials beside it. It holds what
+    #: belongs to ONE computer and must never travel: this machine's sync identity and whether
+    #: it is currently offering to be pulled from. Ride those in the collection and two machines
+    #: sharing an AnkiWeb account end up with one identity between them, and switching sharing
+    #: on here would switch it on there.
+    _MERGE_ORDER = ("omnia.toml", "features.toml", "machine.toml", "providers.toml")
 
     def __init__(
         self,
