@@ -204,3 +204,65 @@ class TestTheCorrectionItself:
         correction = Correction(original="I went shop", rewritten="I went to the shop")
 
         assert "".join(t for t, _ in correction.highlighted()) == "I went to the shop"
+
+
+class TestAlreadyGoodMeansWhatItSays:
+    """ "This is fine" and "it answered with nothing usable" are opposite answers.
+
+    The panel renders them completely differently — one says "nothing to change", the other
+    shows a rewrite — so conflating them puts a reassurance next to a different sentence.
+    """
+
+    def test_a_rewrite_with_every_fix_dropped_is_not_already_good(self):
+        # The way this happens in practice: a model names its keys `original`/`corrected`
+        # instead of `before`/`after`, so every fix parses to empty, changes nothing, and is
+        # filtered out. The rewrite is still there and still different.
+        correction = parse(
+            {
+                "rewritten": "I haven't got any money.",
+                "fixes": [
+                    {"original": "ain't got none", "corrected": "haven't got any"}
+                ],
+            },
+            original="I ain't got none.",
+            mode=WRITTEN,
+        )
+
+        assert correction.fixes == (), "the unparseable fix was kept"
+        assert correction.changed is True
+        assert (
+            correction.already_good is False
+        ), "it told the user the sentence was fine while showing a different one"
+
+    def test_a_no_op_rewrite_with_no_fixes_is_already_good(self):
+        # The case the fix filter exists for: the model echoed the sentence back and every
+        # "fix" it listed changed nothing. That IS "this is fine".
+        correction = parse(
+            {
+                "rewritten": "I have gone to the shop.",
+                "fixes": [{"before": "gone", "after": "gone"}],
+            },
+            original="I have gone to the shop.",
+            mode=WRITTEN,
+        )
+
+        assert correction.fixes == ()
+        assert correction.already_good is True
+
+    def test_the_model_saying_so_is_believed_even_with_fixes(self):
+        correction = parse(
+            {"rewritten": "I have gone.", "already_good": True, "fixes": []},
+            original="I have gone.",
+            mode=WRITTEN,
+        )
+
+        assert correction.already_good is True
+
+    def test_whitespace_alone_is_not_a_correction(self):
+        correction = parse(
+            {"rewritten": "  I have   gone. ", "fixes": []},
+            original="I have gone.",
+            mode=WRITTEN,
+        )
+
+        assert correction.already_good is True, "respacing was reported as a rewrite"

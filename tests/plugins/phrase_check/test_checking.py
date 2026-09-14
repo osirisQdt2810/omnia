@@ -156,16 +156,6 @@ class TestAskingAtMostOnce:
 
         assert len(hub.provider.prompts) == 2
 
-    def test_forgetting_one_makes_the_next_check_ask(self):
-        hub = _Hub()
-        checker = PhraseChecker(hub, _cache())
-        checker.check(PHRASE)
-
-        checker.forget(PHRASE)
-        checker.check(PHRASE)
-
-        assert len(hub.provider.prompts) == 2
-
     def test_a_cached_answer_still_comes_back_as_a_correction(self):
         checker = PhraseChecker(_Hub(), _cache())
         checker.check(PHRASE)

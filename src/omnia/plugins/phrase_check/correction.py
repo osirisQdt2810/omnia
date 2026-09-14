@@ -137,7 +137,12 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
         rewritten=rewritten,
         mode=mode if mode in MODES else WRITTEN,
         fixes=fixes,
-        already_good=bool(payload.get("already_good")) or not fixes,
+        # NOT `or not fixes`: an empty list after filtering means "it answered with nothing
+        # usable", which is the opposite of "this is fine". A model that names its keys
+        # differently enough for every fix to be dropped would otherwise have the panel say the
+        # sentence is correct while showing a REWRITTEN one beside it.
+        already_good=bool(payload.get("already_good"))
+        or (not fixes and _squash(original) == _squash(rewritten)),
     )
 
 

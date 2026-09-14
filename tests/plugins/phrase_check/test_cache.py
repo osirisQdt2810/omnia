@@ -16,7 +16,7 @@ import pytest
 from omnia.plugins.phrase_check.cache import (
     CacheKey,
     CorrectionCache,
-    section_store,
+    file_store,
 )
 
 
@@ -183,38 +183,94 @@ class TestWhenTheStoreMisbehaves:
         assert cache.get(_key()) is None
 
 
-class TestTheConfigBackedStore:
-    class _Repo:
-        def __init__(self) -> None:
-            self.sections: dict = {}
+class TestTheFileBackedStore:
+    """A file under ``user_files/`` — deliberately NOT the collection config.
 
-        def raw_section(self, name: str) -> dict:
-            return dict(self.sections.get(name, {}))
+    A check runs on the HTTP worker thread, where ``col.db`` must not be written; the config
+    blob is also rewritten by the settings dialog, so a check landing mid-save would put the old
+    table back over it; and the feature domain SYNCS, so five hundred cached corrections would
+    ride to AnkiWeb and mark the collection modified on every check. A cache is per-machine
+    scratch and belongs in a per-machine file.
+    """
 
-        def update_section(self, name: str, values: dict) -> None:
-            self.sections.setdefault(name, {}).update(values)
-
-    def test_it_round_trips_through_the_config(self, clock):
-        repo = self._Repo()
-        read, write = section_store(repo, "phrase_check")
-        cache = CorrectionCache(read, write, clock=clock)
-
-        cache.put(_key(), {"rewritten": "I have gone."})
+    def test_it_round_trips_through_the_file(self, clock, tmp_path):
+        read, write = file_store(tmp_path / "cache.json")
+        CorrectionCache(read, write, clock=clock).put(
+            _key(), {"rewritten": "I have gone."}
+        )
 
         assert CorrectionCache(read, write, clock=clock).get(_key()) == {
             "rewritten": "I have gone."
         }
 
-    def test_it_is_stored_as_one_string_not_five_hundred_sections(self, clock):
-        repo = self._Repo()
-        read, write = section_store(repo, "phrase_check")
-        CorrectionCache(read, write, clock=clock).put(_key(), {"rewritten": "x"})
-
-        assert isinstance(repo.sections["phrase_check"]["corrections"], str)
-
-    def test_a_corrupt_stored_string_reads_as_empty_rather_than_raising(self, clock):
-        repo = self._Repo()
-        repo.sections["phrase_check"] = {"corrections": "{not json"}
-        read, _write = section_store(repo, "phrase_check")
+    def test_a_store_that_was_never_written_reads_as_empty(self, clock, tmp_path):
+        read, _write = file_store(tmp_path / "nothing-here.json")
 
         assert read() == {}
+
+    def test_it_makes_the_directory_it_was_pointed_at(self, clock, tmp_path):
+        # user_files/ exists, but nothing guarantees a subdirectory does, and a cache that
+        # refused to write until someone made a folder would silently never cache anything.
+        path = tmp_path / "deeper" / "still" / "cache.json"
+        read, write = file_store(path)
+        CorrectionCache(read, write, clock=clock).put(_key(), {"rewritten": "x"})
+
+        assert path.is_file()
+
+    def test_a_corrupt_file_reads_as_empty_rather_than_raising(self, tmp_path):
+        # A cache that cannot be read is a cache MISS, which costs one LLM call. A cache that
+        # raised would fail the correction itself — the thing the user actually asked for.
+        path = tmp_path / "cache.json"
+        path.write_text("{not json", encoding="utf-8")
+        read, _write = file_store(path)
+
+        assert read() == {}
+
+    def test_a_file_holding_something_that_is_not_a_map_reads_as_empty(self, tmp_path):
+        path = tmp_path / "cache.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        read, _write = file_store(path)
+
+        assert read() == {}
+
+    def test_a_write_that_cannot_happen_does_not_take_the_correction_down(
+        self, clock, tmp_path
+    ):
+        # A read-only disk, a full one, a path that is somehow a directory. The correction has
+        # already been produced; losing the chance to remember it is not a reason to lose it.
+        path = tmp_path / "cache.json"
+        path.mkdir()
+        read, write = file_store(path)
+
+        CorrectionCache(read, write, clock=clock).put(_key(), {"rewritten": "x"})
+
+    def test_it_leaves_no_temporary_file_behind(self, clock, tmp_path):
+        # Written beside the target and renamed over it, so a crash mid-write cannot leave a
+        # truncated file that the next read would throw the whole cache away over.
+        read, write = file_store(tmp_path / "cache.json")
+        CorrectionCache(read, write, clock=clock).put(_key(), {"rewritten": "x"})
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["cache.json"]
+
+    def test_concurrent_writers_do_not_lose_each_other(self, tmp_path):
+        # Checks land on HTTP worker threads and the server threads every connection, so two
+        # finishing at once is ordinary. Read-modify-write without a lock loses one of them.
+        import threading
+
+        path = tmp_path / "cache.json"
+        ready = threading.Barrier(8)
+
+        def contribute(index: int) -> None:
+            read, write = file_store(path)
+            cache = CorrectionCache(read, write, max_entries=100, max_age=10_000.0)
+            ready.wait(5)
+            cache.put(_key(text=f"phrase {index}"), {"rewritten": str(index)})
+
+        workers = [threading.Thread(target=contribute, args=(i,)) for i in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+
+        read, _write = file_store(path)
+        assert len(read()) == 8, "a concurrent write was lost"

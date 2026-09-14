@@ -14,7 +14,11 @@ from omnia.plugins.phrase_check.correction import MODES, WRITTEN
 
 
 class PhraseCheckSettings(PersistedModel):
-    """Settings for checking a phrase a clipper sent."""
+    """Settings for checking a phrase a clipper sent.
+
+    Settings only. The cache of remembered corrections deliberately lives in a file under
+    ``user_files/`` rather than here — it is per-machine scratch, and this domain syncs.
+    """
 
     language: str = Field(
         default="English",
@@ -50,6 +54,3 @@ class PhraseCheckSettings(PersistedModel):
             "short and frequent, which is a different trade-off from generating a whole card."
         ),
     )
-    #: Where remembered corrections live. Not surfaced in the settings form — it is a cache, and
-    #: a text box holding several hundred kilobytes of JSON is not a setting anybody edits.
-    corrections: str = Field(default="", title="", description="", exclude=True)

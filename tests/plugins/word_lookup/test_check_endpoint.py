@@ -125,6 +125,33 @@ class TestWhatItRefuses:
         assert "nothing to check" in body["error"]
         assert called == [], "an empty selection spent a request"
 
+    def test_a_phrase_far_too_long_is_a_400_and_never_reaches_the_model(self, serve):
+        # A 400, not a 502. Sent as a provider failure it would arrive at the panel dressed as
+        # "the model could not be reached", and the user would go and check an API key over a
+        # selection that was merely too big.
+        from omnia.plugins.word_lookup.service import MAX_PHRASE_CHARS
+
+        called = []
+        port = serve(lambda *a: called.append(1) or CORRECTION)
+
+        status, body = _post(port, "/check", {"text": "x " * MAX_PHRASE_CHARS})
+
+        assert status == 400
+        assert "too long" in body["error"]
+        assert str(MAX_PHRASE_CHARS) in body["error"].replace(
+            ",", ""
+        ), "it refused without saying what the limit is"
+        assert called == [], "an oversized selection spent a request"
+
+    def test_a_phrase_right_at_the_limit_is_accepted(self, serve):
+        from omnia.plugins.word_lookup.service import MAX_PHRASE_CHARS
+
+        port = serve(lambda text, mode, refresh: CORRECTION)
+
+        status, _body = _post(port, "/check", {"text": "x" * MAX_PHRASE_CHARS})
+
+        assert status == 200, "the limit was off by one at the boundary"
+
     def test_a_body_that_is_not_json_is_a_400(self, serve):
         port = serve(lambda *a: CORRECTION)
         request = urllib.request.Request(

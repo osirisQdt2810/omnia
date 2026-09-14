@@ -149,6 +149,14 @@ _GENERATE_PATH = "/generate"
 #: Corrects a phrase. A POST because the phrase is a paragraph, not a query parameter, and
 #: because it spends LLM credits — so it sits behind the same page-origin refusal as /generate.
 _CHECK_PATH = "/check"
+#: The most a clipper may ask to have corrected in one request.
+#:
+#: The HTTP contract, checked here so that too much text is a 400 — the request being wrong —
+#: rather than a 502 dressed as a provider failure, which would send the user to check an API
+#: key over a selection that was merely too big. ``phrase_check`` keeps its own, independent
+#: guard for direct callers; this one is what a clipper is held to, and the two are allowed to
+#: differ (the stricter always wins, and that is the whole interaction between them).
+MAX_PHRASE_CHARS = 2000
 # The one non-empty Origin the write path accepts. By SCHEME, never by extension id: the id
 # differs between an unpacked dev load and a Web Store install.
 # ponytail: Chrome only -- a Firefox/Safari port of the clipper would send moz-extension:// or
@@ -523,11 +531,15 @@ class LookupService:
                 if is_page_origin(self.headers.get("Origin")):
                     # A page's fetch, not a clipper's. See the module docstring: no-cors still
                     # performs the side effect, and this side effect costs money.
+                    # Named for BOTH routes rather than reworded for the newer one: /generate
+                    # rewrites notes as well as spending credits, and a message that mentioned
+                    # only the money would be a quiet downgrade of what it says about writes.
                     self._respond(
                         403,
                         {
                             "error": "requests from a web page are refused; "
-                            "this endpoint spends your provider credits"
+                            "this endpoint spends your provider credits and "
+                            "may change your notes"
                         },
                     )
                     return
@@ -559,9 +571,21 @@ class LookupService:
                 except _BadRequestError as exc:
                     self._respond(400, {"error": str(exc)})
                     return
-                text = str(body.get("text") or "")
-                if not text.strip():
+                text = str(body.get("text") or "").strip()
+                if not text:
                     self._respond(400, {"error": "there is nothing to check"})
+                    return
+                if len(text) > MAX_PHRASE_CHARS:
+                    self._respond(
+                        400,
+                        {
+                            "error": (
+                                f"That is too long to check at once — {len(text):,} "
+                                f"characters, and the limit is {MAX_PHRASE_CHARS:,}. "
+                                f"Select a sentence or two."
+                            )
+                        },
+                    )
                     return
                 try:
                     result = service._check_phrase(

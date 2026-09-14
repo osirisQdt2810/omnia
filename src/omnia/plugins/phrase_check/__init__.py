@@ -28,7 +28,7 @@ from omnia.core import services
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
-from omnia.plugins.phrase_check.cache import CorrectionCache, section_store
+from omnia.plugins.phrase_check.cache import STORE_FILENAME, CorrectionCache, file_store
 from omnia.plugins.phrase_check.config import PhraseCheckSettings
 from omnia.plugins.phrase_check.correction import MODES, WRITTEN, Correction
 from omnia.plugins.phrase_check.prompt import language_name
@@ -104,7 +104,11 @@ class PhraseCheckPlugin(FeaturePlugin):
         ctx = self._ctx
         if ctx is None:
             raise PhraseCheckError("Phrase Check is not running.")
-        read, write = section_store(ctx.config, self.id)
+        # A file under user_files/, NOT the config: a check runs on the HTTP worker thread and
+        # col.db must not be written from one, the config blob is also rewritten by the settings
+        # dialog, and the feature domain SYNCS -- five hundred cached corrections have no
+        # business riding to AnkiWeb. See cache.py.
+        read, write = file_store(ctx.paths.user_files_dir / STORE_FILENAME)
         return PhraseChecker(
             ctx.providers,
             CorrectionCache(read, write),

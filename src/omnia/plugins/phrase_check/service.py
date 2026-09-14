@@ -113,13 +113,6 @@ class PhraseChecker:
             self._cache.put(key, payload)
         return correction
 
-    def forget(self, text: str, *, mode: str = WRITTEN) -> None:
-        """Drop a remembered answer, so the next check asks again."""
-        if self._cache is not None:
-            self._cache.forget(
-                CacheKey(text=(text or "").strip(), mode=mode, language=self._language)
-            )
-
     # --- the model ------------------------------------------------------------------------
     def _ask(self, phrase: str, mode: str) -> dict[str, Any]:
         from omnia.core.providers import ProviderError
