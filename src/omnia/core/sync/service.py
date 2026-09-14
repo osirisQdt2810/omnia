@@ -60,9 +60,18 @@ MAIN_THREAD_TIMEOUT_SECONDS = 10.0
 class _Server(ThreadingHTTPServer):
     """A ThreadingHTTPServer whose bind honours "port taken -> fail" on every platform.
 
-    The stdlib default sets ``SO_REUSEADDR``, which on Windows lets a second socket bind a port
-    that is already being served — a conflict would silently double-bind instead of reporting it.
-    POSIX keeps the flag, where it only relaxes TIME_WAIT and never an active listener.
+    The stdlib default sets ``SO_REUSEADDR``, which on **Windows** means something else entirely:
+    there it lets a second socket take a port that is already being served, so a conflict would
+    silently double-bind instead of being reported — hence off there.
+
+    It stays on elsewhere because of what turning it off would cost: a socket that has just been
+    closed sits in TIME_WAIT for up to a minute, and every restart this feature does — the "New
+    ID" button, switching sharing off and on — reopens the same port immediately. Without the
+    flag those would fail for a minute with "port in use", which is a lie about what is wrong.
+
+    The flag does relax one more thing on BSD/macOS than on Linux: a wildcard bind can coexist
+    with a bind to one specific address on the same port. That is not a hole here — every session
+    binds the wildcard, so two of them still collide and the second is refused.
     """
 
     allow_reuse_address = os.name != "nt"
@@ -200,7 +209,7 @@ class Session:
                 else:
                     self._send_raw(200, payload.to_json().encode("utf-8"))
 
-            def _send(self, status: int, body: dict) -> None:
+            def _send(self, status: int, body: dict[str, Any]) -> None:
                 self._send_raw(status, json.dumps(body).encode("utf-8"))
 
             def _send_raw(self, status: int, body: bytes) -> None:

@@ -60,7 +60,7 @@ class SyncClient:
         self._address = address
         self._timeout = timeout
 
-    def hello(self) -> dict:
+    def hello(self) -> dict[str, Any]:
         """Check that the other machine is there and accepts this ID.
 
         Returns:
@@ -78,7 +78,13 @@ class SyncClient:
             answer = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
             raise SyncError(_NOT_OMNIA) from exc
-        if not isinstance(answer, dict):
+        if not isinstance(answer, dict) or "protocol" not in answer:
+            # A body without a protocol is not an old Omnia — it is not an Omnia. An ID names a
+            # PORT, and a port on another machine can be held by anything that answers JSON: a
+            # dev server, a router page, some other add-on's API. Reading a missing field as
+            # "protocol 0" and reporting "that machine runs an older Omnia" sends the user off
+            # to update software that was never the problem, which is the one thing this module
+            # promises not to do.
             raise SyncError(_NOT_OMNIA)
         # Checked HERE so the Check button is where a version mismatch is reported. Left to the
         # inventory pull, "it works" would appear first and the real answer only once the user
@@ -148,7 +154,12 @@ def _from_status(status: int, reason: str) -> str:
     not, and repeating it keeps one wording for one condition across both machines.
     """
     if status == 403:
-        return reason or (
+        # The one status where THIS side knows more. The service answers "that ID does not open
+        # this machine" and deliberately cannot say why — it must give one answer for a missing
+        # key and a wrong one, or the difference tells a caller which half they got right. This
+        # side knows there is a fix and what it is, so it says so; the server's own sentence
+        # becomes the first half and never the whole of it.
+        return (
             "That ID does not open the other machine. It may have been regenerated there — "
             "copy it again."
         )

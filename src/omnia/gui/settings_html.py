@@ -203,16 +203,21 @@ ACTION_TILES: tuple[tuple[str, str, CategoryStyle], ...] = (
 
 
 def _landing_html(categories: list[CategoryModel]) -> str:
-    """Render the landing view: one tile per category, then the action tiles."""
+    """Render the landing view: one tile per category, then the action tiles.
+
+    The action tiles are Omnia's own and are always there, so they are not what decides whether
+    the page is empty — the CATEGORIES are. A build with no feature plugins still says so, under
+    what Omnia itself offers, rather than showing one lone tile and leaving the reader to wonder
+    whether the rest failed to load.
+    """
     tiles = [_tile_html(category, index) for index, category in enumerate(categories)]
     tiles += [
         _action_tile_html(op, name, style, len(categories) + index)
         for index, (op, name, style) in enumerate(ACTION_TILES)
     ]
-    if not tiles:
-        body = '<div class="omnia-empty">No feature plugins are installed.</div>'
-    else:
-        body = f'<div class="omnia-tiles">{"".join(tiles)}</div>'
+    body = f'<div class="omnia-tiles">{"".join(tiles)}</div>' if tiles else ""
+    if not categories:
+        body += '<div class="omnia-empty">No feature plugins are installed.</div>'
     return f'<section id="omnia-landing" class="omnia-landing omnia-enter">{body}</section>'
 
 

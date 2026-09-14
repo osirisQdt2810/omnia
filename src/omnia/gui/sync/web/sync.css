@@ -1,0 +1,66 @@
+/* The Sync panel. Deliberately plain next to the settings grid's gradients: this page is a form
+   someone uses once per machine, and animation here would be decoration on a thing that has to
+   be read carefully. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--fg);
+}
+body.omnia-light {
+  --bg: #f6f7f9; --fg: #1c1e21; --card: #ffffff; --line: #dfe3e8; --muted: #5b6470;
+  --accent: #2563eb; --ok: #1f8a55; --warn: #b4530a; --id-bg: #eef2ff;
+}
+body.omnia-dark {
+  --bg: #1b1d21; --fg: #e8eaed; --card: #24272c; --line: #383c42; --muted: #a0a7b0;
+  --accent: #7aa2f7; --ok: #3ecf8e; --warn: #e0a458; --id-bg: #2b3040;
+}
+.sync-page { padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.sync-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.sync-card h2 { margin: 0; font-size: 14px; }
+.sync-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sync-note { margin: 0; color: var(--muted); line-height: 1.5; }
+.sync-ok { margin: 0; color: var(--ok); line-height: 1.5; }
+.sync-warn { margin: 0; color: var(--warn); line-height: 1.5; }
+.sync-hint { color: var(--muted); font-size: 12px; }
+/* The ID is read aloud and typed by hand, so it gets monospace, generous tracking and room to
+   wrap — it is the one string in Omnia a person has to transcribe without a mistake. */
+.sync-id {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 15px; letter-spacing: 1px;
+  background: var(--id-bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; word-break: break-all; user-select: all;
+}
+.sync-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sync-input {
+  flex: 1; min-width: 0; font-family: ui-monospace, Menlo, Consolas, monospace;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--fg);
+}
+.sync-btn {
+  padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; cursor: pointer; font-size: 13px;
+}
+.sync-btn:disabled { opacity: 0.55; cursor: default; }
+.sync-btn-quiet { background: transparent; color: var(--accent); }
+.sync-switch { position: relative; width: 44px; height: 24px; flex: none; }
+.sync-switch input { opacity: 0; width: 0; height: 0; }
+.sync-slider {
+  position: absolute; inset: 0; background: var(--line); border-radius: 999px;
+  transition: background 0.15s ease; cursor: pointer;
+}
+.sync-slider::before {
+  content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px;
+  background: #fff; border-radius: 50%; transition: transform 0.15s ease;
+}
+.sync-switch input:checked + .sync-slider { background: var(--ok); }
+.sync-switch input:checked + .sync-slider::before { transform: translateX(20px); }
+.sync-offer { border-top: 1px solid var(--line); padding-top: 10px; }
+.sync-decks { list-style: none; margin: 0 0 8px; padding: 0; max-height: 220px; overflow-y: auto; }
+.sync-deck {
+  display: flex; justify-content: space-between; gap: 10px; padding: 3px 0;
+  padding-left: calc(var(--depth) * 16px);
+}
+.sync-deck-cards { color: var(--muted); font-variant-numeric: tabular-nums; }

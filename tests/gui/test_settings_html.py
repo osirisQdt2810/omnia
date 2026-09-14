@@ -172,7 +172,9 @@ class TestLandingView:
         html = build_settings_html([], dark=False)
 
         assert 'data-action="sync"' in html
-        assert "No feature plugins are installed." not in html
+        # And it still says the rest is missing: one lone tile with no explanation reads as a
+        # page that failed to load.
+        assert "No feature plugins are installed." in html
         # Only what Omnia itself offers: the action tiles, and no category section at all.
         # Counted on the rendered MARKUP — `data-category="` also appears inside settings.js,
         # which the page inlines, so a bare substring search can never be zero.

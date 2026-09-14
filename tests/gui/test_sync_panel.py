@@ -1,0 +1,232 @@
+"""Tests for the Sync panel: what each state says, and what the socket's lifecycle does.
+
+The panel's job is that every state it can be in gets WORDS. A sync that cannot start is the
+normal case while somebody sets this up on two machines, and "could not connect" with nothing
+after it is the answer that leaves them with nothing to try — so most of these tests are about
+what is written on the page rather than about what it computes.
+"""
+
+from __future__ import annotations
+
+from omnia.core.sync import (
+    ConfigSummary,
+    DeckEntry,
+    Inventory,
+    MachineIdentity,
+    NoteTypeEntry,
+)
+from omnia.gui.sync import session
+from omnia.gui.sync.collect import inventory_reader
+from omnia.gui.sync.html import DeckRow, PanelState, build_sync_html
+
+
+class _Repo:
+    """A config repository stand-in that remembers what was written, by section."""
+
+    def __init__(self, **sections: dict) -> None:
+        self.sections: dict[str, dict] = dict(sections)
+
+    def raw_section(self, section: str) -> dict:
+        return dict(self.sections.get(section, {}))
+
+    def update_section(self, section: str, values: dict) -> None:
+        self.sections.setdefault(section, {}).update(values)
+
+
+def _page(state: PanelState) -> str:
+    return build_sync_html(state, dark=False)
+
+
+class TestWhatThisMachineSays:
+    def test_sharing_off_says_what_turning_it_on_is_for(self):
+        page = _page(PanelState(sharing=False))
+
+        assert "copy from this computer to another one" in page
+        assert 'id="sync-sharing">' in page  # the switch is drawn off
+
+    def test_sharing_on_shows_the_id_to_read_out(self):
+        page = _page(PanelState(sharing=True, machine_id="ABCD-EFGH-IJKL"))
+
+        assert "ABCD-EFGH-IJKL" in page
+        assert "Type this into the other computer" in page
+        assert 'id="sync-sharing" checked>' in page
+
+    def test_sharing_on_with_no_address_says_so_instead_of_showing_nothing(self):
+        # The distinction that matters: the ID exists, it is simply not reachable. Drawing an
+        # empty box here would read as "something is broken" rather than "connect to a network".
+        page = _page(PanelState(sharing=True, machine_id=""))
+
+        assert "no address another one could reach" in page
+        assert 'id="sync-id"' not in page
+
+    def test_the_page_never_mentions_the_transport(self):
+        # The user's model is two machines and an ID. Naming a VPN, a port or an IP here would
+        # make the panel a thing to configure rather than a thing to use.
+        page = _page(PanelState(sharing=True, machine_id="ABCD-EFGH"))
+
+        lowered = page.lower()
+        for word in ("tailscale", "vpn", "ip address", "port ", "http"):
+            assert word not in lowered
+
+
+class TestWhatTheOtherMachineSays:
+    def test_a_failure_is_rendered_as_a_warning_not_a_success(self):
+        page = _page(
+            PanelState(status="That ID does not open that machine.", connected=False)
+        )
+
+        assert "sync-warn" in page
+        assert "does not open that machine" in page
+
+    def test_nothing_is_listed_before_a_connection(self):
+        page = _page(PanelState(status="Could not connect.", connected=False))
+
+        assert '<div class="sync-offer">' not in page
+
+    def test_a_connection_lists_the_decks_as_a_tree(self):
+        page = _page(
+            PanelState(
+                status="Connected to mac-mini.",
+                connected=True,
+                decks=(
+                    DeckRow(name="Japanese", cards=0, depth=0),
+                    DeckRow(name="Japanese::Kanji", cards=1200, depth=1),
+                ),
+                note_types=("Basic", "Cloze"),
+                features=("smart_notes",),
+            )
+        )
+
+        assert "--depth:1" in page
+        assert ">Kanji<" in page  # the child shows its own leaf name, not the full path
+        assert "1,200" in page
+        assert "2 note types" in page
+        assert "1 configured feature" in page
+
+    def test_a_deck_with_no_cards_of_its_own_shows_a_dash_not_a_zero(self):
+        # A parent deck holds no cards; "0" reads as empty, which is a different thing.
+        page = _page(
+            PanelState(
+                status="Connected.", connected=True, decks=(DeckRow("Japanese", 0),)
+            )
+        )
+
+        assert "—" in page
+
+    def test_the_typed_id_survives_a_failed_check(self):
+        # Retyping an ID by hand after a typo elsewhere in it is the worst part of this feature.
+        page = _page(PanelState(peer_id="ABCD-EFGH", status="Could not connect."))
+
+        assert 'value="ABCD-EFGH"' in page
+
+
+class TestTheSharingSession:
+    def _identity(self, **kwargs) -> MachineIdentity:
+        values = {"key": "k" * 32, "port": 0, "sharing": True}
+        values.update(kwargs)
+        return MachineIdentity(**values)
+
+    def teardown_method(self) -> None:
+        session.stop()
+
+    def test_starting_serves_and_stopping_closes(self):
+        assert session.running() is False
+
+        assert session.start(self._identity(), lambda: Inventory()) is True
+        assert session.running() is True
+
+        session.stop()
+        assert session.running() is False
+
+    def test_starting_again_replaces_the_socket_rather_than_stacking_one(self):
+        # The key and the port are what the socket was opened WITH, so a regenerated key has to
+        # become a new socket — otherwise the old ID keeps opening this machine.
+        session.start(self._identity(key="a" * 32), lambda: Inventory())
+        session.start(self._identity(key="b" * 32), lambda: Inventory())
+
+        assert session.running() is True
+        session.stop()
+        assert session.running() is False
+
+    def test_a_session_with_no_key_refuses_to_serve(self):
+        assert session.start(self._identity(key=""), lambda: Inventory()) is False
+        assert session.running() is False
+
+    def test_sharing_left_off_is_not_restored_at_profile_open(self):
+        repo = _Repo(sync={"key": "k" * 32, "sharing": False})
+
+        assert session.start_if_enabled(repo, lambda: Inventory()) is False
+        assert session.running() is False
+
+    def test_sharing_left_on_is_restored_at_profile_open(self):
+        # The switch is a preference, not a session: turning it on did not mean "until I quit".
+        repo = _Repo(sync={"key": "k" * 32, "sharing": True, "port": 0})
+
+        assert session.start_if_enabled(repo, lambda: Inventory()) is True
+        assert session.running() is True
+
+    def test_a_port_that_is_taken_reports_rather_than_raising(self):
+        # A profile must load even when something else owns the port — a second copy of Anki, or
+        # an unrelated program. It has to come back as False, never as a traceback during
+        # startup; the panel is where the user finds out.
+        import socket
+
+        # The wildcard, which is what a session binds: on BSD/macOS SO_REUSEADDR lets a wildcard
+        # bind sit beside a 127.0.0.1 one, so a loopback blocker would not be the conflict a
+        # second copy of Anki actually is.
+        blocker = socket.socket()
+        blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        blocker.bind(("0.0.0.0", 0))
+        blocker.listen(1)
+        try:
+            taken = _Repo(
+                sync={
+                    "key": "k" * 32,
+                    "sharing": True,
+                    "port": blocker.getsockname()[1],
+                }
+            )
+
+            assert session.start_if_enabled(taken, lambda: Inventory()) is False
+            assert session.running() is False
+        finally:
+            blocker.close()
+
+
+class TestWhatThisMachineOffers:
+    def test_the_reader_is_built_once_and_called_later(self):
+        # It is called on the session's WORKER thread, so building it must touch no collection.
+        read = inventory_reader(_Repo())
+
+        assert callable(read)
+
+
+class TestTheInventoryTheOtherMachineSent:
+    def test_the_panel_renders_a_real_inventory_end_to_end(self):
+        inventory = Inventory(
+            machine="mac-mini",
+            decks=(
+                DeckEntry(id=1, name="Japanese::Kanji", cards=3),
+                DeckEntry(id=2, name="Japanese"),
+            ),
+            note_types=(NoteTypeEntry(name="Basic", fields=("Front", "Back")),),
+            config=ConfigSummary(features=("smart_notes", "audio_speed")),
+        )
+
+        rows = tuple(
+            DeckRow(name=deck.name, cards=deck.cards, depth=depth)
+            for deck, depth in inventory.deck_tree()
+        )
+        page = _page(
+            PanelState(
+                status=f"Connected to {inventory.machine}.",
+                connected=True,
+                decks=rows,
+                note_types=tuple(entry.name for entry in inventory.note_types),
+                features=inventory.config.features,
+            )
+        )
+
+        assert "Connected to mac-mini." in page
+        assert page.index(">Japanese<") < page.index(">Kanji<")  # parent before child
+        assert "2 configured features" in page

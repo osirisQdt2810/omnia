@@ -8,6 +8,9 @@ whole of the access control.
 
 from __future__ import annotations
 
+import pytest
+
+from omnia.core.config.loader import CollectionConfigLoader, TomlConfigLoader
 from omnia.core.config.repository import ConfigRepository
 from omnia.core.sync import (
     DEFAULT_PORT,
@@ -31,6 +34,36 @@ class _Repo:
         self.sections.setdefault(section, {}).update(values)
 
 
+class _FakeCol:
+    """A stand-in collection exposing ``get_config``/``set_config`` over a plain dict."""
+
+    def __init__(self) -> None:
+        self.conf: dict[str, object] = {}
+
+    def get_config(self, key, default=None):
+        return self.conf.get(key, default)
+
+    def set_config(self, key, value):
+        self.conf[key] = value
+
+
+@pytest.fixture(params=["toml", "collection"])
+def repo(request, tmp_path) -> ConfigRepository:
+    """A real repository on EACH backend.
+
+    Parameterised rather than asserted on class constants, because a constant assertion is
+    exactly what let a whole backend ship broken: ``machine.toml`` was added to the collection
+    loader's merge order and not to the file loader's ``LIVE_FILES``, the test checked the
+    former, and on the file backend every write landed on disk and was never read back — so the
+    key was re-minted on every call and every ID was dead before it could be typed.
+    """
+    if request.param == "toml":
+        return ConfigRepository(TomlConfigLoader(tmp_path))
+    return ConfigRepository(
+        CollectionConfigLoader(tmp_path, col_provider=lambda: _FakeCol())
+    )
+
+
 class TestWhereItIsKept:
     def test_the_sync_section_is_written_to_disk_not_to_the_collection(self):
         # The real routing decision, asked of the real repository: `features.toml` is a
@@ -39,11 +72,38 @@ class TestWhereItIsKept:
         assert ConfigRepository._file_for("sync") == "machine.toml"
         assert ConfigRepository._file_for("auto_flip") == "features.toml"
 
-    def test_machine_toml_is_not_one_of_the_collection_domains(self):
-        from omnia.core.config.loader import CollectionConfigLoader
-
+    def test_machine_toml_is_never_a_collection_domain(self):
         assert "machine.toml" not in CollectionConfigLoader._DB_FILES
-        assert "machine.toml" in CollectionConfigLoader._MERGE_ORDER
+
+
+class TestItSurvivesTheRoundTripOnEveryBackend:
+    """Written, then read back — through a REAL repository, on both config backends."""
+
+    def test_the_key_is_minted_once_and_read_back(self, repo):
+        first = MachineSettings(repo).identity().key
+
+        # A second MachineSettings over the same repository: this is the panel being reopened,
+        # which is where a key that is not read back gets re-minted and kills every ID already
+        # copied to the other machine.
+        assert MachineSettings(repo).identity().key == first
+
+    def test_the_sharing_switch_is_read_back(self, repo):
+        MachineSettings(repo).set_sharing(True)
+
+        assert MachineSettings(repo).identity().sharing is True
+
+    def test_the_port_is_read_back(self, repo):
+        MachineSettings(repo).set_port(9000)
+
+        assert MachineSettings(repo).identity().port == 9000
+
+    def test_regenerating_is_read_back_as_the_new_key(self, repo):
+        before = MachineSettings(repo).identity().key
+
+        after = MachineSettings(repo).regenerate().key
+
+        assert after != before
+        assert MachineSettings(repo).identity().key == after
 
 
 class TestTheKey:

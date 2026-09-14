@@ -11,6 +11,7 @@ a user with nothing to try, and four different conditions produce it if nobody s
 
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 import threading
@@ -43,6 +44,41 @@ def _inventory() -> Inventory:
         ),
         note_types=(NoteTypeEntry("AnkiVocabulary", ("Word", "Sentence"), 1200),),
     )
+
+
+@contextlib.contextmanager
+def _peer(answer: bytes, *, status: int = 200, content_type: str = "application/json"):
+    """Something OTHER than Omnia on the port an ID names, torn down either way.
+
+    An ID carries a port, and a port on another machine can be held by anything — a router page,
+    a dev server, an ssh daemon, another add-on. Every one of those is an ordinary setup mistake
+    rather than a bug, so each has to come back as a sentence; this is the stand-in they all use.
+
+    Yields:
+        The :class:`PairingAddress` pointing at it. The token is a fresh one nobody honours,
+        which is the point: these peers do not check it.
+    """
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(answer)))
+            self.end_headers()
+            self.wfile.write(answer)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield PairingAddress("127.0.0.1", server.server_address[1], new_token())
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 @pytest.fixture
@@ -281,64 +317,33 @@ class TestEveryFailureNamesItsFix:
     def test_a_protocol_mismatch_says_which_machine_to_update(self, protocol, expected):
         # Refused by NUMBER rather than by whatever field happens to be missing, so the message
         # can name the machine instead of surfacing a KeyError from three layers down.
-        key = new_token()
         body = json.dumps(
             {"protocol": protocol, "decks": [], "note_types": []}
         ).encode()
 
-        class _Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *_args):
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            client = SyncClient(
-                PairingAddress("127.0.0.1", server.server_address[1], key), timeout=5
-            )
+        with _peer(body) as address:
             with pytest.raises(SyncError, match=expected):
-                client.inventory()
-        finally:
-            server.shutdown()
-            server.server_close()
+                SyncClient(address, timeout=5).inventory()
 
     def test_check_returns_a_sentence_when_something_else_holds_the_port(self):
-        # The ID names a port, and a port on another machine can be held by anything — a router
-        # page, a dev server, another add-on. check() promises the call site needs no exception
-        # handling, so a 200 full of HTML must come back as words, not as a JSONDecodeError.
-        class _Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
+        # check() promises the call site needs no exception handling, so a 200 full of HTML has
+        # to come back as words rather than as a JSONDecodeError.
+        with _peer(b"<html>router login</html>", content_type="text/html") as address:
+            assert "was not Omnia" in check(address, timeout=5)
 
-            def do_GET(self):
-                body = b"<html>router login</html>"
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+    def test_something_answering_json_that_is_not_omnia_is_not_called_an_old_omnia(
+        self,
+    ):
+        # The trap this closes: a missing `protocol` read as 0, which is < PROTOCOL, so a dev
+        # server answering {"status": "ok"} told the user "that machine runs an older Omnia —
+        # update it". They would then go and update software that was never the problem, which
+        # is the one thing this module promises not to do. A body with no protocol is not an old
+        # Omnia; it is not an Omnia.
+        with _peer(b'{"status": "ok"}') as address:
+            message = check(address, timeout=5)
 
-            def log_message(self, *_args):
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            message = check(
-                PairingAddress("127.0.0.1", server.server_address[1], new_token()),
-                timeout=5,
-            )
-
-            assert "was not Omnia" in message
-        finally:
-            server.shutdown()
-            server.server_close()
+        assert "was not Omnia" in message
+        assert "older Omnia" not in message
 
     @staticmethod
     def _raw_listener(reply: bytes):
@@ -385,55 +390,21 @@ class TestEveryFailureNamesItsFix:
         # choose what to copy is the answer arriving in the wrong place.
         body = json.dumps({"ok": True, "protocol": 99}).encode()
 
-        class _Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def do_GET(self):
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *_args):
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            message = check(
-                PairingAddress("127.0.0.1", server.server_address[1], new_token()),
-                timeout=5,
-            )
-
-            assert "update this machine" in message
-        finally:
-            server.shutdown()
-            server.server_close()
+        with _peer(body) as address:
+            assert "update this machine" in check(address, timeout=5)
 
     def test_an_answer_that_is_not_an_inventory_says_so(self):
-        key = new_token()
-
-        class _Handler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def do_GET(self):
-                body = b"<html>a login page</html>"
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def log_message(self, *_args):
-                pass
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            client = SyncClient(
-                PairingAddress("127.0.0.1", server.server_address[1], key), timeout=5
-            )
+        with _peer(b"<html>a login page</html>", content_type="text/html") as address:
             with pytest.raises(SyncError, match="did not answer with an inventory"):
-                client.inventory()
-        finally:
-            server.shutdown()
-            server.server_close()
+                SyncClient(address, timeout=5).inventory()
+
+    def test_a_refusal_says_what_to_do_about_it_not_only_what_happened(self):
+        # The service cannot say why: it must answer the same for a missing key and a wrong one,
+        # or the difference tells a caller which half they got right. THIS side knows there is a
+        # fix — the ID was regenerated over there — so the sentence the user reads carries it.
+        with _peer(
+            b'{"error": "that ID does not open this machine"}', status=403
+        ) as address:
+            message = check(address, timeout=5)
+
+        assert "copy it again" in message

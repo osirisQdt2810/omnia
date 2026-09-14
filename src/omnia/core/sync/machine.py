@@ -21,7 +21,7 @@ Pure, apart from the repository it is handed — no ``aqt``, no sockets.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core.sync.pairing import (
     PairingAddress,
@@ -29,6 +29,9 @@ from omnia.core.sync.pairing import (
     new_token,
 )
 from omnia.core.sync.reachability import local_addresses, rank_addresses
+
+if TYPE_CHECKING:  # typing only — nothing here needs the repository at import time
+    from omnia.core.config.repository import ConfigRepository
 
 SECTION = "sync"
 
@@ -55,10 +58,13 @@ class MachineSettings:
 
     Args:
         repo: The config repository. Only the ``sync`` section is touched, and that section is
-            routed to ``machine.toml`` — see the module docstring for why that matters.
+            routed to ``machine.toml`` — see the module docstring for why that matters. Typed
+            rather than ``Any`` so a reader can follow where these values actually land: the
+            routing is the whole of this module's correctness, and a hidden type is what let a
+            backend that never read the section back ship green.
     """
 
-    def __init__(self, repo: Any) -> None:
+    def __init__(self, repo: ConfigRepository) -> None:
         self._repo = repo
 
     def identity(self) -> MachineIdentity:
@@ -92,15 +98,16 @@ class MachineSettings:
         """Remember which port to offer on."""
         self._write({"port": _port(port)})
 
-    def _section(self) -> dict:
+    def _section(self) -> dict[str, Any]:
         try:
-            return self._repo.raw_section(SECTION)
+            section = self._repo.raw_section(SECTION)
+            return section if isinstance(section, dict) else {}
         except Exception:
             # A config that cannot be read must not stop the panel opening — it renders "not
             # ready" instead, which is a state it has to handle anyway.
             return {}
 
-    def _write(self, values: dict) -> None:
+    def _write(self, values: dict[str, Any]) -> None:
         self._repo.update_section(SECTION, values)
 
 

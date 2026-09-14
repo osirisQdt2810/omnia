@@ -34,7 +34,11 @@ class SettingsDialog(WebDialog):
             parent,
             title="Omnia — All-in-One Toolkit",
             html=self._render(),
-            handlers={"toggle": self._on_toggle, "configure": self._on_configure},
+            handlers={
+                "toggle": self._on_toggle,
+                "configure": self._on_configure,
+                "sync": self._on_sync,
+            },
             width=720,
             height=620,
         )
@@ -90,6 +94,22 @@ class SettingsDialog(WebDialog):
         plugin = next((p for p in self._manager.plugins() if p.id == plugin_id), None)
         if plugin is not None:
             QTimer.singleShot(0, lambda p=plugin: self._configure(p))
+
+    def _on_sync(self, _data: dict[str, Any]) -> None:
+        """Open the Sync panel — the one action tile, which belongs to no plugin.
+
+        Deferred for the same reason :meth:`_on_configure` is: opening a webview dialog
+        synchronously from inside this webview's bridge callback leaves the nested
+        ``AnkiWebView`` loaded but never composited, which reads as a blank window.
+        """
+        from aqt.qt import QTimer
+
+        QTimer.singleShot(0, self._open_sync)
+
+    def _open_sync(self) -> None:
+        from omnia.gui.sync.dialog import open_sync_dialog
+
+        open_sync_dialog(self._manager.config, self)
 
     def _configure(self, plugin: FeaturePlugin) -> None:
         # A bespoke dialog (it owns its own persistence via the repo) takes precedence over the

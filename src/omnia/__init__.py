@@ -54,7 +54,7 @@ _add_vendor_paths()
 # Importing the plugins package runs each plugin's @register at load time.
 from omnia import plugins  # noqa: E402  (import for side effects: registration)
 from omnia.core.config import ConfigRepository, SecretsStore  # noqa: E402
-from omnia.core.logging import setup_logging  # noqa: E402
+from omnia.core.logging import get_logger, setup_logging  # noqa: E402
 from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
 
@@ -154,7 +154,25 @@ def _bootstrap() -> None:
         raise
     _manager = PluginManager(repository, paths)
     _manager.setup()
+    _restore_sharing(repository)
     _install_menu()
+
+
+def _restore_sharing(repository: Any) -> None:
+    """Reopen the sync socket when the user left sharing on (ADR-020, condition 1).
+
+    The switch is a preference rather than a session: somebody who turned sharing on so the
+    other machine could pull from this one did not mean "until I next quit Anki". Nothing here
+    can stop a profile from loading — a port that is now taken is reported in the log and in the
+    panel, never as a dialog in the middle of startup.
+    """
+    try:
+        from omnia.gui.sync.collect import inventory_reader
+        from omnia.gui.sync.session import start_if_enabled
+
+        start_if_enabled(repository, inventory_reader(repository))
+    except Exception:
+        get_logger().exception("omnia: could not restore sync sharing")
 
 
 def _install_menu() -> None:
@@ -193,6 +211,11 @@ def _teardown() -> None:
     from omnia.core.providers import usage
 
     usage.flush_default_recorder()
+    # The sharing socket is the one thing Omnia opens that the OS would happily keep alive past
+    # the profile it belongs to.
+    from omnia.gui.sync.session import stop as stop_sharing
+
+    stop_sharing()
     if _menu_action is not None:
         from aqt import mw
 

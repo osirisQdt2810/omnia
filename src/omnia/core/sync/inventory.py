@@ -201,7 +201,7 @@ class Inventory:
         ]
 
 
-def _entries(value: Any) -> list[dict]:
+def _entries(value: Any) -> list[dict[str, Any]]:
     """The dict entries of a list field, ignoring anything else in it."""
     if not isinstance(value, list):
         return []
