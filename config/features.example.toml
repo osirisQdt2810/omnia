@@ -84,3 +84,18 @@ enable = false                 # off until you say WHAT to replace (an empty `fi
 order = 90
 find = ""
 replace = ""
+
+# Phrase Check — "what is wrong with this sentence?" for a phrase a clipper sent.
+[phrase_check]
+# The language the REASONS come back in. The phrase itself is always corrected as English; this
+# is the language you think in. A name rather than a code, because it goes into the prompt as-is
+# and a model asked to write in "vi-VN" guesses at what that means.
+language = "English"
+# Which register the panel opens in: "written" (essays, email) or "spoken" (conversation). It
+# matters more than it sounds — "I ain't got none" is a mistake in writing and ordinary in
+# speech, so a corrector with one standard is wrong half the time with total confidence.
+default_mode = "written"
+# Empty uses the model Omnia is configured with. Pin one here to give this feature a cheaper or
+# stronger model than the rest: corrections are short and frequent, which is a different
+# trade-off from generating a whole card.
+model = ""

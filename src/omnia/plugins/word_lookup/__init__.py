@@ -46,11 +46,16 @@ from omnia.plugins.word_lookup.logic import (
 )
 from omnia.plugins.word_lookup.service import (
     LookupService,
+    PhraseCheckUnavailableError,
     RegenerationDisabledError,
     RegenerationUnavailableError,
 )
 
 logger = get_logger("word_lookup")
+
+#: The name phrase_check publishes its corrector under. A literal rather than an import: this
+#: plugin must load and serve lookups in a build where phrase_check does not exist at all.
+_CHECK_SERVICE = "phrase_check.check"
 
 # The service seam smart_notes publishes its regeneration on (see ``core/services``).
 REGENERATION_SERVICE = "smart_notes.regeneration"
@@ -220,6 +225,7 @@ class WordLookupPlugin(FeaturePlugin):
             self.lookup,
             media_dir=self._media_dir,
             generate=self.generate,
+            check=self.check_phrase,
             port=port,
             run_on_main=anki_compat.run_on_main,
         )
@@ -301,6 +307,24 @@ class WordLookupPlugin(FeaturePlugin):
             "regenerate_reason": reason,
             "cards": [self._card_payload(card, gateway) for card in ranked],
         }
+
+    def check_phrase(self, text: str, mode: str, refresh: bool) -> dict[str, Any]:
+        """Correct a phrase through phrase_check, found by NAME through the core seam.
+
+        Never imported: two plugins that import each other cannot be switched off independently,
+        and this one must keep serving lookups when Phrase Check is off (ADR-019).
+
+        Raises:
+            PhraseCheckUnavailableError: When Phrase Check is not running.
+        """
+        from omnia.core import services
+
+        checker = services.lookup(_CHECK_SERVICE)
+        if not callable(checker):
+            raise PhraseCheckUnavailableError(
+                "Phrase Check is switched off in Omnia — turn it on to correct a phrase"
+            )
+        return dict(checker(text, mode, refresh))
 
     def generate(
         self, client: str, note_id: int, fields: Optional[list[str]]

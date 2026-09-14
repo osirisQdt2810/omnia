@@ -15,6 +15,7 @@ from omnia.plugins.auto_flip import AutoFlipPlugin
 from omnia.plugins.display_interval import DisplayIntervalPlugin
 from omnia.plugins.note_maintenance import NoteMaintenancePlugin
 from omnia.plugins.overdue_guard import OverdueGuardPlugin
+from omnia.plugins.phrase_check import PhraseCheckPlugin
 from omnia.plugins.smart_notes import SmartNotesPlugin
 from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
 from omnia.plugins.word_lookup import WordLookupPlugin

@@ -78,6 +78,19 @@ logger = get_logger("word_lookup")
 _T = TypeVar("_T")
 
 
+class PhraseCheckUnavailableError(RuntimeError):
+    """Phrase Check is not running, so a phrase cannot be corrected.
+
+    Distinct from a check that FAILED: this one is answered by switching a feature on, and the
+    two reaching the clipper as one message is how a user ends up looking for a setting that was
+    never the problem.
+    """
+
+
+class CheckFailedError(RuntimeError):
+    """A phrase that could not be corrected, carrying the reason as a user-facing sentence."""
+
+
 class RegenerationUnavailableError(RuntimeError):
     """Nothing can regenerate right now — smart_notes is off, or this build has no seam.
 
@@ -92,6 +105,23 @@ class RegenerationDisabledError(RuntimeError):
     Answered as ``409``, carrying the message the clipper shows verbatim — it names the option
     to turn back on, which no client should have to guess at.
     """
+
+
+def _json_object(raw: bytes) -> dict[str, Any]:
+    """One request body as a JSON object.
+
+    Raises:
+        _BadRequestError: When it is not one. Shared by both POST endpoints rather than written
+            twice — the same two mistakes (not JSON, JSON but not an object) deserve the same two
+            sentences wherever they are made.
+    """
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise _BadRequestError("body must be JSON") from exc
+    if not isinstance(body, dict):
+        raise _BadRequestError("body must be a JSON object")
+    return body
 
 
 class _BadRequestError(ValueError):
@@ -116,6 +146,9 @@ _MAIN_THREAD_TIMEOUT_SECONDS = 5.0
 _LOOKUP_PATH = "/lookup"
 _MEDIA_PATH = "/media"
 _GENERATE_PATH = "/generate"
+#: Corrects a phrase. A POST because the phrase is a paragraph, not a query parameter, and
+#: because it spends LLM credits — so it sits behind the same page-origin refusal as /generate.
+_CHECK_PATH = "/check"
 # The one non-empty Origin the write path accepts. By SCHEME, never by extension id: the id
 # differs between an unpacked dev load and a Web Store install.
 # ponytail: Chrome only -- a Firefox/Safari port of the clipper would send moz-extension:// or
@@ -201,6 +234,7 @@ class LookupService:
         generate: Optional[
             Callable[[str, int, Optional[list[str]]], dict[str, Any]]
         ] = None,
+        check: Optional[Callable[[str, str, bool], dict[str, Any]]] = None,
         port: int = 8766,
         host: str = "127.0.0.1",
         run_on_main: Optional[Callable[[Callable[[], None]], None]] = None,
@@ -218,6 +252,10 @@ class LookupService:
                 thread, NOT marshalled: generation talks to LLM/TTS providers for far longer
                 than the main thread may be held, so it does its own marshalling for the parts
                 that need the collection. ``None`` leaves ``POST /generate`` answering 503.
+            check: Corrects a phrase for ``(text, mode, refresh)``. Called on the HTTP worker
+                thread and never marshalled — it talks to an LLM, which the Qt thread may not be
+                held for, and it touches no collection at all. ``None`` leaves ``POST /check``
+                answering 503, which is what a build without Phrase Check looks like.
             port: Loopback port to listen on.
             host: Interface to bind. Anything but a loopback address is refused by
                 :meth:`start` — this service must never be exposed to a network.
@@ -227,6 +265,7 @@ class LookupService:
         self._lookup = lookup
         self._media_dir = media_dir
         self._generate = generate
+        self._check = check
         self._port = port
         self._host = host
         self._run_on_main = run_on_main
@@ -381,6 +420,28 @@ class LookupService:
             raise RegenerationUnavailableError("this service cannot regenerate fields")
         return self._generate(client, note_id, fields)
 
+    def _check_phrase(self, text: str, mode: str, refresh: bool) -> dict[str, Any]:
+        """Correct one phrase through whatever was injected.
+
+        Raises:
+            PhraseCheckUnavailableError: When nothing is wired — Phrase Check is switched off, or
+                this build has none. Answered by switching a feature on, which is a different
+                sentence from a check that was attempted and failed.
+            CheckFailedError: When the check ran and could not finish.
+        """
+        if self._check is None:
+            raise PhraseCheckUnavailableError(
+                "Phrase Check is switched off in Omnia — turn it on to correct a phrase"
+            )
+        try:
+            return self._check(text, mode, refresh)
+        except (PhraseCheckUnavailableError, CheckFailedError):
+            raise
+        except Exception as exc:
+            # Whatever the plugin raised carries the user-facing sentence; it is re-labelled
+            # rather than re-worded, so the reason the provider gave survives to the panel.
+            raise CheckFailedError(str(exc) or "the check could not finish") from exc
+
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         """Return a request-handler class bound to this service instance."""
         service = self
@@ -436,8 +497,15 @@ class LookupService:
                     self._respond(500, {"error": "generate failed"})
 
             def _serve_generate(self) -> None:
-                """Answer ``POST /generate``: regenerate a note's fields through smart_notes."""
-                if urlparse(self.path).path.rstrip("/") != _GENERATE_PATH:
+                """Answer a POST: regenerate a note's fields, or check a phrase.
+
+                One handler for both because everything up to the last step is identical — the
+                same body limit, the same drain-before-deciding, the same refusal for anything a
+                web page started. Splitting it would mean two copies of the guards, and a guard
+                that exists twice is one that will eventually differ.
+                """
+                route = urlparse(self.path).path.rstrip("/")
+                if route not in (_GENERATE_PATH, _CHECK_PATH):
                     self._respond(404, {"error": "unknown endpoint"})
                     return
                 try:
@@ -459,9 +527,12 @@ class LookupService:
                         403,
                         {
                             "error": "requests from a web page are refused; "
-                            "this endpoint changes notes"
+                            "this endpoint spends your provider credits"
                         },
                     )
+                    return
+                if route == _CHECK_PATH:
+                    self._serve_check(raw)
                     return
                 try:
                     payload = self._parse_generate(raw)
@@ -478,6 +549,37 @@ class LookupService:
                 except Exception:
                     logger.exception("word_lookup: generating note %s failed", note_id)
                     self._respond(500, {"error": "generate failed"})
+                else:
+                    self._respond(200, result)
+
+            def _serve_check(self, raw: bytes) -> None:
+                """Answer ``POST /check``: correct a phrase through phrase_check."""
+                try:
+                    body = _json_object(raw)
+                except _BadRequestError as exc:
+                    self._respond(400, {"error": str(exc)})
+                    return
+                text = str(body.get("text") or "")
+                if not text.strip():
+                    self._respond(400, {"error": "there is nothing to check"})
+                    return
+                try:
+                    result = service._check_phrase(
+                        text,
+                        str(body.get("mode") or ""),
+                        bool(body.get("refresh")),
+                    )
+                except PhraseCheckUnavailableError as exc:
+                    # Phrase Check is off, or this build has none. A 503 the clipper renders as
+                    # "switch it on", the same shape /generate uses for smart_notes.
+                    self._respond(503, {"error": str(exc)})
+                except CheckFailedError as exc:
+                    # The model could not be reached, or answered something unreadable. Its own
+                    # sentence, because it names the thing only the user can fix.
+                    self._respond(502, {"error": str(exc)})
+                except Exception:
+                    logger.exception("word_lookup: checking a phrase failed")
+                    self._respond(500, {"error": "the check failed"})
                 else:
                     self._respond(200, result)
 
@@ -507,12 +609,7 @@ class LookupService:
                 Raises:
                     _BadRequestError: Anything about the body this service will not act on.
                 """
-                try:
-                    body = json.loads(raw.decode("utf-8"))
-                except (UnicodeDecodeError, ValueError) as exc:
-                    raise _BadRequestError("body must be JSON") from exc
-                if not isinstance(body, dict):
-                    raise _BadRequestError("body must be a JSON object")
+                body = _json_object(raw)
                 note_id = body.get("note_id")
                 # ``bool`` is an ``int`` in Python, and ``True`` is not a note id.
                 if isinstance(note_id, bool) or not isinstance(note_id, (int, str)):
