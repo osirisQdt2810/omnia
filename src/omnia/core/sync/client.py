@@ -56,9 +56,26 @@ class SyncClient:
             The machine's answer (``{"ok": True, "protocol": N}``).
 
         Raises:
-            SyncError: With a sentence naming what to do about it.
+            SyncError: With a sentence naming what to do about it — including when something
+                answered 200 with a body that is not an Omnia's. The ID names a port, and a port
+                on another machine can be held by anything: a router page, a dev server, another
+                add-on. Letting a JSONDecodeError escape here breaks :func:`check`, whose whole
+                promise is that the call site needs no exception handling.
         """
-        return json.loads(self._get(HELLO_PATH).decode("utf-8"))
+        body = self._get(HELLO_PATH)
+        try:
+            answer = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise SyncError(
+                "Something answered at that ID, but it was not Omnia. Check the ID, and that "
+                "the other machine is sharing."
+            ) from exc
+        if not isinstance(answer, dict):
+            raise SyncError(
+                "Something answered at that ID, but it was not Omnia. Check the ID, and that "
+                "the other machine is sharing."
+            )
+        return answer
 
     def inventory(self) -> Inventory:
         """Ask what the other machine has.

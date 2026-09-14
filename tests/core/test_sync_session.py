@@ -20,6 +20,7 @@ import pytest
 
 from omnia.core.sync import (
     HELLO_PATH,
+    TOKEN_HEADER,
     DeckEntry,
     Inventory,
     NoteTypeEntry,
@@ -141,6 +142,26 @@ class TestTheKeyIsTheKey:
 
         assert reads == []
 
+    def test_a_key_with_a_byte_no_ascii_can_hold_is_refused_like_any_other(
+        self, served
+    ):
+        # HTTP headers decode as latin-1, so a peer can put any byte in this one. Compared as
+        # str, compare_digest RAISES on non-ASCII — and then the request got no answer at all
+        # (so "no key" and "wrong key" stopped being indistinguishable), the refusal was never
+        # logged, and the traceback went to stderr, which inside Anki pops its error dialog.
+        import http.client
+
+        session, _client = served
+        connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=5)
+        try:
+            connection.request("GET", HELLO_PATH, headers={TOKEN_HEADER: "kéy-with-é"})
+            response = connection.getresponse()
+
+            assert response.status == 403
+            assert b"does not open" in response.read()
+        finally:
+            connection.close()
+
     def test_a_session_without_a_key_refuses_to_open(self):
         # Serving with no key is serving to anyone who can reach the port.
         session = Session(_inventory, key="", host="127.0.0.1", port=0)
@@ -177,6 +198,21 @@ class TestTheSocketsLifecycle:
         assert session.running is False
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=2)
+
+
+class TestASilentPeerCannotPinAThread:
+    def test_a_connection_that_says_nothing_is_dropped(self, served):
+        # Without a handler timeout this parks a thread inside readline() for ever, and stop()
+        # cannot reclaim it: it closes the listening socket and joins serve_forever while the
+        # parked handler outlives both — and the switch the user turned off.
+        session, client = served
+        silent = socket.create_connection(("127.0.0.1", session.port), timeout=5)
+        try:
+            # The session is still serving everyone else while that one sits there.
+            assert client.hello()["ok"] is True
+            assert session._handler().timeout == 5, "the handler has no deadline"
+        finally:
+            silent.close()
 
 
 class TestEveryFailureNamesItsFix:
@@ -270,6 +306,36 @@ class TestEveryFailureNamesItsFix:
             )
             with pytest.raises(SyncError, match=expected):
                 client.inventory()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_check_returns_a_sentence_when_something_else_holds_the_port(self):
+        # The ID names a port, and a port on another machine can be held by anything — a router
+        # page, a dev server, another add-on. check() promises the call site needs no exception
+        # handling, so a 200 full of HTML must come back as words, not as a JSONDecodeError.
+        class _Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                body = b"<html>router login</html>"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            message = check(
+                PairingAddress("127.0.0.1", server.server_address[1], new_token()),
+                timeout=5,
+            )
+
+            assert "was not Omnia" in message
         finally:
             server.shutdown()
             server.server_close()

@@ -152,6 +152,15 @@ class Session:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
+            # A socket that opens and then says nothing would otherwise park a thread for ever
+            # inside readline(). The server is threaded, so those accumulate — and `stop()`
+            # cannot reclaim them: it closes the listening socket and joins serve_forever, while
+            # a parked handler thread outlives the session and the switch that turned it off.
+            # The lookup service carries the same five seconds for the same reason, and says
+            # "any local process can start" one; this socket is reachable from another machine,
+            # so it matters more here.
+            timeout = 5
+
             def do_GET(self) -> None:
                 path = self.path.split("?", 1)[0]
                 if path not in (HELLO_PATH, INVENTORY_PATH):
@@ -212,7 +221,18 @@ class Session:
         ``compare_digest`` rather than ``==``: a plain comparison returns as soon as two bytes
         differ, and the time it took is a measurement anyone on the network can make — enough to
         walk the key out one byte at a time given enough requests.
+
+        Compared as BYTES because ``compare_digest`` REJECTS a non-ASCII ``str`` outright, and
+        the header is whatever a peer chose to send (HTTP headers decode as latin-1, so any byte
+        ≥ 0x80 gets there). As a str comparison it raised TypeError from inside the handler,
+        which cost three things at once: the request got no answer at all — so "no key" and
+        "wrong key" were no longer indistinguishable, a probe could tell non-ASCII apart from
+        everything else; the refusal was never logged; and the traceback went to stderr, which
+        inside Anki pops its error dialog. One stray probe from the network, one dialog. The
+        lookup service solved this first and wrote down why.
         """
         if not presented:
             return False
-        return hmac.compare_digest(str(presented), self._key)
+        return hmac.compare_digest(
+            self._key.encode("utf-8"), str(presented).encode("utf-8")
+        )
