@@ -97,6 +97,7 @@ class _Lockout:
         self._lock = threading.Lock()
         self._failures = 0
         self._until = 0.0
+        self._last_failure = 0.0
 
     @property
     def locked(self) -> bool:
@@ -110,6 +111,12 @@ class _Lockout:
             now = self._clock()
             if now >= self._until and self._failures >= self._limit:
                 self._failures = 0  # the last lockout expired; start counting again
+            elif self._failures and now - self._last_failure >= self._seconds:
+                # Failures that STOPPED are forgotten. Without this the count only ever went up:
+                # four typos spread over a week and the fifth, months later, locks the machine
+                # out — which is not a guessing run, and the limit exists for guessing runs.
+                self._failures = 0
+            self._last_failure = now
             self._failures += 1
             if self._failures < self._limit:
                 return False
@@ -121,6 +128,7 @@ class _Lockout:
         with self._lock:
             self._failures = 0
             self._until = 0.0
+            self._last_failure = 0.0
 
 
 class _Server(ThreadingHTTPServer):

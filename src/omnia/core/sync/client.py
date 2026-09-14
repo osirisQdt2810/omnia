@@ -21,7 +21,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
-from typing import Any, Optional
+from typing import Any
 
 from omnia.core.logging import get_logger
 from omnia.core.sync.inventory import PROTOCOL, Inventory, InventoryError
@@ -78,13 +78,18 @@ class SyncClient:
             answer = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
             raise SyncError(_NOT_OMNIA) from exc
-        if not isinstance(answer, dict) or "protocol" not in answer:
-            # A body without a protocol is not an old Omnia — it is not an Omnia. An ID names a
-            # PORT, and a port on another machine can be held by anything that answers JSON: a
-            # dev server, a router page, some other add-on's API. Reading a missing field as
-            # "protocol 0" and reporting "that machine runs an older Omnia" sends the user off
-            # to update software that was never the problem, which is the one thing this module
-            # promises not to do.
+        if (
+            not isinstance(answer, dict)
+            or not isinstance(answer.get("protocol"), int)
+            or isinstance(answer.get("protocol"), bool)
+        ):
+            # A body whose protocol is missing OR is not a number is not an old Omnia — it is
+            # not an Omnia. An ID names a PORT, and a port on another machine can be held by
+            # anything that answers JSON: a dev server, a router page, some other add-on's API.
+            # Reading either as "protocol 0" and reporting "that machine runs an older Omnia"
+            # sends the user off to update software that was never the problem, which is the one
+            # thing this module promises not to do. `bool` is excluded because it is an `int` in
+            # Python and `{"protocol": true}` is not a version.
             raise SyncError(_NOT_OMNIA)
         # Checked HERE so the Check button is where a version mismatch is reported. Left to the
         # inventory pull, "it works" would appear first and the real answer only once the user
@@ -194,20 +199,6 @@ def _from_url_error(reason: Any) -> str:
     if isinstance(reason, socket.gaierror) or "name or service" in str(reason).lower():
         return "That ID does not point anywhere this machine can reach."
     return f"Could not reach the other machine: {reason}"
-
-
-def check(address: PairingAddress, *, timeout: Optional[float] = None) -> str:
-    """Try an ID and return "" when it works, or the sentence explaining why it does not.
-
-    The shape the dialog's Check button wants: no exception handling at the call site, and a
-    single place where "it works" is defined as *the other machine answered our key*.
-    """
-    client = SyncClient(address, timeout=timeout or TIMEOUT_SECONDS)
-    try:
-        client.hello()
-    except SyncError as exc:
-        return str(exc)
-    return ""
 
 
 def _int(value: Any) -> int:

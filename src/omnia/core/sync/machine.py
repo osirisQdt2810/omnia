@@ -91,6 +91,17 @@ class MachineSettings:
             sharing=bool(raw.get("sharing", False)),
         )
 
+    def sharing(self) -> bool:
+        """Whether this machine offers to be pulled from, WITHOUT minting anything.
+
+        Separate from :meth:`identity` on purpose. Minting on read is the rule this module
+        follows — a profile that never opens the sync panel has no business holding a credential
+        — and the profile hook has to ask this question on every single profile open. Asking it
+        through ``identity()`` minted and wrote a nine-digit code on every profile in the world,
+        for a feature nobody had enabled.
+        """
+        return bool(self._section().get("sharing", False))
+
     def regenerate(self) -> MachineIdentity:
         """Mint a new key, which stops every ID handed out before from opening anything."""
         self._write({"key": new_token()})

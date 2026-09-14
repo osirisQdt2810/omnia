@@ -31,9 +31,22 @@ from omnia.core.sync import (
     Session,
     SyncClient,
     SyncError,
-    check,
     new_token,
 )
+
+
+def check(address: PairingAddress, *, timeout: float = 5.0) -> str:
+    """Try an ID and code: "" when they work, else the sentence explaining why they do not.
+
+    Test scaffolding rather than production API. The dialog asks ``hello`` then ``inventory`` in
+    one background op and renders whatever comes back; a non-raising wrapper existed in the
+    client for a Check button that never used it, so it lives here, where it IS used.
+    """
+    try:
+        SyncClient(address, timeout=timeout).hello()
+    except SyncError as exc:
+        return str(exc)
+    return ""
 
 
 def _inventory() -> Inventory:
@@ -400,6 +413,19 @@ class TestEveryFailureNamesItsFix:
             with pytest.raises(SyncError, match="did not answer with an inventory"):
                 SyncClient(address, timeout=5).inventory()
 
+    def test_a_protocol_that_is_not_a_number_is_not_called_an_old_omnia(self):
+        # Same trap as a missing one, through a different door: anything non-numeric read as 0,
+        # which is < PROTOCOL, so the user was told to update an Omnia that does not exist.
+        for body in (
+            b'{"ok": true, "protocol": "banana"}',
+            b'{"ok": true, "protocol": true}',
+        ):
+            with _peer(body) as address:
+                message = check(address, timeout=5)
+
+            assert "was not Omnia" in message, body
+            assert "older Omnia" not in message, body
+
     def test_a_refusal_says_what_to_do_about_it_not_only_what_happened(self):
         # The service cannot say why: it must answer the same for a missing code and a wrong
         # one, or the difference tells a caller which half they got right. THIS side knows there
@@ -480,6 +506,27 @@ class TestTheCodeCannotBeGuessedAt:
 
         assert lockout.record_failure() is False
         assert lockout.locked is False
+
+    def test_failures_that_stopped_are_forgotten(self):
+        # Four typos spread over a week and the fifth, months later, must not lock the machine
+        # out. The limit exists for a guessing RUN, and a run is failures close together.
+        lockout = self._lockout()
+        lockout.record_failure()
+        lockout.record_failure()
+
+        self.now += 61.0
+
+        assert lockout.record_failure() is False
+        assert lockout.record_failure() is False
+        assert lockout.locked is False
+
+    def test_failures_close_together_still_count(self):
+        lockout = self._lockout()
+        for _ in range(2):
+            lockout.record_failure()
+            self.now += 1.0
+
+        assert lockout.record_failure() is True
 
     def test_the_right_code_forgets_the_wrong_ones(self):
         lockout = self._lockout()

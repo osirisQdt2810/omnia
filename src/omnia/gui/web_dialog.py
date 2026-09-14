@@ -125,9 +125,17 @@ class WebDialog(QDialog):
         (``list_note_types``/``load``) is blank without it. Fall back to the base
         ``QWebEngineView.setHtml`` only when there's no media server (e.g. the headless test
         stub), where the page still renders but callbacks are inert.
+
+        Guarded the same way :meth:`eval_js` is, and for the same reason: a dialog that re-renders
+        itself from an off-thread callback (the sync panel does, when the other machine answers)
+        can have been closed by then, and writing HTML into a deleted C++ webview crashes Anki
+        rather than raising anything Python can catch.
         """
         from aqt import mw
+        from aqt.qt import sip
 
+        if self._web_cleaned or sip.isdeleted(self._web):
+            return
         if getattr(mw, "mediaServer", None) is not None:
             self._web.setHtml(html)
         else:

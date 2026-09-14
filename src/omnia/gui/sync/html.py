@@ -32,6 +32,11 @@ class PanelState:
         sharing: Whether this machine currently answers.
         machine_id: The number to show for this machine, or "" when nothing could dial it.
         access_code: The code to show beneath it.
+        local_status: A sentence about THIS machine — sharing would not start, the code was
+            replaced. Its own field rather than sharing ``status``: that one is rendered inside
+            the other machine's card, so a local port conflict appeared under "The other
+            computer" in the same orange used for "could not reach that ID", and read as a
+            failure to reach a peer the user had not tried yet.
         peer_id: The last ID typed for the other machine, remembered between openings.
         peer_code: The last code typed for it. Remembered too — it is the pair that opens a
             machine, and remembering half of it means retyping the other half every time.
@@ -46,6 +51,7 @@ class PanelState:
     sharing: bool = False
     machine_id: str = ""
     access_code: str = ""
+    local_status: str = ""
     peer_id: str = ""
     peer_code: str = ""
     status: str = ""
@@ -91,12 +97,21 @@ def _this_machine_html(state: PanelState) -> str:
             "this computer.</span>"
             "</div>"
         )
+    note = ""
+    if state.local_status:
+        # Green when sharing is on and the sentence is about something that worked; orange when
+        # it is not, which is every failure this card can report.
+        kind = "sync-ok" if state.sharing else "sync-warn"
+        note = (
+            f'<p class="{kind}" id="sync-local-status">'
+            f"{html.escape(state.local_status)}</p>"
+        )
     return (
         '<section class="sync-card">'
         '<div class="sync-head"><h2>This computer</h2>'
         '<label class="sync-switch"><input type="checkbox" id="sync-sharing"'
         f'{checked}><span class="sync-slider"></span></label></div>'
-        f"{body}"
+        f"{body}{note}"
         "</section>"
     )
 
