@@ -14,7 +14,7 @@ Open it from **Tools → Omnia**.
 | **Display Interval** | Shows the next interval on the answer side — and reflects the grade your typing is about to produce, not an ungraded Good. |
 | **Overdue Guard** | Caps the grade on a card you left sitting for months, so one lucky answer does not send it away for a year. |
 | **Audio Speed** | Separate playback speeds for the front and the back, with shortcuts to nudge either side. |
-| **Note Maintenance** | Finds and tidies the notes that quietly rot: empty fields, duplicates, orphaned media. |
+| **Note Maintenance** | Batch, deterministic clean-up of text your notes already contain — strip IPA, reformat synonyms, find-and-replace across fields — with a diff preview before anything is written. No AI, no network. |
 | **Smart Notes** | Fills note fields with an LLM or TTS — definitions, examples, cloze, images, audio — with a dependency graph so each field waits for what it reads. |
 | **Word Lookup** | Answers "is this word already in my collection?" for the companion web and desktop clippers. |
 
