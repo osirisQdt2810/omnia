@@ -340,6 +340,76 @@ class TestEveryFailureNamesItsFix:
             server.shutdown()
             server.server_close()
 
+    @staticmethod
+    def _raw_listener(reply: bytes):
+        """A bare socket on loopback that answers ``reply`` and closes. Returns the port."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        def _serve():
+            try:
+                conn, _ = listener.accept()
+                with conn:
+                    conn.recv(4096)
+                    if reply:
+                        conn.sendall(reply)
+            except OSError:
+                pass
+            finally:
+                listener.close()
+
+        threading.Thread(target=_serve, daemon=True).start()
+        return listener.getsockname()[1]
+
+    def test_a_port_held_by_something_that_is_not_http_returns_a_sentence(self):
+        # urllib wraps only what h.request() raises; getresponse() is outside that guard, so a
+        # non-HTTP banner came out as a bare BadStatusLine — and inside Anki an exception
+        # escaping a QueryOp callback pops the error dialog.
+        port = self._raw_listener(b"SSH-2.0-OpenSSH_9.6\r\n")
+
+        message = check(PairingAddress("127.0.0.1", port, new_token()), timeout=5)
+
+        assert "was not Omnia" in message
+
+    def test_a_port_that_accepts_and_closes_returns_a_sentence(self):
+        # A service still starting, or a firewall that resets rather than refuses.
+        port = self._raw_listener(b"")
+
+        message = check(PairingAddress("127.0.0.1", port, new_token()), timeout=5)
+
+        assert "was not Omnia" in message
+
+    def test_check_says_which_machine_to_update_on_a_protocol_mismatch(self):
+        # On the CHECK, not later: "it works" followed by a failure once the user has gone on to
+        # choose what to copy is the answer arriving in the wrong place.
+        body = json.dumps({"ok": True, "protocol": 99}).encode()
+
+        class _Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            message = check(
+                PairingAddress("127.0.0.1", server.server_address[1], new_token()),
+                timeout=5,
+            )
+
+            assert "update this machine" in message
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_an_answer_that_is_not_an_inventory_says_so(self):
         key = new_token()
 

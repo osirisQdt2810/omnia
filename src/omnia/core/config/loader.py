@@ -177,7 +177,12 @@ class CollectionConfigLoader(BaseConfigLoader):
     """
 
     _DB_FILES = ("omnia.toml", "features.toml")
-    _MERGE_ORDER = ("omnia.toml", "features.toml", "providers.toml")
+    #: ``machine.toml`` is on DISK on purpose, like the credentials beside it. It holds what
+    #: belongs to ONE computer and must never travel: this machine's sync identity and whether
+    #: it is currently offering to be pulled from. Ride those in the collection and two machines
+    #: sharing an AnkiWeb account end up with one identity between them, and switching sharing
+    #: on here would switch it on there.
+    _MERGE_ORDER = ("omnia.toml", "features.toml", "machine.toml", "providers.toml")
 
     def __init__(
         self,

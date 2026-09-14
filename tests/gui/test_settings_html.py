@@ -6,6 +6,7 @@ import re
 
 from omnia.gui.settings_categories import CATEGORY_STYLES, DEFAULT_CATEGORY_STYLE
 from omnia.gui.settings_html import (
+    ACTION_TILES,
     PluginCardModel,
     build_settings_html,
     category_models,
@@ -116,9 +117,23 @@ class TestLandingView:
             [("Reviewing", [_card("auto_flip")]), ("AI", [_card("smart_notes")])],
             dark=False,
         )
-        assert html.count('<button type="button" class="omnia-tile') == 2
+        # Two categories, each appearing as a tile and as the section it opens. The action
+        # tiles are not categories: they open a dialog of their own because they belong to no
+        # plugin and therefore to no group.
+        assert html.count('<button type="button" class="omnia-tile') == 2 + len(
+            ACTION_TILES
+        )
         assert 'data-category="reviewing-0"' in html
         assert 'data-category="ai-1"' in html
+
+    def test_an_action_tile_sits_beside_the_categories(self):
+        html = build_settings_html([("Reviewing", [_card("auto_flip")])], dark=False)
+
+        assert 'data-action="sync"' in html
+        # NOT data-category: the JS pairs a category tile with the section carrying the same
+        # handle, so an action tile wearing one would look for a view that does not exist.
+        assert 'data-action="sync" data-category' not in html
+        assert '<section class="omnia-category" data-action' not in html
 
     def test_tile_carries_the_name_blurb_and_counts(self):
         html = build_settings_html(
@@ -150,11 +165,21 @@ class TestLandingView:
         assert "--i:0;--cat-from:" in html
         assert "--i:1;--cat-from:" in html
 
-    def test_empty_state_when_there_are_no_plugins(self):
+    def test_no_plugins_still_shows_what_omnia_itself_offers(self):
+        # The empty state was written when the grid was only ever plugin groups. An Omnia-level
+        # feature belongs to no plugin, so "no feature plugins are installed" is no longer the
+        # same statement as "there is nothing here".
         html = build_settings_html([], dark=False)
-        assert "No feature plugins are installed." in html
-        assert 'class="omnia-tile' not in html
-        assert 'class="omnia-category"' not in html
+
+        assert 'data-action="sync"' in html
+        assert "No feature plugins are installed." not in html
+        # Only what Omnia itself offers: the action tiles, and no category section at all.
+        # Counted on the rendered MARKUP — `data-category="` also appears inside settings.js,
+        # which the page inlines, so a bare substring search can never be zero.
+        assert html.count('<button type="button" class="omnia-tile') == len(
+            ACTION_TILES
+        )
+        assert html.count('<section class="omnia-category"') == 0
 
     def test_data_total_matches_the_switches_the_view_renders(self):
         # refreshCount divides the live checked count by this attribute; if they ever disagree

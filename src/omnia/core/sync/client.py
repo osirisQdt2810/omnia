@@ -16,13 +16,15 @@ timeout to say so.
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from omnia.core.sync.inventory import Inventory, InventoryError
+from omnia.core.logging import get_logger
+from omnia.core.sync.inventory import PROTOCOL, Inventory, InventoryError
 from omnia.core.sync.pairing import PairingAddress
 from omnia.core.sync.service import HELLO_PATH, INVENTORY_PATH, TOKEN_HEADER
 
@@ -31,9 +33,18 @@ from omnia.core.sync.service import HELLO_PATH, INVENTORY_PATH, TOKEN_HEADER
 #: look hung when the other machine is simply off.
 TIMEOUT_SECONDS = 20.0
 
+logger = get_logger("sync")
+
 #: What a machine that is not sharing looks like on the wire: nothing is listening on the port,
 #: so the OS refuses the connection outright.
 _REFUSED = "Nothing is sharing on that machine right now — open Omnia there and turn sharing on."
+
+#: One sentence for every way something answers that is not an Omnia — a router page, an ssh
+#: banner, a connection reset. They differ on the wire and not in what the user should do.
+_NOT_OMNIA = (
+    "Something answered at that ID, but it was not Omnia. Check the ID, and that the other "
+    "machine is sharing."
+)
 
 
 class SyncError(RuntimeError):
@@ -66,15 +77,13 @@ class SyncClient:
         try:
             answer = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
-            raise SyncError(
-                "Something answered at that ID, but it was not Omnia. Check the ID, and that "
-                "the other machine is sharing."
-            ) from exc
+            raise SyncError(_NOT_OMNIA) from exc
         if not isinstance(answer, dict):
-            raise SyncError(
-                "Something answered at that ID, but it was not Omnia. Check the ID, and that "
-                "the other machine is sharing."
-            )
+            raise SyncError(_NOT_OMNIA)
+        # Checked HERE so the Check button is where a version mismatch is reported. Left to the
+        # inventory pull, "it works" would appear first and the real answer only once the user
+        # had gone on to choose what to copy.
+        _check_protocol(_int(answer.get("protocol")))
         return answer
 
     def inventory(self) -> Inventory:
@@ -112,6 +121,15 @@ class SyncClient:
                 "The other machine did not answer in time. It may be asleep, or busy with a "
                 "long sync of its own."
             ) from None
+        except (http.client.HTTPException, OSError) as exc:
+            # `urllib` wraps only what `h.request()` raises; `h.getresponse()` is outside that
+            # guard, so a peer that answers with a non-HTTP banner (an ssh daemon on a stale
+            # port) or accepts and resets comes through here unwrapped. An ID carries a PORT, so
+            # "something else has that port now" is an ordinary setup mistake — and inside Anki
+            # an exception escaping a QueryOp callback pops the error dialog, which is the exact
+            # failure the non-ASCII key fix just closed.
+            logger.debug("sync: %s answered unusably: %r", self._address.host, exc)
+            raise SyncError(_NOT_OMNIA) from None
 
 
 def _reason(exc: urllib.error.HTTPError) -> str:
@@ -175,3 +193,29 @@ def check(address: PairingAddress, *, timeout: Optional[float] = None) -> str:
     except SyncError as exc:
         return str(exc)
     return ""
+
+
+def _int(value: Any) -> int:
+    """A protocol number, or 0 when the answer carried something else."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _check_protocol(protocol: int) -> None:
+    """Raise when the other machine speaks a different protocol, naming which one to update.
+
+    Same wording as :meth:`Inventory.from_json`, deliberately: one condition, one sentence,
+    wherever the user happens to meet it.
+    """
+    if protocol > PROTOCOL:
+        raise SyncError(
+            "the other machine runs a newer Omnia than this one — update this machine "
+            "before syncing from it"
+        )
+    if protocol < PROTOCOL:
+        raise SyncError(
+            "the other machine runs an older Omnia than this one — update that machine "
+            "before syncing from it"
+        )

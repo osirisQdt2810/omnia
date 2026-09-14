@@ -120,6 +120,13 @@
 
   document.querySelectorAll(".omnia-tile").forEach(function (tile) {
     tile.addEventListener("click", function () {
+      // An action tile opens a dialog of its own instead of a category view — it belongs to no
+      // plugin, so there is no group and no card list for it to show.
+      const action = tile.getAttribute("data-action");
+      if (action) {
+        send(action, {});
+        return;
+      }
       showCategory(tile);
     });
   });

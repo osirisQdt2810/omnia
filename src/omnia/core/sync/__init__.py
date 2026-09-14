@@ -10,7 +10,8 @@ This package holds the parts that need no Anki:
 * :mod:`.reachability` — which of this machine's addresses another one could actually dial;
 * :mod:`.inventory` — what a source offers, as data;
 * :mod:`.service` — the source's read-only session (ADR-020's five conditions, in code);
-* :mod:`.client` — the target's side, whose whole job is that every failure names its own fix.
+* :mod:`.client` — the target's side, whose whole job is that every failure names its own fix;
+* :mod:`.machine` — this machine's key, port and sharing switch, kept OFF the collection.
 
 Nothing here imports ``aqt`` or ``anki``: the service takes a callable that reads the collection,
 and marshalling that onto the Qt main thread is the caller's job.
@@ -31,6 +32,12 @@ from omnia.core.sync.inventory import (
     Inventory,
     InventoryError,
     NoteTypeEntry,
+)
+from omnia.core.sync.machine import (
+    DEFAULT_PORT,
+    MachineIdentity,
+    MachineSettings,
+    machine_id,
 )
 from omnia.core.sync.pairing import (
     GROUP,
@@ -59,6 +66,7 @@ from omnia.core.sync.service import (
 )
 
 __all__ = [
+    "DEFAULT_PORT",
     "GROUP",
     "HELLO_PATH",
     "INVENTORY_PATH",
@@ -76,6 +84,8 @@ __all__ = [
     "DeckEntry",
     "Inventory",
     "InventoryError",
+    "MachineIdentity",
+    "MachineSettings",
     "NoteTypeEntry",
     "PairingAddress",
     "PairingError",
@@ -85,6 +95,7 @@ __all__ = [
     "check",
     "format_pairing_code",
     "local_addresses",
+    "machine_id",
     "new_token",
     "parse_pairing_code",
     "rank_addresses",

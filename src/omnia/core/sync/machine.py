@@ -1,0 +1,135 @@
+"""This machine's sync identity, and the switch that decides whether it answers at all.
+
+Three things live here and nowhere else:
+
+* the **key** that a machine ID carries, minted once per profile and regenerated on demand —
+  regenerating is the revoke, and it is the only one there is;
+* whether **sharing is on**, which is off in a fresh profile and stays off until somebody turns
+  it on (ADR-020, condition 1);
+* the **port** to bind, because a machine whose 8767 is taken by something else needs a way out
+  that is not "reinstall".
+
+All three are stored in ``machine.toml``, which is on disk beside the credentials rather than in
+the collection. That is the whole point: ``features.toml`` rides the collection and therefore
+AnkiWeb, so a switch stored there would turn sharing on over on the other machine too, and a key
+stored there would hand two machines a single identity. Per-machine settings have to be per
+machine, and the config layer routes the ``sync`` section accordingly.
+
+Pure, apart from the repository it is handed — no ``aqt``, no sockets.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from omnia.core.sync.pairing import (
+    PairingAddress,
+    format_pairing_code,
+    new_token,
+)
+from omnia.core.sync.reachability import local_addresses, rank_addresses
+
+SECTION = "sync"
+
+#: The port this machine offers on. Not one of Anki's, not the lookup service's (8766), and
+#: high enough to need no privileges.
+DEFAULT_PORT = 8767
+
+
+@dataclass(frozen=True)
+class MachineIdentity:
+    """What this machine is, for the purpose of being pulled from."""
+
+    key: str
+    port: int
+    sharing: bool
+
+    def address(self, host: str) -> PairingAddress:
+        """The address another machine would dial, given the host to publish."""
+        return PairingAddress(host=host, port=self.port, token=self.key)
+
+
+class MachineSettings:
+    """Reads and writes this machine's sync settings through the config repository.
+
+    Args:
+        repo: The config repository. Only the ``sync`` section is touched, and that section is
+            routed to ``machine.toml`` — see the module docstring for why that matters.
+    """
+
+    def __init__(self, repo: Any) -> None:
+        self._repo = repo
+
+    def identity(self) -> MachineIdentity:
+        """This machine's identity, minting a key the first time it is asked for.
+
+        Minting on READ rather than at install: a profile that never opens the sync panel has no
+        business holding a credential, and generating one lazily means the key's existence and
+        the feature's use start at the same moment.
+        """
+        raw = self._section()
+        key = str(raw.get("key", "") or "")
+        if not key:
+            key = new_token()
+            self._write({"key": key})
+        return MachineIdentity(
+            key=key,
+            port=_port(raw.get("port")),
+            sharing=bool(raw.get("sharing", False)),
+        )
+
+    def regenerate(self) -> MachineIdentity:
+        """Mint a new key, which stops every ID handed out before from opening anything."""
+        self._write({"key": new_token()})
+        return self.identity()
+
+    def set_sharing(self, on: bool) -> None:
+        """Remember whether this machine offers to be pulled from."""
+        self._write({"sharing": bool(on)})
+
+    def set_port(self, port: int) -> None:
+        """Remember which port to offer on."""
+        self._write({"port": _port(port)})
+
+    def _section(self) -> dict:
+        try:
+            return self._repo.raw_section(SECTION)
+        except Exception:
+            # A config that cannot be read must not stop the panel opening — it renders "not
+            # ready" instead, which is a state it has to handle anyway.
+            return {}
+
+    def _write(self, values: dict) -> None:
+        self._repo.update_section(SECTION, values)
+
+
+def _port(value: Any) -> int:
+    """A usable port, or the default — a hand-edited ``port = "nope"`` must not break sharing."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_PORT
+    return number if 1 <= number <= 65535 else DEFAULT_PORT
+
+
+def machine_id(
+    identity: MachineIdentity, *, addresses: Optional[list[str]] = None
+) -> str:
+    """The ID this machine shows, or "" when it has no address another machine could dial.
+
+    The empty string is a real answer, not a failure: a machine with only loopback — no network,
+    or a VPN that is not up — cannot be pulled from, and the panel says so instead of showing an
+    ID that would never connect.
+
+    Args:
+        identity: This machine's key and port.
+        addresses: Candidate addresses; discovered from the routing table when omitted.
+
+    Returns:
+        The ID, or "".
+    """
+    ranked = rank_addresses(addresses if addresses is not None else local_addresses())
+    if not ranked:
+        return ""
+    return format_pairing_code(identity.address(ranked[0].ip))

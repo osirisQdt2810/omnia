@@ -180,16 +180,58 @@ def _icon_html(style: CategoryStyle) -> str:
     )
 
 
+#: Tiles that are not plugin categories. They open a dialog of their own instead of a card list,
+#: which is what an Omnia-level feature needs: it belongs to no plugin, so it belongs to no
+#: group, and the grid is built entirely out of groups. The op is a pycmd the settings dialog
+#: routes; everything else about a tile — the icon, the gradient, the hover — is unchanged, so
+#: the row reads as one thing rather than as a grid with an odd button stapled to it.
+ACTION_TILES: tuple[tuple[str, str, CategoryStyle], ...] = (
+    (
+        "sync",
+        "Sync",
+        CategoryStyle(
+            icon=(
+                "M4 12a8 8 0 0 1 13.7-5.7L20 8.5M20 4v4.5H15.5"
+                "M20 12a8 8 0 0 1-13.7 5.7L4 15.5M4 20v-4.5h4.5"
+            ),
+            blurb="Copy decks and settings from your other computer.",
+            accent_from="#0ea5e9",
+            accent_to="#6366f1",
+        ),
+    ),
+)
+
+
 def _landing_html(categories: list[CategoryModel]) -> str:
-    """Render the landing view: one tile per category, or the empty state."""
-    if not categories:
+    """Render the landing view: one tile per category, then the action tiles."""
+    tiles = [_tile_html(category, index) for index, category in enumerate(categories)]
+    tiles += [
+        _action_tile_html(op, name, style, len(categories) + index)
+        for index, (op, name, style) in enumerate(ACTION_TILES)
+    ]
+    if not tiles:
         body = '<div class="omnia-empty">No feature plugins are installed.</div>'
     else:
-        tiles = "\n".join(
-            _tile_html(category, index) for index, category in enumerate(categories)
-        )
-        body = f'<div class="omnia-tiles">{tiles}</div>'
+        body = f'<div class="omnia-tiles">{"".join(tiles)}</div>'
     return f'<section id="omnia-landing" class="omnia-landing omnia-enter">{body}</section>'
+
+
+def _action_tile_html(op: str, name: str, style: CategoryStyle, index: int) -> str:
+    """Render a tile that opens a dialog, marked by ``data-action`` instead of ``data-category``.
+
+    A different attribute rather than a flag on the same one: the JS pairs a ``data-category``
+    tile with the section that carries the same handle, so an action tile wearing one would look
+    for a view that does not exist and open nothing at all.
+    """
+    return (
+        f'<button type="button" class="omnia-tile omnia-tile-action" data-action="{op}" '
+        f"{_style_vars(style, index)}>"
+        f'<span class="omnia-tile-icon" aria-hidden="true">{_icon_html(style)}</span>'
+        f'<span class="omnia-tile-name">{html.escape(name)}</span>'
+        f'<span class="omnia-tile-blurb">{html.escape(style.blurb)}</span>'
+        '<span class="omnia-tile-count">between your computers</span>'
+        "</button>"
+    )
 
 
 def _tile_html(category: CategoryModel, index: int) -> str:

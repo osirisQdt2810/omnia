@@ -17,8 +17,10 @@ rather than in a document:
 The collection is Anki's, and Anki's collection is MAIN-THREAD ONLY, while every request arrives
 on a worker thread. So the handler never touches it directly: it calls the ``inventory`` callable
 it was constructed with, and the caller is responsible for marshalling that onto the Qt thread
-(``anki_compat.run_on_main``) exactly as the lookup service does. A request that cannot get the
-main thread in time gets a 503 rather than hanging the other machine's dialog.
+(``anki_compat.run_on_main``) exactly as the lookup service does, with the deadline in
+:data:`MAIN_THREAD_TIMEOUT_SECONDS`. A ``TimeoutError`` out of that callable becomes a 503, so the
+other machine shows "busy" rather than hanging — but the deadline itself is the caller's, not
+this module's.
 
 No ``aqt``/``anki`` import here, which is what lets the whole service run in a test against a
 plain function.
@@ -47,8 +49,11 @@ INVENTORY_PATH = "/sync/inventory"
 #: access control.
 TOKEN_HEADER = "X-Omnia-Sync-Key"
 
-#: A request that cannot get the Qt main thread within this long is answered 503 rather than left
-#: hanging — the other machine shows "the other machine is busy" instead of a spinner forever.
+#: What the CALLER should give its collection read before giving up — this module does not
+#: enforce it and must not be read as doing so. The service knows nothing about Anki: it calls
+#: the ``inventory`` callable and turns a ``TimeoutError`` out of it into a 503. The deadline
+#: belongs to whoever marshals onto the Qt thread, and this is the number to use, so both ends
+#: of that contract are written in one place.
 MAIN_THREAD_TIMEOUT_SECONDS = 10.0
 
 
