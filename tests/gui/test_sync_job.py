@@ -233,10 +233,20 @@ class TestFindingItAgain:
         finally:
             job_module.forget()
 
-    def test_a_finished_pull_is_let_go_of(self, inline, applied):
+    def test_a_finished_pull_is_kept_so_its_outcome_can_be_read(self, inline, applied):
+        # The whole point is that the user walked away. Dropping the job the instant it succeeded
+        # would mean the one moment they were not looking is the one moment it could be seen.
+        job = job_module.start_pull(_Client(), _request(), repo=None)
+
+        assert job_module.current() is job
+        assert job_module.current().result == "3 new notes"
+
+    def test_the_next_pull_replaces_the_finished_one(self, inline, applied):
         job_module.start_pull(_Client(), _request(), repo=None)
 
-        assert job_module.current() is None
+        second = job_module.start_pull(_Client(), _request(), repo=None)
+
+        assert job_module.current() is second
 
     def test_a_failed_pull_is_kept_so_its_reason_can_still_be_read(
         self, inline, applied

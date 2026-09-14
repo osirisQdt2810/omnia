@@ -124,7 +124,28 @@ body.omnia-dark {
   color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
   font-weight: 600;
 }
-.offer-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.offer-foot {
+  display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px 10px;
+}
+/* The progress strip spans the footer so the bar is as wide as the window; the tally and the
+   button keep their row underneath it. */
+.offer-progress { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+.offer-bar {
+  flex: 1; height: 6px; border-radius: 999px; background: var(--line); overflow: hidden;
+}
+.offer-bar-fill {
+  display: block; height: 100%; width: 0; border-radius: 999px; background: var(--accent);
+  transition: width .3s ease;
+}
+/* No total yet: a bar pinned at zero reads as stuck, so it sweeps instead of pretending. */
+.offer-bar-fill.offer-unknown {
+  width: 35%; animation: offer-sweep 1.4s ease-in-out infinite;
+}
+@keyframes offer-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.offer-progress-text { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .offer-tally { color: var(--muted); }
 .offer-btn {
   font: inherit; font-weight: 600; padding: 7px 16px; border-radius: 8px; cursor: pointer;

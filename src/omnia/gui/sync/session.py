@@ -36,11 +36,27 @@ def start(identity: MachineIdentity, inventory: Callable[[], Any]) -> bool:
     """
     global _SESSION
     stop()
-    _SESSION = Session(inventory, key=identity.key, port=identity.port)
+    _SESSION = Session(
+        inventory, key=identity.key, port=identity.port, packager=_packager()
+    )
     if not _SESSION.start():
         _SESSION = None
         return False
     return True
+
+
+def _packager() -> Any:
+    """How this machine packs a selection a peer asked for.
+
+    Imported here rather than at module load: it reaches Anki, and this module is also the one
+    the profile hook uses before anything else is ready.
+    """
+    from omnia.gui.sync.export import build_package
+
+    def pack(request: Any) -> Any:
+        return build_package(request, None)
+
+    return pack
 
 
 def stop() -> None:

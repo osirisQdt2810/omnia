@@ -216,11 +216,15 @@ def current() -> Optional[PullJob]:
 
 
 def _release(job: PullJob) -> None:
-    """Let go of a finished job, unless another has already taken its place."""
-    global _CURRENT
-    with _CURRENT_LOCK:
-        if _CURRENT is job:
-            _CURRENT = None if job.snapshot().phase == DONE else job
+    """Mark a job finished. It is KEPT, not dropped.
+
+    Because the whole point is that the user walked away: they closed the picker, carried on
+    studying, and the Sync button is where they find out how it went. A job dropped the instant
+    it succeeded means the one moment they were not looking is the one moment it could be seen.
+
+    It is replaced when the next pull starts, and cleared when the profile closes.
+    """
+    _ = job
 
 
 def forget() -> None:

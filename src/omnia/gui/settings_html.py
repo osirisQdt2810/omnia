@@ -229,8 +229,13 @@ def _header_action_html(op: str, label: str, style: CategoryStyle) -> str:
     return (
         f'<button type="button" class="omnia-action" data-action="{op}" '
         f"{_style_vars(style, None)}>"
+        # The fill sits BEHIND the label and is driven by one custom property. A separate
+        # progress bar would need somewhere to live on a header row that has no room for one,
+        # and a button that fills up is readable from across the desk.
+        '<span class="omnia-action-fill" aria-hidden="true"></span>'
         f'<span class="omnia-action-icon" aria-hidden="true">{_icon_html(style)}</span>'
         f"<span>{html.escape(label)}</span>"
+        '<span class="omnia-action-tip" role="status"></span>'
         "</button>"
     )
 

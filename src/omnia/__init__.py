@@ -213,9 +213,13 @@ def _teardown() -> None:
     usage.flush_default_recorder()
     # The sharing socket is the one thing Omnia opens that the OS would happily keep alive past
     # the profile it belongs to.
+    from omnia.gui.sync.job import forget as forget_pull
     from omnia.gui.sync.session import stop as stop_sharing
 
     stop_sharing()
+    # A half-finished pull belongs to the profile that started it: its temp file goes, and the
+    # next profile does not inherit a job pointing at a collection that is no longer open.
+    forget_pull()
     if _menu_action is not None:
         from aqt import mw
 

@@ -140,11 +140,36 @@
     go.disabled = true;
     go.textContent = "Copying…";
     send("pull", {}, function (answer) {
-      go.textContent = "Copy to this computer";
-      go.disabled = false;
-      if (answer && answer.message) { tallyText.textContent = answer.message; }
+      if (answer && answer.refused) {
+        go.textContent = "Copy to this computer";
+        go.disabled = false;
+        tallyText.textContent = answer.refused;
+      }
     });
   });
+
+  // Python pushes progress in — the pull outlives this window, so the page is told rather than
+  // asking. `hidden` until there is something to show, so a picker nobody has pressed yet does
+  // not carry an empty bar.
+  const strip = document.getElementById("offer-progress");
+  const bar = document.getElementById("offer-bar");
+  const barText = document.getElementById("offer-progress-text");
+
+  window.omniaSync = {
+    showProgress: function (state) {
+      strip.hidden = false;
+      const known = state.percent !== null && state.percent !== undefined;
+      bar.classList.toggle("offer-unknown", !known);
+      bar.style.width = known ? state.percent + "%" : "";
+      barText.textContent = state.summary || "";
+      if (state.finished) {
+        go.textContent = "Copy to this computer";
+        go.disabled = false;
+        tallyText.textContent = state.summary || "";
+        strip.hidden = true;
+      }
+    },
+  };
 
   render({decks: 0, cards: 0, note_types: 0, dropped: 0, features: 0});
 })();

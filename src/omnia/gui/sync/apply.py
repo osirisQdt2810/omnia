@@ -42,8 +42,9 @@ class ApplyResult:
     def __init__(self) -> None:
         self.notes_added = 0
         self.notes_updated = 0
+        #: How many notes the package held, whether or not any of them were new here.
+        self.notes_found = 0
         self.sections: tuple[str, ...] = ()
-        self.log_text = ""
 
     @property
     def summary(self) -> str:
@@ -140,8 +141,12 @@ def apply_package(path: str) -> ApplyResult:
     result = ApplyResult()
     log = getattr(changes, "log", None)
     if log is not None:
-        result.notes_added = len(getattr(log, "new", []) or [])
-        result.notes_updated = len(getattr(log, "updated", []) or [])
+        # ``new`` and ``updated`` are repeated Notes on ImportResponse.Log; ``found_notes`` is
+        # how many the package held, which is what makes "nothing new" readable as "this machine
+        # already had it all" rather than as "the package was empty".
+        result.notes_added = len(getattr(log, "new", ()) or ())
+        result.notes_updated = len(getattr(log, "updated", ()) or ())
+        result.notes_found = int(getattr(log, "found_notes", 0) or 0)
     logger.info(
         "sync: imported %s — %d new, %d updated",
         os.path.basename(path),
