@@ -6,7 +6,7 @@ import re
 
 from omnia.gui.settings_categories import CATEGORY_STYLES, DEFAULT_CATEGORY_STYLE
 from omnia.gui.settings_html import (
-    ACTION_TILES,
+    HEADER_ACTIONS,
     PluginCardModel,
     build_settings_html,
     category_models,
@@ -117,22 +117,35 @@ class TestLandingView:
             [("Reviewing", [_card("auto_flip")]), ("AI", [_card("smart_notes")])],
             dark=False,
         )
-        # Two categories, each appearing as a tile and as the section it opens. The action
-        # tiles are not categories: they open a dialog of their own because they belong to no
-        # plugin and therefore to no group.
-        assert html.count('<button type="button" class="omnia-tile') == 2 + len(
-            ACTION_TILES
-        )
+        # Two categories, each appearing as a tile and as the section it opens — and nothing
+        # else. Omnia's own actions are not categories and are not tiles; they sit on the header
+        # row, because a tile in this grid that opens a window instead of a section implies it
+        # is one of the features you turn on.
+        assert html.count('<button type="button" class="omnia-tile') == 2
         assert 'data-category="reviewing-0"' in html
         assert 'data-category="ai-1"' in html
 
-    def test_an_action_tile_sits_beside_the_categories(self):
+    def test_omnias_own_action_sits_on_the_header_row_not_in_the_grid(self):
         html = build_settings_html([("Reviewing", [_card("auto_flip")])], dark=False)
 
+        assert 'class="omnia-header-actions"' in html
         assert 'data-action="sync"' in html
-        # NOT data-category: the JS pairs a category tile with the section carrying the same
-        # handle, so an action tile wearing one would look for a view that does not exist.
+        # Beside the title, before the grid opens — and never inside the tiles.
+        assert html.index('data-action="sync"') < html.index(
+            'data-category="reviewing-0"'
+        )
+        assert 'class="omnia-tile" data-action' not in html
+        # NOT data-category: the JS pairs a category handle with the section carrying the same
+        # one, so an action wearing that attribute would look for a view that does not exist.
         assert 'data-action="sync" data-category' not in html
+
+    def test_the_script_binds_actions_by_attribute_not_by_where_they_sit(self):
+        # The wiring this pins: the handler used to be bound to `.omnia-tile`, so the moment Sync
+        # became a header button instead of a tile the click stopped reaching Python — a live,
+        # visible control that silently did nothing, with every test still green.
+        html = build_settings_html([("Reviewing", [_card("auto_flip")])], dark=False)
+
+        assert 'querySelectorAll("[data-action]")' in html
         assert '<section class="omnia-category" data-action' not in html
 
     def test_tile_carries_the_name_blurb_and_counts(self):
@@ -171,16 +184,13 @@ class TestLandingView:
         # same statement as "there is nothing here".
         html = build_settings_html([], dark=False)
 
+        # What Omnia itself does is still reachable...
         assert 'data-action="sync"' in html
-        # And it still says the rest is missing: one lone tile with no explanation reads as a
-        # page that failed to load.
+        # ...and the grid says plainly that the rest is missing, rather than being blank.
         assert "No feature plugins are installed." in html
-        # Only what Omnia itself offers: the action tiles, and no category section at all.
         # Counted on the rendered MARKUP — `data-category="` also appears inside settings.js,
         # which the page inlines, so a bare substring search can never be zero.
-        assert html.count('<button type="button" class="omnia-tile') == len(
-            ACTION_TILES
-        )
+        assert html.count('<button type="button" class="omnia-tile') == 0
         assert html.count('<section class="omnia-category"') == 0
 
     def test_data_total_matches_the_switches_the_view_renders(self):
@@ -441,7 +451,7 @@ class TestEveryTileIsWiredToSomething:
         # error, no log line. The Sync tile shipped that way: rendered, clickable, inert.
         HANDLERS, SettingsDialog = self._dialog()
 
-        for op, name, _style in ACTION_TILES:
+        for op, name, _icon in HEADER_ACTIONS:
             assert (
                 op in HANDLERS
             ), f"the {name} tile sends {op!r} and nothing answers it"

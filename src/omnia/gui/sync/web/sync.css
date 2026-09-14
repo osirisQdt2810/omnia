@@ -57,13 +57,6 @@ body.omnia-dark {
 }
 .sync-switch input:checked + .sync-slider { background: var(--ok); }
 .sync-switch input:checked + .sync-slider::before { transform: translateX(20px); }
-.sync-offer { border-top: 1px solid var(--line); padding-top: 10px; }
-.sync-decks { list-style: none; margin: 0 0 8px; padding: 0; max-height: 220px; overflow-y: auto; }
-.sync-deck {
-  display: flex; justify-content: space-between; gap: 10px; padding: 3px 0;
-  padding-left: calc(var(--depth) * 16px);
-}
-.sync-deck-cards { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* Two numbers side by side. They are read off this screen and typed into another one, so they
    get the room, the spacing and the monospace; everything else on the card is smaller than they
    are. */

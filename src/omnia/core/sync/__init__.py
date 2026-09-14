@@ -9,6 +9,9 @@ This package holds the parts that need no Anki:
 * :mod:`.pairing` — the number one machine shows and the code that opens it;
 * :mod:`.reachability` — which of this machine's addresses another one could actually dial;
 * :mod:`.inventory` — what a source offers, as data;
+* :mod:`.tree` — those decks as a tree, and what picking one of them means;
+* :mod:`.selection` — the whole of what is being asked for: decks, the note types they drag along,
+  and the settings;
 * :mod:`.service` — the source's read-only session (ADR-020's five conditions, in code);
 * :mod:`.client` — the target's side, whose whole job is that every failure names its own fix;
 * :mod:`.machine` — this machine's key, port and sharing switch, kept OFF the collection.
@@ -62,6 +65,12 @@ from omnia.core.sync.reachability import (
     local_addresses,
     rank_addresses,
 )
+from omnia.core.sync.selection import (
+    DROPPED,
+    IDLE,
+    NEEDED,
+    OfferSelection,
+)
 from omnia.core.sync.service import (
     HELLO_PATH,
     INVENTORY_PATH,
@@ -70,11 +79,22 @@ from omnia.core.sync.service import (
     TOKEN_HEADER,
     Session,
 )
+from omnia.core.sync.tree import (
+    PARTIAL,
+    PICKED,
+    UNPICKED,
+    DeckNode,
+    DeckRow,
+    DeckSelection,
+    DeckTree,
+)
 
 __all__ = [
     "DEFAULT_PORT",
+    "DROPPED",
     "GROUP",
     "HELLO_PATH",
+    "IDLE",
     "ID_DIGITS",
     "INVENTORY_PATH",
     "KIND_LAN",
@@ -82,18 +102,27 @@ __all__ = [
     "KIND_OTHER",
     "KIND_ULA",
     "KIND_VIRTUAL",
+    "NEEDED",
+    "PARTIAL",
     "PASSCODE_DIGITS",
+    "PICKED",
     "PROTOCOL",
     "TIMEOUT_SECONDS",
     "TOKEN_HEADER",
+    "UNPICKED",
     "Address",
     "ConfigSummary",
     "DeckEntry",
+    "DeckNode",
+    "DeckRow",
+    "DeckSelection",
+    "DeckTree",
     "Inventory",
     "InventoryError",
     "MachineIdentity",
     "MachineSettings",
     "NoteTypeEntry",
+    "OfferSelection",
     "PairingAddress",
     "PairingError",
     "Session",

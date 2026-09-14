@@ -5,8 +5,8 @@ The user's model is two steps and the page is built to show exactly those:
 * **This machine** — a switch, the ID to read out, and the access code beneath it. Two numbers,
   the way remote-desktop tools do it, and for the same reason: without a rendezvous server the ID
   has to BE the address, which uses up every digit it has (:mod:`omnia.core.sync.pairing`).
-* **The other machine** — a box for its ID, a box for its code, a button that says whether it
-  worked, and once it has, what that machine holds.
+* **The other machine** — a box for its ID, a box for its code, and a button that says whether
+  it worked. What that machine HOLDS opens in its own window.
 
 Every state the panel can be in gets words rather than a spinner that stops: not ready, sharing
 off, sharing on, checking, connected, and each way a connection fails. That is the whole design
@@ -19,18 +19,9 @@ Pure string building, no ``aqt`` — so the page unit-tests headless.
 from __future__ import annotations
 
 import html
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from omnia.gui.assets import read_asset
-
-
-@dataclass(frozen=True)
-class DeckRow:
-    """One deck offered by the other machine, ready to render."""
-
-    name: str
-    cards: int
-    depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -45,10 +36,11 @@ class PanelState:
         peer_code: The last code typed for it. Remembered too — it is the pair that opens a
             machine, and remembering half of it means retyping the other half every time.
         status: A sentence about the other machine — the result of the last check, or "".
-        connected: Whether ``status`` is a success rather than a failure.
-        decks: What the other machine holds, once it has been asked.
-        note_types: Its note types, by name.
-        features: The configured features it holds.
+        connected: Whether ``status`` is a success rather than a failure. What the other
+            machine HOLDS is not in here: it opens in its own window
+            (:mod:`omnia.gui.sync.offer_html`), because pairing is done once per pair of machines
+            and picking is the thing somebody comes back to — sharing one panel would scroll the
+            ID and the access code away exactly when they are being read out.
     """
 
     sharing: bool = False
@@ -58,9 +50,6 @@ class PanelState:
     peer_code: str = ""
     status: str = ""
     connected: bool = False
-    decks: tuple[DeckRow, ...] = ()
-    note_types: tuple[str, ...] = ()
-    features: tuple[str, ...] = field(default_factory=tuple)
 
 
 def build_sync_html(state: PanelState, *, dark: bool) -> str:
@@ -145,47 +134,5 @@ def _other_machine_html(state: PanelState) -> str:
         '<button class="sync-btn" id="sync-check">Check</button>'
         "</div>"
         f"{status}"
-        f"{_offer_html(state)}"
         "</section>"
     )
-
-
-def _offer_html(state: PanelState) -> str:
-    """What the other machine holds, or nothing at all before it has been asked."""
-    if not state.connected:
-        return ""
-    decks = "".join(
-        '<li class="sync-deck" style="--depth:{depth}">'
-        '<span class="sync-deck-name">{name}</span>'
-        '<span class="sync-deck-cards">{cards}</span></li>'.format(
-            depth=row.depth,
-            name=html.escape(row.name.rsplit("::", 1)[-1]),
-            cards=f"{row.cards:,}" if row.cards else "—",
-        )
-        for row in state.decks
-    )
-    summary = ", ".join(
-        part
-        for part in (
-            _count(len(state.note_types), "note type"),
-            _count(len(state.features), "configured feature"),
-        )
-        if part
-    )
-    # Built outside the f-string: a backslash inside one is a SyntaxError before Python 3.12,
-    # and Anki's minimum is 3.10 — the kind of break that only shows up on the oldest job in the
-    # matrix, as a collection error rather than a failing assertion.
-    empty = '<li class="sync-note">No decks over there.</li>'
-    return (
-        '<div class="sync-offer">'
-        f'<ul class="sync-decks">{decks or empty}</ul>'
-        f'<p class="sync-note">{html.escape(summary)}</p>'
-        "</div>"
-    )
-
-
-def _count(number: int, noun: str) -> str:
-    """``2, "note type"`` → ``"2 note types"``; nothing at all for zero."""
-    if not number:
-        return ""
-    return f"{number} {noun}{'' if number == 1 else 's'}"

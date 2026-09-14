@@ -8,16 +8,10 @@ what is written on the page rather than about what it computes.
 
 from __future__ import annotations
 
-from omnia.core.sync import (
-    ConfigSummary,
-    DeckEntry,
-    Inventory,
-    MachineIdentity,
-    NoteTypeEntry,
-)
+from omnia.core.sync import Inventory, MachineIdentity
 from omnia.gui.sync import session
 from omnia.gui.sync.collect import inventory_reader
-from omnia.gui.sync.html import DeckRow, PanelState, build_sync_html
+from omnia.gui.sync.html import PanelState, build_sync_html
 
 
 class _Repo:
@@ -97,40 +91,13 @@ class TestWhatTheOtherMachineSays:
         assert "sync-warn" in page
         assert "does not open that machine" in page
 
-    def test_nothing_is_listed_before_a_connection(self):
-        page = _page(PanelState(status="Could not connect.", connected=False))
+    def test_what_the_other_machine_holds_is_not_listed_here(self):
+        # It opens in its own window. A panel that also listed a thousand decks would scroll the
+        # ID and the access code away exactly when somebody is reading them out.
+        page = _page(PanelState(status="Connected to mac-mini.", connected=True))
 
-        assert '<div class="sync-offer">' not in page
-
-    def test_a_connection_lists_the_decks_as_a_tree(self):
-        page = _page(
-            PanelState(
-                status="Connected to mac-mini.",
-                connected=True,
-                decks=(
-                    DeckRow(name="Japanese", cards=0, depth=0),
-                    DeckRow(name="Japanese::Kanji", cards=1200, depth=1),
-                ),
-                note_types=("Basic", "Cloze"),
-                features=("smart_notes",),
-            )
-        )
-
-        assert "--depth:1" in page
-        assert ">Kanji<" in page  # the child shows its own leaf name, not the full path
-        assert "1,200" in page
-        assert "2 note types" in page
-        assert "1 configured feature" in page
-
-    def test_a_deck_with_no_cards_of_its_own_shows_a_dash_not_a_zero(self):
-        # A parent deck holds no cards; "0" reads as empty, which is a different thing.
-        page = _page(
-            PanelState(
-                status="Connected.", connected=True, decks=(DeckRow("Japanese", 0),)
-            )
-        )
-
-        assert "—" in page
+        assert "sync-decks" not in page
+        assert "Connected to mac-mini." in page
 
     def test_both_typed_numbers_survive_a_failed_check(self):
         # Retyping twenty digits by hand after a typo in one of them is the part of this feature
@@ -242,34 +209,3 @@ class TestWhatThisMachineOffers:
         read = inventory_reader(_Repo())
 
         assert callable(read)
-
-
-class TestTheInventoryTheOtherMachineSent:
-    def test_the_panel_renders_a_real_inventory_end_to_end(self):
-        inventory = Inventory(
-            machine="mac-mini",
-            decks=(
-                DeckEntry(id=1, name="Japanese::Kanji", cards=3),
-                DeckEntry(id=2, name="Japanese"),
-            ),
-            note_types=(NoteTypeEntry(name="Basic", fields=("Front", "Back")),),
-            config=ConfigSummary(features=("smart_notes", "audio_speed")),
-        )
-
-        rows = tuple(
-            DeckRow(name=deck.name, cards=deck.cards, depth=depth)
-            for deck, depth in inventory.deck_tree()
-        )
-        page = _page(
-            PanelState(
-                status=f"Connected to {inventory.machine}.",
-                connected=True,
-                decks=rows,
-                note_types=tuple(entry.name for entry in inventory.note_types),
-                features=inventory.config.features,
-            )
-        )
-
-        assert "Connected to mac-mini." in page
-        assert page.index(">Japanese<") < page.index(">Kanji<")  # parent before child
-        assert "2 configured features" in page

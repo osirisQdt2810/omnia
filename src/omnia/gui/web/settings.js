@@ -120,14 +120,18 @@
 
   document.querySelectorAll(".omnia-tile").forEach(function (tile) {
     tile.addEventListener("click", function () {
-      // An action tile opens a dialog of its own instead of a category view — it belongs to no
-      // plugin, so there is no group and no card list for it to show.
-      const action = tile.getAttribute("data-action");
-      if (action) {
-        send(action, {});
-        return;
-      }
       showCategory(tile);
+    });
+  });
+
+  // Omnia's own actions sit on the header row rather than in the grid: they open a window
+  // instead of a category, and a tile among the features would imply Sync is one of them.
+  // Bound by the ATTRIBUTE, not by the button class, so moving one of these somewhere else on
+  // the page cannot quietly disconnect it — which is exactly what happened when the Sync tile
+  // became a header button and the tile handler stopped seeing it.
+  document.querySelectorAll("[data-action]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      send(button.getAttribute("data-action"), {});
     });
   });
 

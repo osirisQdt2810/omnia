@@ -74,8 +74,15 @@ def _from_collection() -> tuple[tuple[DeckEntry, ...], tuple[NoteTypeEntry, ...]
         col = anki_compat.main_window().col
         cards = _card_counts(col)
         notes = _note_counts(col)
+        names = {int(model["id"]): str(model["name"]) for model in col.models.all()}
+        used = _note_types_per_deck(col, names)
         decks = tuple(
-            DeckEntry(id=deck_id, name=name, cards=cards.get(deck_id, 0))
+            DeckEntry(
+                id=deck_id,
+                name=name,
+                cards=cards.get(deck_id, 0),
+                note_types=tuple(sorted(used.get(deck_id, ()))),
+            )
             for deck_id, name in anki_compat.deck_names(col)
         )
         note_types = tuple(
@@ -147,6 +154,37 @@ def _card_counts(col: Any) -> dict[int, int]:
     except Exception:
         logger.warning("sync: could not count cards per deck", exc_info=True)
         return {}
+
+
+def _note_types_per_deck(col: Any, names: dict[int, str]) -> dict[int, set[str]]:
+    """Which note types each deck's own cards use — ``{deck_id: {name, ...}}``, in one query.
+
+    The picker lights up a note type the instant a deck that needs it is chosen, so this has to
+    arrive WITH the inventory; asking per deck would be a network round trip per click, over a
+    link that may be a laptop on the other side of a VPN.
+
+    One ``distinct`` pass over the card table rather than a query per deck, for the same reason
+    the counts are one aggregate: this runs on Anki's main thread and everything on it is frozen
+    while it does.
+
+    Returns:
+        The map, or ``{}`` when the query is unavailable — the picker then lights nothing up,
+        which is a duller panel and not a broken one.
+    """
+    try:
+        rows = col.db.all(
+            "select distinct case when c.odid != 0 then c.odid else c.did end as home, n.mid "
+            "from cards c join notes n on n.id = c.nid"
+        )
+    except Exception:
+        logger.warning("sync: could not map decks to note types", exc_info=True)
+        return {}
+    out: dict[int, set[str]] = {}
+    for home, mid in rows:
+        name = names.get(int(mid))
+        if name:
+            out.setdefault(int(home), set()).add(name)
+    return out
 
 
 def _note_counts(col: Any) -> dict[int, int]:

@@ -7,8 +7,9 @@ nothing else:
 * **which decks are here, and how big.** With the sub-deck structure intact, because "sync one
   deck" almost always means a parent and everything under it, and a flat list of forty names
   makes the user rebuild that tree in their head.
-* **which note types those decks need.** A note type is dragged along by a deck, never picked on
-  its own.
+* **which note types those decks need.** Each deck carries the note types ITS cards use, so the
+  target can light them up the moment a deck is chosen rather than asking a second question per
+  deck over a link that may be a laptop across a VPN.
 * **what configuration exists**, summarised: which features are configured, and which note types
   the per-note-type rules cover. The rules themselves are not in the inventory — they are large,
   and the target has not decided to take anything yet.
@@ -29,7 +30,7 @@ from typing import Any
 #: Bumped when a field changes meaning or disappears. The target refuses an inventory it cannot
 #: read rather than guessing, and says WHICH SIDE is behind — a sync that half-understands the
 #: other machine is worse than one that stops.
-PROTOCOL = 1
+PROTOCOL = 2
 
 
 class InventoryError(ValueError):
@@ -50,6 +51,11 @@ class DeckEntry:
     #: Cards in this deck ALONE, not counting sub-decks. A parent that showed its children's total
     #: would read as "5000 cards" for a deck that holds none, and the user picks by size.
     cards: int = 0
+    #: The note types this deck's own cards use, by name. Carried so the target can light up the
+    #: note types a chosen deck needs the instant it is chosen — the alternative is asking the
+    #: source a second question per deck, over a link that may be a laptop on the other side of
+    #: a VPN. Names rather than ids, because ids are per-collection and mean nothing here.
+    note_types: tuple[str, ...] = ()
 
     @property
     def parent(self) -> str:
@@ -102,7 +108,12 @@ class Inventory:
                 "omnia_version": self.omnia_version,
                 "protocol": self.protocol,
                 "decks": [
-                    {"id": deck.id, "name": deck.name, "cards": deck.cards}
+                    {
+                        "id": deck.id,
+                        "name": deck.name,
+                        "cards": deck.cards,
+                        "note_types": list(deck.note_types),
+                    }
                     for deck in self.decks
                 ],
                 "note_types": [
@@ -166,6 +177,9 @@ class Inventory:
                     id=_int(entry.get("id"), 0),
                     name=str(entry.get("name", "")),
                     cards=_int(entry.get("cards"), 0),
+                    note_types=tuple(
+                        str(name) for name in entry.get("note_types") or ()
+                    ),
                 )
                 for entry in _entries(raw.get("decks"))
                 if str(entry.get("name", ""))

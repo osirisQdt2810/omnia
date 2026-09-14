@@ -22,6 +22,7 @@ import pytest
 from omnia.core.sync import (
     HELLO_PATH,
     MAX_ATTEMPTS,
+    PROTOCOL,
     TOKEN_HEADER,
     DeckEntry,
     Inventory,
@@ -103,7 +104,7 @@ class TestOneMachineAsksAnother:
         answer = client.hello()
 
         assert answer["ok"] is True
-        assert answer["protocol"] == 1
+        assert answer["protocol"] == PROTOCOL
 
     def test_the_inventory_arrives_whole(self, served):
         _session, client = served

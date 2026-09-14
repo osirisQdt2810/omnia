@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 #: Every ``pycmd`` op the page can send, and the method that answers it. Declared rather than
 #: written inline so the page and the router can be checked against each other: the landing grid
-#: renders one action tile per :data:`~omnia.gui.settings_html.ACTION_TILES` entry, and a tile
+#: renders one button per :data:`~omnia.gui.settings_html.HEADER_ACTIONS` entry, and a button
 #: whose op has no handler here is an advertised control that silently does nothing —
 #: :class:`~omnia.gui.web_dialog.WebDialog` drops an unrouted message without a word. The Sync
 #: tile shipped exactly that way, which is why this is a map a test can read.

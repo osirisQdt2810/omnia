@@ -32,7 +32,7 @@ from omnia.core.sync import (
 )
 from omnia.gui.sync import session
 from omnia.gui.sync.collect import inventory_reader
-from omnia.gui.sync.html import DeckRow, PanelState, build_sync_html
+from omnia.gui.sync.html import PanelState, build_sync_html
 from omnia.gui.web_dialog import WebDialog
 
 logger = get_logger("sync")
@@ -54,6 +54,9 @@ class SyncDialog(WebDialog):
         self._repo = repo
         self._settings = MachineSettings(repo)
         self._inventory = inventory_reader(repo)
+        # Held so the picker is not garbage-collected the moment this method returns — it is
+        # shown, not exec'd, so nothing else on the Python side refers to it.
+        self._offer: Any = None
         self._state = self._initial_state()
         super().__init__(
             parent,
@@ -202,6 +205,7 @@ class SyncDialog(WebDialog):
 
     # --- callbacks ---------------------------------------------------------------------
     def _show_offer(self, peer_id: str, peer_code: str, inventory: Any) -> None:
+        """Say it connected, then open what the other machine has in its own window."""
         self._show(
             PanelState(
                 sharing=self._state.sharing,
@@ -211,14 +215,19 @@ class SyncDialog(WebDialog):
                 peer_code=peer_code,
                 status=f"Connected to {inventory.machine or 'the other computer'}.",
                 connected=True,
-                decks=tuple(
-                    DeckRow(name=deck.name, cards=deck.cards, depth=depth)
-                    for deck, depth in inventory.deck_tree()
-                ),
-                note_types=tuple(entry.name for entry in inventory.note_types),
-                features=tuple(inventory.config.features),
             )
         )
+        # Deferred, like every other webview this add-on opens from inside a callback: a nested
+        # AnkiWebView built synchronously here loads with full content and never composites,
+        # which reads as a blank window. A 0ms timer lets this return first.
+        from aqt.qt import QTimer
+
+        QTimer.singleShot(0, lambda: self._open_offer(inventory))
+
+    def _open_offer(self, inventory: Any) -> None:
+        from omnia.gui.sync.offer import open_offer_dialog
+
+        self._offer = open_offer_dialog(inventory, self)
 
     def _show_failure(self, peer_id: str, peer_code: str, exc: BaseException) -> None:
         # A SyncError already carries the sentence that names its own fix; anything else is a bug

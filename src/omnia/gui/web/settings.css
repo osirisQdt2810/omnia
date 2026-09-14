@@ -32,6 +32,23 @@ body {
   -webkit-background-clip: text; background-clip: text; color: transparent;
 }
 .omnia-subtitle { color: var(--muted); margin-top: 4px; }
+/* The title and Omnia's own actions share one row; the actions sit hard right, so the title can
+   grow without ever pushing them off. */
+.omnia-header-row { display: flex; align-items: center; gap: 12px; }
+.omnia-header-row .omnia-title { flex: 1; min-width: 0; }
+.omnia-header-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.omnia-action {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--fg);
+  border: 1px solid var(--card-border);
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  transition: transform .14s ease, border-color .14s ease, color .14s ease;
+}
+.omnia-action svg { width: 15px; height: 15px; }
+.omnia-action:hover { transform: translateY(-1px); border-color: var(--accent); color: var(--accent); }
+.omnia-action:active { transform: translateY(0); }
+.omnia-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .omnia-cards { display: flex; flex-direction: column; gap: 10px; }
 .omnia-card {
   display: flex; align-items: center; gap: 14px;

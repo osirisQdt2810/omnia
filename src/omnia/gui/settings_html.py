@@ -128,6 +128,7 @@ def build_settings_html(
     return read_asset(__file__, "web", "settings.html").format(
         theme_class="omnia-dark" if dark else "omnia-light",
         css=read_asset(__file__, "web", "settings.css"),
+        actions=_header_actions_html(),
         landing=_landing_html(categories),
         categories=views,
         js=read_asset(__file__, "web", "settings.js"),
@@ -185,58 +186,61 @@ def _icon_html(style: CategoryStyle) -> str:
 #: group, and the grid is built entirely out of groups. The op is a pycmd the settings dialog
 #: routes; everything else about a tile — the icon, the gradient, the hover — is unchanged, so
 #: the row reads as one thing rather than as a grid with an odd button stapled to it.
-ACTION_TILES: tuple[tuple[str, str, CategoryStyle], ...] = (
+#: Omnia's own actions, which belong to no plugin and therefore to no category. They live on the
+#: HEADER ROW rather than among the tiles: the grid is the list of features you turn on, and a
+#: tile sitting in it that opens a window instead implies Sync is one of them. Beside the title
+#: it reads as what it is — something the whole add-on does.
+HEADER_ACTIONS: tuple[tuple[str, str, str], ...] = (
     (
         "sync",
         "Sync",
-        CategoryStyle(
-            icon=(
-                "M4 12a8 8 0 0 1 13.7-5.7L20 8.5M20 4v4.5H15.5"
-                "M20 12a8 8 0 0 1-13.7 5.7L4 15.5M4 20v-4.5h4.5"
-            ),
-            blurb="Copy decks and settings from your other computer.",
-            accent_from="#0ea5e9",
-            accent_to="#6366f1",
-        ),
+        # Two arrows chasing each other: the same shape every piece of software uses for this,
+        # which is worth more here than anything bespoke.
+        "M4 12a8 8 0 0 1 13.7-5.7L20 8.5M20 4v4.5H15.5"
+        "M4 12a8 8 0 0 0 13.7 5.7L4 15.5M4 20v-4.5h4.5",
     ),
 )
 
 
-def _landing_html(categories: list[CategoryModel]) -> str:
-    """Render the landing view: one tile per category, then the action tiles.
-
-    The action tiles are Omnia's own and are always there, so they are not what decides whether
-    the page is empty — the CATEGORIES are. A build with no feature plugins still says so, under
-    what Omnia itself offers, rather than showing one lone tile and leaving the reader to wonder
-    whether the rest failed to load.
-    """
-    tiles = [_tile_html(category, index) for index, category in enumerate(categories)]
-    tiles += [
-        _action_tile_html(op, name, style, len(categories) + index)
-        for index, (op, name, style) in enumerate(ACTION_TILES)
-    ]
-    body = f'<div class="omnia-tiles">{"".join(tiles)}</div>' if tiles else ""
-    if not categories:
-        body += '<div class="omnia-empty">No feature plugins are installed.</div>'
-    return f'<section id="omnia-landing" class="omnia-landing omnia-enter">{body}</section>'
+def _header_actions_html() -> str:
+    """The buttons beside the title."""
+    return (
+        '<div class="omnia-header-actions">'
+        + "".join(
+            _header_action_html(op, label, icon) for op, label, icon in HEADER_ACTIONS
+        )
+        + "</div>"
+    )
 
 
-def _action_tile_html(op: str, name: str, style: CategoryStyle, index: int) -> str:
-    """Render a tile that opens a dialog, marked by ``data-action`` instead of ``data-category``.
+def _header_action_html(op: str, label: str, icon: str) -> str:
+    """One header button: an icon, its name, and the op it sends.
 
-    A different attribute rather than a flag on the same one: the JS pairs a ``data-category``
-    tile with the section that carries the same handle, so an action tile wearing one would look
+    Marked ``data-action`` rather than ``data-category`` because the JS pairs a category handle
+    with the section carrying the same one — an action wearing a category attribute would look
     for a view that does not exist and open nothing at all.
     """
+    # No ``title`` attribute: the page bans raw browser tooltips (they are unstyled, slow and
+    # untouchable), and this button carries its name in the open anyway.
     return (
-        f'<button type="button" class="omnia-tile omnia-tile-action" data-action="{op}" '
-        f"{_style_vars(style, index)}>"
-        f'<span class="omnia-tile-icon" aria-hidden="true">{_icon_html(style)}</span>'
-        f'<span class="omnia-tile-name">{html.escape(name)}</span>'
-        f'<span class="omnia-tile-blurb">{html.escape(style.blurb)}</span>'
-        '<span class="omnia-tile-count">between your computers</span>'
+        f'<button type="button" class="omnia-action" data-action="{op}">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" '
+        'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">'
+        f'<path d="{icon}"/></svg>'
+        f"<span>{html.escape(label)}</span>"
         "</button>"
     )
+
+
+def _landing_html(categories: list[CategoryModel]) -> str:
+    """Render the landing view: one tile per category."""
+    tiles = [_tile_html(category, index) for index, category in enumerate(categories)]
+    body = (
+        f'<div class="omnia-tiles">{"".join(tiles)}</div>'
+        if tiles
+        else '<div class="omnia-empty">No feature plugins are installed.</div>'
+    )
+    return f'<section id="omnia-landing" class="omnia-landing omnia-enter">{body}</section>'
 
 
 def _tile_html(category: CategoryModel, index: int) -> str:
