@@ -107,6 +107,17 @@ class FeaturePlugin:
     tooltip: str = ""
     # Lower sorts earlier in the settings list (within its group).
     order: int = 100
+    # Runs whenever Anki does, and never appears in the settings grid.
+    #
+    # For a feature that is not a CHOICE: something another program depends on, which nobody
+    # would deliberately switch off and which is confusing to find switched off. A card for one
+    # of these is a switch whose only effect is to break something else — and the grid reads as
+    # "the features you can turn on", so anything in it that is not one dilutes the rest.
+    #
+    # It costs the user the ability to stop it, so it is only right where stopping it has no
+    # purpose: `word_lookup` serves the clippers over loopback, reads nothing on its own and
+    # writes nothing a page can reach.
+    always_on: bool = False
     # The plugin's own Pydantic settings model (co-located in ``plugins/<plugin>/config.py``).
     # The default :meth:`config_schema` derives the generic settings form from it, so a plugin
     # declares its model once instead of re-listing every field. Typed under TYPE_CHECKING to

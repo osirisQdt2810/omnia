@@ -179,11 +179,14 @@ class WordLookupPlugin(FeaturePlugin):
 
     name = "Word Lookup"
     description = "Let the clippers look a word up in your collection."
-    # NOT "Integrations": that word belongs to the Smart Notes tab holding the clipper cards,
-    # and a same-named category on the main grid read as that place while being somewhere else.
-    # Not "AI" either, tempting as sitting beside Smart Notes is — lookup reads the collection
-    # and calls no model, and that category is described as generating fields with one.
-    group = "General"
+    # No card on the settings grid, and no switch. This is not a feature somebody chooses: it
+    # is what the clippers talk to, and a user who finds it switched off experiences it as the
+    # clippers being broken rather than as a setting they changed. The grid reads as "the
+    # features you can turn on", and a row in it whose only effect is to break another program
+    # dilutes every other row.
+    #
+    # It was the only thing in "General", so that category goes with it.
+    always_on = True
     tooltip = (
         "Answers a clipper's magnifier: “is this word already in my collection?”\n"
         "\n"

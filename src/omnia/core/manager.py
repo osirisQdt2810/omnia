@@ -56,8 +56,11 @@ class PluginManager:
         self._web.install()
         for plugin_id, cls in get_registered().items():
             self._plugins[plugin_id] = cls()
-        for plugin_id in self._plugins:
-            if self._config.is_enabled(plugin_id):
+        for plugin_id, plugin in self._plugins.items():
+            # An always-on plugin ignores the enable map entirely — there is no card to set it
+            # from, so a stale ``enabled = false`` left by an older build must not switch off
+            # something the clippers now depend on.
+            if plugin.always_on or self._config.is_enabled(plugin_id):
                 self._activate(plugin_id)
 
     # --- context ---------------------------------------------------------------------
@@ -118,6 +121,11 @@ class PluginManager:
         """
         if plugin_id not in self._plugins:
             raise KeyError(f"Unknown plugin: {plugin_id!r}")
+        if self._plugins[plugin_id].always_on:
+            # Nothing in the UI can reach this, but the API must not pretend to have done
+            # something: an always-on plugin has no enable flag to set, and writing one would
+            # leave a value in config that is read by nothing.
+            return plugin_id in self._active
         self._config.set_enabled(plugin_id, enabled)  # persists + reloads config
         if enabled and plugin_id not in self._active:
             return self._activate(plugin_id)
@@ -172,6 +180,11 @@ def group_plugins(
     sections exist and how they read is the settings page's business, and ``core`` must not
     import ``gui`` to find out. See :func:`omnia.gui.settings_categories.category_order`.
 
+    :attr:`FeaturePlugin.always_on` plugins are left out: they are not choices, so a card for one
+    would be a switch whose only effect is to break something that depends on it. Filtered HERE
+    rather than in the page, so every surface that groups plugins agrees — and :meth:`plugins`
+    still returns them, because looking one up by id must keep working.
+
     Args:
         plugins: The feature-plugin instances to group.
         order: Preferred section order; unnamed groups sort after, in first-seen order.
@@ -181,6 +194,8 @@ def group_plugins(
     """
     by_group: dict[str, list[FeaturePlugin]] = {}
     for plugin in plugins:
+        if getattr(plugin, "always_on", False):
+            continue
         by_group.setdefault(plugin.group, []).append(plugin)
 
     def _group_rank(name: str) -> tuple[int, int]:

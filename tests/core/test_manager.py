@@ -8,7 +8,7 @@ import pytest
 
 from omnia.core import registry
 from omnia.core.config import ConfigLoader, ConfigRepository
-from omnia.core.manager import PluginManager
+from omnia.core.manager import PluginManager, group_plugins, grouped_plugins
 from omnia.core.plugin import AddonPaths, FeaturePlugin
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "omnia" / "config"
@@ -205,5 +205,97 @@ class TestPluginManager:
         try:
             with pytest.raises(KeyError):
                 mgr.set_enabled("nope", True)
+        finally:
+            mgr.teardown()
+
+
+class TestAPluginThatIsNotAChoice:
+    """``always_on``: it runs whenever Anki does, and never appears in the grid.
+
+    For a feature another program depends on — ``word_lookup`` serves the clippers — where a card
+    would be a switch whose only effect is to break something else, and a user who found it off
+    would experience it as the clippers being broken rather than as a setting they changed.
+    """
+
+    @pytest.fixture
+    def plugins(self):
+        @registry.register("service")
+        class Service(FeaturePlugin):
+            name = "A Service"
+            always_on = True
+
+            def on_enable(self, ctx):
+                pass
+
+            def on_disable(self, ctx):
+                pass
+
+        @registry.register("ordinary")
+        class Ordinary(FeaturePlugin):
+            name = "An Ordinary Feature"
+            group = "Reviewing"
+
+            def on_enable(self, ctx):
+                pass
+
+            def on_disable(self, ctx):
+                pass
+
+        return Service, Ordinary
+
+    def test_it_is_activated_without_ever_being_enabled(self, make_manager, plugins):
+        # The enable map has no entry for it and must not be consulted: a stale ``enabled =
+        # false`` left by an older build would otherwise switch off what the clippers depend on.
+        mgr, repo = make_manager()
+
+        mgr.setup()
+        try:
+            assert mgr.is_active("service") is True
+            assert repo.is_enabled("service") is False, "it wrote a flag nothing reads"
+            assert mgr.is_active("ordinary") is False
+        finally:
+            mgr.teardown()
+
+    def test_it_is_left_out_of_the_grid(self, make_manager, plugins):
+        mgr, _repo = make_manager()
+        mgr.setup()
+        try:
+            groups = grouped_plugins(mgr)
+        finally:
+            mgr.teardown()
+
+        assert [name for name, _ in groups] == ["Reviewing"]
+        shown = {p.id for _name, members in groups for p in members}
+        assert shown == {"ordinary"}
+
+    def test_a_group_holding_only_always_on_plugins_does_not_render(self, plugins):
+        # Not an empty tile with a zero count — the section simply is not there.
+        service, _ordinary = plugins
+
+        assert group_plugins([service()]) == []
+
+    def test_it_can_still_be_found_by_id(self, make_manager, plugins):
+        # Hiding it from the GRID must not hide it from the code that looks one up to reload or
+        # configure it.
+        mgr, _repo = make_manager()
+        mgr.setup()
+        try:
+            assert {p.id for p in mgr.plugins()} == {"service", "ordinary"}
+        finally:
+            mgr.teardown()
+
+    def test_toggling_it_writes_nothing_and_does_not_stop_it(
+        self, make_manager, plugins
+    ):
+        # Nothing in the UI can reach this, but the API must not pretend to have acted: there is
+        # no enable flag to set, and writing one leaves a value read by nobody.
+        mgr, repo = make_manager()
+        mgr.setup()
+        try:
+            still_active = mgr.set_enabled("service", False)
+
+            assert still_active is True
+            assert mgr.is_active("service") is True
+            assert repo.is_enabled("service") is False
         finally:
             mgr.teardown()
