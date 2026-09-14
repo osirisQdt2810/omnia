@@ -129,6 +129,20 @@ class TestTheSharingSession:
     def teardown_method(self) -> None:
         session.stop()
 
+    @staticmethod
+    def _free_port() -> int:
+        """A port nothing holds right now.
+
+        Not the default: `_port()` reads 0 as "unset" and answers 8767, so a stored port of 0
+        makes this bind the REAL sharing port — which a developer running Anki with sharing on
+        already holds, and the test fails for a reason that has nothing to do with the code.
+        """
+        import socket
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            return int(probe.getsockname()[1])
+
     def test_starting_serves_and_stopping_closes(self):
         assert session.running() is False
 
@@ -153,14 +167,16 @@ class TestTheSharingSession:
         assert session.running() is False
 
     def test_sharing_left_off_is_not_restored_at_profile_open(self):
-        repo = _Repo(sync={"key": "k" * 32, "sharing": False})
+        repo = _Repo(
+            sync={"key": "k" * 32, "sharing": False, "port": self._free_port()}
+        )
 
         assert session.start_if_enabled(repo, lambda: Inventory()) is False
         assert session.running() is False
 
     def test_sharing_left_on_is_restored_at_profile_open(self):
         # The switch is a preference, not a session: turning it on did not mean "until I quit".
-        repo = _Repo(sync={"key": "k" * 32, "sharing": True, "port": 0})
+        repo = _Repo(sync={"key": "k" * 32, "sharing": True, "port": self._free_port()})
 
         assert session.start_if_enabled(repo, lambda: Inventory()) is True
         assert session.running() is True

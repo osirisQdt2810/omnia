@@ -8,7 +8,10 @@ code into an address, so the ID has to CARRY the address itself.
 
 Everything about its shape follows from that:
 
-* it holds ``host``, ``port`` and a ``token``, and nothing else;
+* it holds ``host``, ``port`` and a ``token``, and nothing else, packed as BYTES rather than as
+  text — an IPv4 address is four bytes, not fourteen characters, and a 128-bit key is sixteen
+  bytes, not thirty-two hex characters. Spelling them out cost fifty characters of an ID that a
+  person has to read off one screen and type into another;
 * it is base32 without padding, upper-cased and grouped, so it reads over a phone call and
   survives a copy-paste that eats whitespace or changes case — unlike a raw ``100.x.y.z:8767``
   URL, which invites being typed into a browser and looks like something to keep;
@@ -31,11 +34,25 @@ from __future__ import annotations
 import base64
 import re
 import secrets
+import socket
 from dataclasses import dataclass
 
 #: How many characters of randomness the machine key carries. 32 hex characters is 128 bits:
-#: far past guessing, and short enough that the whole ID stays about forty characters.
+#: far past guessing, and — packed as the sixteen bytes it actually is — short enough that the
+#: whole ID stays under forty characters.
 TOKEN_CHARS = 32
+
+_TOKEN_BYTES = TOKEN_CHARS // 2
+
+#: How the host is packed, so an address that is four bytes takes four bytes. The tag is the
+#: first byte of every code, which is also what makes an ID from a future Omnia recognisable as
+#: one rather than as a mistyped string.
+_KIND_IPV4 = 4
+_KIND_IPV6 = 6
+_KIND_NAME = (
+    0  # a DNS name, length-prefixed — nothing produces one today, but an ID is a
+)
+#: format, and refusing to carry a name would make one impossible to add later.
 
 #: The code is printed in groups of this many characters, separated by dashes. Purely cosmetic —
 #: :func:`parse_pairing_code` strips them — but it is what makes a forty-character string
@@ -46,7 +63,6 @@ _TOKEN_RE = re.compile(rf"^[0-9a-f]{{{TOKEN_CHARS}}}$")
 # 253 is the maximum length of a DNS name; a shorter cap refuses a legitimate long hostname
 # with "not a usable address" and nothing the user could do about it.
 _HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]{1,253}$")
-_SEPARATOR = "|"
 
 
 class PairingError(ValueError):
@@ -101,8 +117,7 @@ def format_pairing_code(address: PairingAddress) -> str:
     Returns:
         An upper-case base32 string in dash-separated groups.
     """
-    raw = _SEPARATOR.join([address.host, str(address.port), address.token])
-    encoded = base64.b32encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+    encoded = base64.b32encode(_pack(address)).decode("ascii").rstrip("=")
     return "-".join(
         encoded[index : index + GROUP] for index in range(0, len(encoded), GROUP)
     )
@@ -132,15 +147,60 @@ def parse_pairing_code(code: str) -> PairingAddress:
         raise PairingError("that does not look like a pairing code")
     padding = "=" * (-len(cleaned) % 8)
     try:
-        raw = base64.b32decode(cleaned + padding).decode("utf-8")
+        raw = base64.b32decode(cleaned + padding)
     except Exception as exc:  # a truncated or mistyped code lands here
         raise PairingError("that code is incomplete or was mistyped") from exc
-    parts = raw.split(_SEPARATOR)
-    if len(parts) != 3:
-        raise PairingError("that code was made by a different version of Omnia")
-    host, port, token = parts
+    return _unpack(raw)
+
+
+def _pack(address: PairingAddress) -> bytes:
+    """``host``/``port``/``token`` as bytes: a tag, the host, two bytes of port, the key."""
     try:
-        number = int(port)
-    except ValueError as exc:
-        raise PairingError("that code carries no usable port") from exc
-    return PairingAddress(host=host, port=number, token=token)
+        host = socket.inet_pton(socket.AF_INET, address.host)
+        kind = _KIND_IPV4
+    except OSError:
+        try:
+            host = socket.inet_pton(socket.AF_INET6, address.host)
+            kind = _KIND_IPV6
+        except OSError:
+            name = address.host.encode("utf-8")[:253]
+            host = bytes([len(name)]) + name
+            kind = _KIND_NAME
+    return (
+        bytes([kind])
+        + host
+        + int(address.port).to_bytes(2, "big")
+        + bytes.fromhex(address.token)
+    )
+
+
+def _unpack(raw: bytes) -> PairingAddress:
+    """The inverse of :func:`_pack`, with every way it can be wrong given its own sentence."""
+    if not raw:
+        raise PairingError("that code is incomplete or was mistyped")
+    kind, rest = raw[0], raw[1:]
+    try:
+        if kind == _KIND_IPV4:
+            host, rest = socket.inet_ntop(socket.AF_INET, rest[:4]), rest[4:]
+        elif kind == _KIND_IPV6:
+            host, rest = socket.inet_ntop(socket.AF_INET6, rest[:16]), rest[16:]
+        elif kind == _KIND_NAME:
+            length = rest[0]
+            host, rest = rest[1 : 1 + length].decode("utf-8"), rest[1 + length :]
+        else:
+            # A tag this build has no meaning for is a code from a DIFFERENT Omnia, not a typo.
+            # Not "newer": an unknown tag cannot tell the two directions apart, and guessing
+            # would send half the people who see it to update the wrong machine. What it can
+            # say is that re-reading the ID will not help, which is the useful half.
+            raise PairingError("that code was made by a different version of Omnia")
+    except PairingError:
+        raise
+    except (IndexError, OSError, UnicodeDecodeError, ValueError) as exc:
+        raise PairingError("that code is incomplete or was mistyped") from exc
+    if len(rest) != 2 + _TOKEN_BYTES:
+        raise PairingError("that code is incomplete or was mistyped")
+    return PairingAddress(
+        host=host,
+        port=int.from_bytes(rest[:2], "big"),
+        token=rest[2:].hex(),
+    )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from omnia.core.sync import (
+    TOKEN_CHARS,
     PairingAddress,
     PairingError,
     format_pairing_code,
@@ -94,6 +95,9 @@ class TestHowACodeArrives:
     def test_a_code_from_another_shape_is_named_as_such(self):
         import base64
 
+        # The text shape the first version of this used. Its leading byte is not one of the
+        # host tags, so it reads as another Omnia's code rather than as a typo — which is the
+        # difference between updating a machine and re-reading a correct ID for an hour.
         raw = base64.b32encode(b"100.71.161.7|8767").decode().rstrip("=")
 
         with pytest.raises(PairingError, match="different version"):
@@ -118,3 +122,50 @@ class TestAnAddressThatCannotWork:
         address = PairingAddress(host="fd7a:115c::1", port=8767, token=new_token())
 
         assert address.base_url == "http://[fd7a:115c::1]:8767"
+
+
+class TestAnIdIsSomethingAPersonTypes:
+    """The ID is read off one screen and typed into another, so its LENGTH is a feature.
+
+    The first version spelled every part out as text — fourteen characters for a four-byte
+    address, thirty-two for a sixteen-byte key — and produced an eighty-four-character string
+    for a machine on a mesh address. Nobody transcribes that correctly.
+    """
+
+    def test_a_v4_address_fits_in_forty_characters(self):
+        code = format_pairing_code(
+            PairingAddress("100.126.254.35", 8767, "a" * TOKEN_CHARS)
+        )
+
+        assert len(code.replace("-", "")) <= 40
+
+    def test_a_v6_address_costs_more_but_still_round_trips(self):
+        address = PairingAddress("fd7a:115c:a1e0::4839:fe24", 8767, "b" * TOKEN_CHARS)
+
+        assert parse_pairing_code(format_pairing_code(address)) == address
+
+    def test_a_hostname_round_trips_too(self):
+        # Nothing produces one today — addresses come from the routing table — but an ID is a
+        # FORMAT, and one that cannot carry a name could never be taught to.
+        address = PairingAddress("my-mac.local", 8767, "c" * TOKEN_CHARS)
+
+        assert parse_pairing_code(format_pairing_code(address)) == address
+
+    def test_the_key_survives_the_packing_exactly(self):
+        # It is compared byte-for-byte against the header a peer sends; one bit lost here and
+        # nothing opens, with no sign of where it went.
+        token = "0123456789abcdef" * 2
+        address = PairingAddress("192.168.0.101", 8767, token)
+
+        assert parse_pairing_code(format_pairing_code(address)).token == token
+
+    def test_a_high_port_survives_the_two_bytes_it_is_packed_into(self):
+        address = PairingAddress("10.0.0.2", 65535, "d" * TOKEN_CHARS)
+
+        assert parse_pairing_code(format_pairing_code(address)).port == 65535
+
+    def test_a_truncated_code_is_reported_as_truncated(self):
+        code = format_pairing_code(PairingAddress("10.0.0.2", 8767, "e" * TOKEN_CHARS))
+
+        with pytest.raises(PairingError, match="incomplete or was mistyped"):
+            parse_pairing_code(code.replace("-", "")[:-8])

@@ -72,17 +72,19 @@ def _from_collection() -> tuple[tuple[DeckEntry, ...], tuple[NoteTypeEntry, ...]
 
     def _read() -> tuple[tuple[DeckEntry, ...], tuple[NoteTypeEntry, ...]]:
         col = anki_compat.main_window().col
+        cards = _card_counts(col)
+        notes = _note_counts(col)
         decks = tuple(
-            DeckEntry(id=deck_id, name=name, cards=_card_count(col, name))
+            DeckEntry(id=deck_id, name=name, cards=cards.get(deck_id, 0))
             for deck_id, name in anki_compat.deck_names(col)
         )
         note_types = tuple(
             NoteTypeEntry(
-                name=name,
-                fields=tuple(anki_compat.note_type_field_names(name, col)),
-                notes=_note_count(col, name),
+                name=str(model["name"]),
+                fields=tuple(str(field["name"]) for field in model["flds"]),
+                notes=notes.get(int(model["id"]), 0),
             )
-            for name in anki_compat.note_type_names(col)
+            for model in col.models.all()
         )
         return decks, note_types
 
@@ -121,21 +123,42 @@ def call_on_main(work: Callable[[], T]) -> T:
     return box["value"]  # type: ignore[no-any-return]
 
 
-def _card_count(col: Any, deck: str) -> int:
-    """Cards in ``deck`` ALONE. ``-deck:x::*`` excludes the sub-decks, whose own rows say so."""
+def _card_counts(col: Any) -> dict[int, int]:
+    """Cards per deck, in ONE query — ``{deck_id: cards}``, sub-decks not included.
+
+    A search per deck is what this replaced, and on a real collection it cost four and a half
+    seconds with Anki frozen for every one of them: 1,914 decks meant 1,914 searches, run on the
+    main thread because that is where the collection lives. One aggregate is a few milliseconds,
+    and the counts are the same numbers.
+
+    A card in a filtered deck is counted against the deck it came FROM (``odid``), which is
+    where the user sees it and where it returns to.
+
+    Returns:
+        The counts, or ``{}`` when the query is unavailable — every deck then reads 0, which is
+        wrong but harmless: the count is decoration and must never be why the menu fails.
+    """
     try:
-        return len(col.find_cards(f'"deck:{deck}" -"deck:{deck}::*"'))
+        rows = col.db.all(
+            "select case when odid != 0 then odid else did end as home, count() "
+            "from cards group by home"
+        )
+        return {int(home): int(total) for home, total in rows}
     except Exception:
-        # A deck name with a quote in it, or a search Anki refuses: the count is decoration and
-        # must never be the reason the whole menu fails to build.
-        return 0
+        logger.warning("sync: could not count cards per deck", exc_info=True)
+        return {}
 
 
-def _note_count(col: Any, note_type: str) -> int:
+def _note_counts(col: Any) -> dict[int, int]:
+    """Notes per note type, in one query — ``{note_type_id: notes}``."""
     try:
-        return len(col.find_notes(f'"note:{note_type}"'))
+        return {
+            int(mid): int(total)
+            for mid, total in col.db.all("select mid, count() from notes group by mid")
+        }
     except Exception:
-        return 0
+        logger.warning("sync: could not count notes per note type", exc_info=True)
+        return {}
 
 
 def _machine_name() -> str:
@@ -149,18 +172,23 @@ def _machine_name() -> str:
 
 
 def _version() -> str:
-    """The add-on's own version, read from the manifest the build stamped it into."""
+    """The add-on's own version, read from the manifest the build stamps it into.
+
+    Walked up to the PACKAGE directory rather than by a parent index: this file is
+    ``omnia/gui/sync/collect.py`` and the manifest sits beside ``omnia/__init__.py``, and an
+    index off by one is an empty version with no error anywhere — which is exactly how the first
+    live run of this reported no version at all.
+    """
     import json
     from pathlib import Path
 
     try:
-        manifest = Path(__file__).resolve().parents[3] / "manifest.json"
-        return str(
-            json.loads(manifest.read_text(encoding="utf-8")).get("human_version", "")
-        )
+        package = Path(__file__).resolve().parent.parent.parent  # .../omnia
+        raw = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+        return str(raw.get("human_version") or "")
     except Exception:
-        # A dev checkout has no stamped version, and the peer only shows it — never branches
-        # on it. The protocol number is what decides compatibility.
+        # A source checkout has no stamped version — build_addon.py adds it — and the peer only
+        # SHOWS this; it never branches on it. The protocol number decides compatibility.
         return ""
 
 
