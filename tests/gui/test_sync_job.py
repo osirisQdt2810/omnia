@@ -25,17 +25,31 @@ class _Client:
     """A source that hands over a package without a network."""
 
     def __init__(
-        self, payload: bytes = b"apkg", *, fail: Exception | None = None
+        self,
+        payload: bytes = b"apkg",
+        *,
+        fail: Exception | None = None,
+        config: dict | None = None,
+        note_types: tuple = (),
     ) -> None:
         self.payload = payload
         self.fail = fail
+        self.config = config or {}
+        self.note_types = note_types
         self.asked: list[PackageRequest] = []
 
     def request_package(self, request: PackageRequest) -> PackageOffer:
         self.asked.append(request)
         if self.fail is not None:
             raise self.fail
-        return PackageOffer(id="pkg", bytes=len(self.payload), cards=3, notes=2)
+        return PackageOffer(
+            id="pkg",
+            bytes=len(self.payload),
+            cards=3,
+            notes=2,
+            config=self.config,
+            note_types=self.note_types,
+        )
 
     def download_package(self, offer, destination, on_progress=None):
         with open(destination, "wb") as handle:
@@ -79,6 +93,8 @@ def applied(monkeypatch):
 
     class _Result:
         summary = "3 new notes"
+        note_types_added: tuple = ()
+        sections: tuple = ()
 
     def backup_first(reason=""):
         seen["backups"] = int(seen["backups"]) + 1
@@ -90,8 +106,18 @@ def applied(monkeypatch):
         seen["policy"] = policy
         return _Result()
 
+    def apply_note_types(definitions):
+        seen["note_types"] = tuple(definitions or ())
+        return tuple(str(d.get("name", "")) for d in definitions or ())
+
+    def apply_config(repo, sections):
+        seen["config"] = dict(sections or {})
+        return tuple(sorted(sections or {}))
+
     monkeypatch.setattr("omnia.gui.sync.apply.backup_first", backup_first)
     monkeypatch.setattr("omnia.gui.sync.apply.apply_package", apply_package)
+    monkeypatch.setattr("omnia.gui.sync.apply.apply_note_types", apply_note_types)
+    monkeypatch.setattr("omnia.gui.sync.apply.apply_config", apply_config)
     return seen
 
 
@@ -231,6 +257,67 @@ class TestTheDuplicatePolicy:
         job_module.start_pull(_Client(), _request(), repo=None)
 
         assert applied["policy"] == ""
+
+
+class TestWhatArrivesBesideThePackage:
+    """Settings and note type definitions cannot ride in an ``.apkg``.
+
+    A review found all of this selected in the picker, announced in the confirmation, sent over
+    the wire — and then dropped on the floor, because nothing on the target ever read it.
+    """
+
+    def test_settings_reach_the_config(self, inline, applied):
+        values = {"note_types": [{"note_type": "Basic"}]}
+
+        job = job_module.start_pull(
+            _Client(config={"smart_notes": values}), _request(), repo="the-repo"
+        )
+
+        assert applied["config"] == {"smart_notes": values}
+        assert job.snapshot().phase == DONE
+
+    def test_note_type_definitions_are_created(self, inline, applied):
+        definitions = ({"name": "Brand New", "id": 99},)
+
+        job_module.start_pull(_Client(note_types=definitions), _request(), repo=None)
+
+        assert applied["note_types"] == definitions
+
+    def test_they_are_applied_AFTER_the_package(self, inline, applied):
+        # So a note type that DID come with notes is already here and is left alone rather than
+        # created a second time.
+        order: list[str] = []
+        applied["packages"] = _Recorder(order, "package")
+
+        job_module.start_pull(
+            _Client(note_types=({"name": "N"},)), _request(), repo=None
+        )
+
+        assert order and order[0] == "package"
+
+    def test_a_pull_with_no_package_at_all_still_applies_them(self, inline, applied):
+        # Note types or settings alone: there is nothing to download, and inventing an empty file
+        # to fetch would mean a progress bar for a transfer of zero bytes.
+        client = _Client(b"", config={"auto_flip": {"delay": 3}})
+
+        job = job_module.start_pull(client, _request(), repo=None)
+
+        assert applied["packages"] == [], "a package was imported when none was sent"
+        assert applied["config"] == {"auto_flip": {"delay": 3}}
+        assert job.snapshot().phase == DONE
+
+
+class _Recorder(list):
+    """A list that notes when it is appended to, for checking the order of two steps."""
+
+    def __init__(self, order: list, label: str) -> None:
+        super().__init__()
+        self._order = order
+        self._label = label
+
+    def append(self, item) -> None:
+        self._order.append(self._label)
+        super().append(item)
 
 
 class TestFindingItAgain:

@@ -129,7 +129,7 @@ class SyncDialog(WebDialog):
             return {"ok": True}
 
         identity = self._settings.identity()
-        started = session.start(identity, self._inventory)
+        started = session.start(identity, self._inventory, self._repo)
         if started:
             self._show(
                 self._keeping_peer(
@@ -151,7 +151,9 @@ class SyncDialog(WebDialog):
         identity = self._settings.regenerate()
         session.stop()
         restarted = (
-            session.start(identity, self._inventory) if identity.sharing else False
+            session.start(identity, self._inventory, self._repo)
+            if identity.sharing
+            else False
         )
         if identity.sharing and not restarted:
             # The same case `_on_sharing` handles, and it has to be handled the same way here:

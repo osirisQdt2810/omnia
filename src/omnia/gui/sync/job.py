@@ -102,17 +102,26 @@ class PullJob:
             label=f"Omnia: copying from {self._machine}…",
         )
 
-    def _fetch(self) -> str:
-        """Ask for the package and bring it over. Runs on a worker thread."""
+    def _fetch(self) -> PackageOffer:
+        """Ask for what was chosen and bring it over. Runs on a worker thread.
+
+        Returns the OFFER rather than the path, because a package is only part of what travels:
+        note type definitions and settings ride in the answer, and an import step handed only a
+        filename would have nowhere to read them from.
+        """
         self._phase(PREPARING)
         offer: PackageOffer = self._client.request_package(self._request)
+        if not offer.has_package:
+            # Note types or settings alone. There is nothing to download, and inventing an empty
+            # file to fetch would mean a progress bar for a transfer of zero bytes.
+            return offer
         self._phase(DOWNLOADING)
         with self._lock:
             self._tracker.set_total(offer.bytes)
         path = _destination()
         self._path = path
         self._client.download_package(offer, path, on_progress=self._advance)
-        return path
+        return offer
 
     def _advance(self, done: int) -> None:
         with self._lock:
@@ -124,16 +133,27 @@ class PullJob:
             self._tracker.set_phase(phase, detail=detail)
         self._on_change()
 
-    def _import(self, path: str) -> None:
-        """Add it to this collection. Runs on the Qt main thread, because it writes."""
-        from omnia.gui.sync.apply import apply_package, backup_first
+    def _import(self, offer: PackageOffer) -> None:
+        """Add what arrived to this collection. On the Qt main thread, because it writes."""
+        from omnia.gui.sync.apply import (
+            ApplyResult,
+            apply_config,
+            apply_note_types,
+            apply_package,
+            backup_first,
+        )
 
         self._phase(IMPORTING)
+        path = self._path
         try:
             backup_first(f"before copying from {self._machine}")
-            result = apply_package(path, self._policy)
+            result = apply_package(path, self._policy) if path else ApplyResult()
+            # After the package, so a note type that DID come with notes is already here and is
+            # left alone rather than created a second time.
+            result.note_types_added = apply_note_types(offer.note_types)
+            result.sections = apply_config(self._repo, offer.config)
         except Exception as exc:
-            logger.exception("sync: could not add the package to this collection")
+            logger.exception("sync: could not add what arrived to this collection")
             self._fail(
                 "The copy arrived but could not be added to this collection. Nothing was "
                 f"changed — see the Omnia log. ({exc})"

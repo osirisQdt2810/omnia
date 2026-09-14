@@ -27,7 +27,11 @@ def running() -> bool:
     return _SESSION is not None and _SESSION.running
 
 
-def start(identity: MachineIdentity, inventory: Callable[[], Any]) -> bool:
+def start(
+    identity: MachineIdentity,
+    inventory: Callable[[], Any],
+    repo: Any = None,
+) -> bool:
     """(Re)build the session for ``identity`` and open its socket. Returns whether it serves.
 
     Rebuilt rather than mutated: the key and the port are what the socket was opened WITH, so a
@@ -37,7 +41,7 @@ def start(identity: MachineIdentity, inventory: Callable[[], Any]) -> bool:
     global _SESSION
     stop()
     _SESSION = Session(
-        inventory, key=identity.key, port=identity.port, packager=_packager()
+        inventory, key=identity.key, port=identity.port, packager=_packager(repo)
     )
     if not _SESSION.start():
         _SESSION = None
@@ -45,16 +49,19 @@ def start(identity: MachineIdentity, inventory: Callable[[], Any]) -> bool:
     return True
 
 
-def _packager() -> Any:
+def _packager(repo: Any) -> Any:
     """How this machine packs a selection a peer asked for.
 
     Imported here rather than at module load: it reaches Anki, and this module is also the one
     the profile hook uses before anything else is ready.
+
+    The repository goes with it because the settings a peer asks for are read from it — they
+    cannot ride inside an ``.apkg``, so they travel in the answer that describes one.
     """
     from omnia.gui.sync.export import build_package
 
     def pack(request: Any) -> Any:
-        return build_package(request, None)
+        return build_package(request, repo)
 
     return pack
 
@@ -84,7 +91,7 @@ def start_if_enabled(repo: Any, inventory: Callable[[], Any]) -> bool:
     if not settings.sharing():
         return False
     identity = settings.identity()
-    if start(identity, inventory):
+    if start(identity, inventory, repo):
         return True
     logger.error(
         "sync: sharing was left on but port %s could not be opened", identity.port

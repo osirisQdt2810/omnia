@@ -31,6 +31,21 @@ class TestWhatARequestRefusesToMean:
         assert request.decks == ()
         assert request.config == ("smart_notes",)
 
+    def test_note_types_alone_are_a_legitimate_request(self):
+        # Bringing a kind of card before there is anything to put in it. This used to be refused
+        # here, one layer under the picker that had just lit the chip up as chosen — so the
+        # headline feature was unreachable from the UI.
+        request = PackageRequest(note_types=("Brand New",))
+
+        assert request.note_types == ("Brand New",)
+        assert request.wants_cards is False
+
+    def test_a_request_with_decks_wants_cards(self):
+        # What the source checks before it builds a search: a card search with no deck in it is
+        # not a narrow search, it is the whole collection.
+        assert PackageRequest(decks=("A",), note_types=("Basic",)).wants_cards is True
+        assert PackageRequest(config=("smart_notes",)).wants_cards is False
+
 
 class TestWhatTravels:
     def test_media_travels_by_default(self):

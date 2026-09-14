@@ -45,6 +45,8 @@ class ApplyResult:
         #: How many notes the package held, whether or not any of them were new here.
         self.notes_found = 0
         self.sections: tuple[str, ...] = ()
+        #: Note types created here from a definition that travelled on its own.
+        self.note_types_added: tuple[str, ...] = ()
 
     @property
     def summary(self) -> str:
@@ -79,6 +81,11 @@ def backup_first(reason: str = "before an Omnia sync") -> bool:
     Before anything is written, and its failure is reported rather than fatal: a user who chose to
     copy a deck should not be stopped by a full disk on the backup folder — but they must be told,
     because the thing that makes an unwanted import survivable is this file.
+
+    Waits for completion on the Qt thread, which is what Anki itself does before a risky
+    operation. On a large collection that is a visible freeze with no progress window — seconds,
+    against a copy that has already taken minutes — and it is the right trade: a backup taken
+    after the import has started is not a backup.
     """
     from omnia.core import anki_compat
 
@@ -192,7 +199,45 @@ def _if_newer() -> int:
     )
 
 
-def apply_config(repo: Any, sections: dict[str, Any]) -> tuple[str, ...]:
+def apply_note_types(definitions: Any) -> tuple[str, ...]:
+    """Create note types that travelled as definitions rather than inside a package.
+
+    Only the ones that are NOT already here. An existing note type is left exactly as it is: the
+    user asked to bring a kind of card this machine did not have, not to have their own version
+    of one replaced — and replacing it is what empties a field on every note that used it.
+
+    Args:
+        definitions: Note types as Anki stores them, from the other machine.
+
+    Returns:
+        The names actually created, in order.
+    """
+    from omnia.core import anki_compat
+
+    col = anki_compat.main_window().col
+    created: list[str] = []
+    for definition in definitions or ():
+        name = str((definition or {}).get("name", ""))
+        if not name:
+            continue
+        try:
+            if col.models.by_name(name):
+                logger.info("sync: note type %r is already here, left alone", name)
+                continue
+            model = dict(definition)
+            # The id and the modification stamp belong to the OTHER collection. Cleared so Anki
+            # allocates its own; keeping them would collide with whatever holds that id here.
+            model["id"] = 0
+            model.pop("usn", None)
+            col.models.add_dict(model)
+        except Exception:
+            logger.exception("sync: could not create the note type %r", name)
+            continue
+        created.append(name)
+    return tuple(created)
+
+
+def apply_config(repo: Any, sections: Any) -> tuple[str, ...]:
     """Copy the chosen configuration sections onto this machine.
 
     Args:
@@ -204,6 +249,8 @@ def apply_config(repo: Any, sections: dict[str, Any]) -> tuple[str, ...]:
         well as on the source: a list that arrived over a network is not to be trusted because of
         where it came from.
     """
+    if not isinstance(sections, dict):
+        return ()
     applied: list[str] = []
     for name in sorted(sections):
         if name in _NEVER_APPLIED:

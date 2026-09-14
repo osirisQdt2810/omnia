@@ -6,14 +6,15 @@ picked. Media is also the bulk of it, which is why :mod:`omnia.core.sync.progres
 
 Everything undecidable is decided here rather than at either end of the wire:
 
-* **A request names decks AND note types, and both are restrictions.** The note types are not
-  "which ones to bring along" — they are dragged along by the notes regardless — they are which
-  notes may travel at all. A deck holding two note types where the user dropped one must arrive
-  with only the other's notes in it, and that is a filter on the CARDS, not on the package.
-* **An empty request is refused, never widened.** No decks means nothing to send, and no note
-  types means every note was excluded; either could be read as "then send everything", and that
-  reading is how somebody ends up with a stranger's whole collection because a checkbox did not
-  register.
+* **Note types do two jobs, and which one depends on whether decks were named.** With decks, they
+  are a restriction on the CARDS — a deck holding two note types where one was dropped must arrive
+  with only the other's notes. Without decks, they are the whole request: bring these note types'
+  DEFINITIONS and no notes at all, which is how a second machine is set up to author a kind of
+  card before there is anything to put in it.
+* **An empty request is refused, never widened.** Nothing named at all means nothing to send, and
+  decks with every note type dropped means every note was excluded; either could be read as "then
+  send everything", and that reading is how somebody ends up with a stranger's whole collection
+  because a checkbox did not register. The refusal lives here so it holds at BOTH ends.
 
 Pure: it builds a description, not a search string, because the escaping belongs to Anki's own
 search builder and this module may not import it.
@@ -22,7 +23,7 @@ search builder and this module may not import it.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -57,12 +58,22 @@ class PackageRequest:
                 rather than widened: either could be read as "send everything", and that reading
                 is how a mis-registered checkbox turns into somebody's whole collection.
         """
-        if not self.decks and not self.config:
+        if not self.decks and not self.note_types and not self.config:
             raise PackageError("nothing was chosen to copy")
         if self.decks and not self.note_types:
             raise PackageError(
                 "every note type was left behind, so those decks would arrive empty"
             )
+
+    @property
+    def wants_cards(self) -> bool:
+        """Whether any cards are being asked for.
+
+        False for a request that names only note types or only settings — and the source must
+        check this before it builds a search, because a card search with no deck in it is not a
+        narrow search, it is the whole collection.
+        """
+        return bool(self.decks)
 
     def to_json(self) -> str:
         """Render for the wire."""
@@ -100,17 +111,31 @@ class PackageRequest:
 
 @dataclass(frozen=True)
 class PackageOffer:
-    """What the source says it has packed, before a byte of it moves.
+    """What the source packed, answered before a byte of the package moves.
 
     The size is the whole point: it is what turns the copy into a percentage and a time estimate
     rather than a spinner. A source that cannot say how big it is sends 0, and the target shows a
     moving bar with no number instead of a made-up one.
+
+    Two things ride in this answer rather than inside the package, because an ``.apkg`` cannot
+    carry either: the **settings**, which are not Anki's to store, and the **definitions** of note
+    types chosen with no notes behind them — Anki gathers note types from the notes it is
+    exporting, so one with no cards contributes nothing to a package at all.
     """
 
     id: str
     bytes: int = 0
     cards: int = 0
     notes: int = 0
+    #: ``{section: values}`` for the settings that were asked for.
+    config: dict[str, Any] = field(default_factory=dict)
+    #: Note type definitions, as Anki stores them, for the ones chosen on their own.
+    note_types: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def has_package(self) -> bool:
+        """Whether there is a file to fetch. False when only settings or definitions travel."""
+        return bool(self.id) and self.bytes > 0
 
     def to_json(self) -> str:
         return json.dumps(
@@ -119,6 +144,8 @@ class PackageOffer:
                 "bytes": self.bytes,
                 "cards": self.cards,
                 "notes": self.notes,
+                "config": self.config,
+                "note_types": list(self.note_types),
             }
         )
 
@@ -130,13 +157,19 @@ class PackageOffer:
             raise PackageError(
                 "the other machine did not answer with a package"
             ) from exc
-        if not isinstance(raw, dict) or not str(raw.get("id", "")):
+        if not isinstance(raw, dict) or "id" not in raw:
             raise PackageError("the other machine did not answer with a package")
+        config = raw.get("config")
+        note_types = raw.get("note_types")
         return cls(
             id=str(raw["id"]),
             bytes=_count(raw.get("bytes")),
             cards=_count(raw.get("cards")),
             notes=_count(raw.get("notes")),
+            config=config if isinstance(config, dict) else {},
+            note_types=tuple(
+                entry for entry in (note_types or ()) if isinstance(entry, dict)
+            ),
         )
 
 
