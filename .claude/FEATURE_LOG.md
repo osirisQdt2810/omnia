@@ -21,6 +21,54 @@ Format for each entry:
 
 ---
 
+## 2026-09-15 — Phrase Check: correcting a phrase, one fix at a time
+
+**What:** A new feature plugin (`plugins/phrase_check/`) that corrects a selected phrase and
+explains every change, plus `POST /check` on the socket `word_lookup` already serves. It answers
+with a LIST of small fixes — each with its own reason — and the phrase rewritten with the changed
+words marked, in one of two registers (spoken / written). It has **no reviewer surface**:
+everything it does is reached from a selection in a clipper. Both clippers gained a Correct
+button and a panel beside their magnifier (omnia-web-clipper #16, omnia-desktop-clipper #23).
+
+**Why:** the clippers answered "is this word in my collection?" and nothing answered the question
+that comes just before it — the user is reading or writing something and is not sure the sentence
+is right. The shape is the feature: "your sentence should be X" teaches nothing, and one
+paragraph explaining six unrelated problems is read by nobody. Two registers because the same
+sentence is wrong in different ways depending on whether it is being said or written.
+
+**Files:** `plugins/phrase_check/{__init__,correction,prompt,cache,service,config}.py`;
+`plugins/word_lookup/service.py` (+`/check`, `MAX_PHRASE_CHARS`);
+`plugins/word_lookup/__init__.py` (`check_phrase`, via `core.services` by NAME — ADR-019);
+`plugins/__init__.py`. Tests: `tests/plugins/phrase_check/*`,
+`tests/plugins/word_lookup/test_check_endpoint.py`.
+
+**How to verify:**
+```bash
+pytest tests/plugins/phrase_check tests/plugins/word_lookup -q     # 337 passed
+# end to end: enable Phrase Check in Tools -> Omnia, select a phrase in a clipper, press the wand
+curl -s -X POST http://127.0.0.1:8766/check -H 'Content-Type: application/json' \
+     -d '{"text": "I have went to the shop for buy milk."}' | python -m json.tool
+```
+
+**Notes / rollback:** three things worth remembering.
+
+* The cache lives in a JSON file under `user_files/`, **not** the config. A check runs on the
+  HTTP worker thread and `col.db` must not be written from one; `update_section` is
+  read-blob/mutate/write-blob and would race the settings dialog; and `features.toml` SYNCS, so
+  five hundred corrections would ride to AnkiWeb and mark the collection modified on every check.
+  Its lock is module-level, because a checker is built per request and a per-instance lock
+  protects nothing.
+* `default_mode` must be a `Literal`, not a `str` with a `json_schema_extra` choices hint. That
+  hint is Pydantic **v2** API and the vendored Pydantic is 1.10, which swallows it silently —
+  the settings dialog then renders a free-text box and a typo is saved without complaint. The
+  same trap applies to any future picker; `core/config/schema.py` reads the annotation and
+  nothing else.
+* `word_lookup` echoes a failure's message to the clipper only when the exception carries
+  `user_facing = True`. Anything else is a flat 500, so an internal repr cannot reach a browser.
+
+Rollback: disable the plugin (it is off by default and has no reviewer surface, so nothing else
+changes); `/check` then answers 503 and the clippers say which switch to flip.
+
 ## 2026-09-14 — Pulling one machine's decks and settings onto another (ADR-020)
 
 **What:** Omnia can show what another computer holds and let the user pick from it. Each machine
