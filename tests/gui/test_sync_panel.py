@@ -82,6 +82,72 @@ class TestWhatThisMachineSays:
             assert word not in lowered
 
 
+class TestWhichCardASentenceLandsIn:
+    """Each machine's messages belong under its own heading. This is not cosmetic.
+
+    Both sentences shared one field once, and that field is rendered inside the OTHER machine's
+    card: "Sharing could not start — port 8767 is already in use" appeared directly beneath the
+    boxes for the peer's ID and code, in the same orange used for "could not reach that ID". A
+    local port conflict read as a failure to reach a machine the user had not tried yet.
+    """
+
+    @staticmethod
+    def _cards(page: str) -> tuple[str, str]:
+        """The page split into (this computer, the other computer)."""
+        first, _, second = page.partition(
+            '<section class="sync-card"><h2>The other computer'
+        )
+        return first, second
+
+    def test_a_local_failure_is_written_under_this_computer(self):
+        page = _page(
+            PanelState(local_status="Sharing could not start — port 8767 is in use.")
+        )
+
+        mine, theirs = self._cards(page)
+        assert "port 8767" in mine
+        assert "port 8767" not in theirs
+
+    def test_a_peer_failure_is_written_under_the_other_computer(self):
+        page = _page(
+            PanelState(status="That access code does not open the other machine.")
+        )
+
+        mine, theirs = self._cards(page)
+        assert "does not open" in theirs
+        assert "does not open" not in mine
+
+    def test_the_two_can_be_shown_at_once_without_colliding(self):
+        page = _page(
+            PanelState(
+                local_status="This computer has a new access code.",
+                status="Could not connect.",
+            )
+        )
+
+        mine, theirs = self._cards(page)
+        assert "new access code" in mine and "Could not connect." not in mine
+        assert "Could not connect." in theirs
+
+    def test_a_local_success_is_green_rather_than_a_warning(self):
+        # "You have a new access code" is not a problem, and orange says it is.
+        page = _page(
+            PanelState(
+                sharing=True,
+                machine_id="1",
+                access_code="2",
+                local_status="This computer has a new access code.",
+            )
+        )
+
+        assert 'class="sync-ok" id="sync-local-status"' in page
+
+    def test_a_local_failure_is_a_warning(self):
+        page = _page(PanelState(local_status="Sharing could not start."))
+
+        assert 'class="sync-warn" id="sync-local-status"' in page
+
+
 class TestWhatTheOtherMachineSays:
     def test_a_failure_is_rendered_as_a_warning_not_a_success(self):
         page = _page(
@@ -174,6 +240,16 @@ class TestTheSharingSession:
 
         assert session.start_if_enabled(repo, lambda: Inventory()) is True
         assert session.running() is True
+
+    def test_a_fresh_profile_is_not_given_a_credential_it_never_asked_for(self):
+        # The rule this protects is written into MachineSettings: a profile that never opens the
+        # sync panel has no business holding an access code. The profile hook runs on EVERY
+        # profile open, so asking it the switch through `identity()` — which mints — wrote a
+        # nine-digit code into every profile in the world for a feature nobody enabled.
+        repo = _Repo()
+
+        assert session.start_if_enabled(repo, lambda: Inventory()) is False
+        assert repo.sections.get("sync", {}) == {}
 
     def test_a_port_that_is_taken_reports_rather_than_raising(self):
         # A profile must load even when something else owns the port — a second copy of Anki, or

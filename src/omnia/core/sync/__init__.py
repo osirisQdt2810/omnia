@@ -26,7 +26,6 @@ from omnia.core.sync.client import (
     TIMEOUT_SECONDS,
     SyncClient,
     SyncError,
-    check,
 )
 from omnia.core.sync.inventory import (
     PROTOCOL,
@@ -102,6 +101,8 @@ __all__ = [
     "KIND_OTHER",
     "KIND_ULA",
     "KIND_VIRTUAL",
+    "LOCKOUT_SECONDS",
+    "MAX_ATTEMPTS",
     "NEEDED",
     "PARTIAL",
     "PASSCODE_DIGITS",
@@ -129,7 +130,6 @@ __all__ = [
     "SyncClient",
     "SyncError",
     "access_code",
-    "check",
     "format_machine_id",
     "format_passcode",
     "local_addresses",

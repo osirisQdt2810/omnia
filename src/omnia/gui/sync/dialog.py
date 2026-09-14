@@ -46,6 +46,12 @@ logger = get_logger("sync")
 PEER_KEY = "peer_id"
 PEER_CODE_KEY = "peer_code"
 
+#: One wording for one condition, used by both ops that can hit it.
+_PORT_TAKEN = (
+    "Sharing could not start — port {port} is already in use. Close the other copy of Anki, "
+    "or use a different port."
+)
+
 
 class SyncDialog(WebDialog):
     """Shows this machine's ID, and asks the other machine what it has."""
@@ -125,12 +131,10 @@ class SyncDialog(WebDialog):
         started = session.start(identity, self._inventory)
         if started:
             self._show(
-                PanelState(
+                self._keeping_peer(
                     sharing=True,
                     machine_id=machine_id(identity),
                     access_code=access_code(identity),
-                    peer_id=self._state.peer_id,
-                    peer_code=self._state.peer_code,
                 )
             )
         else:
@@ -138,29 +142,31 @@ class SyncDialog(WebDialog):
             # profile open that could not be opened now, and the panel would keep disagreeing
             # with itself.
             self._settings.set_sharing(False)
-            self._show(
-                self._off(
-                    status=(
-                        f"Sharing could not start — port {identity.port} is already in use. "
-                        "Close the other copy of Anki, or use a different port."
-                    )
-                )
-            )
+            self._show(self._off(local_status=_PORT_TAKEN.format(port=identity.port)))
         return {"ok": started}
 
     def _on_regenerate(self, _data: dict[str, Any]) -> dict[str, Any]:
         """Mint a new access code, which stops the old one opening this machine."""
         identity = self._settings.regenerate()
         session.stop()
-        live = identity.sharing and session.start(identity, self._inventory)
+        restarted = (
+            session.start(identity, self._inventory) if identity.sharing else False
+        )
+        if identity.sharing and not restarted:
+            # The same case `_on_sharing` handles, and it has to be handled the same way here:
+            # the socket is closed, so leaving the preference on would have the next profile open
+            # silently retry a port that is taken, while the panel says off. Windows is where
+            # this actually bites — `allow_reuse_address` is off there, so a rebind straight
+            # after a close can fail.
+            self._settings.set_sharing(False)
+            self._show(self._off(local_status=_PORT_TAKEN.format(port=identity.port)))
+            return {"ok": False}
         self._show(
-            PanelState(
-                sharing=live,
-                machine_id=machine_id(identity) if live else "",
-                access_code=access_code(identity) if live else "",
-                peer_id=self._state.peer_id,
-                peer_code=self._state.peer_code,
-                status=(
+            self._keeping_peer(
+                sharing=restarted,
+                machine_id=machine_id(identity) if restarted else "",
+                access_code=access_code(identity) if restarted else "",
+                local_status=(
                     "This computer has a new access code. The old one no longer opens it — "
                     "the ID has not changed."
                 ),
@@ -196,8 +202,20 @@ class SyncDialog(WebDialog):
 
         self._repo.update_section("sync", {PEER_KEY: typed, PEER_CODE_KEY: typed_code})
         client = SyncClient(address)
+
+        def ask() -> Any:
+            """Prove the code, then fetch the menu.
+
+            ``hello`` first because it is a few bytes: a wrong access code, a machine that is not
+            sharing and a version mismatch are all answered before a quarter of a megabyte of
+            deck names crosses a link that may be a laptop on the other side of a VPN. It is also
+            what makes the button's name true — it checks, and only then fetches.
+            """
+            client.hello()
+            return client.inventory()
+
         anki_compat.run_in_background(
-            client.inventory,
+            ask,
             on_success=lambda inventory: self._show_offer(typed, typed_code, inventory),
             on_failure=lambda exc: self._show_failure(typed, typed_code, exc),
             label="Omnia: asking the other computer…",
@@ -211,6 +229,7 @@ class SyncDialog(WebDialog):
                 sharing=self._state.sharing,
                 machine_id=self._state.machine_id,
                 access_code=self._state.access_code,
+                local_status=self._state.local_status,
                 peer_id=peer_id,
                 peer_code=peer_code,
                 status=f"Connected to {inventory.machine or 'the other computer'}.",
@@ -245,18 +264,45 @@ class SyncDialog(WebDialog):
             sharing=self._state.sharing,
             machine_id=self._state.machine_id,
             access_code=self._state.access_code,
+            local_status=self._state.local_status,
             peer_id=peer_id,
             peer_code=peer_code,
             status=status,
         )
 
-    def _off(self, *, status: str = "") -> PanelState:
-        """Sharing off, with whatever the user typed about the OTHER machine left alone."""
+    def _off(self, *, local_status: str = "") -> PanelState:
+        """Sharing off, with everything about the OTHER machine left exactly as it was.
+
+        ``status`` and ``connected`` describe one thing and have to move together: the first is
+        the sentence, the second is whether it is good news, and carrying one without the other
+        repaints "Connected to the-mac." as an orange warning. Switching THIS machine's sharing
+        off says nothing about whether the other machine answered.
+        """
+        return self._keeping_peer(sharing=False, local_status=local_status)
+
+    def _keeping_peer(
+        self,
+        *,
+        sharing: bool,
+        local_status: str = "",
+        machine_id: str = "",
+        access_code: str = "",
+    ) -> PanelState:
+        """A state that changes THIS machine's half and leaves the other machine's alone.
+
+        One constructor for every op that touches only this card, so "leave the other half alone"
+        is written once instead of copied into each — copying it is how one of them ended up
+        keeping the peer's sentence and dropping the flag that says how to colour it.
+        """
         return PanelState(
-            sharing=False,
+            sharing=sharing,
+            machine_id=machine_id,
+            access_code=access_code,
+            local_status=local_status,
             peer_id=self._state.peer_id,
             peer_code=self._state.peer_code,
-            status=status,
+            status=self._state.status,
+            connected=self._state.connected,
         )
 
 

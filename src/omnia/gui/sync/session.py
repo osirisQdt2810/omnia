@@ -61,9 +61,13 @@ def start_if_enabled(repo: Any, inventory: Callable[[], Any]) -> bool:
     A machine whose port is now taken simply does not come back up; the panel says so when it is
     next opened, and nothing here interrupts a profile load to report it.
     """
-    identity = MachineSettings(repo).identity()
-    if not identity.sharing:
+    settings = MachineSettings(repo)
+    # The switch first, and through an accessor that mints NOTHING: `identity()` creates the
+    # access code if there is none, and this runs on every profile open. Asking it the other way
+    # round wrote a credential to every profile that had never opened the sync panel.
+    if not settings.sharing():
         return False
+    identity = settings.identity()
     if start(identity, inventory):
         return True
     logger.error(
