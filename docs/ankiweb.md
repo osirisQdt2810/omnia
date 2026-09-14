@@ -17,6 +17,7 @@ Open it from **Tools → Omnia**.
 | **Note Maintenance** | Batch, deterministic clean-up of text your notes already contain — strip IPA, reformat synonyms, find-and-replace across fields — with a diff preview before anything is written. No AI, no network. |
 | **Smart Notes** | Fills note fields with an LLM or TTS — definitions, examples, cloze, images, audio — with a dependency graph so each field waits for what it reads. |
 | **Word Lookup** | Answers "is this word already in my collection?" for the companion web and desktop clippers. |
+| **Phrase Check** | Corrects a phrase you select in a clipper: every mistake as its own card with its own reason, then the sentence rewritten with the changes marked. |
 
 ## Sync — two computers, a few decks, no export files
 
@@ -58,12 +59,30 @@ written for you — you read the code and run it before it is ever saved.
 Providers: OpenAI, Anthropic, Gemini (API and Vertex), DeepSeek, Groq, OpenRouter, Ollama for
 text; Google, OpenAI, ElevenLabs and a bundled offline voice for speech.
 
+## Phrase Check — what is wrong with this sentence, and why
+
+Select a phrase anywhere you are reading or writing, press the wand in the clipper, and Omnia
+answers with a **list** of small fixes rather than a corrected paragraph. Each one is its own
+card — what you wrote, what to write instead, and an Explanation button with the reason — and
+below them the whole phrase rewritten with the changed words marked.
+
+That shape is deliberate. "Your sentence should be X" teaches nothing, and one paragraph
+explaining six unrelated problems is read by nobody.
+
+Two registers, because the same sentence is wrong in different ways depending on whether it is
+being said or written: *"I ain't got none"* is a mistake in an essay and ordinary in
+conversation. The panel asks, and you can switch without losing your place.
+
+Answers are remembered, so coming back to a phrase costs nothing. Nothing is written to your
+collection — it only reads what you selected.
+
 ## Companion clippers
 
 Two optional browser/desktop helpers capture a word and its sentence from anything you are
 reading and send it to Anki, where Smart Notes fills the rest of the card in. They ask Word
 Lookup first, so you can see whether the word is already in your collection before you add it
-again.
+again — and the same selection can go to Phrase Check instead, if what you want is not "do I
+have this?" but "is this right?".
 
 ## Requires
 
