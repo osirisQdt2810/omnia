@@ -151,7 +151,10 @@ class CorrectionCache:
             self._save(self._evict(store))
 
     def __len__(self) -> int:
-        return len(self._load())
+        # Under the lock like the rest: a read taken mid-write would be a count of a store that
+        # never existed. Cheap, and consistency here costs nothing.
+        with _MUTATE_LOCK:
+            return len(self._load())
 
     # --- housekeeping ---------------------------------------------------------------------
     def _load(self) -> dict[str, Any]:

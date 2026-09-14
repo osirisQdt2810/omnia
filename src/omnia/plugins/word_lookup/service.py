@@ -508,8 +508,11 @@ class LookupService:
                 try:
                     self._serve_generate()
                 except Exception:
-                    logger.exception("word_lookup: generate request failed")
-                    self._respond(500, {"error": "generate failed"})
+                    # One handler serves /generate AND /check, so this says neither word: a
+                    # clipper surfacing "generate failed" over a correction is telling the user
+                    # about a feature they did not use.
+                    logger.exception("word_lookup: a POST failed")
+                    self._respond(500, {"error": "the request failed"})
 
             def _serve_generate(self) -> None:
                 """Answer a POST: regenerate a note's fields, or check a phrase.

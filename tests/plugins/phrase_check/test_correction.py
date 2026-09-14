@@ -125,9 +125,20 @@ class TestAFix:
     def test_whitespace_alone_is_not_a_change(self):
         assert Fix(before="the  cat", after="the cat").changes_anything is False
 
-    def test_case_alone_is_not_a_change_either(self):
-        # A model "fixing" capitalisation it invented is the same noise in another coat.
-        assert Fix(before="The cat", after="the cat").changes_anything is False
+    def test_case_alone_IS_a_change(self):
+        # Missing capitals on "I" and at the start of a sentence are among the commonest
+        # written-English learner errors, and `written` is the register this ships in. Folding
+        # case made every one of those fixes invisible: filtered out as noise, `already_good`
+        # True, and the panel telling the user the sentence was fine beside one that differed
+        # from what they wrote.
+        assert Fix(before="i", after="I").changes_anything is True
+        assert Fix(before="the cat sat", after="The cat sat").changes_anything is True
+
+    def test_it_is_a_change_in_the_other_direction_too(self):
+        # This direction is what the old rule was written for — a model "fixing" a capital it
+        # invented. But a rule that discards those also discards the ones that are right, and
+        # being silent about a real mistake is the worse half of that trade.
+        assert Fix(before="The cat", after="the cat").changes_anything is True
 
     def test_a_real_change_is_one(self):
         assert Fix(before="have went", after="have gone").changes_anything is True
@@ -249,9 +260,22 @@ class TestAlreadyGoodMeansWhatItSays:
         assert correction.fixes == ()
         assert correction.already_good is True
 
-    def test_the_model_saying_so_is_believed_even_with_fixes(self):
+    def test_the_model_saying_so_is_not_enough_on_its_own(self):
+        # The flag is not consulted at all: a payload claiming `already_good` beside a rewrite
+        # that differs is a reassurance contradicted by the sentence printed under it, and the
+        # panel renders the two together. The sentences decide.
         correction = parse(
             {"rewritten": "I have gone.", "already_good": True, "fixes": []},
+            original="I have went.",
+            mode=WRITTEN,
+        )
+
+        assert correction.already_good is False
+        assert correction.changed is True
+
+    def test_an_echoed_sentence_is_already_good_whatever_the_flag_says(self):
+        correction = parse(
+            {"rewritten": "I have gone.", "fixes": []},
             original="I have gone.",
             mode=WRITTEN,
         )
@@ -266,3 +290,63 @@ class TestAlreadyGoodMeansWhatItSays:
         )
 
         assert correction.already_good is True, "respacing was reported as a rewrite"
+
+
+class TestACapitalIsACorrection:
+    """The bug this class exists for: a capitalisation fix, erased and then denied.
+
+    `i went to school yesterday.` is corrected to `I went to school yesterday.` — a real fix, of
+    one of the commonest written-English learner errors. Folding case made it invisible to the
+    whole module: the fix was filtered out as noise, `already_good` came out True, and nothing
+    was bolded, so the panel said "nothing to change" beside a sentence that was not the one the
+    user wrote.
+    """
+
+    def test_a_capitalisation_fix_survives_parsing(self):
+        correction = parse(
+            {
+                "rewritten": "I went to school yesterday.",
+                "fixes": [
+                    {
+                        "before": "i",
+                        "after": "I",
+                        "kind": "punctuation",
+                        "why": "The pronoun I is always capitalised.",
+                    }
+                ],
+            },
+            original="i went to school yesterday.",
+            mode=WRITTEN,
+        )
+
+        assert len(correction.fixes) == 1, "the real fix was filtered out as noise"
+        assert correction.already_good is False, "it said the sentence was fine"
+        assert correction.changed is True
+
+    def test_the_capitalised_word_is_the_one_marked(self):
+        correction = parse(
+            {"rewritten": "The cat sat.", "fixes": []},
+            original="the cat sat.",
+            mode=WRITTEN,
+        )
+
+        runs = correction.highlighted()
+
+        assert "".join(text for text, _new in runs) == "The cat sat."
+        assert any(is_new for _text, is_new in runs), "the fixed capital was not marked"
+        # The runs carry their trailing whitespace, so they join back to the sentence exactly.
+        assert [text.strip() for text, is_new in runs if is_new] == ["The"]
+
+    def test_a_capitalisation_fix_inside_a_bigger_rewrite_is_still_marked(self):
+        correction = parse(
+            {"rewritten": "I have gone to school.", "fixes": []},
+            original="i have went to school.",
+            mode=WRITTEN,
+        )
+
+        marked = [text for text, is_new in correction.highlighted() if is_new]
+
+        assert (
+            "I " in "".join(marked) or "I" in marked
+        ), f"the capital was not marked: {marked}"
+        assert "gone" in "".join(marked)

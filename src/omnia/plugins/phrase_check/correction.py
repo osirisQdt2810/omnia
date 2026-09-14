@@ -80,9 +80,10 @@ class Fix:
 
         Whitespace-insensitive, because a model that returns ``"the  cat"`` → ``"the cat"`` with
         a paragraph about subject-verb agreement is not offering a correction, it is offering
-        noise with a confident label on it.
+        noise with a confident label on it. Case-SENSITIVE, because ``"i"`` → ``"I"`` is a real
+        correction and one of the commonest there is (see :func:`_respace`).
         """
-        return _squash(self.before) != _squash(self.after)
+        return _respace(self.before) != _respace(self.after)
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ class Correction:
     @property
     def changed(self) -> bool:
         """Whether the rewrite differs from what the user wrote."""
-        return _squash(self.original) != _squash(self.rewritten)
+        return _respace(self.original) != _respace(self.rewritten)
 
     def highlighted(self) -> tuple[tuple[str, bool], ...]:
         """The rewrite as ``(text, is_new)`` runs, for bolding what changed."""
@@ -141,8 +142,10 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
         # usable", which is the opposite of "this is fine". A model that names its keys
         # differently enough for every fix to be dropped would otherwise have the panel say the
         # sentence is correct while showing a REWRITTEN one beside it.
-        already_good=bool(payload.get("already_good"))
-        or (not fixes and _squash(original) == _squash(rewritten)),
+        # Derived, never taken on the model's word. A payload claiming ``already_good`` beside
+        # a rewrite that differs is a reassurance contradicted by the sentence printed under it,
+        # and the panel renders the two together — so the sentences decide.
+        already_good=not fixes and _respace(original) == _respace(rewritten),
     )
 
 
@@ -162,7 +165,10 @@ def highlight(original: str, rewritten: str) -> tuple[tuple[str, bool], ...]:
     before, after = _words(original), _words(rewritten)
     runs: list[tuple[str, bool]] = []
     for tag, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
-        None, [_squash(w) for w in before], [_squash(w) for w in after], autojunk=False
+        None,
+        [_respace(w) for w in before],
+        [_respace(w) for w in after],
+        autojunk=False,
     ).get_opcodes():
         if tag == "delete":
             continue
@@ -192,9 +198,24 @@ def _words(text: str) -> list[str]:
     return _WORD_RE.findall(text or "")
 
 
-def _squash(text: str) -> str:
-    """For comparison only: collapse whitespace and case, keep everything else."""
-    return " ".join((text or "").split()).casefold()
+def _respace(text: str) -> str:
+    """For comparison only: collapse whitespace, and nothing else.
+
+    Case is NOT collapsed, because case is one of the things being corrected. Folding it made
+    every capitalisation fix invisible to this module: ``i went`` → ``I went`` compared equal, so
+    the fix was filtered out as noise, ``already_good`` came out True, and the panel told the
+    user the sentence was fine beside a sentence that differed from what they wrote. Missing
+    capitals on "I" and at the start of a sentence are among the commonest written-English
+    learner errors, and ``written`` is the register this ships in.
+
+    The de-capitalising direction was the case this was written for — a model "fixing" a capital
+    it invented — but a rule that discards those also discards the corrections that are right,
+    and being silent about a real mistake is the worse half of that trade.
+
+    Lines up with :meth:`CacheKey.digest`, which already normalises whitespace only, on the
+    stated grounds that "i went" and "I went" are different questions.
+    """
+    return " ".join((text or "").split())
 
 
 def _entries(value: Any) -> list[dict[str, Any]]:
