@@ -22,13 +22,18 @@ Three hard constraints shape this module:
 
 Guarding the write path
 -----------------------
-1. **A token.** The plugin issues a ``secrets.token_urlsafe`` value, persists it, and drops it
-   in a file only the desktop clipper's user can read. Every ``POST`` must present it in
-   ``X-Omnia-Token``, compared with :func:`hmac.compare_digest` (constant time — a naive ``==``
-   leaks the shared secret one byte at a time to something that can time a loopback request).
-   No token configured means the write path is shut, never open.
-2. **No request a web page started.** A ``POST`` whose ``Origin`` is a web origin
-   (``http://…``/``https://…``) is refused before the token is even looked at. This service
+There used to be two guards. The token is gone — removed at the owner's instruction after it
+produced a steady stream of 401s and nothing else: it had to be copied by hand from a config
+dialog into each clipper's options, it silently invalidated every clipper when rotated, and the
+clippers reported a mistyped one as "Omnia rejected the access token" with no way to tell that
+from a service that was simply not running.
+
+What that costs, stated plainly: any process on this machine can now ask for a field to be
+regenerated, which rewrites a note and spends LLM credits. What it does not cost is the thing the
+token was mostly protecting against, because the remaining guard covers it:
+
+**No request a web page started.** A ``POST`` whose ``Origin`` is a web origin
+   (``http://…``/``https://…``) is refused outright. This service
    sends no CORS headers, so a page cannot READ an answer — but ``fetch(url, {mode:
    "no-cors"})`` still performs the SIDE EFFECT, and here the side effect rewrites note fields
    and spends money.
@@ -45,17 +50,18 @@ Guarding the write path
    * ``Origin`` is a forbidden header name: page JS can neither set nor remove it, and the
      browser fills in the page's own origin, so a page cannot disguise itself as an extension.
 
-   So: absent (a native client) or ``chrome-extension://…`` (an extension) is allowed; anything
-   else is a page and is refused — including ``http://127.0.0.1``, since a page served from
-   localhost is still a page. The allowance is by SCHEME, not by extension id: the id differs
-   between an unpacked dev load and a Web Store install, and pinning a value we do not control
-   would break the clipper for no gain. The token stays the actual authentication; this is the
-   second layer.
+So: absent (a native client) or ``chrome-extension://…`` (an extension) is allowed; anything else
+is a page and is refused — including ``http://127.0.0.1``, since a page served from localhost is
+still a page. The allowance is by SCHEME, not by extension id: the id differs between an unpacked
+dev load and a Web Store install, and pinning a value we do not control would break the clipper
+for no gain.
+
+The socket is loopback-only, so "any process on this machine" is the whole of the exposure, and
+no web page can reach it however it is coaxed.
 """
 
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import threading
@@ -110,7 +116,6 @@ _MAIN_THREAD_TIMEOUT_SECONDS = 5.0
 _LOOKUP_PATH = "/lookup"
 _MEDIA_PATH = "/media"
 _GENERATE_PATH = "/generate"
-_TOKEN_HEADER = "X-Omnia-Token"
 # The one non-empty Origin the write path accepts. By SCHEME, never by extension id: the id
 # differs between an unpacked dev load and a Web Store install.
 # ponytail: Chrome only -- a Firefox/Safari port of the clipper would send moz-extension:// or
@@ -196,7 +201,6 @@ class LookupService:
         generate: Optional[
             Callable[[str, int, Optional[list[str]]], dict[str, Any]]
         ] = None,
-        token: str = "",
         port: int = 8766,
         host: str = "127.0.0.1",
         run_on_main: Optional[Callable[[Callable[[], None]], None]] = None,
@@ -214,7 +218,6 @@ class LookupService:
                 thread, NOT marshalled: generation talks to LLM/TTS providers for far longer
                 than the main thread may be held, so it does its own marshalling for the parts
                 that need the collection. ``None`` leaves ``POST /generate`` answering 503.
-            token: The shared secret a ``POST`` must present. Empty keeps the write path shut.
             port: Loopback port to listen on.
             host: Interface to bind. Anything but a loopback address is refused by
                 :meth:`start` — this service must never be exposed to a network.
@@ -224,7 +227,6 @@ class LookupService:
         self._lookup = lookup
         self._media_dir = media_dir
         self._generate = generate
-        self._token = token
         self._port = port
         self._host = host
         self._run_on_main = run_on_main
@@ -379,19 +381,6 @@ class LookupService:
             raise RegenerationUnavailableError("this service cannot regenerate fields")
         return self._generate(client, note_id, fields)
 
-    def _token_matches(self, presented: Optional[str]) -> bool:
-        """Whether ``presented`` is the configured token, compared in constant time.
-
-        Compared as BYTES because :func:`hmac.compare_digest` rejects a non-ASCII ``str``
-        outright, and the header is whatever a client chose to send. No configured token means
-        no match: the write path defaults to shut, so a failure to issue one can never open it.
-        """
-        if not self._token:
-            return False
-        return hmac.compare_digest(
-            self._token.encode("utf-8"), (presented or "").encode("utf-8")
-        )
-
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:
         """Return a request-handler class bound to this service instance."""
         service = self
@@ -473,9 +462,6 @@ class LookupService:
                             "this endpoint changes notes"
                         },
                     )
-                    return
-                if not service._token_matches(self.headers.get(_TOKEN_HEADER)):
-                    self._respond(401, {"error": f"missing or invalid {_TOKEN_HEADER}"})
                     return
                 try:
                     payload = self._parse_generate(raw)

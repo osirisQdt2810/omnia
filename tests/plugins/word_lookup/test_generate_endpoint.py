@@ -2,8 +2,8 @@
 
 The reads (``/lookup``, ``/media``) are open by design: they can only tell a caller what is
 already in the collection. This one overwrites note fields and spends the user's LLM/TTS
-credits, so most of what follows is about what it REFUSES: a request with no token, a request
-with the wrong token, and a request a web page started (an ``Origin`` header), whose side effect
+credits, so most of what follows is about what it REFUSES: a request a web page started (an
+``Origin`` header), whose side effect
 would happen even though the page could never read the answer.
 
 The generate callable is injected, so nothing here needs smart_notes, Anki or a network.
@@ -25,8 +25,6 @@ from omnia.plugins.word_lookup.service import (
     RegenerationDisabledError,
     RegenerationUnavailableError,
 )
-
-_TOKEN = "a-perfectly-good-token"
 
 
 def _free_port() -> int:
@@ -82,11 +80,10 @@ def serve():
     """Start a service with an injected generate callable; always stop it."""
     started: list[LookupService] = []
 
-    def make(generate=None, *, token: str = _TOKEN, lookup=None) -> int:
+    def make(generate=None, *, lookup=None) -> int:
         service = LookupService(
             lookup or (lambda word, client: {"word": word, "client": client}),
             generate=generate,
-            token=token,
             port=_free_port(),
         )
         assert service.start(), "the service did not bind"
@@ -109,7 +106,7 @@ class TestAGoodRequest:
             lambda client, note_id, fields: {"note_id": note_id, "results": []}
         )
 
-        status, body = _post(port, "/generate", {"note_id": 7}, X_Omnia_Token=_TOKEN)
+        status, body = _post(port, "/generate", {"note_id": 7})
 
         assert status == 200
         assert body == {"note_id": 7, "results": []}
@@ -121,7 +118,6 @@ class TestAGoodRequest:
             port,
             "/generate",
             {"client": "web_clipper", "note_id": 12, "fields": ["A", "B"]},
-            X_Omnia_Token=_TOKEN,
         )
 
         assert (body["client"], body["note_id"], body["fields"]) == (
@@ -134,7 +130,7 @@ class TestAGoodRequest:
     def test_no_fields_means_every_field(self, serve, body):
         port = serve(_echo)
 
-        _status, answer = _post(port, "/generate", body, X_Omnia_Token=_TOKEN)
+        _status, answer = _post(port, "/generate", body)
 
         assert answer["fields"] is None
 
@@ -142,62 +138,9 @@ class TestAGoodRequest:
         """A JS client that stringifies ids must not be told its note id is missing."""
         port = serve(_echo)
 
-        _status, body = _post(
-            port, "/generate", {"note_id": "42"}, X_Omnia_Token=_TOKEN
-        )
+        _status, body = _post(port, "/generate", {"note_id": "42"})
 
         assert body["note_id"] == 42
-
-
-class TestTheToken:
-    """The token is what separates the user's clipper from anything else on the machine."""
-
-    def test_no_token_is_a_401(self, serve):
-        calls: list = []
-        port = serve(lambda *args: calls.append(args) or {})
-
-        status, body = _post(port, "/generate", {"note_id": 1})
-
-        assert status == 401 and "token" in body["error"].lower()
-        assert calls == [], "an unauthenticated request reached the generator"
-
-    def test_a_wrong_token_of_the_same_length_is_a_401(self, serve):
-        port = serve(_echo)
-
-        wrong = "b" + _TOKEN[1:]
-        status, _body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=wrong)
-
-        assert status == 401
-
-    def test_no_configured_token_keeps_the_write_path_shut(self, serve):
-        """Failing to issue a token must never be the same as having no lock at all."""
-        port = serve(_echo, token="")
-
-        assert _post(port, "/generate", {"note_id": 1})[0] == 401
-        assert _post(port, "/generate", {"note_id": 1}, X_Omnia_Token="")[0] == 401
-
-    def test_it_is_compared_in_constant_time(self, serve, monkeypatch):
-        """A naive ``==`` leaks the secret one byte at a time to a caller that can time us."""
-        seen: list[tuple[bytes, bytes]] = []
-        real = service_module.hmac.compare_digest
-
-        def spy(left, right):
-            seen.append((left, right))
-            return real(left, right)
-
-        monkeypatch.setattr(service_module.hmac, "compare_digest", spy)
-        port = serve(_echo)
-
-        assert _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)[0] == 200
-        assert seen == [(_TOKEN.encode(), _TOKEN.encode())]
-
-    def test_a_non_ascii_token_is_refused_not_a_crash(self, serve):
-        """``compare_digest`` rejects a non-ASCII ``str`` outright; the header is untrusted."""
-        port = serve(_echo)
-
-        status, _body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token="tökén")
-
-        assert status == 401
 
 
 class TestARequestAPageStarted:
@@ -218,15 +161,13 @@ class TestARequestAPageStarted:
         calls: list = []
         port = serve(lambda *args: calls.append(args) or {})
 
-        status, body = _post(
-            port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN, Origin=origin
-        )
+        status, body = _post(port, "/generate", {"note_id": 1}, Origin=origin)
 
         assert status == 403 and "web page" in body["error"]
         assert calls == [], "a page's request reached the generator"
 
-    def test_it_outranks_the_token_check(self, serve):
-        """Even a request with a valid-looking token is refused when a page started it."""
+    def test_a_page_is_refused_however_it_asks(self, serve):
+        """The origin is the whole of the write-path defence now, so it has to hold alone."""
         port = serve(_echo)
 
         status, _body = _post(
@@ -247,7 +188,6 @@ class TestARequestAPageStarted:
             port,
             "/generate",
             {"note_id": 1},
-            X_Omnia_Token=_TOKEN,
             Origin="chrome-extension://abc",
         )
 
@@ -257,21 +197,20 @@ class TestARequestAPageStarted:
         """What a native client sends — the desktop clipper's ``urllib`` request."""
         port = serve(_echo)
 
-        assert _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)[0] == 200
+        assert _post(port, "/generate", {"note_id": 1})[0] == 200
 
-    def test_an_extension_origin_still_needs_the_token(self, serve):
-        """The origin check is the second layer; the token is the authentication."""
+    def test_an_extension_origin_is_allowed_through(self, serve):
+        """An extension is a clipper, not a page — which is the distinction that still matters."""
         port = serve(_echo)
 
         status, _body = _post(
             port,
             "/generate",
             {"note_id": 1},
-            X_Omnia_Token="wrong",
             Origin="chrome-extension://abc",
         )
 
-        assert status == 401
+        assert status == 200
 
 
 class TestReadingAnOriginValue:
@@ -311,7 +250,7 @@ class TestABodyThisServiceWillNotActOn:
     def test_a_missing_or_unusable_note_id_is_a_400(self, serve, body):
         port = serve(_echo)
 
-        status, answer = _post(port, "/generate", body, X_Omnia_Token=_TOKEN)
+        status, answer = _post(port, "/generate", body)
 
         assert status == 400 and "note_id" in answer["error"]
 
@@ -319,9 +258,7 @@ class TestABodyThisServiceWillNotActOn:
     def test_fields_must_be_a_list_of_names(self, serve, fields):
         port = serve(_echo)
 
-        status, answer = _post(
-            port, "/generate", {"note_id": 1, "fields": fields}, X_Omnia_Token=_TOKEN
-        )
+        status, answer = _post(port, "/generate", {"note_id": 1, "fields": fields})
 
         assert status == 400 and "fields" in answer["error"]
 
@@ -331,7 +268,6 @@ class TestABodyThisServiceWillNotActOn:
         response = _raw_request(
             port,
             b"POST /generate HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-            b"X-Omnia-Token: " + _TOKEN.encode() + b"\r\n"
             b"Content-Length: 5\r\n\r\nnope!",
         )
 
@@ -340,7 +276,7 @@ class TestABodyThisServiceWillNotActOn:
     def test_a_json_array_is_a_400(self, serve):
         port = serve(_echo)
 
-        status, _answer = _post(port, "/generate", [1, 2], X_Omnia_Token=_TOKEN)
+        status, _answer = _post(port, "/generate", [1, 2])
 
         assert status == 400
 
@@ -381,7 +317,7 @@ class TestWhenGenerationCannotHappen:
 
         port = serve(refuse)
 
-        status, body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        status, body = _post(port, "/generate", {"note_id": 1})
 
         assert status == 409
         assert "Regenerate from clippers" in body["error"]
@@ -392,14 +328,14 @@ class TestWhenGenerationCannotHappen:
 
         port = serve(unavailable)
 
-        status, body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        status, body = _post(port, "/generate", {"note_id": 1})
 
         assert status == 503 and "Smart Notes" in body["error"]
 
     def test_a_service_with_no_generator_is_a_503(self, serve):
         port = serve(None)
 
-        status, _body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        status, _body = _post(port, "/generate", {"note_id": 1})
 
         assert status == 503
 
@@ -409,7 +345,7 @@ class TestWhenGenerationCannotHappen:
 
         port = serve(timeout)
 
-        status, _body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        status, _body = _post(port, "/generate", {"note_id": 1})
 
         assert status == 503
 
@@ -419,7 +355,7 @@ class TestWhenGenerationCannotHappen:
 
         port = serve(boom)
 
-        status, body = _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        status, body = _post(port, "/generate", {"note_id": 1})
 
         assert status == 500
         assert "secret internal detail" not in json.dumps(body)
@@ -429,11 +365,11 @@ class TestRoutingAndIsolation:
     def test_posting_to_another_path_is_a_404(self, serve):
         port = serve(_echo)
 
-        status, _body = _post(port, "/lookup", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        status, _body = _post(port, "/lookup", {"note_id": 1})
 
         assert status == 404
 
-    def test_lookup_still_needs_no_token(self, serve):
+    def test_lookup_was_always_open_and_stays_open(self, serve):
         """Turning the write path on may not put a lock on the reads."""
         port = serve(_echo)
 
@@ -453,9 +389,7 @@ class TestRoutingAndIsolation:
         port = serve(slow)
         answer: list[tuple[int, dict]] = []
         caller = threading.Thread(
-            target=lambda: answer.append(
-                _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
-            )
+            target=lambda: answer.append(_post(port, "/generate", {"note_id": 1}))
         )
         caller.start()
         try:
@@ -474,7 +408,7 @@ class TestRoutingAndIsolation:
 
         port = serve(boom)
 
-        assert _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)[0] == 500
+        assert _post(port, "/generate", {"note_id": 1})[0] == 500
         assert "Traceback" not in capfd.readouterr().err
 
     def test_the_service_keeps_serving_afterwards(self, serve):
@@ -482,6 +416,6 @@ class TestRoutingAndIsolation:
             raise RuntimeError("kaboom")
 
         port = serve(boom)
-        _post(port, "/generate", {"note_id": 1}, X_Omnia_Token=_TOKEN)
+        _post(port, "/generate", {"note_id": 1})
 
         assert _get(port, "/lookup?word=after")[0] == 200
