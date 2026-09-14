@@ -421,3 +421,34 @@ class TestPageAssets:
         # The flat-list markup is gone; its rules must not linger as dead weight.
         css = _page_css(build_settings_html([], dark=False))
         assert "omnia-section" not in css
+
+
+class TestEveryTileIsWiredToSomething:
+    """An advertised control that does nothing is worse than one that is not there."""
+
+    @staticmethod
+    def _dialog():
+        """The dialog CLASS, never an instance — there is no Qt here to build one with."""
+        from aqt_stubs import install_gui_stubs
+
+        install_gui_stubs()
+        from omnia.gui.settings_dialog import HANDLERS, SettingsDialog
+
+        return HANDLERS, SettingsDialog
+
+    def test_every_action_tile_has_a_handler_on_the_dialog(self):
+        # WebDialog drops a message whose op it does not know, without a word — no dialog, no
+        # error, no log line. The Sync tile shipped that way: rendered, clickable, inert.
+        HANDLERS, SettingsDialog = self._dialog()
+
+        for op, name, _style in ACTION_TILES:
+            assert (
+                op in HANDLERS
+            ), f"the {name} tile sends {op!r} and nothing answers it"
+            assert callable(getattr(SettingsDialog, HANDLERS[op], None))
+
+    def test_the_handler_map_names_methods_that_exist(self):
+        HANDLERS, SettingsDialog = self._dialog()
+
+        for op, method in HANDLERS.items():
+            assert hasattr(SettingsDialog, method), f"{op!r} names a missing {method}"

@@ -25,6 +25,19 @@ if TYPE_CHECKING:
     from omnia.core.plugin import FeaturePlugin
 
 
+#: Every ``pycmd`` op the page can send, and the method that answers it. Declared rather than
+#: written inline so the page and the router can be checked against each other: the landing grid
+#: renders one action tile per :data:`~omnia.gui.settings_html.ACTION_TILES` entry, and a tile
+#: whose op has no handler here is an advertised control that silently does nothing —
+#: :class:`~omnia.gui.web_dialog.WebDialog` drops an unrouted message without a word. The Sync
+#: tile shipped exactly that way, which is why this is a map a test can read.
+HANDLERS = {
+    "toggle": "_on_toggle",
+    "configure": "_on_configure",
+    "sync": "_on_sync",
+}
+
+
 class SettingsDialog(WebDialog):
     """Lists every feature plugin, grouped, with a live toggle and a Configure button."""
 
@@ -34,11 +47,7 @@ class SettingsDialog(WebDialog):
             parent,
             title="Omnia — All-in-One Toolkit",
             html=self._render(),
-            handlers={
-                "toggle": self._on_toggle,
-                "configure": self._on_configure,
-                "sync": self._on_sync,
-            },
+            handlers={op: getattr(self, name) for op, name in HANDLERS.items()},
             width=720,
             height=620,
         )
