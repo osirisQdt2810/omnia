@@ -43,6 +43,10 @@ class SettingsDialog(WebDialog):
 
     def __init__(self, manager: PluginManager, parent: Any = None) -> None:
         self._manager = manager
+        self._sync_timer: Any = None
+        #: What the button currently shows, so an unchanged state is not repainted 120 times a
+        #: minute into a webview that is also rendering a settings grid.
+        self._sync_shown: Any = (None, "")
         super().__init__(
             parent,
             title="Omnia — All-in-One Toolkit",
@@ -104,6 +108,50 @@ class SettingsDialog(WebDialog):
         if plugin is not None:
             QTimer.singleShot(0, lambda p=plugin: self._configure(p))
 
+    def _watch_sync(self) -> None:
+        """Keep the Sync button showing how far a background pull has got.
+
+        The pull outlives every window that can show it — that is the point of running it in the
+        background — so this polls rather than being called back into: a closed dialog simply
+        stops asking, where a callback held by one is a call into a deleted webview.
+        """
+        from aqt import mw
+
+        if self._sync_timer is None:
+            self._sync_timer = mw.progress.timer(
+                500, self._sync_tick, True, parent=self
+            )
+        self._sync_tick()
+
+    def _sync_tick(self) -> None:
+        from omnia.core.sync.progress import DONE, FAILED
+        from omnia.gui.sync.job import current
+
+        job = current()
+        if job is None:
+            self._push_sync_progress(None, "")
+            return
+        progress = job.snapshot()
+        finished = progress.phase in (DONE, FAILED)
+        self._push_sync_progress(
+            None if finished else progress.percent,
+            job.result if finished else progress.summary(),
+        )
+
+    def _push_sync_progress(self, percent: Any, tip: str) -> None:
+        if (percent, tip) == self._sync_shown:
+            return  # nothing changed; do not repaint the page for it
+        self._sync_shown = (percent, tip)
+        self.eval_js(
+            "window.omniaSettings.setActionProgress("
+            + json.dumps("sync")
+            + ", "
+            + json.dumps(percent)
+            + ", "
+            + json.dumps(tip)
+            + ");"
+        )
+
     def _on_sync(self, _data: dict[str, Any]) -> None:
         """Open the Sync panel — the one action tile, which belongs to no plugin.
 
@@ -158,3 +206,12 @@ class SettingsDialog(WebDialog):
             }
         )
         self.eval_js(f"window.omniaSettings.setCardState({state});")
+
+    def showEvent(self, evt: Any) -> None:  # noqa: N802 (Qt override name)
+        """Start watching once the page is on screen.
+
+        Here rather than in ``__init__``: the page has to exist before anything can be pushed
+        into it, and a pull may already have been running before this window was opened.
+        """
+        super().showEvent(evt)
+        self._watch_sync()

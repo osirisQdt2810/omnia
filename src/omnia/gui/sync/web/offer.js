@@ -131,20 +131,95 @@
   chips.forEach(function (chip) {
     chip.addEventListener("click", function () {
       const kind = chip.getAttribute("data-kind");
-      ask(kind === "feature" ? "pick_feature" : "drop_note_type",
+      ask(kind === "feature" ? "pick_feature" : "toggle_note_type",
           {name: chip.getAttribute("data-name")});
     });
   });
 
+  // --- the confirmation ------------------------------------------------------------------
+  // Shown before every copy, not only when something clashes: the duplicate choice decides what
+  // happens to notes that exist on both machines, and the user is about to press a button that
+  // acts on it. A dialog that only appeared sometimes would be one they never learned to read.
+  const sheet = document.getElementById("offer-sheet");
+  const sheetLines = document.getElementById("offer-sheet-lines");
+  const confirmBtn = document.getElementById("offer-confirm");
+  const cancelBtn = document.getElementById("offer-cancel");
+
+  function openSheet(answer) {
+    sheetLines.textContent = "";
+    (answer.lines || []).forEach(function (line, index) {
+      const item = document.createElement("li");
+      item.textContent = line;
+      if (index === 0 && answer.serious) { item.className = "offer-serious"; }
+      sheetLines.appendChild(item);
+    });
+    const chosen = document.querySelector(
+      '[name="offer-policy"][value="' + (answer.policy || "keep") + '"]'
+    );
+    if (chosen) { chosen.checked = true; }
+    sheet.hidden = false;
+    confirmBtn.focus();
+  }
+
+  function closeSheet() { sheet.hidden = true; }
+
+  document.querySelectorAll('[name="offer-policy"]').forEach(function (radio) {
+    radio.addEventListener("change", function () {
+      if (radio.checked) { send("set_policy", {policy: radio.value}); }
+    });
+  });
+
+  cancelBtn.addEventListener("click", closeSheet);
+  sheet.addEventListener("click", function (ev) {
+    if (ev.target === sheet) { closeSheet(); }
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !sheet.hidden) { closeSheet(); }
+  });
+
   go.addEventListener("click", function () {
+    send("check", {}, function (answer) {
+      if (!answer) { return; }
+      if (answer.refused) { tallyText.textContent = answer.refused; return; }
+      openSheet(answer);
+    });
+  });
+
+  confirmBtn.addEventListener("click", function () {
+    closeSheet();
     go.disabled = true;
     go.textContent = "Copying…";
     send("pull", {}, function (answer) {
-      go.textContent = "Copy to this computer";
-      go.disabled = false;
-      if (answer && answer.message) { tallyText.textContent = answer.message; }
+      if (answer && answer.refused) {
+        go.textContent = "Copy to this computer";
+        go.disabled = false;
+        tallyText.textContent = answer.refused;
+      }
     });
   });
+
+  // Python pushes progress in — the pull outlives this window, so the page is told rather than
+  // asking. `hidden` until there is something to show, so a picker nobody has pressed yet does
+  // not carry an empty bar.
+  const strip = document.getElementById("offer-progress");
+  const bar = document.getElementById("offer-bar");
+  const barText = document.getElementById("offer-progress-text");
+
+  window.omniaSync = {
+    showProgress: function (state) {
+      strip.hidden = false;
+      const known = state.percent !== null && state.percent !== undefined;
+      bar.classList.toggle("offer-unknown", !known);
+      bar.style.width = known ? state.percent + "%" : "";
+      barText.textContent = state.summary || "";
+      if (state.finished) {
+        go.textContent = "Copy to this computer";
+        go.disabled = false;
+        tallyText.textContent = state.summary || "";
+        strip.hidden = true;
+      }
+    },
+  };
 
   render({decks: 0, cards: 0, note_types: 0, dropped: 0, features: 0});
 })();

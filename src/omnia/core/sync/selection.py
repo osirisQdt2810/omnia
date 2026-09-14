@@ -8,10 +8,12 @@ them, which is where it would rot.
 The three parts, and the rule each follows:
 
 * **Decks** — clicking one takes it and everything under it; clicking again puts all of it back.
-* **Note types** — never picked directly. They light up because a chosen deck needs them, and
-  clicking one DROPS it: the deck still comes, but the notes of that type stay behind. That is
-  the useful case — a deck with two note types in it where only one is worth carrying — and it
-  is why this is a set of exclusions rather than a set of picks.
+* **Note types** — in one of three states, because there are two different things a user means.
+  A note type a chosen deck NEEDS lights up on its own, and clicking it DROPS it: the deck still
+  comes, the notes of that type stay behind. A note type nothing needs can be picked outright,
+  and then its definition travels with no notes at all — which is how you set up a second machine
+  to author the same kind of card before there is anything to put in it. The two wear different
+  colours because they mean different things: one arrived, the other was chosen.
 * **Settings** — one chip per configured feature, picked outright. Credentials are not among
   them; the source never offers those.
 
@@ -27,8 +29,12 @@ from omnia.core.sync.tree import DeckSelection, DeckTree
 #: What a note-type chip shows. ``NEEDED`` is its own state and deliberately not "picked": it was
 #: not chosen, it arrived because a deck needs it, and drawing the two the same would hide the
 #: fact that un-choosing the deck takes it away again.
+#: Lit because a chosen deck needs it. Deliberately not "picked": it was not chosen, and drawing
+#: the two the same would hide that un-choosing the deck takes it away again.
 NEEDED = "needed"
+#: Needed by a chosen deck, and deliberately left behind.
 DROPPED = "dropped"
+#: Nothing needs it and nobody chose it.
 IDLE = "idle"
 
 PICKED = "picked"
@@ -52,6 +58,8 @@ class OfferSelection:
             entry.name: frozenset(entry.note_types) for entry in inventory.decks
         }
         self._dropped: set[str] = set()
+        #: Note types chosen for their own sake, with no deck behind them.
+        self._chosen: set[str] = set()
         self._features: set[str] = set()
 
     # --- decks --------------------------------------------------------------------------
@@ -85,30 +93,59 @@ class OfferSelection:
         return out
 
     @property
-    def note_types(self) -> set[str]:
-        """The note types that will actually travel: needed, minus the ones dropped."""
-        return self.needed - self._dropped
+    def chosen_note_types(self) -> set[str]:
+        """The note types picked for their own sake, whether or not a deck also needs them.
 
-    def drop_note_type(self, name: str) -> dict[str, dict[str, str]]:
-        """Drop a note type, or take it back. Only meaningful while a deck needs it.
-
-        A chip nobody's decks need is inert rather than an error: the page shows it dimmed, and a
-        click on it has to be a no-op instead of quietly recording a preference about a note type
-        that is not coming either way.
+        Sent to the source as its own list rather than inferred there: with decks named it cannot
+        tell "this note type is in the filter because a deck needs it" from "…because the user
+        asked for it", and guessing wrong means a chosen note type arriving as nothing at all.
         """
-        if name not in self.needed:
-            return {"note_types": {name: IDLE}}
-        if name in self._dropped:
-            self._dropped.discard(name)
+        return set(self._chosen)
+
+    @property
+    def note_types(self) -> set[str]:
+        """The note types that will actually travel.
+
+        The ones a chosen deck needs, minus the ones dropped, plus the ones chosen for their own
+        sake. A note type can be in the last group and not the first: its definition travels with
+        no notes, which is how a second machine is set up to author the same kind of card before
+        there is anything to put in it.
+        """
+        return (self.needed - self._dropped) | self._chosen
+
+    def toggle_note_type(self, name: str) -> dict[str, dict[str, str]]:
+        """Click one note type, and answer with what it now shows.
+
+        What a click MEANS depends on where the chip stands, and that is the point:
+
+        * needed by a chosen deck → drop it, and the deck still comes without those notes;
+        * already dropped → take it back;
+        * nothing needs it → choose it outright, so its definition travels with no notes.
+
+        One handler rather than two ops, because the user does one thing — they click a chip —
+        and a page that had to know which of two messages to send would be holding the rule.
+        """
+        if name in self.needed:
+            if name in self._dropped:
+                self._dropped.discard(name)
+            else:
+                self._dropped.add(name)
+                # Also un-choose it. A chip can be lit two ways — chosen outright, then needed by
+                # a deck picked afterwards — and without this the union puts it straight back:
+                # the chip read "dropped", the tally said one was left behind, and the notes
+                # travelled anyway.
+                self._chosen.discard(name)
+        elif name in self._chosen:
+            self._chosen.discard(name)
         else:
-            self._dropped.add(name)
+            self._chosen.add(name)
         return {"note_types": {name: self.note_type_state(name)}}
 
     def note_type_state(self, name: str) -> str:
         """What one note-type chip shows."""
-        if name not in self.needed:
-            return IDLE
-        return DROPPED if name in self._dropped else NEEDED
+        if name in self.needed:
+            return DROPPED if name in self._dropped else NEEDED
+        return PICKED if name in self._chosen else IDLE
 
     def _note_type_states(self) -> dict[str, str]:
         """Every note type's state — cheap, and it keeps the page from deriving any of them."""

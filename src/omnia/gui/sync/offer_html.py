@@ -107,8 +107,9 @@ def _extras_html(inventory: Any) -> str:
         + _section_html(
             "note-types",
             "Note types",
-            "They light up when a deck needs them. Click one to leave it behind — the deck "
-            "still comes, its notes of that type do not.",
+            "They light up green when a deck needs them; click one to leave it behind and the "
+            "deck still comes without those notes. Click one nothing needs to bring just its "
+            "definition, with no notes at all.",
             [
                 _chip_html("note-type", entry.name, _notes_label(entry))
                 for entry in getattr(inventory, "note_types", ())

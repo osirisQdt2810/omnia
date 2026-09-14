@@ -12,8 +12,12 @@ rather than in a document:
    because of :class:`_Lockout`: a few wrong ones and this machine stops answering for a while,
    which turns a billion combinations from an afternoon's work into centuries of it. The short
    code and the lockout are one design, and neither half is sound without the other.
-3. **Read-only, always.** Two endpoints, both ``GET``. There is nothing here that writes, so the
-   worst a peer can do to this machine is read what its owner published.
+3. **Nothing a peer sends can change this collection.** Three endpoints. Two are ``GET``; the
+   third is a ``POST`` that asks for a selection to be packed, and it is a POST because the
+   selection is a list of deck names that does not belong in a URL. It still only READS: it
+   exports to a temp file and hands the bytes over. Nothing in this module writes to the
+   collection, and the worst a peer can do to this machine is read what its owner published.
+   (ADR-021 restates ADR-020's original "both GET" as this, which is what it was protecting.)
 4. **The user only ever handles an ID.** This module never renders anything; the address and the
    key are folded into the ID by :mod:`omnia.core.sync.pairing`.
 5. **It says what it is doing.** Every served request is logged with the endpoint and the peer.
@@ -40,19 +44,38 @@ import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 from omnia.core.logging import get_logger
 from omnia.core.sync.inventory import PROTOCOL, Inventory
+from omnia.core.sync.package import PackageError, PackageRequest
 
 logger = get_logger("sync")
 
 HELLO_PATH = "/sync/hello"
 INVENTORY_PATH = "/sync/inventory"
+#: Ask the source to pack a selection (POST), then fetch the bytes (GET). Two steps rather than
+#: one so the target learns the SIZE before a byte moves — which is what turns the copy into a
+#: percentage and a time rather than a spinner.
+PACKAGE_PATH = "/sync/package"
 
 #: The header the machine's key travels in. A header rather than a query parameter: a URL ends up
 #: in logs, in shell history and in a browser's address bar, and the key is the whole of the
 #: access control.
 TOKEN_HEADER = "X-Omnia-Sync-Key"
+
+#: The biggest request body this will read. A selection is a list of deck names; a megabyte is
+#: thousands of them, and anything larger is a denial of service rather than a choice.
+_MAX_REQUEST_BYTES = 1_000_000
+
+#: How long a stalled STREAM is tolerated, as opposed to a silent request. A package can be
+#: hundreds of megabytes over a link that pauses; aborting on the five seconds that protect the
+#: request path would fail transfers that were about to continue.
+_STREAM_TIMEOUT_SECONDS = 120
+
+#: How much of a package is read and written at a time. Small enough that a 700 MB transfer is
+#: not held in memory, big enough that it is not a syscall per kilobyte.
+_CHUNK_BYTES = 256 * 1024
 
 #: Wrong codes tolerated before this machine stops answering. Five is enough for somebody
 #: fat-fingering a nine-digit number off another screen and nowhere near enough to search it.
@@ -159,6 +182,12 @@ class Session:
         inventory: Returns what this machine offers. Called on a WORKER thread, so a caller that
             reads Anki must marshal onto the main thread inside this callable — the service
             cannot do it, because it deliberately knows nothing about Anki.
+        packager: Packs a :class:`~omnia.core.sync.package.PackageRequest` and returns
+            ``(path, offer)``. Also called on a worker thread, and it is meant to be: Anki's own
+            exporter runs on one (``aqt.import_export.exporting`` hands ``col`` to a ``QueryOp``),
+            and packing a few hundred megabytes of media on the Qt thread would freeze the source
+            machine for minutes. ``None`` leaves this machine able to list what it has and unable
+            to hand any of it over, which is what an older build looks like to a newer peer.
         key: The access code this machine shows beneath its ID.
         host: What to bind. ``0.0.0.0`` to be reachable from another machine, which is the point;
             a caller that wants loopback can pass it.
@@ -172,8 +201,15 @@ class Session:
         key: str,
         host: str = "0.0.0.0",
         port: int = 8767,
+        packager: Optional[Callable[[Any], tuple[str, Any]]] = None,
     ) -> None:
         self._inventory = inventory
+        self._packager = packager
+        # Packages waiting to be collected, by id. Held so the bytes can be served by a second
+        # request and cleaned up afterwards — an export nobody fetched must not outlive the
+        # session, or a machine that shares once leaks hundreds of megabytes of temp file.
+        self._packages: dict[str, str] = {}
+        self._packages_lock = threading.Lock()
         self._key = key
         self._host = host
         self._port = port
@@ -232,7 +268,32 @@ class Session:
         server.server_close()
         if thread is not None:
             thread.join(timeout=5)
+        self._discard_packages()
         logger.info("sync: sharing is off")
+
+    def _discard_packages(self) -> None:
+        """Delete every package still waiting to be collected.
+
+        On stop rather than only after a successful send: a peer that asks for a package and then
+        closes its laptop leaves one behind, and hundreds of megabytes of temp file per attempt is
+        not an acceptable way to find that out.
+        """
+        with self._packages_lock:
+            paths, self._packages = list(self._packages.values()), {}
+        for path in paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                logger.warning("sync: could not remove the package at %s", path)
+
+    def _take_package(self, package_id: str) -> Optional[str]:
+        """The path for ``package_id``, removed from the waiting list. One fetch per package."""
+        with self._packages_lock:
+            return self._packages.pop(package_id, None)
+
+    def _hold_package(self, package_id: str, path: str) -> None:
+        with self._packages_lock:
+            self._packages[package_id] = path
 
     def _handler(self) -> type[BaseHTTPRequestHandler]:
         """Build the request handler bound to this session."""
@@ -250,11 +311,34 @@ class Session:
             # so it matters more here.
             timeout = 5
 
+            def do_POST(self) -> None:
+                """Ask for a selection to be packed. Reads the collection; never writes to it."""
+                path = self.path.split("?", 1)[0]
+                if path != PACKAGE_PATH:
+                    self._send(404, {"error": "no such endpoint"})
+                    return
+                if not self._allowed(path):
+                    return
+                self._pack()
+
             def do_GET(self) -> None:
                 path = self.path.split("?", 1)[0]
+                if path == PACKAGE_PATH:
+                    if self._allowed(path):
+                        self._send_package()
+                    return
                 if path not in (HELLO_PATH, INVENTORY_PATH):
                     self._send(404, {"error": "no such endpoint"})
                     return
+                if not self._allowed(path):
+                    return
+                if path == HELLO_PATH:
+                    self._send(200, {"ok": True, "protocol": PROTOCOL})
+                    return
+                self._send_inventory()
+
+            def _allowed(self, path: str) -> bool:
+                """Whether this request may proceed. Answers the refusal itself when not."""
                 if session._lockout.locked:
                     # Answered BEFORE the code is compared, so a locked-out guesser learns
                     # nothing from how long the answer took or from what it said.
@@ -265,7 +349,7 @@ class Session:
                         429,
                         {"error": "too many wrong codes — wait a minute and try again"},
                     )
-                    return
+                    return False
                 if not session._authorised(self.headers.get(TOKEN_HEADER)):
                     # Deliberately the same answer for "no code" and "wrong code": telling them
                     # apart tells a caller which half they got right.
@@ -280,13 +364,95 @@ class Session:
                             "sync: refused a request for %s from %s", path, self._peer()
                         )
                     self._send(403, {"error": "that code does not open this machine"})
-                    return
+                    return False
                 session._lockout.record_success()
                 logger.info("sync: served %s to %s", path, self._peer())
-                if path == HELLO_PATH:
-                    self._send(200, {"ok": True, "protocol": PROTOCOL})
+                return True
+
+            def _pack(self) -> None:
+                """Export what the peer asked for, and answer with its id and size."""
+                if session._packager is None:
+                    self._send(
+                        501,
+                        {
+                            "error": (
+                                "the other machine can list what it has but cannot copy it — "
+                                "update Omnia there"
+                            )
+                        },
+                    )
                     return
-                self._send_inventory()
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except ValueError:
+                    length = 0
+                if length <= 0 or length > _MAX_REQUEST_BYTES:
+                    # A body with no length, or one big enough to be a denial of service rather
+                    # than a deck list. 1 MB is thousands of deck names.
+                    self._send(400, {"error": "that request was not a selection"})
+                    return
+                body = self.rfile.read(length).decode("utf-8", "replace")
+                try:
+                    request = PackageRequest.from_json(body)
+                except PackageError as exc:
+                    self._send(400, {"error": str(exc)})
+                    return
+                try:
+                    path, offer = session._packager(request)
+                except TimeoutError:
+                    self._send(503, {"error": "the other machine is busy"})
+                    return
+                except Exception:
+                    logger.exception("sync: could not pack the selection")
+                    self._send(
+                        500, {"error": "the other machine could not pack that up"}
+                    )
+                    return
+                session._hold_package(offer.id, path)
+                logger.info(
+                    "sync: packed %s (%s bytes) for %s",
+                    offer.id,
+                    offer.bytes,
+                    self._peer(),
+                )
+                self._send_raw(200, offer.to_json().encode("utf-8"))
+
+            def _send_package(self) -> None:
+                """Stream one packed selection, then delete it. One fetch per package."""
+                query = parse_qs(urlparse(self.path).query)
+                package_id = (query.get("id") or [""])[0]
+                path = session._take_package(package_id)
+                if not path or not os.path.exists(path):
+                    # 410 rather than 404: the endpoint exists and the thing it named is gone,
+                    # which is a different sentence from "this build has no such endpoint" — and
+                    # a 404 here made a collected package read as "the two Omnias differ".
+                    self._send(410, {"error": "that package is no longer waiting"})
+                    return
+                try:
+                    size = os.path.getsize(path)
+                    # The handler's five-second socket timeout is there to stop a SILENT peer
+                    # parking a thread inside readline(). Applied to a multi-hundred-megabyte
+                    # stream it means any five-second hiccup aborts a transfer that would have
+                    # recovered, so the streaming path gets its own, much longer patience.
+                    self.connection.settimeout(_STREAM_TIMEOUT_SECONDS)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(size))
+                    self.end_headers()
+                    with open(path, "rb") as handle:
+                        while True:
+                            chunk = handle.read(_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                    logger.info("sync: sent %s (%s bytes)", package_id, size)
+                finally:
+                    # Whether it arrived or the peer vanished mid-transfer: this machine is not
+                    # keeping a copy on the chance somebody asks again.
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        logger.warning("sync: could not remove the package at %s", path)
 
             def _send_inventory(self) -> None:
                 try:

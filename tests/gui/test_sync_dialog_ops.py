@@ -60,7 +60,9 @@ class TestRegeneratingTheAccessCode:
     def test_it_replaces_the_code_and_says_the_id_has_not_changed(
         self, dialog, monkeypatch
     ):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: True)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: True
+        )
         before = dialog._settings.identity().key
 
         dialog._on_regenerate({})
@@ -77,7 +79,9 @@ class TestRegeneratingTheAccessCode:
         # after a close can fail. Leaving `sharing = true` behind would have the next profile
         # open silently retry a port that is taken, while the panel says off — the preference
         # and the screen disagreeing with nothing on screen to explain it.
-        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: False
+        )
 
         dialog._on_regenerate({})
 
@@ -87,7 +91,9 @@ class TestRegeneratingTheAccessCode:
     def test_a_restart_that_fails_says_which_port_and_what_to_do(
         self, dialog, monkeypatch
     ):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: False
+        )
 
         dialog._on_regenerate({})
 
@@ -98,7 +104,9 @@ class TestRegeneratingTheAccessCode:
         assert state.status == "Connected to the-mac."
 
     def test_a_failed_restart_shows_no_id_to_hand_out(self, dialog, monkeypatch):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: False
+        )
 
         dialog._on_regenerate({})
 
@@ -122,7 +130,9 @@ class TestTheSharingSwitch:
     def test_a_port_that_is_taken_reports_under_this_computer(
         self, dialog, monkeypatch
     ):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: False
+        )
 
         answer = dialog._on_sharing({"on": True})
 
@@ -152,14 +162,18 @@ class TestTheOtherMachinesHalfIsLeftAlone:
         self._assert_peer_intact(dialog.shown[-1])
 
     def test_a_port_conflict_keeps_the_peer_result(self, dialog, monkeypatch):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: False
+        )
 
         dialog._on_sharing({"on": True})
 
         self._assert_peer_intact(dialog.shown[-1])
 
     def test_turning_sharing_on_keeps_the_peer_result(self, dialog, monkeypatch):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: True)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: True
+        )
 
         dialog._on_sharing({"on": True})
 
@@ -168,14 +182,18 @@ class TestTheOtherMachinesHalfIsLeftAlone:
     def test_a_new_access_code_keeps_the_peer_result(self, dialog, monkeypatch):
         # The sibling op dropped it entirely, which is the same inconsistency wearing the other
         # face: one of the two ops kept the peer's sentence and the other silently binned it.
-        monkeypatch.setattr(session, "start", lambda identity, inventory: True)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: True
+        )
 
         dialog._on_regenerate({})
 
         self._assert_peer_intact(dialog.shown[-1])
 
     def test_a_new_code_whose_restart_fails_keeps_it_too(self, dialog, monkeypatch):
-        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+        monkeypatch.setattr(
+            session, "start", lambda identity, inventory, repo=None: False
+        )
 
         dialog._on_regenerate({})
 

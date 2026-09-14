@@ -2003,7 +2003,7 @@ extension point, not to grow this file.
 ## ADR-020: A sync listener may leave loopback — under a session, a token, and read-only
 
 **Date**: 2026-09-14
-**Status**: Accepted
+**Status**: Accepted (condition 3 restated by ADR-021)
 
 ### Context
 Two machines, one collection too large to move whole. The user keeps a main machine and a second
@@ -2099,3 +2099,73 @@ target must therefore check for that and say so before writing.
 - **Mutual sync with conflict resolution.** Rejected for now; the user asked for one direction
   ("máy A cần lấy data và config từ máy B") and two directions cost a per-item version history
   and a resolution UI that nothing yet needs.
+
+---
+
+## ADR-021: The sync listener's third condition is "a peer cannot change this collection", not "both GET"
+
+**Date**: 2026-09-14
+**Status**: Accepted — restates condition 3 of ADR-020
+
+### Context
+ADR-020 allowed one listener off loopback under five conditions, and wrote the third as: *"Read-only,
+always. Two endpoints, both `GET`. There is nothing here that writes."*
+
+Then the feature needed its third endpoint: the target names a **selection** — the decks it picked and
+the note types that survived — and asks the source to pack it. That selection is a list of full deck
+names. A realistic pick is a parent with a few hundred sub-decks under it, and their names are long,
+non-ASCII and contain `::`. Carrying it in a query string means percent-encoding several kilobytes into
+a URL, which lands in every log line and every proxy's length limit, and which `http.server` reads as a
+single request line. Deck **ids** are shorter but are per-collection integers that mean nothing to the
+machine asked to export them.
+
+So the choice was: a `POST` whose body is the selection, or keeping the letter of "both GET" by making
+the wire worse.
+
+### Decision
+**Condition 3 is that nothing a peer sends can change this machine's collection.** The verb is not the
+control; the handler is. `POST /sync/package` is allowed: it parses a selection, runs an export to a
+temporary file, and hands the bytes over. It writes a temp file and nothing else — no note, no card, no
+deck, no config on the source is touched by anything a peer can say.
+
+The other four conditions are unchanged, and the new endpoint is behind all of them: it is refused
+before the body is read unless the access code matches, it is subject to the same guessing lockout, and
+it is logged with the peer and the size it produced.
+
+### Rationale
+- "Both GET" was never the property worth protecting; it was a cheap way to describe one. A `GET` that
+  deletes a note would satisfy the letter and violate everything the condition was for, and a `POST`
+  that only reads violates the letter and nothing else.
+- The real invariant is auditable in one place: the handler for every endpoint takes the collection
+  read-only, and `core/sync/service.py` imports nothing that could write.
+- Two steps (pack, then fetch) rather than one streaming response, because the target needs the **size**
+  before a byte moves. Without it there is no percentage and no estimate, and a pull that carries media
+  runs for minutes — long enough that "it is working" is not an acceptable answer.
+- A packed selection is fetched **once** and deleted, and everything uncollected is deleted when sharing
+  stops. The source is not a file host, and hundreds of megabytes per abandoned attempt is not an
+  acceptable way to discover that.
+
+### Consequences
+**Positive**
+- Deck names travel as data, in a body, with no length limit to design around and no encoding in a log.
+- The size arrives before the transfer, so the user gets a percentage and a time rather than a spinner.
+- The condition now says what it means, so the next endpoint is judged by whether it can change the
+  collection rather than by which verb it uses.
+
+**Negative**
+- "Read-only" can no longer be checked by reading the method names; it has to be checked by reading the
+  handlers. Mitigated by keeping all three in one small module that touches Anki only through an
+  injected callable.
+- A source that is mid-export holds a temp file the size of the selection, media included. Deleted on
+  collection, on a failed send, and on stop — but a machine that crashes mid-pack leaves one behind.
+
+### Alternatives considered
+- **Selection in the query string.** Kept the letter of ADR-020 and broke on the first user with a few
+  hundred sub-decks; also puts every deck name in the request line and therefore in any log.
+- **Deck ids instead of names.** Shorter, but ids are per-collection: the target reads them out of the
+  inventory it was handed, so they would work — at the cost of a selection that is meaningless if the
+  inventory is a minute stale, and unreadable in a log when diagnosing.
+- **One endpoint that streams the export as it runs.** Fewer round trips, and no temp file. Rejected
+  because the size is not known until the export finishes, which is exactly the number the progress
+  display is built on, and because a failure half way would have already written a partial `.apkg` the
+  target might keep.

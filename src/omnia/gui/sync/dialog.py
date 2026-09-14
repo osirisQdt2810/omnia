@@ -63,6 +63,7 @@ class SyncDialog(WebDialog):
         # Held so the picker is not garbage-collected the moment this method returns — it is
         # shown, not exec'd, so nothing else on the Python side refers to it.
         self._offer: Any = None
+        self._client: Any = None
         self._state = self._initial_state()
         super().__init__(
             parent,
@@ -128,7 +129,7 @@ class SyncDialog(WebDialog):
             return {"ok": True}
 
         identity = self._settings.identity()
-        started = session.start(identity, self._inventory)
+        started = session.start(identity, self._inventory, self._repo)
         if started:
             self._show(
                 self._keeping_peer(
@@ -150,7 +151,9 @@ class SyncDialog(WebDialog):
         identity = self._settings.regenerate()
         session.stop()
         restarted = (
-            session.start(identity, self._inventory) if identity.sharing else False
+            session.start(identity, self._inventory, self._repo)
+            if identity.sharing
+            else False
         )
         if identity.sharing and not restarted:
             # The same case `_on_sharing` handles, and it has to be handled the same way here:
@@ -201,7 +204,9 @@ class SyncDialog(WebDialog):
             return
 
         self._repo.update_section("sync", {PEER_KEY: typed, PEER_CODE_KEY: typed_code})
-        client = SyncClient(address)
+        # Kept on the dialog: the picker that opens when this succeeds does the copying, and it
+        # needs the same connection rather than rebuilding one from numbers it does not hold.
+        self._client = client = SyncClient(address)
 
         def ask() -> Any:
             """Prove the code, then fetch the menu.
@@ -241,12 +246,14 @@ class SyncDialog(WebDialog):
         # which reads as a blank window. A 0ms timer lets this return first.
         from aqt.qt import QTimer
 
-        QTimer.singleShot(0, lambda: self._open_offer(inventory))
+        QTimer.singleShot(0, lambda: self._open_offer(inventory, self._client))
 
-    def _open_offer(self, inventory: Any) -> None:
+    def _open_offer(self, inventory: Any, client: Any) -> None:
         from omnia.gui.sync.offer import open_offer_dialog
 
-        self._offer = open_offer_dialog(inventory, self)
+        # The client goes with it: the picker is where the copying is started from, and a picker
+        # that could only list would have to build a second one from numbers it does not hold.
+        self._offer = open_offer_dialog(inventory, client, self._repo, self)
 
     def _show_failure(self, peer_id: str, peer_code: str, exc: BaseException) -> None:
         # A SyncError already carries the sentence that names its own fix; anything else is a bug

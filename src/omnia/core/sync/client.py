@@ -16,22 +16,43 @@ timeout to say so.
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
+import os
 import socket
 import urllib.error
 import urllib.request
-from typing import Any
+from collections.abc import Callable
+from typing import Any, Optional
+from urllib.parse import quote
 
 from omnia.core.logging import get_logger
 from omnia.core.sync.inventory import PROTOCOL, Inventory, InventoryError
+from omnia.core.sync.package import PackageError, PackageOffer, PackageRequest
 from omnia.core.sync.pairing import PairingAddress
-from omnia.core.sync.service import HELLO_PATH, INVENTORY_PATH, TOKEN_HEADER
+from omnia.core.sync.service import (
+    HELLO_PATH,
+    INVENTORY_PATH,
+    PACKAGE_PATH,
+    TOKEN_HEADER,
+)
+
+#: How much of a package is read at a time. Small enough that hundreds of megabytes are never
+#: held in memory, big enough that it is not a syscall per kilobyte.
+_CHUNK_BYTES = 256 * 1024
 
 #: How long to wait on the other machine. Long enough for a collection read behind a busy Qt main
 #: thread (the service allows itself ten seconds for that), short enough that a dialog does not
 #: look hung when the other machine is simply off.
 TIMEOUT_SECONDS = 20.0
+
+#: What the PACK request gets instead. It is not a timeout on a network round trip: the source
+#: exports the whole selection, media and all, before writing a byte of the answer, so this is a
+#: bound on how long an export may take. Fifteen minutes covers a large deck with its media on a
+#: slow disk; past that something is genuinely wrong, and a machine that packs for longer than
+#: the user will sit still for is not a machine this should keep waiting on.
+PACK_TIMEOUT_SECONDS = 900.0
 
 logger = get_logger("sync")
 
@@ -113,15 +134,117 @@ class SyncClient:
             # than wrapping it in a second, vaguer one.
             raise SyncError(str(exc)) from exc
 
+    def request_package(self, request: PackageRequest) -> PackageOffer:
+        """Ask the other machine to pack a selection, and learn how big it is.
+
+        Separate from fetching it so the size is known BEFORE a byte moves — which is what turns
+        the copy into a percentage and a time estimate rather than a spinner that means nothing.
+
+        Given :data:`PACK_TIMEOUT_SECONDS` rather than the usual one. Packing is SYNCHRONOUS on
+        the source: it exports the whole selection, media and all, before writing a byte of the
+        answer. Three decks with a few hundred megabytes of media is minutes, and the ordinary
+        twenty-second deadline would report "it did not answer in time — it may be asleep", which
+        is the one thing this module promises never to do: name a cause it has not established.
+        Worse, the source would finish and hold a package nobody ever fetched, and every retry
+        would leak another one.
+
+        Returns:
+            What it packed.
+
+        Raises:
+            SyncError: On anything that stopped the answer arriving or being readable.
+        """
+        body = request.to_json().encode("utf-8")
+        try:
+            return PackageOffer.from_json(
+                self._send(PACKAGE_PATH, body, timeout=PACK_TIMEOUT_SECONDS).decode(
+                    "utf-8"
+                )
+            )
+        except PackageError as exc:
+            raise SyncError(str(exc)) from exc
+
+    def download_package(
+        self,
+        offer: PackageOffer,
+        destination: str,
+        on_progress: Optional[Callable[[int], None]] = None,
+    ) -> int:
+        """Fetch a packed selection to ``destination``, reporting bytes as they arrive.
+
+        Streamed to disk rather than read into memory: a few decks with their media is routinely
+        hundreds of megabytes, and Anki's importer wants a path anyway.
+
+        Args:
+            offer: What the other machine said it packed.
+            destination: Where to write it.
+            on_progress: Called with the RUNNING TOTAL of bytes written, often. The caller decides
+                how often to repaint; this one does not throttle, because a transfer that stalls
+                should be visible as a number that stops moving.
+
+        Returns:
+            How many bytes arrived.
+
+        Raises:
+            SyncError: On anything that stopped the package arriving whole. A partial file is
+                removed — an ``.apkg`` that is 90% of a package is not a smaller package, it is a
+                file Anki will refuse, and leaving it behind invites a retry that "works".
+        """
+        url = f"{self._address.base_url}{PACKAGE_PATH}?id={quote(offer.id)}"
+        request = urllib.request.Request(url, method="GET", headers=self._headers())
+        received = 0
+        try:
+            with (
+                urllib.request.urlopen(request, timeout=self._timeout) as response,
+                open(destination, "wb") as handle,
+            ):
+                while True:
+                    chunk = response.read(_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    received += len(chunk)
+                    if on_progress is not None:
+                        on_progress(received)
+        except Exception as exc:
+            _discard(destination)
+            raise SyncError(_transfer_failure(exc)) from None
+        if offer.bytes and received != offer.bytes:
+            _discard(destination)
+            raise SyncError(
+                "The copy stopped part way through. Nothing was added to this collection — "
+                "try again."
+            )
+        return received
+
+    def _headers(self) -> dict[str, str]:
+        return {TOKEN_HEADER: self._address.token, "User-Agent": "omnia-sync"}
+
+    def _send(
+        self, path: str, body: bytes, *, timeout: Optional[float] = None
+    ) -> bytes:
+        """One authenticated POST, with every failure turned into a sentence."""
+        headers = self._headers()
+        headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            f"{self._address.base_url}{path}", data=body, method="POST", headers=headers
+        )
+        return self._perform(request, timeout=timeout)
+
     def _get(self, path: str) -> bytes:
         """One authenticated GET, with every failure turned into a sentence."""
         request = urllib.request.Request(
-            f"{self._address.base_url}{path}",
-            method="GET",
-            headers={TOKEN_HEADER: self._address.token, "User-Agent": "omnia-sync"},
+            f"{self._address.base_url}{path}", method="GET", headers=self._headers()
         )
+        return self._perform(request)
+
+    def _perform(
+        self, request: urllib.request.Request, *, timeout: Optional[float] = None
+    ) -> bytes:
+        """Send one prepared request, with every failure turned into a sentence."""
+        deadline = timeout or self._timeout
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            with urllib.request.urlopen(request, timeout=deadline) as response:
                 return bytes(response.read())
         except urllib.error.HTTPError as exc:
             raise SyncError(_from_status(exc.code, _reason(exc))) from None
@@ -141,6 +264,40 @@ class SyncClient:
             # failure the non-ASCII key fix just closed.
             logger.debug("sync: %s answered unusably: %r", self._address.host, exc)
             raise SyncError(_NOT_OMNIA) from None
+
+
+def _discard(path: str) -> None:
+    """Remove a half-written package.
+
+    An ``.apkg`` that is 90% of a package is not a smaller package — it is a file Anki refuses —
+    and leaving it on disk invites a retry that finds it already there and "works".
+    """
+    with contextlib.suppress(OSError):
+        os.unlink(path)
+
+
+def _transfer_failure(exc: BaseException) -> str:
+    """What stopped a package arriving, as a sentence.
+
+    Shares the wording of the smaller requests where the condition is the same, and adds the one
+    thing that only matters here: nothing was added to this collection. A user who does not know
+    that will go looking for a half-imported deck.
+    """
+    if isinstance(exc, SyncError):
+        return str(exc)
+    if isinstance(exc, urllib.error.HTTPError):
+        return _from_status(exc.code, _reason(exc))
+    if isinstance(exc, urllib.error.URLError):
+        return _from_url_error(exc.reason)
+    if isinstance(exc, (socket.timeout, TimeoutError)):
+        return (
+            "The copy stopped part way through — the other machine stopped answering. Nothing "
+            "was added to this collection."
+        )
+    if isinstance(exc, OSError) and getattr(exc, "filename", None):
+        return f"Could not write the file: {exc.strerror or exc}."
+    logger.debug("sync: the transfer failed: %r", exc)
+    return "The copy stopped part way through. Nothing was added to this collection — try again."
 
 
 def _reason(exc: urllib.error.HTTPError) -> str:
@@ -171,6 +328,15 @@ def _from_status(status: int, reason: str) -> str:
     if status == 429:
         return reason or (
             "The other machine has had too many wrong codes — wait a minute and try again."
+        )
+    if status == 410:
+        # The endpoint is there and what it named is gone: a package already collected, or one
+        # discarded when the other machine stopped sharing. Its own sentence, not "check both
+        # are up to date" — the builds are fine.
+        return reason or "That package is no longer waiting on the other machine."
+    if status == 501:
+        return reason or (
+            "The other machine can list what it has but cannot copy it — update Omnia there."
         )
     if status == 404:
         return (

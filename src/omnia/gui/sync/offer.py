@@ -11,9 +11,13 @@ Thin Qt glue. The tree's behaviour is in the page, the selection rules are in
 
 from __future__ import annotations
 
+import contextlib
+import json
 from typing import Any, Optional
 
 from omnia.core.logging import get_logger
+from omnia.core.sync.package import PackageError, PackageRequest
+from omnia.core.sync.progress import DONE, FAILED
 from omnia.core.sync.selection import OfferSelection
 from omnia.gui.sync.offer_html import build_offer_html
 from omnia.gui.web_dialog import WebDialog
@@ -24,8 +28,14 @@ logger = get_logger("sync")
 class OfferDialog(WebDialog):
     """Shows one machine's decks, note types and settings, and takes a selection."""
 
-    def __init__(self, inventory: Any, parent: Any = None) -> None:
+    def __init__(
+        self, inventory: Any, client: Any = None, repo: Any = None, parent: Any = None
+    ) -> None:
         self._inventory = inventory
+        self._client = client
+        self._repo = repo
+        self._timer: Any = None
+        self._job: Any = None
         # The selection lives HERE, not in the page. What a click means is a rule with corners
         # in it — unpicking a parent whose child was picked separately, a note type that lights
         # up because a deck needs it — and the page owning a second copy is how it got painted
@@ -39,8 +49,10 @@ class OfferDialog(WebDialog):
             html=self._render(),
             handlers={
                 "pick_deck": self._on_pick_deck,
-                "drop_note_type": self._on_drop_note_type,
+                "toggle_note_type": self._on_toggle_note_type,
                 "pick_feature": self._on_pick_feature,
+                "check": self._on_check,
+                "set_policy": self._on_set_policy,
                 "pull": self._on_pull,
             },
             width=640,
@@ -56,9 +68,9 @@ class OfferDialog(WebDialog):
         """Toggle one deck. Answers for the note types too — they follow the decks."""
         return self._answer(self._selection.pick_deck(str(data.get("name", ""))))
 
-    def _on_drop_note_type(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Leave one note type behind, or take it back."""
-        return self._answer(self._selection.drop_note_type(str(data.get("name", ""))))
+    def _on_toggle_note_type(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Click one note type: drop it, take it back, or choose it outright."""
+        return self._answer(self._selection.toggle_note_type(str(data.get("name", ""))))
 
     def _on_pick_feature(self, data: dict[str, Any]) -> dict[str, Any]:
         """Toggle one feature's settings."""
@@ -71,30 +83,155 @@ class OfferDialog(WebDialog):
         answer["tally"] = self._selection.tally()
         return answer
 
-    def _on_pull(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Take what was picked.
+    def _on_check(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """What this copy would land on, before anything moves.
 
-        The copying itself is the next slice. Until it exists this says so plainly rather than
-        appearing to work: a button that looks like it copied decks and did not is worse than one
-        that admits it is not finished.
+        Asked and answered on THIS machine: the target is the only one that knows what it already
+        has, and a warning computed anywhere else would be a guess.
         """
-        logger.info(
-            "sync: asked to pull %d deck(s), %d note type(s), %d setting(s)",
-            len(self._selection.decks),
-            len(self._selection.note_types),
-            len(self._selection.features),
+        from omnia.core.sync.clash import describe, find_clashes, normalise
+
+        policy = self._policy()
+        try:
+            request = self._build_request()
+        except PackageError as exc:
+            return {"refused": str(exc)}
+        clashes = find_clashes(
+            decks=request.decks,
+            note_types=request.note_types,
+            here=self._local_inventory(),
+            there=self._inventory,
         )
         return {
-            "ok": False,
-            "message": (
-                "Copying is not switched on yet — this build can show you what the other "
-                "computer has, and not yet bring it over."
-            ),
+            "clashes": bool(clashes),
+            "serious": bool(clashes.serious),
+            "lines": describe(clashes, normalise(policy)),
+            "policy": normalise(policy),
+            "decks": len(request.decks),
+            "note_types": len(request.note_types),
         }
 
+    def _on_set_policy(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Remember what to do with a note that exists on both machines."""
+        from omnia.core.sync.clash import normalise
 
-def open_offer_dialog(inventory: Any, parent: Any = None) -> Optional[OfferDialog]:
+        policy = normalise(data.get("policy"))
+        try:
+            self._repo.update_section("sync", {"on_duplicate": policy})
+        except Exception:
+            logger.exception("sync: could not remember the duplicate choice")
+        return {"policy": policy}
+
+    def _policy(self) -> str:
+        from omnia.core.sync.clash import normalise
+
+        try:
+            return normalise(self._repo.raw_section("sync").get("on_duplicate"))
+        except Exception:
+            return normalise(None)
+
+    def _local_inventory(self) -> Any:
+        """What THIS machine already has, for the clash check."""
+        from omnia.gui.sync.collect import read_inventory
+
+        return read_inventory(self._repo)
+
+    def _build_request(self) -> PackageRequest:
+        return PackageRequest(
+            decks=tuple(sorted(self._selection.decks)),
+            note_types=tuple(sorted(self._selection.note_types)),
+            definitions=tuple(sorted(self._selection.chosen_note_types)),
+            config=tuple(sorted(self._selection.features)),
+        )
+
+    def _on_pull(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """Start copying what was picked.
+
+        Returns at once. The pull outlives this window on purpose — the user can close it and
+        carry on studying — so progress is PUSHED in while the window happens to be open, rather
+        than the page asking for it.
+        """
+        from omnia.gui.sync.job import PullRefusedError, start_pull
+
+        try:
+            request = self._build_request()
+        except PackageError as exc:
+            return {"refused": str(exc)}
+        if self._client is None:
+            return {
+                "refused": "This window is not connected to the other computer any more."
+            }
+
+        logger.info(
+            "sync: pulling %d deck(s), %d note type(s), %d setting(s)",
+            len(request.decks),
+            len(request.note_types),
+            len(request.config),
+        )
+        try:
+            self._job = start_pull(
+                self._client,
+                request,
+                self._repo,
+                machine=self._inventory.machine or "the other computer",
+                policy=self._policy(),
+            )
+        except PullRefusedError as exc:
+            return {"refused": str(exc)}
+        self._watch()
+        return {"started": True}
+
+    # --- showing a pull that is running ---------------------------------------------------
+    def _watch(self) -> None:
+        """Repaint the strip a few times a second while a pull is running.
+
+        A timer rather than a callback from the job: the job outlives this window, and a callback
+        held by a closed dialog is a call into a deleted webview. Polling means a window that is
+        gone simply stops asking.
+        """
+        from aqt import mw
+
+        if self._timer is not None:
+            return
+        self._timer = mw.progress.timer(400, self._tick, True, parent=self)
+        self._tick()
+
+    def _tick(self) -> None:
+        # The job THIS window started, not whatever is current: a pull can finish between two
+        # ticks, and a window that looked up "the current pull" would find it gone and never
+        # show the outcome it was waiting for.
+        job = self._job
+        if job is None:
+            self._stop_watching()
+            return
+        progress = job.snapshot()
+        finished = progress.phase in (DONE, FAILED)
+        self.eval_js(
+            "window.omniaSync && window.omniaSync.showProgress("
+            + json.dumps(
+                {
+                    "percent": progress.percent,
+                    "summary": job.result if finished else progress.summary(),
+                    "finished": finished,
+                }
+            )
+            + ");"
+        )
+        if finished:
+            self._stop_watching()
+
+    def _stop_watching(self) -> None:
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            # A timer whose Qt parent has already gone raises rather than no-opping.
+            with contextlib.suppress(Exception):
+                timer.stop()
+
+
+def open_offer_dialog(
+    inventory: Any, client: Any = None, repo: Any = None, parent: Any = None
+) -> Optional[OfferDialog]:
     """Open the picker for ``inventory``."""
-    dialog = OfferDialog(inventory, parent)
+    dialog = OfferDialog(inventory, client, repo, parent)
     dialog.show()
     return dialog

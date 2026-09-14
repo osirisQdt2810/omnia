@@ -108,7 +108,7 @@ class TestDroppingANoteType:
         offer = _offer()
         offer.pick_deck("Japanese::Kanji")
 
-        offer.drop_note_type("Vocab")
+        offer.toggle_note_type("Vocab")
 
         assert "Japanese::Kanji" in offer.decks
         assert offer.note_types == {"Cloze"}
@@ -117,26 +117,59 @@ class TestDroppingANoteType:
     def test_clicking_it_again_takes_it_back(self):
         offer = _offer()
         offer.pick_deck("Japanese::Kanji")
-        offer.drop_note_type("Vocab")
+        offer.toggle_note_type("Vocab")
 
-        offer.drop_note_type("Vocab")
+        offer.toggle_note_type("Vocab")
 
         assert offer.note_type_state("Vocab") == NEEDED
 
-    def test_dropping_one_nothing_needs_is_a_no_op(self):
-        # A chip nobody's decks need is inert. Recording a preference about a note type that is
-        # not coming either way is a decision the user never made.
+    def test_a_note_type_no_deck_needs_can_be_chosen_on_its_own(self):
+        # Its definition travels with no notes — which is how a second machine is set up to
+        # author the same kind of card before there is anything to put in it.
         offer = _offer()
 
-        answer = offer.drop_note_type("Unused")
+        answer = offer.toggle_note_type("Unused")
 
-        assert answer["note_types"]["Unused"] == IDLE
+        assert answer["note_types"]["Unused"] == PICKED
+        assert offer.note_types == {"Unused"}
+
+    def test_choosing_one_again_unchooses_it(self):
+        offer = _offer()
+        offer.toggle_note_type("Unused")
+
+        offer.toggle_note_type("Unused")
+
+        assert offer.note_type_state("Unused") == IDLE
         assert offer.note_types == set()
+
+    def test_a_chosen_one_and_a_needed_one_are_told_apart(self):
+        # Different colours because they mean different things: one arrived because a deck needs
+        # it, the other was chosen. Un-choosing the deck takes only the first away.
+        offer = _offer()
+        offer.pick_deck("Japanese::Kanji")
+        offer.toggle_note_type("Unused")
+
+        assert offer.note_type_state("Cloze") == NEEDED
+        assert offer.note_type_state("Unused") == PICKED
+
+    def test_dropping_one_that_was_also_picked_outright_really_drops_it(self):
+        # A chip can be lit two ways. Picked first, then needed by a deck chosen afterwards —
+        # and without un-choosing it, the union put it straight back: the chip said "dropped",
+        # the tally said one was left behind, and the notes travelled anyway.
+        offer = _offer()
+        offer.toggle_note_type("Vocab")  # idle -> picked, no deck yet
+        offer.pick_deck("Japanese::Kanji")  # now needed as well
+
+        offer.toggle_note_type("Vocab")  # the user drops it
+
+        assert offer.note_type_state("Vocab") == DROPPED
+        assert "Vocab" not in offer.note_types, "a dropped note type still travels"
+        assert offer.tally()["note_types"] == 1
 
     def test_a_drop_survives_picking_another_deck(self):
         offer = _offer()
         offer.pick_deck("Japanese::Kanji")
-        offer.drop_note_type("Vocab")
+        offer.toggle_note_type("Vocab")
 
         offer.pick_deck("English")
 
@@ -145,12 +178,31 @@ class TestDroppingANoteType:
     def test_the_tally_says_how_many_were_left_behind(self):
         offer = _offer()
         offer.pick_deck("Japanese::Kanji")
-        offer.drop_note_type("Vocab")
+        offer.toggle_note_type("Vocab")
 
         tally = offer.tally()
 
         assert tally["note_types"] == 1
         assert tally["dropped"] == 1
+
+
+class TestWhatTheSourceIsTold:
+    def test_the_outright_choices_are_reported_separately(self):
+        # The source cannot tell them apart from the filter list once decks are named — "in the
+        # list because a deck needs it" and "because the user asked for it" look identical — and
+        # guessing wrong means a chosen note type arriving as nothing at all.
+        offer = _offer()
+        offer.pick_deck("Japanese::Kanji")  # needs Cloze and Vocab
+        offer.toggle_note_type("Unused")  # chosen outright
+
+        assert offer.chosen_note_types == {"Unused"}
+        assert "Unused" in offer.note_types
+
+    def test_a_note_type_only_needed_by_a_deck_is_not_reported_as_chosen(self):
+        offer = _offer()
+        offer.pick_deck("Japanese::Kanji")
+
+        assert offer.chosen_note_types == set()
 
 
 class TestTheSettings:

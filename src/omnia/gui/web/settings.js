@@ -135,6 +135,30 @@
     });
   });
 
+  /**
+   * Show how far a background job on an action button has got.
+   *
+   * Pushed in by Python rather than polled from here: the job outlives this page, and a page
+   * that asked would have to know what to ask about.
+   *
+   * @param {string} op Which action button, by its data-action.
+   * @param {?number} percent 0-100, or null when the size is not yet known.
+   * @param {string} tip What the hover readout says. Empty clears it.
+   */
+  function setActionProgress(op, percent, tip) {
+    const button = document.querySelector('[data-action="' + op + '"]');
+    if (!button) { return; }
+    const readout = button.querySelector(".omnia-action-tip");
+    if (readout) { readout.textContent = tip || ""; }
+    if (percent === null || percent === undefined) {
+      button.setAttribute("data-progress", tip ? "unknown" : "none");
+      button.style.removeProperty("--progress");
+      return;
+    }
+    button.setAttribute("data-progress", "known");
+    button.style.setProperty("--progress", percent + "%");
+  }
+
   document.querySelectorAll(".omnia-back").forEach(function (btn) {
     btn.addEventListener("click", showLanding);
   });
@@ -182,6 +206,7 @@
    * @param {{id: string, enabled: boolean, active: boolean, status: string}} state
    */
   window.omniaSettings = {
+    setActionProgress: setActionProgress,
     setCardState: function (state) {
       // Matched by attribute rather than a built selector: a plugin id is not our string.
       const cards = document.querySelectorAll(".omnia-card");
