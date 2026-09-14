@@ -1,0 +1,83 @@
+# Publish a tagged build to the AnkiWeb listing.
+#
+# Deliberately NOT on every merge. Two reasons, and the second is the one that decides it:
+#
+#   * AnkiWeb keeps exactly one published build per branch, so an upload replaces what every
+#     existing user gets on their next update check. A merge is not a decision to do that; a tag
+#     is.
+#   * AnkiWeb has no public upload API. Its own docs say to use the Upload button on the site,
+#     and an Anki maintainer has stated on the official forum that the Terms do not currently
+#     permit third-party API access. The owner of the account chose to automate it anyway, which
+#     is theirs to choose — but the right shape for that choice is a handful of deliberate
+#     publishes, not a dozen a day that look like nothing a person would do.
+#
+# Every merge still produces a downloadable build: see release.yml, which tags `build-*` and is
+# where the fast iteration lives. This workflow is the slow lane.
+#
+# **The session is a credential in a PUBLIC repository whose action logs anyone can read.** It
+# reaches the script through the environment only — never a command line, which shows up in logs
+# and in `ps` — is never echoed, and is never transformed, because GitHub masks a secret by
+# matching it exactly and a base64 or a split defeats that. This workflow cannot run on
+# `pull_request`, so no PR can reach the secret at all.
+
+name: AnkiWeb
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ankiweb
+  cancel-in-progress: false # an upload half-sent is not something to race
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    name: Upload to AnkiWeb
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # reads the build releases to check this commit went through the pipeline
+    steps:
+      - name: Refuse a commit that never went through the pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # "I tagged the wrong commit" is the ordinary mistake, and this lane replaces the build
+          # for EVERY user. So the tagged commit must be one the fast lane already published a
+          # build for — which only happens after the PR pipeline's full matrix passed and the
+          # review approved it.
+          #
+          # Asked this way rather than by reading check-runs on the commit: a PR merged by the
+          # auto-merge job is pushed with GITHUB_TOKEN, and GitHub starts no workflow run for
+          # that, so the merge commit carries no checks of its own. The build release is the
+          # durable evidence that the pipeline ran and was green.
+          built=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '.[] | select(.target_commitish == "${{ github.sha }}") | .tag_name')
+          if [ -n "$built" ]; then
+            echo "This commit has a build from the pipeline: $built"
+          else
+            echo "::error::This commit has no build release, so it never went through the pipeline. Tag a commit on main that CI built, or run the Release workflow for it first."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: false # the only LFS files are the voice weights, which the build excludes
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Build the add-on
+        env:
+          # What Anki shows beside the add-on in its list. The tag IS the version a user sees.
+          OMNIA_BUILD_VERSION: ${{ github.ref_name }}
+        run: python scripts/build_addon.py
+
+      - name: Upload
+        env:
+          OMNIA_ANKIWEB_COOKIE: ${{ secrets.ANKIWEB_COOKIE }}
+        run: python scripts/publish_ankiweb.py dist/omnia.ankiaddon "${{ github.ref_name }}"
