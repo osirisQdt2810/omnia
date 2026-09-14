@@ -1,11 +1,16 @@
 # Omnia — pluginized Anki add-on. Tooling config only (the add-on is not pip-packaged;
 # it ships as a folder / .ankiaddon built by scripts/build_addon.py).
 
-# Python target tracks the latest Anki's bundled interpreter (Anki 25.09+/26.x ships
-# CPython 3.13; minimum supported is 3.10). Keep code 3.10+-compatible.
+# Both tools target the OLDEST Python this add-on has to run on, not the newest it is developed
+# on. Anki 25.09+/26.x bundles CPython 3.13, but the minimum supported is 3.10 and the add-on has
+# to import there — so a construct the newer grammar accepts is a break, not a modernisation.
+# Targeting py313 said the opposite, and it cost a red matrix: an escaped quote inside an
+# f-string (PEP 701, 3.12+) is a SyntaxError on 3.10/3.11, so it surfaced as a collection error
+# on the two oldest jobs, after a push, rather than as a lint finding before one. At py310 ruff
+# reports it; neither tool has anything else to say about the existing tree.
 [tool.black]
 line-length = 88
-target-version = ["py313"]
+target-version = ["py310"]
 # Never format vendored deps or the read-only reference add-ons.
 extend-exclude = '''
 /(
@@ -17,7 +22,7 @@ extend-exclude = '''
 
 [tool.ruff]
 line-length = 88
-target-version = "py313"
+target-version = "py310"
 extend-exclude = ["vendor", "models", "references"]
 
 [tool.ruff.lint]

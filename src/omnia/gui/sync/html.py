@@ -147,9 +147,13 @@ def _offer_html(state: PanelState) -> str:
         )
         if part
     )
+    # Built outside the f-string: a backslash inside one is a SyntaxError before Python 3.12,
+    # and Anki's minimum is 3.10 — the kind of break that only shows up on the oldest job in the
+    # matrix, as a collection error rather than a failing assertion.
+    empty = '<li class="sync-note">No decks over there.</li>'
     return (
         '<div class="sync-offer">'
-        f'<ul class="sync-decks">{decks or "<li class=\'sync-note\'>No decks over there.</li>"}</ul>'
+        f'<ul class="sync-decks">{decks or empty}</ul>'
         f'<p class="sync-note">{html.escape(summary)}</p>'
         "</div>"
     )
