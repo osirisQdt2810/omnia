@@ -14,8 +14,38 @@ Open it from **Tools → Omnia**.
 | **Display Interval** | Shows the next interval on the answer side — and reflects the grade your typing is about to produce, not an ungraded Good. |
 | **Overdue Guard** | Caps the grade on a card you left sitting for months, so one lucky answer does not send it away for a year. |
 | **Audio Speed** | Separate playback speeds for the front and the back, with shortcuts to nudge either side. |
+| **Note Maintenance** | Batch, deterministic clean-up of text your notes already contain — strip IPA, reformat synonyms, find-and-replace across fields — with a diff preview before anything is written. No AI, no network. |
 | **Smart Notes** | Fills note fields with an LLM or TTS — definitions, examples, cloze, images, audio — with a dependency graph so each field waits for what it reads. |
 | **Word Lookup** | Answers "is this word already in my collection?" for the companion web and desktop clippers. |
+
+## Sync — two computers, a few decks, no export files
+
+**New in 0.1.0.** If you study on a laptop and a desktop, you already know the problem: AnkiWeb
+syncs everything or nothing, and a large collection is not something you want on both machines.
+
+Omnia copies **the decks you choose** from one computer to the other, over your own network, with
+their media, their note types and your Omnia settings. No export file, no USB stick, no cloud in
+between.
+
+It works the way you would expect a remote-desktop tool to. Each computer shows an **ID** and an
+**access code** — two short numbers. Type the other machine's two numbers into yours and it lists
+what that machine holds: its deck tree with card counts, its note types, its configured features.
+Pick what you want and press Copy.
+
+- **It runs in the background.** Close the window and carry on studying. The Sync button fills up
+  as it goes, and hovering it tells you how far along and roughly how long is left.
+- **Nothing is copied over quietly.** Before it starts, you are told which decks and note types
+  already exist on this computer — and which note types have the same name but *different fields*,
+  which is the one case where something you already have could change. You choose what happens to
+  a note that exists on both machines: leave yours alone, or replace it.
+- **A backup is taken first**, into Anki's own backup folder, so it appears in Anki's own restore
+  list.
+- **The other machine is read-only.** It can be asked what it has and asked for a copy; nothing
+  you send it can change anything on it.
+- **Nothing is shared until you switch it on.** A fresh profile shares nothing and is not even
+  given an access code until you open the panel. Five wrong codes and a machine stops answering
+  for a minute.
+- **API keys never travel.**
 
 ## Smart Notes, briefly
 
@@ -27,6 +57,13 @@ written for you — you read the code and run it before it is ever saved.
 
 Providers: OpenAI, Anthropic, Gemini (API and Vertex), DeepSeek, Groq, OpenRouter, Ollama for
 text; Google, OpenAI, ElevenLabs and a bundled offline voice for speech.
+
+## Companion clippers
+
+Two optional browser/desktop helpers capture a word and its sentence from anything you are
+reading and send it to Anki, where Smart Notes fills the rest of the card in. They ask Word
+Lookup first, so you can see whether the word is already in your collection before you add it
+again.
 
 ## Requires
 
