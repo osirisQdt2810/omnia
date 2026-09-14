@@ -38,7 +38,31 @@ jobs:
     name: Upload to AnkiWeb
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read # reads the build releases to check this commit went through the pipeline
     steps:
+      - name: Refuse a commit that never went through the pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # "I tagged the wrong commit" is the ordinary mistake, and this lane replaces the build
+          # for EVERY user. So the tagged commit must be one the fast lane already published a
+          # build for — which only happens after the PR pipeline's full matrix passed and the
+          # review approved it.
+          #
+          # Asked this way rather than by reading check-runs on the commit: a PR merged by the
+          # auto-merge job is pushed with GITHUB_TOKEN, and GitHub starts no workflow run for
+          # that, so the merge commit carries no checks of its own. The build release is the
+          # durable evidence that the pipeline ran and was green.
+          built=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '.[] | select(.target_commitish == "${{ github.sha }}") | .tag_name')
+          if [ -n "$built" ]; then
+            echo "This commit has a build from the pipeline: $built"
+          else
+            echo "::error::This commit has no build release, so it never went through the pipeline. Tag a commit on main that CI built, or run the Release workflow for it first."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           lfs: false # the only LFS files are the voice weights, which the build excludes

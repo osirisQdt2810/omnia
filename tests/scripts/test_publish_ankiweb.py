@@ -74,15 +74,47 @@ class TestTheWireFormat:
         assert info[3] == b""
         assert info[4] == b"https://example.test"
         assert info[5] == b"hello"
-        assert _fields(info[6]) == {
-            1: publish.MIN_POINT_VERSION,
-            2: publish.MAX_POINT_VERSION,
-        }
+        assert _fields(info[6])[1] == publish.MIN_POINT_VERSION
+
+    def test_the_branch_publishes_no_maximum_version(self):
+        # 260900 is exactly 26.9.0, not "the 26.09 series" — a cap one patch above the Anki this
+        # was last tested on. The upload would have returned 200 and published a listing AnkiWeb
+        # refuses to serve to anyone on 26.9.1, with no signal anywhere.
+        branch = _fields(
+            publish.addon_branch(publish.MIN_POINT_VERSION, publish.MAX_POINT_VERSION)
+        )
+
+        assert branch[1] == publish.MIN_POINT_VERSION
+        assert 2 not in branch, "a maximum was published; docs/ankiweb.md promises none"
+
+    def test_any_future_cap_must_not_be_about_to_expire(self):
+        # If someone reintroduces a ceiling, this is what catches it expiring — in CI rather
+        # than in an install failure six weeks later. Anki ships roughly monthly.
+        if not publish.MAX_POINT_VERSION:
+            return
+        from datetime import date
+
+        today = date.today()
+        cap_months = (publish.MAX_POINT_VERSION // 10000) * 12 + (
+            publish.MAX_POINT_VERSION // 100 % 100
+        )
+        now_months = (today.year % 100) * 12 + today.month
+        assert cap_months - now_months >= 6, (
+            "the published maximum Anki version is within six months — it will start refusing "
+            "installs before anyone remembers it is there"
+        )
+
+    def test_the_tags_are_declared_rather_than_blanked(self):
+        # Same mechanism as the description: proto3 sends "" and the server takes it, so an
+        # empty default does not mean "leave them alone", it means "erase them".
+        assert publish.TAGS.strip(), "an empty TAGS erases the listing's search tags"
 
     def test_the_version_branch_months_are_real_months(self):
         # 26.99 is month 99. The form clamps it, the server rejects the upload with a 400 and an
         # empty body, and nothing on screen says why.
         for point in (publish.MIN_POINT_VERSION, publish.MAX_POINT_VERSION):
+            if not point:
+                continue
             month = point // 100 % 100
             assert 1 <= month <= 12, point
 

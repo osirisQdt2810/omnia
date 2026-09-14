@@ -51,15 +51,26 @@ UPLOAD_URL = "https://ankiweb.net/svc/shared/upload-addon"
 #: new add-on with a new code that nobody has installed.
 ADDON_ID = 726991726
 TITLE = "Omnia — All-in-One Toolkit"
-TAGS = ""
+#: The listing's search tags, declared here because this request REPLACES the whole record: an
+#: empty string is not "leave them alone", it is "erase them", by the same mechanism that would
+#: blank the description. Sent deliberately rather than defaulting to the value that destroys.
+TAGS = "ai tts cloze automation reviewer"
 SUPPORT_URL = "https://github.com/osirisQdt2810/omnia"
 
-#: The Anki point versions the single published branch covers, in AnkiWeb's own scale (25.09 is
-#: 250900). The MONTH half must be a real month: the upload form silently clamps an impossible
-#: one and the server then rejects the whole request with a 400 and an EMPTY body, which is
-#: indistinguishable from every other rejection and cost hours once already.
+#: The oldest Anki this add-on supports, in AnkiWeb's scale — ``major*10000 + minor*100 + patch``,
+#: so 25.09 is 250900. The MONTH half must be a real month: the upload form silently clamps an
+#: impossible one and the server then rejects the whole request with a 400 and an EMPTY body,
+#: which is indistinguishable from every other rejection and cost hours once already.
 MIN_POINT_VERSION = 250900
-MAX_POINT_VERSION = 260900
+
+#: And NO ceiling. 260900 is not "the 26.09 series", it is exactly 26.9.0 — a strict cap one
+#: patch above the Anki this was last tested on, so the first upload would have published a
+#: listing AnkiWeb refuses to serve to anyone on 26.9.1, with no signal anywhere: the upload
+#: returns 200 and the users simply stop getting updates. A cap pinned to the month you happened
+#: to publish in expires by the next release, and `docs/ankiweb.md` promises "25.09 or newer"
+#: with no upper bound. Zero is proto3's default, so `_uint` drops the field entirely — which is
+#: what a blank maximum on the upload form means.
+MAX_POINT_VERSION = 0
 
 #: The listing's description, kept in the repo. AnkiWeb's request carries the description on
 #: every upload, and proto3 cannot tell "unset" from "empty" — so omitting it would blank the

@@ -30,12 +30,11 @@
 # below lives inside the job that just got killed. Here the publish gets a run of its own that
 # `ci-main` cannot reach.
 #
-# **Why not AnkiWeb.** It has no public upload API; automating its private endpoint means driving
-# a login session from CI, and an Anki maintainer has said on the official forum that the Terms
-# do not currently permit third-party API access. That is the account owner's call to take
-# deliberately, not something to arrange quietly inside a workflow. A Release is also additive
-# where AnkiWeb is not: it keeps exactly one published build per branch, so an upload replaces
-# what every existing user gets on their next update check.
+# **Why this lane never touches AnkiWeb.** That listing keeps exactly one published build per
+# branch, so an upload replaces what every existing user gets on their next update check — which
+# is a decision, not a consequence of merging. It happens in `ankiweb.yml`, on a `v*` tag that a
+# person pushes. A Release here is additive instead: the previous build stays downloadable and
+# the tag records which commit it came from.
 #
 # Docs-only and test-only commits publish nothing: there is no new add-on in them, and a release
 # per README typo trains everyone to ignore the release list.
