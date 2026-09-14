@@ -107,11 +107,13 @@ def _backup_folder() -> str:
     return str(mw.pm.backupFolder())
 
 
-def apply_package(path: str) -> ApplyResult:
+def apply_package(path: str, policy: str = "") -> ApplyResult:
     """Import a pulled package into this collection.
 
     Args:
         path: The ``.apkg`` that arrived.
+        policy: What to do with a note that exists on both machines — ``keep`` (the default) or
+            ``override``.
 
     Returns:
         What changed.
@@ -131,7 +133,11 @@ def apply_package(path: str) -> ApplyResult:
             package_path=path,
             options=ImportAnkiPackageOptions(
                 merge_notetypes=True,
-                update_notes=_if_newer(),
+                update_notes=_condition(policy),
+                # Note types always follow IF_NEWER, whatever the note policy says. The choice
+                # the user made is about their NOTES; silently replacing a note type they edited
+                # here would empty a field on every note that used it, which is not something to
+                # infer from an answer to a different question.
                 update_notetypes=_if_newer(),
                 with_scheduling=True,
                 with_deck_configs=True,
@@ -156,16 +162,28 @@ def apply_package(path: str) -> ApplyResult:
     return result
 
 
+def _condition(policy: str) -> int:
+    """Anki's update condition for the policy the user chose.
+
+    ``keep`` is NEVER rather than IF_NEWER: "leave what is here alone" has to mean exactly that,
+    and a note that is newer over there is still a note this machine already has.
+    """
+    from anki.import_export_pb2 import ImportAnkiPackageUpdateCondition as Condition
+
+    from omnia.core.sync.clash import OVERRIDE, normalise
+
+    if normalise(policy) == OVERRIDE:
+        return int(Condition.IMPORT_ANKI_PACKAGE_UPDATE_CONDITION_ALWAYS)
+    return int(Condition.IMPORT_ANKI_PACKAGE_UPDATE_CONDITION_NEVER)
+
+
 def _if_newer() -> int:
-    """Anki's "update only when the arriving one is newer".
+    """Anki's "update only when the arriving one is newer" — what NOTE TYPES are imported under.
 
-    The condition both notes and note types are imported under, and the reason is the same for
-    both: what arrives usually already exists here. Two machines syncing the same decks through
-    AnkiWeb share note ids, so ALWAYS would overwrite edits made on this machine and NEVER would
-    make a second copy of every card — doubling the collection in one click.
-
-    Sharper still for note types: one with this name may differ here because the user added a
-    field on this machine, and replacing it wholesale empties that field on every note using it.
+    Not a choice the user is asked to make. One with this name may differ here because they added
+    a field on this machine, and replacing it wholesale empties that field on every note using
+    it; making a second copy of it instead would split their notes across two note types that
+    look identical. IF_NEWER is the only one of the three that does neither.
     """
     from anki.import_export_pb2 import ImportAnkiPackageUpdateCondition
 

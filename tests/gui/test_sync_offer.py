@@ -128,9 +128,13 @@ class TestTheNoteTypesAndTheSettings:
 
         assert "1,200" in page
 
-    def test_it_explains_that_dropping_one_keeps_the_deck(self):
-        # The whole reason this is a drop and not a pick, and not obvious from the chip alone.
-        assert "the deck still comes, its notes of that type do not" in _page().lower()
+    def test_it_explains_both_things_a_click_can_mean(self):
+        # A chip does one of two opposite things depending on where it stands, and neither is
+        # obvious from the chip alone.
+        page = _page().lower()
+
+        assert "leave it behind and the deck still comes without those notes" in page
+        assert "bring just its definition, with no notes at all" in page
 
     def test_every_configured_feature_is_its_own_chip(self):
         page = _page()

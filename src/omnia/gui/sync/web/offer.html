@@ -25,6 +25,21 @@
     <button class="offer-btn" id="offer-go" disabled>Copy to this computer</button>
   </footer>
 </div>
+<div class="offer-sheet" id="offer-sheet" hidden>
+  <div class="offer-sheet-card" role="dialog" aria-modal="true" aria-labelledby="offer-sheet-title">
+    <h2 id="offer-sheet-title">Before it copies</h2>
+    <ul class="offer-sheet-lines" id="offer-sheet-lines"></ul>
+    <fieldset class="offer-policy">
+      <legend>If a note is on both computers</legend>
+      <label><input type="radio" name="offer-policy" value="keep"> Leave this computer's alone</label>
+      <label><input type="radio" name="offer-policy" value="override"> Replace it with the arriving one</label>
+    </fieldset>
+    <div class="offer-sheet-buttons">
+      <button class="offer-btn offer-btn-quiet" id="offer-cancel">Cancel</button>
+      <button class="offer-btn" id="offer-confirm">Copy</button>
+    </div>
+  </div>
+</div>
 <script>
 {js}
 </script>

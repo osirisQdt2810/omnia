@@ -85,8 +85,9 @@ def applied(monkeypatch):
         seen["backup_reason"] = reason
         return True
 
-    def apply_package(path):
+    def apply_package(path, policy=""):
         seen["packages"].append((path, os.path.exists(path)))
+        seen["policy"] = policy
         return _Result()
 
     monkeypatch.setattr("omnia.gui.sync.apply.backup_first", backup_first)
@@ -209,13 +210,27 @@ class TestWhenItGoesWrong:
         paths: list[str] = []
         monkeypatch.setattr(
             "omnia.gui.sync.apply.apply_package",
-            lambda path: paths.append(path)
+            lambda path, policy="": paths.append(path)
             or (_ for _ in ()).throw(RuntimeError("no")),
         )
 
         job_module.start_pull(_Client(), _request(), repo=None)
 
         assert paths and not os.path.exists(paths[0])
+
+
+class TestTheDuplicatePolicy:
+    def test_it_reaches_the_import(self, inline, applied):
+        job_module.start_pull(_Client(), _request(), repo=None, policy="override")
+
+        assert applied["policy"] == "override"
+
+    def test_none_chosen_leaves_the_import_to_its_own_default(self, inline, applied):
+        # Which is KEEP. The safe one is safe in both places, so a missing choice cannot become
+        # permission to overwrite by passing through an extra layer.
+        job_module.start_pull(_Client(), _request(), repo=None)
+
+        assert applied["policy"] == ""
 
 
 class TestFindingItAgain:

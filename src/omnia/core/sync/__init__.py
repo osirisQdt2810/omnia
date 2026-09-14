@@ -13,6 +13,7 @@ This package holds the parts that need no Anki:
 * :mod:`.selection` — the whole of what is being asked for: decks, the note types they drag along,
   and the settings;
 * :mod:`.service` — the source's read-only session (ADR-020's five conditions, in code);
+* :mod:`.clash` — what a pull would land on top of, and what happens to a note that is on both;
 * :mod:`.package` — what one machine asks another to pack, and what that request may mean;
 * :mod:`.progress` — how far a pull has got and how much longer it has, as a value;
 * :mod:`.client` — the target's side, whose whole job is that every failure names its own fix;
@@ -24,6 +25,13 @@ and marshalling that onto the Qt main thread is the caller's job.
 
 from __future__ import annotations
 
+from omnia.core.sync.clash import (
+    KEEP,
+    OVERRIDE,
+    Clashes,
+    NoteTypeClash,
+    find_clashes,
+)
 from omnia.core.sync.client import (
     TIMEOUT_SECONDS,
     SyncClient,
@@ -119,6 +127,7 @@ __all__ = [
     "ID_DIGITS",
     "IMPORTING",
     "INVENTORY_PATH",
+    "KEEP",
     "KIND_LAN",
     "KIND_MESH",
     "KIND_OTHER",
@@ -127,6 +136,7 @@ __all__ = [
     "LOCKOUT_SECONDS",
     "MAX_ATTEMPTS",
     "NEEDED",
+    "OVERRIDE",
     "PACKAGE_PATH",
     "PARTIAL",
     "PASSCODE_DIGITS",
@@ -137,6 +147,7 @@ __all__ = [
     "TOKEN_HEADER",
     "UNPICKED",
     "Address",
+    "Clashes",
     "ConfigSummary",
     "DeckEntry",
     "DeckNode",
@@ -147,6 +158,7 @@ __all__ = [
     "InventoryError",
     "MachineIdentity",
     "MachineSettings",
+    "NoteTypeClash",
     "NoteTypeEntry",
     "OfferSelection",
     "PackageError",
@@ -160,6 +172,7 @@ __all__ = [
     "SyncClient",
     "SyncError",
     "access_code",
+    "find_clashes",
     "format_bytes",
     "format_duration",
     "format_machine_id",

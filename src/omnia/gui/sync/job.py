@@ -57,11 +57,17 @@ class PullJob:
     """
 
     def __init__(
-        self, client: Any, request: PackageRequest, repo: Any, machine: str = ""
+        self,
+        client: Any,
+        request: PackageRequest,
+        repo: Any,
+        machine: str = "",
+        policy: str = "",
     ) -> None:
         self._client = client
         self._request = request
         self._repo = repo
+        self._policy = policy
         self._machine = machine or "the other computer"
         self._tracker = ProgressTracker(time.monotonic)
         self._lock = threading.Lock()
@@ -125,7 +131,7 @@ class PullJob:
         self._phase(IMPORTING)
         try:
             backup_first(f"before copying from {self._machine}")
-            result = apply_package(path)
+            result = apply_package(path, self._policy)
         except Exception as exc:
             logger.exception("sync: could not add the package to this collection")
             self._fail(
@@ -188,6 +194,7 @@ def start_pull(
     repo: Any,
     *,
     machine: str = "",
+    policy: str = "",
     on_change: Optional[Callable[[], None]] = None,
 ) -> PullJob:
     """Begin a pull, if none is already running.
@@ -203,7 +210,7 @@ def start_pull(
             raise PullRefusedError(
                 "A copy is already running. Wait for it to finish before starting another."
             )
-        job = PullJob(client, request, repo, machine=machine)
+        job = PullJob(client, request, repo, machine=machine, policy=policy)
         _CURRENT = job
     job.start(on_change)
     return job

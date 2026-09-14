@@ -49,8 +49,10 @@ class OfferDialog(WebDialog):
             html=self._render(),
             handlers={
                 "pick_deck": self._on_pick_deck,
-                "drop_note_type": self._on_drop_note_type,
+                "toggle_note_type": self._on_toggle_note_type,
                 "pick_feature": self._on_pick_feature,
+                "check": self._on_check,
+                "set_policy": self._on_set_policy,
                 "pull": self._on_pull,
             },
             width=640,
@@ -66,9 +68,9 @@ class OfferDialog(WebDialog):
         """Toggle one deck. Answers for the note types too — they follow the decks."""
         return self._answer(self._selection.pick_deck(str(data.get("name", ""))))
 
-    def _on_drop_note_type(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Leave one note type behind, or take it back."""
-        return self._answer(self._selection.drop_note_type(str(data.get("name", ""))))
+    def _on_toggle_note_type(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Click one note type: drop it, take it back, or choose it outright."""
+        return self._answer(self._selection.toggle_note_type(str(data.get("name", ""))))
 
     def _on_pick_feature(self, data: dict[str, Any]) -> dict[str, Any]:
         """Toggle one feature's settings."""
@@ -81,6 +83,66 @@ class OfferDialog(WebDialog):
         answer["tally"] = self._selection.tally()
         return answer
 
+    def _on_check(self, _data: dict[str, Any]) -> dict[str, Any]:
+        """What this copy would land on, before anything moves.
+
+        Asked and answered on THIS machine: the target is the only one that knows what it already
+        has, and a warning computed anywhere else would be a guess.
+        """
+        from omnia.core.sync.clash import describe, find_clashes, normalise
+
+        policy = self._policy()
+        try:
+            request = self._build_request()
+        except PackageError as exc:
+            return {"refused": str(exc)}
+        clashes = find_clashes(
+            decks=request.decks,
+            note_types=request.note_types,
+            here=self._local_inventory(),
+            there=self._inventory,
+        )
+        return {
+            "clashes": bool(clashes),
+            "serious": bool(clashes.serious),
+            "lines": describe(clashes, normalise(policy)),
+            "policy": normalise(policy),
+            "decks": len(request.decks),
+            "note_types": len(request.note_types),
+        }
+
+    def _on_set_policy(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Remember what to do with a note that exists on both machines."""
+        from omnia.core.sync.clash import normalise
+
+        policy = normalise(data.get("policy"))
+        try:
+            self._repo.update_section("sync", {"on_duplicate": policy})
+        except Exception:
+            logger.exception("sync: could not remember the duplicate choice")
+        return {"policy": policy}
+
+    def _policy(self) -> str:
+        from omnia.core.sync.clash import normalise
+
+        try:
+            return normalise(self._repo.raw_section("sync").get("on_duplicate"))
+        except Exception:
+            return normalise(None)
+
+    def _local_inventory(self) -> Any:
+        """What THIS machine already has, for the clash check."""
+        from omnia.gui.sync.collect import read_inventory
+
+        return read_inventory(self._repo)
+
+    def _build_request(self) -> PackageRequest:
+        return PackageRequest(
+            decks=tuple(sorted(self._selection.decks)),
+            note_types=tuple(sorted(self._selection.note_types)),
+            config=tuple(sorted(self._selection.features)),
+        )
+
     def _on_pull(self, _data: dict[str, Any]) -> dict[str, Any]:
         """Start copying what was picked.
 
@@ -91,11 +153,7 @@ class OfferDialog(WebDialog):
         from omnia.gui.sync.job import PullRefusedError, start_pull
 
         try:
-            request = PackageRequest(
-                decks=tuple(sorted(self._selection.decks)),
-                note_types=tuple(sorted(self._selection.note_types)),
-                config=tuple(sorted(self._selection.features)),
-            )
+            request = self._build_request()
         except PackageError as exc:
             return {"refused": str(exc)}
         if self._client is None:
@@ -115,6 +173,7 @@ class OfferDialog(WebDialog):
                 request,
                 self._repo,
                 machine=self._inventory.machine or "the other computer",
+                policy=self._policy(),
             )
         except PullRefusedError as exc:
             return {"refused": str(exc)}

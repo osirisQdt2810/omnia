@@ -157,3 +157,37 @@ body.omnia-dark {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* The confirmation. Over the picker rather than a window of its own, because the thing it is
+   about — which decks and note types are lit — is directly behind it and worth still seeing. */
+.offer-sheet {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center;
+  justify-content: center; padding: 24px;
+  background: rgba(0, 0, 0, .38);
+  animation: offer-fade .16s ease;
+}
+.offer-sheet[hidden] { display: none; }
+.offer-sheet-card {
+  width: min(520px, 100%); max-height: 100%; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .35);
+  animation: offer-rise .18s cubic-bezier(.2, .8, .3, 1);
+}
+@keyframes offer-fade { from { opacity: 0; } }
+@keyframes offer-rise { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+.offer-sheet-card h2 { margin: 0; font-size: 15px; }
+.offer-sheet-lines { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 7px; }
+.offer-sheet-lines li { line-height: 1.5; }
+/* The one that can lose something gets the colour; the rest are information. */
+.offer-sheet-lines li.offer-serious { color: var(--warn, #b4530a); font-weight: 600; }
+.offer-policy {
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.offer-policy legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
+.offer-policy label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.offer-sheet-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.offer-btn-quiet { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+body.omnia-light { --warn: #b4530a; }
+body.omnia-dark { --warn: #e0a458; }
