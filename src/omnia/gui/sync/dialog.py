@@ -131,14 +131,10 @@ class SyncDialog(WebDialog):
         started = session.start(identity, self._inventory)
         if started:
             self._show(
-                PanelState(
+                self._keeping_peer(
                     sharing=True,
                     machine_id=machine_id(identity),
                     access_code=access_code(identity),
-                    peer_id=self._state.peer_id,
-                    peer_code=self._state.peer_code,
-                    status=self._state.status,
-                    connected=self._state.connected,
                 )
             )
         else:
@@ -166,12 +162,10 @@ class SyncDialog(WebDialog):
             self._show(self._off(local_status=_PORT_TAKEN.format(port=identity.port)))
             return {"ok": False}
         self._show(
-            PanelState(
+            self._keeping_peer(
                 sharing=restarted,
                 machine_id=machine_id(identity) if restarted else "",
                 access_code=access_code(identity) if restarted else "",
-                peer_id=self._state.peer_id,
-                peer_code=self._state.peer_code,
                 local_status=(
                     "This computer has a new access code. The old one no longer opens it — "
                     "the ID has not changed."
@@ -277,14 +271,38 @@ class SyncDialog(WebDialog):
         )
 
     def _off(self, *, local_status: str = "") -> PanelState:
-        """Sharing off, with whatever the user typed about the OTHER machine left alone."""
+        """Sharing off, with everything about the OTHER machine left exactly as it was.
+
+        ``status`` and ``connected`` describe one thing and have to move together: the first is
+        the sentence, the second is whether it is good news, and carrying one without the other
+        repaints "Connected to the-mac." as an orange warning. Switching THIS machine's sharing
+        off says nothing about whether the other machine answered.
+        """
+        return self._keeping_peer(sharing=False, local_status=local_status)
+
+    def _keeping_peer(
+        self,
+        *,
+        sharing: bool,
+        local_status: str = "",
+        machine_id: str = "",
+        access_code: str = "",
+    ) -> PanelState:
+        """A state that changes THIS machine's half and leaves the other machine's alone.
+
+        One constructor for every op that touches only this card, so "leave the other half alone"
+        is written once instead of copied into each — copying it is how one of them ended up
+        keeping the peer's sentence and dropping the flag that says how to colour it.
+        """
         return PanelState(
-            sharing=False,
+            sharing=sharing,
+            machine_id=machine_id,
+            access_code=access_code,
+            local_status=local_status,
             peer_id=self._state.peer_id,
             peer_code=self._state.peer_code,
             status=self._state.status,
-            connected=False,
-            local_status=local_status,
+            connected=self._state.connected,
         )
 
 

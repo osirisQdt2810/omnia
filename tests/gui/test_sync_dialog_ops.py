@@ -39,7 +39,16 @@ def dialog(monkeypatch):
     panel._settings = MachineSettings(repo)
     panel._inventory = lambda: None
     panel._offer = None
-    panel._state = PanelState(sharing=True, machine_id="1", access_code="2")
+    # Seeded with a SUCCESSFUL peer result. Every op below touches only this machine's half, and
+    # an assertion against an empty `status` is vacuous — it passes whether the op preserves the
+    # peer's sentence or wipes it, which is exactly how a regression here went unnoticed.
+    panel._state = PanelState(
+        sharing=True,
+        machine_id="1",
+        access_code="2",
+        status="Connected to the-mac.",
+        connected=True,
+    )
     shown: list[PanelState] = []
     monkeypatch.setattr(SyncDialog, "_show", lambda self, state: shown.append(state))
     panel.shown = shown
@@ -86,7 +95,7 @@ class TestRegeneratingTheAccessCode:
         assert "8767" in state.local_status
         assert "already in use" in state.local_status
         # And NOT in the other machine's slot, which is where it used to land.
-        assert state.status == ""
+        assert state.status == "Connected to the-mac."
 
     def test_a_failed_restart_shows_no_id_to_hand_out(self, dialog, monkeypatch):
         monkeypatch.setattr(session, "start", lambda identity, inventory: False)
@@ -120,7 +129,57 @@ class TestTheSharingSwitch:
         assert answer == {"ok": False}
         assert dialog._settings.identity().sharing is False
         assert "already in use" in dialog.shown[-1].local_status
-        assert dialog.shown[-1].status == ""
+        assert dialog.shown[-1].status == "Connected to the-mac."
+
+
+class TestTheOtherMachinesHalfIsLeftAlone:
+    """``status`` and ``connected`` describe ONE thing and have to move together.
+
+    The first is the sentence, the second is whether it is good news and therefore green. Every
+    op below touches only this machine, and carrying the sentence without the flag repaints
+    "Connected to the-mac." as an orange warning — the bug class this whole area exists to
+    remove, reintroduced two lines under the fix for it.
+    """
+
+    @staticmethod
+    def _assert_peer_intact(state) -> None:
+        assert state.status == "Connected to the-mac."
+        assert state.connected is True
+
+    def test_turning_sharing_off_keeps_the_peer_result(self, dialog):
+        dialog._on_sharing({"on": False})
+
+        self._assert_peer_intact(dialog.shown[-1])
+
+    def test_a_port_conflict_keeps_the_peer_result(self, dialog, monkeypatch):
+        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+
+        dialog._on_sharing({"on": True})
+
+        self._assert_peer_intact(dialog.shown[-1])
+
+    def test_turning_sharing_on_keeps_the_peer_result(self, dialog, monkeypatch):
+        monkeypatch.setattr(session, "start", lambda identity, inventory: True)
+
+        dialog._on_sharing({"on": True})
+
+        self._assert_peer_intact(dialog.shown[-1])
+
+    def test_a_new_access_code_keeps_the_peer_result(self, dialog, monkeypatch):
+        # The sibling op dropped it entirely, which is the same inconsistency wearing the other
+        # face: one of the two ops kept the peer's sentence and the other silently binned it.
+        monkeypatch.setattr(session, "start", lambda identity, inventory: True)
+
+        dialog._on_regenerate({})
+
+        self._assert_peer_intact(dialog.shown[-1])
+
+    def test_a_new_code_whose_restart_fails_keeps_it_too(self, dialog, monkeypatch):
+        monkeypatch.setattr(session, "start", lambda identity, inventory: False)
+
+        dialog._on_regenerate({})
+
+        self._assert_peer_intact(dialog.shown[-1])
 
 
 class TestCheckingTheOtherMachine:

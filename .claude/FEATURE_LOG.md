@@ -21,6 +21,52 @@ Format for each entry:
 
 ---
 
+## 2026-09-14 — Pulling one machine's decks and settings onto another (ADR-020)
+
+**What:** Omnia can show what another computer holds and let the user pick from it. Each machine
+shows an **eleven-digit ID** and a **nine-digit access code**; typing both into the other machine
+opens a read-only session over HTTP, and a second window lists that machine's deck tree, note
+types and configured features to choose from. Sync is an Omnia-level action — a button on the
+settings header row, not a plugin tile. **Copying is not wired yet**: this slice can look, not
+bring.
+
+**Why:** one person, two computers, one AnkiWeb account — but AnkiWeb is all-or-nothing and the
+collection is too large to move that way. The user wants a few decks and the Omnia setup that
+goes with them, over the internet, with no export/import step in between.
+
+**Files:**
+- `src/omnia/core/sync/` — `pairing` (the two numbers, and a Verhoeff check digit), `reachability`
+  (which of this machine's addresses another could dial), `inventory` (what is offered, as data),
+  `service` (the source's read-only session + the guessing lockout), `client` (every failure gets
+  a sentence), `machine` (this machine's identity, kept OFF the collection), `tree`/`selection`
+  (what picking a deck means).
+- `src/omnia/gui/sync/` — `dialog` (pairing), `offer`/`offer_html` (the picker), `collect` (the
+  one module that touches Anki), `session` (the socket's lifecycle), `web/`.
+- Seams touched: `core/config/loader.py` + `repository.py` (a new `machine.toml` domain, on disk),
+  `gui/web_dialog.py` (`set_html` gained the deleted-webview guard `eval_js` already had),
+  `gui/settings_html.py` + `web/settings.{css,js}` (the header action row),
+  `src/omnia/__init__.py` (restore sharing at profile open, close it at profile close).
+
+**How to verify:**
+```bash
+pytest tests/core/test_sync_*.py tests/gui/test_sync_*.py -q
+```
+Live, on one machine: switch sharing on, then type this machine's own two numbers into the other
+half. The picker opens on the real collection. Across two machines, do the same with the other
+machine's numbers.
+
+**Notes / rollback:**
+- The nine-digit code is only safe because the source refuses to be guessed at — five wrong codes
+  and it stops answering for a minute. **The short code and the lockout are one decision**; do not
+  change either without the other.
+- `machine.toml` must be listed in BOTH `TomlConfigLoader.LIVE_FILES` and
+  `CollectionConfigLoader._MERGE_ORDER`. In only one, the section is written and never read back,
+  and the access code is re-minted on every read.
+- Nothing binds a socket until somebody switches sharing on, and no profile is given an access
+  code until it opens the panel.
+- Rollback: the feature is inert with sharing off. Removing the header action hides it entirely.
+
+
 ## 2026-09-13 — The interval label reflects the typing grade, not an ungraded Good
 
 **What:** display_interval publishes `display_interval.interval_label` (an object with
