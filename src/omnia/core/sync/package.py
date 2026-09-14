@@ -40,6 +40,11 @@ class PackageRequest:
     #: Note type names whose notes may travel. Always the complete list of what should come; an
     #: empty one means everything was dropped, not that there is no restriction.
     note_types: tuple[str, ...] = ()
+    #: Note types the user asked for OUTRIGHT — their definitions travel whether or not any cards
+    #: use them. Carried separately rather than inferred at the source, which with decks named
+    #: cannot tell "in the filter because a deck needs it" from "because the user asked for it";
+    #: guessing wrong means a chosen note type arriving as nothing at all.
+    definitions: tuple[str, ...] = ()
     #: Config sections to copy. Not part of the package — they ride in the same answer because
     #: they are part of the same decision.
     config: tuple[str, ...] = ()
@@ -58,7 +63,12 @@ class PackageRequest:
                 rather than widened: either could be read as "send everything", and that reading
                 is how a mis-registered checkbox turns into somebody's whole collection.
         """
-        if not self.decks and not self.note_types and not self.config:
+        if (
+            not self.decks
+            and not self.note_types
+            and not self.definitions
+            and not self.config
+        ):
             raise PackageError("nothing was chosen to copy")
         if self.decks and not self.note_types:
             raise PackageError(
@@ -81,6 +91,7 @@ class PackageRequest:
             {
                 "decks": list(self.decks),
                 "note_types": list(self.note_types),
+                "definitions": list(self.definitions),
                 "config": list(self.config),
                 "with_scheduling": self.with_scheduling,
                 "with_media": self.with_media,
@@ -103,6 +114,7 @@ class PackageRequest:
         return cls(
             decks=_names(raw.get("decks")),
             note_types=_names(raw.get("note_types")),
+            definitions=_names(raw.get("definitions")),
             config=_names(raw.get("config")),
             with_scheduling=bool(raw.get("with_scheduling", True)),
             with_media=bool(raw.get("with_media", True)),

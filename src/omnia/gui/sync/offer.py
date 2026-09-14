@@ -140,6 +140,7 @@ class OfferDialog(WebDialog):
         return PackageRequest(
             decks=tuple(sorted(self._selection.decks)),
             note_types=tuple(sorted(self._selection.note_types)),
+            definitions=tuple(sorted(self._selection.chosen_note_types)),
             config=tuple(sorted(self._selection.features)),
         )
 

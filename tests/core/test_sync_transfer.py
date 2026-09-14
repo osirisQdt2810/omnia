@@ -93,6 +93,56 @@ class TestAPackageCrossesWhole:
         assert seen[-1] == len(PAYLOAD)
 
 
+class TestHowLongItWaits:
+    def test_packing_gets_far_longer_than_an_ordinary_request(self):
+        # Packing is SYNCHRONOUS on the source: it exports the whole selection, media and all,
+        # before writing a byte of the answer. A few hundred megabytes is minutes, and the
+        # ordinary twenty-second deadline would report "it did not answer in time — it may be
+        # asleep", which is a cause this module has not established. Worse, the source would
+        # finish and hold a package nobody ever fetches, and every retry leaks another.
+        from omnia.core.sync import PACK_TIMEOUT_SECONDS, TIMEOUT_SECONDS
+
+        assert PACK_TIMEOUT_SECONDS >= 600
+        assert PACK_TIMEOUT_SECONDS > TIMEOUT_SECONDS * 10
+
+    def test_the_pack_request_actually_uses_it(self, packed, monkeypatch):
+        # Asserted on the call, not on the constant: a deadline defined and not passed is the
+        # same twenty-second failure with a longer number written next to it.
+        import urllib.request
+
+        _session, client, _made, _tmp = packed
+        seen: list[float] = []
+        real = urllib.request.urlopen
+
+        def record(request, timeout=None, **kwargs):
+            seen.append(timeout)
+            return real(request, timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(urllib.request, "urlopen", record)
+        client.request_package(_request())
+
+        from omnia.core.sync import PACK_TIMEOUT_SECONDS
+
+        assert seen == [PACK_TIMEOUT_SECONDS]
+
+    def test_an_ordinary_request_keeps_the_short_one(self, packed, monkeypatch):
+        # hello and inventory stay short, so a sleeping machine is reported quickly.
+        import urllib.request
+
+        _session, client, _made, _tmp = packed
+        seen: list[float] = []
+        real = urllib.request.urlopen
+
+        def record(request, timeout=None, **kwargs):
+            seen.append(timeout)
+            return real(request, timeout=timeout, **kwargs)
+
+        monkeypatch.setattr(urllib.request, "urlopen", record)
+        client.hello()
+
+        assert seen == [10]  # the fixture's own timeout, not the pack one
+
+
 class TestWhatTheSourceDoesNotKeep:
     def test_a_package_is_fetched_once_and_then_gone(self, packed):
         # This machine is not keeping a copy of somebody's decks on the chance they ask again.

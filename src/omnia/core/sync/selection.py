@@ -93,6 +93,16 @@ class OfferSelection:
         return out
 
     @property
+    def chosen_note_types(self) -> set[str]:
+        """The note types picked for their own sake, whether or not a deck also needs them.
+
+        Sent to the source as its own list rather than inferred there: with decks named it cannot
+        tell "this note type is in the filter because a deck needs it" from "…because the user
+        asked for it", and guessing wrong means a chosen note type arriving as nothing at all.
+        """
+        return set(self._chosen)
+
+    @property
     def note_types(self) -> set[str]:
         """The note types that will actually travel.
 
@@ -120,6 +130,11 @@ class OfferSelection:
                 self._dropped.discard(name)
             else:
                 self._dropped.add(name)
+                # Also un-choose it. A chip can be lit two ways — chosen outright, then needed by
+                # a deck picked afterwards — and without this the union puts it straight back:
+                # the chip read "dropped", the tally said one was left behind, and the notes
+                # travelled anyway.
+                self._chosen.discard(name)
         elif name in self._chosen:
             self._chosen.discard(name)
         else:

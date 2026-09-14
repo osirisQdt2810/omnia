@@ -74,6 +74,12 @@ class PullJob:
         self._path: Optional[str] = None
         self._finished = False
         self._result: str = ""
+        #: Bound here as well as in ``start`` so nothing can reach ``_phase`` before it exists.
+        self._on_change: Callable[[], None] = lambda: None
+        #: Set when the profile closes. The worker checks it between chunks rather than being
+        #: killed: a download interrupted mid-write is fine, but one that keeps writing into a
+        #: path that has just been unlinked is a file nobody will ever clean up.
+        self._abandoned = False
 
     # --- what anybody drawing this needs --------------------------------------------------
     def snapshot(self) -> Progress:
@@ -93,13 +99,21 @@ class PullJob:
 
     # --- the run ---------------------------------------------------------------------------
     def start(self, on_change: Optional[Callable[[], None]] = None) -> None:
-        """Begin. Returns at once; the work happens elsewhere."""
+        """Begin. Returns at once; the work happens elsewhere.
+
+        Deliberately with NO progress label. ``run_in_background`` turns one into
+        ``QueryOp.with_progress``, which is Anki's application-MODAL progress window — and a
+        modal is the exact opposite of what this feature is for. With one up, the user cannot
+        close the picker, cannot answer a card, and cannot open the settings dialog, so the Sync
+        button filling up behind its label could only ever be seen after the copy it was
+        reporting had finished. The three polling surfaces are the progress display; a fourth
+        that blocks the other three is not an addition.
+        """
         self._on_change = on_change or (lambda: None)
         anki_compat.run_in_background(
             self._fetch,
             on_success=self._import,
             on_failure=self._failed,
-            label=f"Omnia: copying from {self._machine}…",
         )
 
     def _fetch(self) -> PackageOffer:
@@ -124,9 +138,15 @@ class PullJob:
         return offer
 
     def _advance(self, done: int) -> None:
+        if self._abandoned:
+            raise PullAbandonedError("the profile closed while this copy was running")
         with self._lock:
             self._tracker.advance(done)
         self._on_change()
+
+    def abandon(self) -> None:
+        """Stop as soon as the worker notices. Called when the profile closes."""
+        self._abandoned = True
 
     def _phase(self, phase: str, *, detail: str = "") -> None:
         with self._lock:
@@ -208,6 +228,10 @@ class PullRefusedError(RuntimeError):
     """A pull that must not start, with a reason a person can act on."""
 
 
+class PullAbandonedError(RuntimeError):
+    """A pull the profile walked out on. Not a failure anybody needs a sentence for."""
+
+
 def start_pull(
     client: Any,
     request: PackageRequest,
@@ -255,11 +279,16 @@ def _release(job: PullJob) -> None:
 
 
 def forget() -> None:
-    """Drop whatever is remembered. Called when the profile closes."""
+    """Stop and drop whatever is remembered. Called when the profile closes.
+
+    The in-flight worker is told to stop BEFORE the file is removed: unlinking underneath a
+    download that is still writing leaves a file with no name and no one to delete it.
+    """
     global _CURRENT
     with _CURRENT_LOCK:
         job, _CURRENT = _CURRENT, None
     if job is not None:
+        job.abandon()
         job._discard()
 
 

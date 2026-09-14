@@ -33,6 +33,7 @@ from omnia.core.sync.clash import (
     find_clashes,
 )
 from omnia.core.sync.client import (
+    PACK_TIMEOUT_SECONDS,
     TIMEOUT_SECONDS,
     SyncClient,
     SyncError,
@@ -138,6 +139,7 @@ __all__ = [
     "NEEDED",
     "OVERRIDE",
     "PACKAGE_PATH",
+    "PACK_TIMEOUT_SECONDS",
     "PARTIAL",
     "PASSCODE_DIGITS",
     "PICKED",

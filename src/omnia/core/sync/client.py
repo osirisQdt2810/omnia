@@ -47,6 +47,13 @@ _CHUNK_BYTES = 256 * 1024
 #: look hung when the other machine is simply off.
 TIMEOUT_SECONDS = 20.0
 
+#: What the PACK request gets instead. It is not a timeout on a network round trip: the source
+#: exports the whole selection, media and all, before writing a byte of the answer, so this is a
+#: bound on how long an export may take. Fifteen minutes covers a large deck with its media on a
+#: slow disk; past that something is genuinely wrong, and a machine that packs for longer than
+#: the user will sit still for is not a machine this should keep waiting on.
+PACK_TIMEOUT_SECONDS = 900.0
+
 logger = get_logger("sync")
 
 #: What a machine that is not sharing looks like on the wire: nothing is listening on the port,
@@ -133,6 +140,14 @@ class SyncClient:
         Separate from fetching it so the size is known BEFORE a byte moves — which is what turns
         the copy into a percentage and a time estimate rather than a spinner that means nothing.
 
+        Given :data:`PACK_TIMEOUT_SECONDS` rather than the usual one. Packing is SYNCHRONOUS on
+        the source: it exports the whole selection, media and all, before writing a byte of the
+        answer. Three decks with a few hundred megabytes of media is minutes, and the ordinary
+        twenty-second deadline would report "it did not answer in time — it may be asleep", which
+        is the one thing this module promises never to do: name a cause it has not established.
+        Worse, the source would finish and hold a package nobody ever fetched, and every retry
+        would leak another one.
+
         Returns:
             What it packed.
 
@@ -142,7 +157,9 @@ class SyncClient:
         body = request.to_json().encode("utf-8")
         try:
             return PackageOffer.from_json(
-                self._send(PACKAGE_PATH, body).decode("utf-8")
+                self._send(PACKAGE_PATH, body, timeout=PACK_TIMEOUT_SECONDS).decode(
+                    "utf-8"
+                )
             )
         except PackageError as exc:
             raise SyncError(str(exc)) from exc
@@ -203,14 +220,16 @@ class SyncClient:
     def _headers(self) -> dict[str, str]:
         return {TOKEN_HEADER: self._address.token, "User-Agent": "omnia-sync"}
 
-    def _send(self, path: str, body: bytes) -> bytes:
+    def _send(
+        self, path: str, body: bytes, *, timeout: Optional[float] = None
+    ) -> bytes:
         """One authenticated POST, with every failure turned into a sentence."""
         headers = self._headers()
         headers["Content-Type"] = "application/json"
         request = urllib.request.Request(
             f"{self._address.base_url}{path}", data=body, method="POST", headers=headers
         )
-        return self._perform(request)
+        return self._perform(request, timeout=timeout)
 
     def _get(self, path: str) -> bytes:
         """One authenticated GET, with every failure turned into a sentence."""
@@ -219,10 +238,13 @@ class SyncClient:
         )
         return self._perform(request)
 
-    def _perform(self, request: urllib.request.Request) -> bytes:
+    def _perform(
+        self, request: urllib.request.Request, *, timeout: Optional[float] = None
+    ) -> bytes:
         """Send one prepared request, with every failure turned into a sentence."""
+        deadline = timeout or self._timeout
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            with urllib.request.urlopen(request, timeout=deadline) as response:
                 return bytes(response.read())
         except urllib.error.HTTPError as exc:
             raise SyncError(_from_status(exc.code, _reason(exc))) from None

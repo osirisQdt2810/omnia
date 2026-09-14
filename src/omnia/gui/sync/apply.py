@@ -50,29 +50,34 @@ class ApplyResult:
 
     @property
     def summary(self) -> str:
-        """One line naming what arrived."""
+        """One line naming what arrived.
+
+        Every kind of thing that can arrive gets a clause. A pull that created a note type and
+        nothing else used to report "nothing new — this machine already had it all", telling the
+        user the thing that just worked did not happen — and that sentence is what the picker's
+        strip and the Sync button tooltip both show.
+        """
         parts = []
         if self.notes_added:
-            parts.append(
-                f"{self.notes_added:,} new note"
-                + ("" if self.notes_added == 1 else "s")
-            )
+            parts.append(_count(self.notes_added, "new note"))
         if self.notes_updated:
-            parts.append(
-                f"{self.notes_updated:,} note"
-                + ("" if self.notes_updated == 1 else "s")
-                + " updated"
-            )
+            parts.append(_count(self.notes_updated, "note") + " updated")
+        if self.note_types_added:
+            parts.append(_count(len(self.note_types_added), "note type"))
         if self.sections:
-            parts.append(
-                f"{len(self.sections)} setting"
-                + ("" if len(self.sections) == 1 else "s")
-            )
-        return (
-            ", ".join(parts)
-            if parts
-            else "nothing new — this machine already had it all"
-        )
+            parts.append(_count(len(self.sections), "setting"))
+        if parts:
+            return ", ".join(parts)
+        if self.notes_found:
+            # The difference that matters: the package arrived and held notes, and this machine
+            # already had every one of them. "Nothing happened" would read as a failure.
+            return f"nothing new — this machine already had all {self.notes_found:,} of them"
+        return "nothing arrived"
+
+
+def _count(number: int, noun: str) -> str:
+    """``3, "new note"`` → ``"3 new notes"``."""
+    return f"{number:,} {noun}" + ("" if number == 1 else "s")
 
 
 def backup_first(reason: str = "before an Omnia sync") -> bool:

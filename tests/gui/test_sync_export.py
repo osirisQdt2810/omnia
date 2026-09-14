@@ -225,6 +225,28 @@ class TestWhatCannotRideInsideAPackage:
 
         assert [entry["name"] for entry in offer.note_types] == ["Brand New"]
 
+    def test_a_note_type_chosen_outright_travels_even_when_decks_were_also_picked(
+        self, col, tmp_path
+    ):
+        # The defect: with decks named, no definition was sent at all, and the card search
+        # (deck AND note-type) yields nothing for a note type no card uses — so a chip the user
+        # had lit as chosen arrived as nothing, while the tally counted it and the pull reported
+        # success.
+        col.models = _Models({"Unused": {"name": "Unused", "id": 7}})
+
+        path, offer = export_module.build_package(
+            PackageRequest(
+                decks=("Japanese",),
+                note_types=("Basic", "Unused"),
+                definitions=("Unused",),
+            ),
+            _Repo(),
+        )
+        try:
+            assert [entry["name"] for entry in offer.note_types] == ["Unused"]
+        finally:
+            os.path.exists(path) and os.unlink(path)
+
     def test_note_types_are_not_duplicated_when_decks_carry_them(self, col, tmp_path):
         # With decks named, the package already holds whatever its notes use.
         col.models = _Models({"Basic": {"name": "Basic"}})

@@ -68,6 +68,11 @@ TOKEN_HEADER = "X-Omnia-Sync-Key"
 #: thousands of them, and anything larger is a denial of service rather than a choice.
 _MAX_REQUEST_BYTES = 1_000_000
 
+#: How long a stalled STREAM is tolerated, as opposed to a silent request. A package can be
+#: hundreds of megabytes over a link that pauses; aborting on the five seconds that protect the
+#: request path would fail transfers that were about to continue.
+_STREAM_TIMEOUT_SECONDS = 120
+
 #: How much of a package is read and written at a time. Small enough that a 700 MB transfer is
 #: not held in memory, big enough that it is not a syscall per kilobyte.
 _CHUNK_BYTES = 256 * 1024
@@ -425,6 +430,11 @@ class Session:
                     return
                 try:
                     size = os.path.getsize(path)
+                    # The handler's five-second socket timeout is there to stop a SILENT peer
+                    # parking a thread inside readline(). Applied to a multi-hundred-megabyte
+                    # stream it means any five-second hiccup aborts a transfer that would have
+                    # recovered, so the streaming path gets its own, much longer patience.
+                    self.connection.settimeout(_STREAM_TIMEOUT_SECONDS)
                     self.send_response(200)
                     self.send_header("Content-Type", "application/octet-stream")
                     self.send_header("Content-Length", str(size))

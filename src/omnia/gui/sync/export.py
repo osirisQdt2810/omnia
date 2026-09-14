@@ -19,9 +19,16 @@ f-strings: a deck called ``Chemistry "hard"`` or a note type with a colon in it 
 produce a search that silently matches something else.
 
 It runs on a worker thread holding the collection. Not a shortcut — Anki's own exporter does
-exactly this (``aqt.import_export.exporting`` hands ``col`` to a ``QueryOp``) — and the
-alternative is freezing the source machine for however long a few hundred megabytes of media
-takes.
+exactly this (``aqt.import_export.exporting`` hands ``col`` to a ``QueryOp``) — and marshalling
+onto the Qt thread the way :mod:`omnia.gui.sync.collect` does would freeze the source machine
+outright for the length of the export.
+
+**The accepted cost, stated because the neighbouring module documents the opposite rule:** this
+does not go through ``taskman``, so it is not serialised against whatever the source's own user is
+doing. Anki's backend holds the collection lock for the duration, which means their Anki is
+unresponsive while a large export runs, with no progress window to explain it. The alternative —
+blocking the Qt thread — is the same freeze plus a frozen UI, so this is the better of two costs
+rather than a free choice. A source that wants neither can switch sharing off.
 """
 
 from __future__ import annotations
@@ -171,15 +178,20 @@ def _card_ids(col: Any, request: PackageRequest) -> list[int]:
 def _note_type_definitions(request: PackageRequest) -> tuple[dict[str, Any], ...]:
     """The note types that must travel as DATA rather than inside the package.
 
-    Only the ones no chosen deck can drag along — with decks named, the package carries whatever
-    its notes use. A definition sent twice would be harmless and a definition sent for every note
-    type in a large collection would not, so this stays narrow.
+    Exactly the ones the target said were chosen outright. Inferring them from the filter list
+    was the bug: with decks named, ``note_types`` holds both what the decks need and what the
+    user asked for, and sending definitions for neither meant a chosen note type arrived as
+    nothing at all while its chip said "picked" and the tally counted it.
+
+    Sending one for a note type the package already carries is harmless — the target creates it
+    only when absent — and is far better than not sending one that is needed.
     """
-    if request.decks or not request.note_types:
+    wanted = request.definitions or (() if request.decks else request.note_types)
+    if not wanted:
         return ()
     col = _collection()
     out: list[dict[str, Any]] = []
-    for name in request.note_types:
+    for name in wanted:
         try:
             model = col.models.by_name(name)
         except Exception:

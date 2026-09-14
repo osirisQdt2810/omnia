@@ -91,10 +91,12 @@ def applied(monkeypatch):
     """Record what the import step did, without touching a collection."""
     seen: dict[str, object] = {"backups": 0, "packages": []}
 
-    class _Result:
-        summary = "3 new notes"
-        note_types_added: tuple = ()
-        sections: tuple = ()
+    from omnia.gui.sync.apply import ApplyResult
+
+    def _make_result():
+        result = ApplyResult()
+        result.notes_added = 3
+        return result
 
     def backup_first(reason=""):
         seen["backups"] = int(seen["backups"]) + 1
@@ -104,11 +106,14 @@ def applied(monkeypatch):
     def apply_package(path, policy=""):
         seen["packages"].append((path, os.path.exists(path)))
         seen["policy"] = policy
-        return _Result()
+        return _make_result()
 
     def apply_note_types(definitions):
         seen["note_types"] = tuple(definitions or ())
         return tuple(str(d.get("name", "")) for d in definitions or ())
+
+    # The real ApplyResult, so its `summary` is what the tests read back — a stub with a fixed
+    # summary would have hidden the missing clause this covers.
 
     def apply_config(repo, sections):
         seen["config"] = dict(sections or {})
@@ -139,10 +144,15 @@ class TestAPullThatWorks:
         # bar that jumps.
         assert len(seen) > 5
 
-    def test_the_label_names_the_machine_it_is_copying_from(self, inline, applied):
+    def test_it_never_asks_for_a_modal_progress_window(self, inline, applied):
+        # A label turns run_in_background into QueryOp.with_progress, which is Anki's
+        # APPLICATION-MODAL window. With one up the user cannot close the picker, answer a card,
+        # or open the settings dialog — so the Sync button filling up behind its label could only
+        # ever be seen after the copy it was reporting had already finished. The whole point of
+        # this job is that it runs while the user carries on.
         job_module.start_pull(_Client(), _request(), repo=None, machine="mac-mini")
 
-        assert "mac-mini" in str(inline["label"])
+        assert inline.get("label") is None
 
 
 class TestWhatItProtects:
@@ -294,6 +304,17 @@ class TestWhatArrivesBesideThePackage:
         )
 
         assert order and order[0] == "package"
+
+    def test_a_definition_only_pull_says_what_it_did(self, inline, applied):
+        # It used to report "nothing new — this machine already had it all", which is the
+        # sentence the picker's strip AND the Sync button tooltip both show: the user was told
+        # the thing that had just worked did not happen.
+        job = job_module.start_pull(
+            _Client(b"", note_types=({"name": "Brand New"},)), _request(), repo=None
+        )
+
+        assert "note type" in job.result
+        assert "nothing" not in job.result
 
     def test_a_pull_with_no_package_at_all_still_applies_them(self, inline, applied):
         # Note types or settings alone: there is nothing to download, and inventing an empty file

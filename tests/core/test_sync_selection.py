@@ -152,6 +152,20 @@ class TestDroppingANoteType:
         assert offer.note_type_state("Cloze") == NEEDED
         assert offer.note_type_state("Unused") == PICKED
 
+    def test_dropping_one_that_was_also_picked_outright_really_drops_it(self):
+        # A chip can be lit two ways. Picked first, then needed by a deck chosen afterwards —
+        # and without un-choosing it, the union put it straight back: the chip said "dropped",
+        # the tally said one was left behind, and the notes travelled anyway.
+        offer = _offer()
+        offer.toggle_note_type("Vocab")  # idle -> picked, no deck yet
+        offer.pick_deck("Japanese::Kanji")  # now needed as well
+
+        offer.toggle_note_type("Vocab")  # the user drops it
+
+        assert offer.note_type_state("Vocab") == DROPPED
+        assert "Vocab" not in offer.note_types, "a dropped note type still travels"
+        assert offer.tally()["note_types"] == 1
+
     def test_a_drop_survives_picking_another_deck(self):
         offer = _offer()
         offer.pick_deck("Japanese::Kanji")
@@ -170,6 +184,25 @@ class TestDroppingANoteType:
 
         assert tally["note_types"] == 1
         assert tally["dropped"] == 1
+
+
+class TestWhatTheSourceIsTold:
+    def test_the_outright_choices_are_reported_separately(self):
+        # The source cannot tell them apart from the filter list once decks are named — "in the
+        # list because a deck needs it" and "because the user asked for it" look identical — and
+        # guessing wrong means a chosen note type arriving as nothing at all.
+        offer = _offer()
+        offer.pick_deck("Japanese::Kanji")  # needs Cloze and Vocab
+        offer.toggle_note_type("Unused")  # chosen outright
+
+        assert offer.chosen_note_types == {"Unused"}
+        assert "Unused" in offer.note_types
+
+    def test_a_note_type_only_needed_by_a_deck_is_not_reported_as_chosen(self):
+        offer = _offer()
+        offer.pick_deck("Japanese::Kanji")
+
+        assert offer.chosen_note_types == set()
 
 
 class TestTheSettings:
