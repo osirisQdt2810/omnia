@@ -1,0 +1,206 @@
+"""Tests for what a correction is, before anything renders it.
+
+The shape is the feature. "Your sentence should be X" teaches nothing, and one paragraph
+explaining six unrelated problems is read by nobody — so an answer is a LIST of small separate
+fixes, each with its own reason, plus the whole phrase rewritten.
+
+Two properties carry the rest, and both fail in the direction that looks fine:
+
+* a fix that changes nothing is noise wearing a confident label, and is dropped here rather than
+  in the page, so every surface agrees;
+* the highlighting has to join back into exactly the rewrite, or the reader is shown a sentence
+  nobody wrote.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from omnia.plugins.phrase_check.correction import (
+    SPOKEN,
+    WRITTEN,
+    Correction,
+    CorrectionError,
+    Fix,
+    highlight,
+    parse,
+)
+
+
+class TestReadingAModelsAnswer:
+    def _payload(self, **over):
+        payload = {
+            "rewritten": "I have gone to the shop.",
+            "fixes": [
+                {
+                    "before": "have went",
+                    "after": "have gone",
+                    "why": "The past participle of 'go' is 'gone'.",
+                    "kind": "grammar",
+                }
+            ],
+        }
+        payload.update(over)
+        return payload
+
+    def test_it_reads_the_rewrite_and_the_fixes(self):
+        correction = parse(self._payload(), original="I have went to the shop.")
+
+        assert correction.rewritten == "I have gone to the shop."
+        assert len(correction.fixes) == 1
+        assert correction.fixes[0].why.startswith("The past participle")
+
+    def test_the_original_comes_from_the_REQUEST_not_the_answer(self):
+        # A model that paraphrases the input in its echo would otherwise make the highlighting
+        # diff against a sentence nobody wrote.
+        correction = parse(
+            self._payload(original="something the model made up"),
+            original="I have went to the shop.",
+        )
+
+        assert correction.original == "I have went to the shop."
+
+    def test_a_fix_that_changes_nothing_is_dropped(self):
+        # Models return these: identical text, confident explanation. A card reading
+        # "nothing -> nothing" is one the reader has to work out is noise.
+        correction = parse(
+            self._payload(
+                fixes=[
+                    {"before": "the  cat", "after": "the cat", "why": "spacing"},
+                    {"before": "have went", "after": "have gone", "why": "tense"},
+                ]
+            ),
+            original="I have went to the shop.",
+        )
+
+        assert [fix.before for fix in correction.fixes] == ["have went"]
+
+    def test_an_answer_with_no_rewrite_is_refused(self):
+        with pytest.raises(CorrectionError, match="without a corrected version"):
+            parse({"fixes": []}, original="anything")
+
+    def test_something_that_is_not_a_correction_says_so(self):
+        for payload in ("<html>", [], None, 12):
+            with pytest.raises(
+                CorrectionError, match="did not answer with a correction"
+            ):
+                parse(payload, original="anything")
+
+    def test_a_phrase_with_nothing_wrong_is_a_real_answer(self):
+        # Distinct from a broken one: it arrives WITH the original echoed back.
+        correction = parse(
+            {"rewritten": "I went to the shop.", "fixes": [], "already_good": True},
+            original="I went to the shop.",
+        )
+
+        assert correction.already_good is True
+        assert correction.changed is False
+
+    def test_an_unknown_mode_falls_back_to_written(self):
+        assert parse(self._payload(), original="x", mode="shouted").mode == WRITTEN
+
+    def test_the_mode_survives_when_it_is_one_we_know(self):
+        assert parse(self._payload(), original="x", mode=SPOKEN).mode == SPOKEN
+
+    def test_an_explanation_under_either_key_is_read(self):
+        # Models are inconsistent about this one and the explanation is the whole point of a fix.
+        correction = parse(
+            self._payload(
+                fixes=[{"before": "a", "after": "b", "explanation": "because"}]
+            ),
+            original="a",
+        )
+
+        assert correction.fixes[0].why == "because"
+
+
+class TestAFix:
+    def test_an_empty_replacement_is_a_deletion(self):
+        assert Fix(before="very", after="").is_deletion is True
+        assert Fix(before="very", after="   ").is_deletion is True
+
+    def test_a_replacement_is_not(self):
+        assert Fix(before="very", after="extremely").is_deletion is False
+
+    def test_whitespace_alone_is_not_a_change(self):
+        assert Fix(before="the  cat", after="the cat").changes_anything is False
+
+    def test_case_alone_is_not_a_change_either(self):
+        # A model "fixing" capitalisation it invented is the same noise in another coat.
+        assert Fix(before="The cat", after="the cat").changes_anything is False
+
+    def test_a_real_change_is_one(self):
+        assert Fix(before="have went", after="have gone").changes_anything is True
+
+
+class TestHighlightingWhatChanged:
+    def test_the_runs_join_back_into_exactly_the_rewrite(self):
+        # The property that matters most: anything else shows the reader a sentence nobody wrote.
+        original = "I have went to the shop yesterday."
+        rewritten = "I went to the shop yesterday."
+
+        assert "".join(text for text, _ in highlight(original, rewritten)) == rewritten
+
+    def test_only_the_changed_words_are_marked(self):
+        runs = highlight("I have went to the shop.", "I have gone to the shop.")
+        marked = "".join(text for text, is_new in runs if is_new)
+
+        assert marked.strip() == "gone"
+
+    def test_an_unchanged_phrase_marks_nothing(self):
+        runs = highlight("I went to the shop.", "I went to the shop.")
+
+        assert not any(is_new for _text, is_new in runs)
+
+    def test_it_marks_whole_words_not_letters(self):
+        # A character diff bolds two letters in the middle of a word, which at body-text size is
+        # unreadable. A word is the smallest unit a reader can see has changed.
+        runs = highlight("I recieve mail.", "I receive mail.")
+        marked = "".join(text for text, is_new in runs if is_new)
+
+        assert marked.strip() == "receive"
+
+    def test_added_words_are_marked(self):
+        runs = highlight("I went shop.", "I went to the shop.")
+        marked = "".join(text for text, is_new in runs if is_new)
+
+        assert "to the" in marked
+
+    def test_a_removed_word_leaves_nothing_marked_but_still_joins(self):
+        original, rewritten = "It is very very good.", "It is very good."
+        runs = highlight(original, rewritten)
+
+        assert "".join(text for text, _ in runs) == rewritten
+
+    def test_neighbouring_runs_of_the_same_kind_are_merged(self):
+        # Fewer spans for the page, and no two adjacent <b> tags that render as one but are two.
+        # Two consecutive changed words must come back as ONE run, not two.
+        runs = highlight("a b c d", "a X Y d")
+        kinds = [is_new for _text, is_new in runs]
+
+        assert kinds == [False, True, False], runs
+        assert all(kinds[i] != kinds[i + 1] for i in range(len(kinds) - 1))
+
+    def test_punctuation_travels_with_its_word(self):
+        # A fix that only adds a comma must still bold something; a bare "," on its own would be
+        # invisible.
+        runs = highlight("However I went", "However, I went")
+        marked = "".join(text for text, is_new in runs if is_new)
+
+        assert "However," in marked
+
+    def test_an_empty_original_marks_the_whole_rewrite(self):
+        runs = highlight("", "Something new.")
+
+        assert all(is_new for _text, is_new in runs)
+
+
+class TestTheCorrectionItself:
+    def test_it_knows_whether_anything_changed(self):
+        assert Correction(original="a b", rewritten="a c").changed is True
+        assert Correction(original="a b", rewritten="a  b").changed is False
+
+    def test_highlighting_is_available_from_the_correction(self):
+        correction = Correction(original="I went shop", rewritten="I went to the shop")
+
+        assert "".join(t for t, _ in correction.highlighted()) == "I went to the shop"
