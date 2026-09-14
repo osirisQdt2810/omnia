@@ -160,8 +160,12 @@ def _from_status(status: int, reason: str) -> str:
         # side knows there is a fix and what it is, so it says so; the server's own sentence
         # becomes the first half and never the whole of it.
         return (
-            "That ID does not open the other machine. It may have been regenerated there — "
-            "copy it again."
+            "That access code does not open the other machine. It may have been changed there "
+            "— read it off that screen again."
+        )
+    if status == 429:
+        return reason or (
+            "The other machine has had too many wrong codes — wait a minute and try again."
         )
     if status == 404:
         return (

@@ -1,29 +1,30 @@
-"""A machine's ID: the one string a user ever handles, and everything it has to carry.
+"""A machine's ID and its access code: the two things a user ever handles.
 
-The user's model is exactly two steps — each machine shows an ID, and you type the other
-machine's ID into yours. Nothing about addresses, ports, keys, or what makes the two machines
-able to reach each other. That is the requirement, and this module is where it meets the fact
-that there is no rendezvous server (ADR-020): nothing exists that could turn a short numeric
-code into an address, so the ID has to CARRY the address itself.
+The model is the one people already know from remote-desktop tools: each machine shows a
+**number**, you type the other machine's number into yours, and a short **code** proves you are
+allowed in. Nothing about addresses, ports or what makes the two machines able to reach each
+other.
 
-Everything about its shape follows from that:
+Why two fields rather than one string is the whole design, and it comes from ADR-020: there is
+no rendezvous server. AnyDesk's nine digits are short because AnyDesk runs infrastructure that
+turns them into an address; nothing here does, so **the ID has to BE the address**. An IPv4
+address is a 32-bit number — ten digits, plus one check digit — and that is the entire budget.
+A key cannot also fit, so it is the second field, exactly as an unattended-access password is in
+those tools.
 
-* it holds ``host``, ``port`` and a ``token``, and nothing else, packed as BYTES rather than as
-  text — an IPv4 address is four bytes, not fourteen characters, and a 128-bit key is sixteen
-  bytes, not thirty-two hex characters. Spelling them out cost fifty characters of an ID that a
-  person has to read off one screen and type into another;
-* it is base32 without padding, upper-cased and grouped, so it reads over a phone call and
-  survives a copy-paste that eats whitespace or changes case — unlike a raw ``100.x.y.z:8767``
-  URL, which invites being typed into a browser and looks like something to keep;
-* it is **opaque**. A user who can read an address out of their ID will start reasoning about
-  addresses, and the next question is which tool provides them — which is precisely what the
-  interface must never bring up.
+What follows from that:
 
-So an ID is a credential wearing the clothes of an identifier. It is stable per machine, not
-per session: the shape this feature serves is a second machine pulling from a main machine that
-is simply switched on, and a per-session code would need someone sitting at the source to read
-it out every time. :func:`new_token` mints the key; regenerating it is what revokes every ID
-handed out before.
+* **The ID is eleven digits** for the ordinary case (a v4 address on the default port), shown in
+  groups of three. It is a number, not a string: no case to get wrong, no letters that look like
+  digits, and a phone keypad can type it.
+* **The check digit is load-bearing.** Without it a single mistyped digit is a different, equally
+  valid address, and the user gets "could not connect" for a machine that is fine. With it they
+  get "that ID was mistyped", which is the answer they can act on.
+* **The access code is nine digits**, generated, and safe only because the service refuses to be
+  guessed at — :mod:`omnia.core.sync.service` locks out after a few wrong ones. A billion
+  combinations against five attempts a minute is centuries; without the lockout it would be an
+  afternoon. The two halves are one design and neither works alone.
+* **Regenerating the code is the revoke**, and the only one there is.
 
 Everything here is pure — no sockets, no ``aqt`` — so the format unit-tests headless and both
 ends share one implementation of it.
@@ -31,47 +32,43 @@ ends share one implementation of it.
 
 from __future__ import annotations
 
-import base64
 import re
 import secrets
 import socket
 from dataclasses import dataclass
 
-#: How many characters of randomness the machine key carries. 32 hex characters is 128 bits:
-#: far past guessing, and — packed as the sixteen bytes it actually is — short enough that the
-#: whole ID stays under forty characters.
-TOKEN_CHARS = 32
+#: The port a machine offers on unless its owner changed it. An ID for this port says nothing
+#: about it, which is what keeps the common case eleven digits; any other port is spelled out
+#: and the ID is longer. Defined HERE rather than in :mod:`omnia.core.sync.machine` because the
+#: ID's length depends on it and this module may not import that one.
+DEFAULT_PORT = 8767
 
-_TOKEN_BYTES = TOKEN_CHARS // 2
+#: Digits in the ordinary ID: ten for the address, one to catch a typo.
+ID_DIGITS = 11
 
-#: How the host is packed, so an address that is four bytes takes four bytes. The tag is the
-#: first byte of every code, which is also what makes an ID from a future Omnia recognisable as
-#: one rather than as a mistyped string.
-_KIND_IPV4 = 4
-_KIND_IPV6 = 6
-_KIND_NAME = (
-    0  # a DNS name, length-prefixed — nothing produces one today, but an ID is a
-)
-#: format, and refusing to carry a name would make one impossible to add later.
+#: Digits in the access code.
+PASSCODE_DIGITS = 9
 
-#: The code is printed in groups of this many characters, separated by dashes. Purely cosmetic —
-#: :func:`parse_pairing_code` strips them — but it is what makes a forty-character string
-#: something a person can read back without losing their place.
-GROUP = 5
+#: Digits per group when either is displayed. Cosmetic — both parsers strip the separators —
+#: but it is what makes a number readable back over a phone call without losing your place.
+GROUP = 3
 
-_TOKEN_RE = re.compile(rf"^[0-9a-f]{{{TOKEN_CHARS}}}$")
-# 253 is the maximum length of a DNS name; a shorter cap refuses a legitimate long hostname
-# with "not a usable address" and nothing the user could do about it.
-_HOST_RE = re.compile(r"^[A-Za-z0-9._:\-\[\]]{1,253}$")
+#: How a non-default port is carried: the address, then the port, then the check digit. Longer
+#: than eleven digits on purpose — a machine whose owner moved the port off the default has
+#: already left the ordinary case, and a silent truncation would be worse than four more digits.
+_PORT_DIGITS = 5
+
+_DIGITS_RE = re.compile(r"^[0-9]+$")
+_PASSCODE_RE = re.compile(rf"^[0-9]{{{PASSCODE_DIGITS}}}$")
 
 
 class PairingError(ValueError):
-    """A pairing code that cannot be read, with a reason a person can act on."""
+    """An ID or access code that cannot be used, with a reason a person can act on."""
 
 
 @dataclass(frozen=True)
 class PairingAddress:
-    """What a machine ID decodes to: where to reach it, and the key it will demand."""
+    """What an ID and an access code together name: where to reach a machine, and its code."""
 
     host: str
     port: int
@@ -85,12 +82,12 @@ class PairingAddress:
                 validated later because an address that cannot be dialled is not an address:
                 every consumer would otherwise have to re-check the same three things.
         """
-        if not _HOST_RE.match(self.host or ""):
+        if not _is_ip(self.host):
             raise PairingError(f"{self.host!r} is not a usable address")
         if not 1 <= int(self.port) <= 65535:
             raise PairingError(f"{self.port} is not a usable port")
-        if not _TOKEN_RE.match(self.token or ""):
-            raise PairingError("the code carries no usable key")
+        if not _PASSCODE_RE.match(self.token or ""):
+            raise PairingError("that is not a usable access code")
 
     @property
     def base_url(self) -> str:
@@ -100,107 +97,187 @@ class PairingAddress:
 
 
 def new_token() -> str:
-    """Return a fresh machine key (128 bits, hex).
+    """Return a fresh access code: nine digits, zero-padded.
 
-    Called once when a profile first offers to share, and again on every regenerate — which is
-    the revoke: every ID handed out before stops opening anything.
+    Minted when a profile first offers to share, and again on every regenerate — which is the
+    revoke, and the only one there is. Nine digits is safe only because the service refuses to
+    be guessed at; see the module docstring, and :mod:`omnia.core.sync.service`.
     """
-    return secrets.token_hex(TOKEN_CHARS // 2)
+    return f"{secrets.randbelow(10**PASSCODE_DIGITS):0{PASSCODE_DIGITS}d}"
 
 
-def format_pairing_code(address: PairingAddress) -> str:
-    """Render ``address`` as the ID this machine shows.
-
-    Args:
-        address: Where this machine is reachable, and its key.
-
-    Returns:
-        An upper-case base32 string in dash-separated groups.
-    """
-    encoded = base64.b32encode(_pack(address)).decode("ascii").rstrip("=")
-    return "-".join(
-        encoded[index : index + GROUP] for index in range(0, len(encoded), GROUP)
+def format_passcode(token: str) -> str:
+    """Render an access code for reading aloud: ``123 456 789``."""
+    return " ".join(
+        token[index : index + GROUP] for index in range(0, len(token), GROUP)
     )
 
 
-def parse_pairing_code(code: str) -> PairingAddress:
-    """Read a machine ID back into an address.
+def parse_passcode(text: str) -> str:
+    """Read an access code back, forgiving spaces, dashes and line breaks.
 
-    Tolerant of how an ID arrives: dashes, spaces, line breaks and lower case are all stripped
-    before decoding, because an ID travels through chat windows and handwriting, and refusing
-    one over a stray space would be refusing it for the user's formatting rather than for its
-    content.
+    Raises:
+        PairingError: When it is not nine digits.
+    """
+    cleaned = re.sub(r"[\s\-]+", "", str(text or ""))
+    if not cleaned:
+        raise PairingError("no access code was entered")
+    if not _PASSCODE_RE.match(cleaned):
+        raise PairingError(f"an access code is {PASSCODE_DIGITS} digits")
+    return cleaned
+
+
+def format_machine_id(host: str, port: int = DEFAULT_PORT) -> str:
+    """Render the number this machine shows.
 
     Args:
-        code: What the user pasted.
+        host: The address another machine would dial. Must be an IP — a name cannot be a number,
+            and nothing produces one (addresses come from the routing table).
+        port: The port it offers on.
+
+    Returns:
+        The ID in groups of three digits.
+
+    Raises:
+        PairingError: When ``host`` is not an address that fits in an ID.
+    """
+    digits = _address_digits(host)
+    if int(port) != DEFAULT_PORT:
+        digits += f"{int(port):0{_PORT_DIGITS}d}"
+    return _group(digits + str(_check_digit(digits)))
+
+
+def parse_machine_id(text: str) -> tuple[str, int]:
+    """Read a machine ID back into ``(host, port)``.
+
+    Tolerant of how an ID arrives — spaces, dashes and line breaks are stripped — because it
+    travels through chat windows and handwriting, and refusing one over the user's formatting
+    rather than its content is refusing it for the wrong reason.
+
+    Args:
+        text: What the user typed.
 
     Returns:
         The address it names.
 
     Raises:
-        PairingError: When it is not a code, or not one this build understands.
+        PairingError: When it is not an ID, or is one that was mistyped.
     """
-    cleaned = re.sub(r"[\s\-]+", "", str(code or "")).upper()
+    cleaned = re.sub(r"[\s\-.]+", "", str(text or ""))
     if not cleaned:
-        raise PairingError("no code was entered")
-    if not re.fullmatch(r"[A-Z2-7]+", cleaned):
-        raise PairingError("that does not look like a pairing code")
-    padding = "=" * (-len(cleaned) % 8)
-    try:
-        raw = base64.b32decode(cleaned + padding)
-    except Exception as exc:  # a truncated or mistyped code lands here
-        raise PairingError("that code is incomplete or was mistyped") from exc
-    return _unpack(raw)
+        raise PairingError("no ID was entered")
+    if not _DIGITS_RE.match(cleaned):
+        raise PairingError("an ID is only digits")
+    body = cleaned[:-1]
+    if not body or _fold(cleaned) != 0:
+        # The whole reason for the check digit: without it one wrong digit is a DIFFERENT valid
+        # address, and the user spends an evening on "could not connect" for a machine that was
+        # never asked.
+        raise PairingError("that ID was mistyped — check it against the other computer")
+    if len(body) == 10:
+        return _address_from_digits(body), DEFAULT_PORT
+    if len(body) == 10 + _PORT_DIGITS:
+        port = int(body[10:])
+        if not 1 <= port <= 65535:
+            raise PairingError("that ID carries no usable port")
+        return _address_from_digits(body[:10]), port
+    if len(body) == 39 or len(body) == 39 + _PORT_DIGITS:
+        port = int(body[39:]) if len(body) > 39 else DEFAULT_PORT
+        return _address_from_digits(body[:39], version=6), port
+    raise PairingError(
+        "that ID is incomplete or was made by a different version of Omnia"
+    )
 
 
-def _pack(address: PairingAddress) -> bytes:
-    """``host``/``port``/``token`` as bytes: a tag, the host, two bytes of port, the key."""
+def _group(digits: str) -> str:
+    """``"16860441953"`` → ``"168 604 419 53"``."""
+    return " ".join(
+        digits[index : index + GROUP] for index in range(0, len(digits), GROUP)
+    )
+
+
+#: Verhoeff's check digit, built on the dihedral group D5 (1969). Chosen over the obvious
+#: weighted sum and over Luhn — the credit-card one — because it catches EVERY single-digit slip
+#: and EVERY adjacent transposition, which are the two ways a person mistypes a number they are
+#: reading off another screen. Luhn misses a transposed 0 and 9; a weighted sum mod 10 misses
+#: whole classes, because even weights are not invertible there.
+#:
+#: The group table is CONSTRUCTED rather than pasted: ``d(a, b)`` composes two of the ten
+#: symmetries of a pentagon (0-4 rotations, 5-9 reflections), and getting a hundred hand-typed
+#: numbers right is not something to trust. Only the permutation below is data, and the tests
+#: verify the whole thing exhaustively rather than taking it on faith.
+_P1 = (1, 5, 7, 6, 2, 8, 3, 0, 9, 4)
+
+
+def _d5(a: int, b: int) -> int:
+    """Compose two symmetries of a pentagon."""
+    if a < 5:
+        return (a + b) % 5 if b < 5 else 5 + (a + b) % 5
+    return 5 + (a - b) % 5 if b < 5 else (a - b) % 5
+
+
+def _shuffle(position: int, digit: int) -> int:
+    """Apply the permutation ``position`` times — this is what makes ORDER matter."""
+    for _ in range(position % 8):
+        digit = _P1[digit]
+    return digit
+
+
+def _fold(digits: str) -> int:
+    """Compose every digit into one symmetry. Zero exactly when a complete ID is intact.
+
+    POSITION is what carries the transposition property — the permutation is applied once per
+    place counting from the RIGHT — so the check digit has to be folded in at place zero, the
+    same place it was generated for. Off by one and single-digit slips are still caught while
+    two swapped neighbours sail through, which is the harder mistake to spot by eye.
+    """
+    interim = 0
+    for position, digit in enumerate(reversed(digits)):
+        interim = _d5(interim, _shuffle(position, int(digit)))
+    return interim
+
+
+def _check_digit(body: str) -> int:
+    """The digit that makes ``body + digit`` fold to zero."""
+    return _INVERSE[_fold(body + "0")]
+
+
+#: The inverse of each symmetry: a rotation undone by the opposite rotation, a reflection by
+#: itself. Written out because it is five lines of code for ten obvious numbers.
+_INVERSE = (0, 4, 3, 2, 1, 5, 6, 7, 8, 9)
+
+
+def _is_ip(host: str) -> bool:
+    """Whether ``host`` is an IP literal this module can turn into digits."""
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            socket.inet_pton(family, host or "")
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def _address_digits(host: str) -> str:
+    """An IP as decimal digits: ten for v4, thirty-nine for v6, zero-padded either way."""
     try:
-        host = socket.inet_pton(socket.AF_INET, address.host)
-        kind = _KIND_IPV4
+        packed = socket.inet_pton(socket.AF_INET, host)
+        width = 10
     except OSError:
         try:
-            host = socket.inet_pton(socket.AF_INET6, address.host)
-            kind = _KIND_IPV6
-        except OSError:
-            name = address.host.encode("utf-8")[:253]
-            host = bytes([len(name)]) + name
-            kind = _KIND_NAME
-    return (
-        bytes([kind])
-        + host
-        + int(address.port).to_bytes(2, "big")
-        + bytes.fromhex(address.token)
-    )
+            packed = socket.inet_pton(socket.AF_INET6, host)
+            width = 39
+        except OSError as exc:
+            raise PairingError(f"{host!r} is not an address an ID can carry") from exc
+    return f"{int.from_bytes(packed, 'big'):0{width}d}"
 
 
-def _unpack(raw: bytes) -> PairingAddress:
-    """The inverse of :func:`_pack`, with every way it can be wrong given its own sentence."""
-    if not raw:
-        raise PairingError("that code is incomplete or was mistyped")
-    kind, rest = raw[0], raw[1:]
+def _address_from_digits(digits: str, *, version: int = 4) -> str:
+    """The inverse of :func:`_address_digits`."""
+    size = 4 if version == 4 else 16
     try:
-        if kind == _KIND_IPV4:
-            host, rest = socket.inet_ntop(socket.AF_INET, rest[:4]), rest[4:]
-        elif kind == _KIND_IPV6:
-            host, rest = socket.inet_ntop(socket.AF_INET6, rest[:16]), rest[16:]
-        elif kind == _KIND_NAME:
-            length = rest[0]
-            host, rest = rest[1 : 1 + length].decode("utf-8"), rest[1 + length :]
-        else:
-            # A tag this build has no meaning for is a code from a DIFFERENT Omnia, not a typo.
-            # Not "newer": an unknown tag cannot tell the two directions apart, and guessing
-            # would send half the people who see it to update the wrong machine. What it can
-            # say is that re-reading the ID will not help, which is the useful half.
-            raise PairingError("that code was made by a different version of Omnia")
-    except PairingError:
-        raise
-    except (IndexError, OSError, UnicodeDecodeError, ValueError) as exc:
-        raise PairingError("that code is incomplete or was mistyped") from exc
-    if len(rest) != 2 + _TOKEN_BYTES:
-        raise PairingError("that code is incomplete or was mistyped")
-    return PairingAddress(
-        host=host,
-        port=int.from_bytes(rest[:2], "big"),
-        token=rest[2:].hex(),
-    )
+        packed = int(digits).to_bytes(size, "big")
+    except (OverflowError, ValueError) as exc:
+        raise PairingError("that ID does not name a usable address") from exc
+    family = socket.AF_INET if version == 4 else socket.AF_INET6
+    return str(socket.inet_ntop(family, packed))

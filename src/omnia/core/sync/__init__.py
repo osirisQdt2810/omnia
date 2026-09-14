@@ -6,7 +6,7 @@ applies to the target, and what has to be skipped and why.
 
 This package holds the parts that need no Anki:
 
-* :mod:`.pairing` — the ID one machine shows and the other types in (address + machine key);
+* :mod:`.pairing` — the number one machine shows and the code that opens it;
 * :mod:`.reachability` — which of this machine's addresses another one could actually dial;
 * :mod:`.inventory` — what a source offers, as data;
 * :mod:`.service` — the source's read-only session (ADR-020's five conditions, in code);
@@ -34,19 +34,23 @@ from omnia.core.sync.inventory import (
     NoteTypeEntry,
 )
 from omnia.core.sync.machine import (
-    DEFAULT_PORT,
     MachineIdentity,
     MachineSettings,
+    access_code,
     machine_id,
 )
 from omnia.core.sync.pairing import (
+    DEFAULT_PORT,
     GROUP,
-    TOKEN_CHARS,
+    ID_DIGITS,
+    PASSCODE_DIGITS,
     PairingAddress,
     PairingError,
-    format_pairing_code,
+    format_machine_id,
+    format_passcode,
     new_token,
-    parse_pairing_code,
+    parse_machine_id,
+    parse_passcode,
 )
 from omnia.core.sync.reachability import (
     KIND_LAN,
@@ -61,6 +65,8 @@ from omnia.core.sync.reachability import (
 from omnia.core.sync.service import (
     HELLO_PATH,
     INVENTORY_PATH,
+    LOCKOUT_SECONDS,
+    MAX_ATTEMPTS,
     TOKEN_HEADER,
     Session,
 )
@@ -69,15 +75,16 @@ __all__ = [
     "DEFAULT_PORT",
     "GROUP",
     "HELLO_PATH",
+    "ID_DIGITS",
     "INVENTORY_PATH",
     "KIND_LAN",
     "KIND_MESH",
     "KIND_OTHER",
     "KIND_ULA",
     "KIND_VIRTUAL",
+    "PASSCODE_DIGITS",
     "PROTOCOL",
     "TIMEOUT_SECONDS",
-    "TOKEN_CHARS",
     "TOKEN_HEADER",
     "Address",
     "ConfigSummary",
@@ -92,11 +99,14 @@ __all__ = [
     "Session",
     "SyncClient",
     "SyncError",
+    "access_code",
     "check",
-    "format_pairing_code",
+    "format_machine_id",
+    "format_passcode",
     "local_addresses",
     "machine_id",
     "new_token",
-    "parse_pairing_code",
+    "parse_machine_id",
+    "parse_passcode",
     "rank_addresses",
 ]

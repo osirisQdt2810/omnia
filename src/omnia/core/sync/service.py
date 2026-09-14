@@ -5,9 +5,13 @@ rather than in a document:
 
 1. **Off until the user turns it on.** Nothing in this module binds by itself. :meth:`Session.start`
    is called by the settings UI when sharing is switched on, and a fresh profile has it off.
-2. **The machine's key is the key.** Every request must carry it. A request without it is refused
+2. **The access code is the key.** Every request must carry it. A request without it is refused
    before anything reads the collection, and the comparison is constant-time so the answer's
-   TIMING cannot be used to walk the key out one byte at a time.
+   TIMING cannot be used to walk the code out one digit at a time. The code is nine digits — a
+   number somebody reads off one screen and types into another — and nine digits are only safe
+   because of :class:`_Lockout`: a few wrong ones and this machine stops answering for a while,
+   which turns a billion combinations from an afternoon's work into centuries of it. The short
+   code and the lockout are one design, and neither half is sound without the other.
 3. **Read-only, always.** Two endpoints, both ``GET``. There is nothing here that writes, so the
    worst a peer can do to this machine is read what its owner published.
 4. **The user only ever handles an ID.** This module never renders anything; the address and the
@@ -32,6 +36,7 @@ import hmac
 import json
 import os
 import threading
+import time
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
@@ -49,12 +54,73 @@ INVENTORY_PATH = "/sync/inventory"
 #: access control.
 TOKEN_HEADER = "X-Omnia-Sync-Key"
 
+#: Wrong codes tolerated before this machine stops answering. Five is enough for somebody
+#: fat-fingering a nine-digit number off another screen and nowhere near enough to search it.
+MAX_ATTEMPTS = 5
+
+#: How long a lockout lasts, and how long it takes to forget failures that stopped. A minute is
+#: survivable for the person typing and ruinous for anyone guessing: five tries a minute against
+#: a billion codes is a job measured in centuries.
+LOCKOUT_SECONDS = 60.0
+
 #: What the CALLER should give its collection read before giving up — this module does not
 #: enforce it and must not be read as doing so. The service knows nothing about Anki: it calls
 #: the ``inventory`` callable and turns a ``TimeoutError`` out of it into a 503. The deadline
 #: belongs to whoever marshals onto the Qt thread, and this is the number to use, so both ends
 #: of that contract are written in one place.
 MAIN_THREAD_TIMEOUT_SECONDS = 10.0
+
+
+class _Lockout:
+    """Counts wrong codes, and shuts the door for a while once there are too many.
+
+    Deliberately NOT per peer address. An attacker picks their source address and a per-address
+    counter is one they can reset at will, which makes the limit decorative; this listener lives
+    on a private network where the cost of the blunt version — anyone reachable can lock the
+    owner out for a minute — is a nuisance, and the owner can see why in the log. A guessing
+    limit that can be sidestepped is worse than none, because the nine-digit code was chosen on
+    the assumption that this one holds.
+
+    Thread-safe: requests arrive on a thread each.
+    """
+
+    def __init__(
+        self,
+        *,
+        limit: int = MAX_ATTEMPTS,
+        seconds: float = LOCKOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._limit = limit
+        self._seconds = seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._failures = 0
+        self._until = 0.0
+
+    @property
+    def locked(self) -> bool:
+        """Whether this machine is refusing everything right now."""
+        with self._lock:
+            return self._clock() < self._until
+
+    def record_failure(self) -> bool:
+        """Count one wrong code. Returns whether that closed the door."""
+        with self._lock:
+            now = self._clock()
+            if now >= self._until and self._failures >= self._limit:
+                self._failures = 0  # the last lockout expired; start counting again
+            self._failures += 1
+            if self._failures < self._limit:
+                return False
+            self._until = now + self._seconds
+            return True
+
+    def record_success(self) -> None:
+        """Forget the failures — the right code arrived, so nobody is guessing."""
+        with self._lock:
+            self._failures = 0
+            self._until = 0.0
 
 
 class _Server(ThreadingHTTPServer):
@@ -85,7 +151,7 @@ class Session:
         inventory: Returns what this machine offers. Called on a WORKER thread, so a caller that
             reads Anki must marshal onto the main thread inside this callable — the service
             cannot do it, because it deliberately knows nothing about Anki.
-        key: The machine key, the same one folded into the ID this machine shows.
+        key: The access code this machine shows beneath its ID.
         host: What to bind. ``0.0.0.0`` to be reachable from another machine, which is the point;
             a caller that wants loopback can pass it.
         port: What to bind.
@@ -105,6 +171,7 @@ class Session:
         self._port = port
         self._server: Optional[_Server] = None
         self._thread: Optional[threading.Thread] = None
+        self._lockout = _Lockout()
 
     @property
     def running(self) -> bool:
@@ -128,7 +195,7 @@ class Session:
         if self._server is not None:
             return True
         if not self._key:
-            logger.error("sync: refusing to serve without a machine key")
+            logger.error("sync: refusing to serve without an access code")
             return False
         try:
             self._server = _Server((self._host, self._port), self._handler())
@@ -180,14 +247,33 @@ class Session:
                 if path not in (HELLO_PATH, INVENTORY_PATH):
                     self._send(404, {"error": "no such endpoint"})
                     return
-                if not session._authorised(self.headers.get(TOKEN_HEADER)):
-                    # Deliberately the same answer for "no key" and "wrong key": telling them
-                    # apart tells a caller which half they got right.
+                if session._lockout.locked:
+                    # Answered BEFORE the code is compared, so a locked-out guesser learns
+                    # nothing from how long the answer took or from what it said.
                     logger.warning(
-                        "sync: refused a request for %s from %s", path, self._peer()
+                        "sync: locked out, refused %s from %s", path, self._peer()
                     )
-                    self._send(403, {"error": "that ID does not open this machine"})
+                    self._send(
+                        429,
+                        {"error": "too many wrong codes — wait a minute and try again"},
+                    )
                     return
+                if not session._authorised(self.headers.get(TOKEN_HEADER)):
+                    # Deliberately the same answer for "no code" and "wrong code": telling them
+                    # apart tells a caller which half they got right.
+                    if session._lockout.record_failure():
+                        logger.warning(
+                            "sync: too many wrong codes from %s — refusing for %.0fs",
+                            self._peer(),
+                            LOCKOUT_SECONDS,
+                        )
+                    else:
+                        logger.warning(
+                            "sync: refused a request for %s from %s", path, self._peer()
+                        )
+                    self._send(403, {"error": "that code does not open this machine"})
+                    return
+                session._lockout.record_success()
                 logger.info("sync: served %s to %s", path, self._peer())
                 if path == HELLO_PATH:
                     self._send(200, {"ok": True, "protocol": PROTOCOL})
@@ -230,7 +316,7 @@ class Session:
         return Handler
 
     def _authorised(self, presented: Optional[str]) -> bool:
-        """Whether a request carried this machine's key.
+        """Whether a request carried this machine's access code.
 
         ``compare_digest`` rather than ``==``: a plain comparison returns as soon as two bytes
         differ, and the time it took is a measurement anyone on the network can make — enough to

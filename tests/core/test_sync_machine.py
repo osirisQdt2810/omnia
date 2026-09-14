@@ -14,10 +14,12 @@ from omnia.core.config.loader import CollectionConfigLoader, TomlConfigLoader
 from omnia.core.config.repository import ConfigRepository
 from omnia.core.sync import (
     DEFAULT_PORT,
+    PASSCODE_DIGITS,
     MachineIdentity,
     MachineSettings,
+    access_code,
     machine_id,
-    parse_pairing_code,
+    parse_machine_id,
 )
 
 
@@ -171,17 +173,33 @@ class TestTheSwitchAndThePort:
 
 class TestTheIdThisMachineShows:
     def _identity(self) -> MachineIdentity:
-        return MachineIdentity(key="a" * 32, port=8767, sharing=True)
+        return MachineIdentity(key="1" * PASSCODE_DIGITS, port=8767, sharing=True)
 
-    def test_it_carries_the_best_address_and_the_key(self):
+    def test_it_carries_the_best_address(self):
         code = machine_id(self._identity(), addresses=["192.168.1.40", "100.71.161.7"])
 
-        address = parse_pairing_code(code)
-        assert address.host == "100.71.161.7"  # the mesh address outranks the LAN one
-        assert address.port == 8767
-        assert address.token == "a" * 32
+        assert parse_machine_id(code) == ("100.71.161.7", 8767)  # mesh outranks LAN
+
+    def test_it_carries_no_secret(self):
+        # The ID is the ADDRESS; the access code is the second field. An ID that leaked the code
+        # would make the code pointless, since the ID is the thing people paste into chat.
+        identity = self._identity()
+
+        assert identity.key not in machine_id(identity, addresses=["100.71.161.7"])
+
+    def test_a_moved_port_travels_with_it(self):
+        identity = MachineIdentity(key="1" * PASSCODE_DIGITS, port=9000, sharing=True)
+
+        assert parse_machine_id(machine_id(identity, addresses=["10.0.0.2"]))[1] == 9000
 
     def test_a_machine_with_no_dialable_address_shows_no_id(self):
         # A real answer, not a failure: an ID minted from loopback would never connect, and the
         # panel says so instead of handing out something that cannot work.
         assert machine_id(self._identity(), addresses=["127.0.0.1"]) == ""
+
+
+class TestTheCodeThisMachineShows:
+    def test_it_is_the_key_grouped_for_reading_aloud(self):
+        identity = MachineIdentity(key="123456789", port=8767, sharing=True)
+
+        assert access_code(identity) == "123 456 789"

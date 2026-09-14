@@ -44,12 +44,27 @@ class TestWhatThisMachineSays:
         assert "copy from this computer to another one" in page
         assert 'id="sync-sharing">' in page  # the switch is drawn off
 
-    def test_sharing_on_shows_the_id_to_read_out(self):
-        page = _page(PanelState(sharing=True, machine_id="ABCD-EFGH-IJKL"))
+    def test_sharing_on_shows_the_two_numbers_to_read_out(self):
+        page = _page(
+            PanelState(
+                sharing=True, machine_id="168 604 419 56", access_code="123 456 789"
+            )
+        )
 
-        assert "ABCD-EFGH-IJKL" in page
-        assert "Type this into the other computer" in page
+        assert "168 604 419 56" in page
+        assert "123 456 789" in page
+        assert "Type both of these into the other computer" in page
         assert 'id="sync-sharing" checked>' in page
+
+    def test_each_number_has_its_own_copy_button(self):
+        # One handler, two buttons, each naming what it copies — a single Copy button beside two
+        # numbers is a button whose meaning the reader has to guess.
+        page = _page(
+            PanelState(sharing=True, machine_id="168 604 419 56", access_code="1 2 3")
+        )
+
+        assert 'data-copy="sync-id"' in page
+        assert 'data-copy="sync-code"' in page
 
     def test_sharing_on_with_no_address_says_so_instead_of_showing_nothing(self):
         # The distinction that matters: the ID exists, it is simply not reachable. Drawing an
@@ -62,7 +77,11 @@ class TestWhatThisMachineSays:
     def test_the_page_never_mentions_the_transport(self):
         # The user's model is two machines and an ID. Naming a VPN, a port or an IP here would
         # make the panel a thing to configure rather than a thing to use.
-        page = _page(PanelState(sharing=True, machine_id="ABCD-EFGH"))
+        page = _page(
+            PanelState(
+                sharing=True, machine_id="168 604 419 56", access_code="123 456 789"
+            )
+        )
 
         lowered = page.lower()
         for word in ("tailscale", "vpn", "ip address", "port ", "http"):
@@ -113,11 +132,19 @@ class TestWhatTheOtherMachineSays:
 
         assert "—" in page
 
-    def test_the_typed_id_survives_a_failed_check(self):
-        # Retyping an ID by hand after a typo elsewhere in it is the worst part of this feature.
-        page = _page(PanelState(peer_id="ABCD-EFGH", status="Could not connect."))
+    def test_both_typed_numbers_survive_a_failed_check(self):
+        # Retyping twenty digits by hand after a typo in one of them is the part of this feature
+        # people give up on.
+        page = _page(
+            PanelState(
+                peer_id="168 604 419 56",
+                peer_code="123 456 789",
+                status="Could not connect.",
+            )
+        )
 
-        assert 'value="ABCD-EFGH"' in page
+        assert 'value="168 604 419 56"' in page
+        assert 'value="123 456 789"' in page
 
 
 class TestTheSharingSession:

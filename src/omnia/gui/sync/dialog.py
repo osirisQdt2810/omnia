@@ -21,11 +21,14 @@ from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.sync import (
     MachineSettings,
+    PairingAddress,
     PairingError,
     SyncClient,
     SyncError,
+    access_code,
     machine_id,
-    parse_pairing_code,
+    parse_machine_id,
+    parse_passcode,
 )
 from omnia.gui.sync import session
 from omnia.gui.sync.collect import inventory_reader
@@ -34,10 +37,14 @@ from omnia.gui.web_dialog import WebDialog
 
 logger = get_logger("sync")
 
-#: Where the last-used peer ID is remembered. The ID of the machine you pull FROM names a
-#: COMPUTER rather than a collection, so it belongs beside the key in ``machine.toml`` — the
-#: other machine in this pair is not the same one after the collection syncs to a third.
+#: Where the other machine's ID and code are remembered. They name a COMPUTER rather than a
+#: collection, so they belong beside this machine's own settings in ``machine.toml`` — the other
+#: machine in this pair is not the same one once the collection syncs to a third.
+#:
+#: The code is remembered as well as the ID because they are a pair: keeping half of it means
+#: retyping nine digits on every check, which is the part of this people give up on.
 PEER_KEY = "peer_id"
+PEER_CODE_KEY = "peer_code"
 
 
 class SyncDialog(WebDialog):
@@ -75,12 +82,14 @@ class SyncDialog(WebDialog):
         return PanelState(
             sharing=live,
             machine_id=machine_id(identity) if live else "",
-            peer_id=self._peer_id(),
+            access_code=access_code(identity) if live else "",
+            peer_id=self._remembered(PEER_KEY),
+            peer_code=self._remembered(PEER_CODE_KEY),
         )
 
-    def _peer_id(self) -> str:
+    def _remembered(self, key: str) -> str:
         try:
-            return str(self._repo.raw_section("sync").get(PEER_KEY, "") or "")
+            return str(self._repo.raw_section("sync").get(key, "") or "")
         except Exception:
             return ""
 
@@ -106,7 +115,7 @@ class SyncDialog(WebDialog):
         self._settings.set_sharing(wanted)
         if not wanted:
             session.stop()
-            self._show(PanelState(sharing=False, peer_id=self._state.peer_id))
+            self._show(self._off())
             return {"ok": True}
 
         identity = self._settings.identity()
@@ -116,7 +125,9 @@ class SyncDialog(WebDialog):
                 PanelState(
                     sharing=True,
                     machine_id=machine_id(identity),
+                    access_code=access_code(identity),
                     peer_id=self._state.peer_id,
+                    peer_code=self._state.peer_code,
                 )
             )
         else:
@@ -125,19 +136,17 @@ class SyncDialog(WebDialog):
             # with itself.
             self._settings.set_sharing(False)
             self._show(
-                PanelState(
-                    sharing=False,
-                    peer_id=self._state.peer_id,
+                self._off(
                     status=(
                         f"Sharing could not start — port {identity.port} is already in use. "
                         "Close the other copy of Anki, or use a different port."
-                    ),
+                    )
                 )
             )
         return {"ok": started}
 
     def _on_regenerate(self, _data: dict[str, Any]) -> dict[str, Any]:
-        """Mint a new key, which stops every ID handed out before from opening anything."""
+        """Mint a new access code, which stops the old one opening this machine."""
         identity = self._settings.regenerate()
         session.stop()
         live = identity.sharing and session.start(identity, self._inventory)
@@ -145,8 +154,13 @@ class SyncDialog(WebDialog):
             PanelState(
                 sharing=live,
                 machine_id=machine_id(identity) if live else "",
+                access_code=access_code(identity) if live else "",
                 peer_id=self._state.peer_id,
-                status="This computer has a new ID. The old one no longer opens it.",
+                peer_code=self._state.peer_code,
+                status=(
+                    "This computer has a new access code. The old one no longer opens it — "
+                    "the ID has not changed."
+                ),
             )
         )
         return {"ok": True}
@@ -166,28 +180,35 @@ class SyncDialog(WebDialog):
         button, and the answer arrives as a re-render rather than as this call's return value.
         """
         typed = str(data.get("id", ""))
+        typed_code = str(data.get("code", ""))
         try:
-            address = parse_pairing_code(typed)
+            host, port = parse_machine_id(typed)
+            address = PairingAddress(host, port, parse_passcode(typed_code))
         except PairingError as exc:
-            self._show(self._with_status(typed, str(exc)))
+            # Reported without dialling anything: a mistyped number is answered in the moment
+            # the user is still looking at the box they typed it into, rather than after the
+            # full connection timeout with "could not connect".
+            self._show(self._with_status(typed, typed_code, str(exc)))
             return
 
-        self._repo.update_section("sync", {PEER_KEY: typed})
+        self._repo.update_section("sync", {PEER_KEY: typed, PEER_CODE_KEY: typed_code})
         client = SyncClient(address)
         anki_compat.run_in_background(
             client.inventory,
-            on_success=lambda inventory: self._show_offer(typed, inventory),
-            on_failure=lambda exc: self._show_failure(typed, exc),
+            on_success=lambda inventory: self._show_offer(typed, typed_code, inventory),
+            on_failure=lambda exc: self._show_failure(typed, typed_code, exc),
             label="Omnia: asking the other computer…",
         )
 
     # --- callbacks ---------------------------------------------------------------------
-    def _show_offer(self, peer_id: str, inventory: Any) -> None:
+    def _show_offer(self, peer_id: str, peer_code: str, inventory: Any) -> None:
         self._show(
             PanelState(
                 sharing=self._state.sharing,
                 machine_id=self._state.machine_id,
+                access_code=self._state.access_code,
                 peer_id=peer_id,
+                peer_code=peer_code,
                 status=f"Connected to {inventory.machine or 'the other computer'}.",
                 connected=True,
                 decks=tuple(
@@ -199,7 +220,7 @@ class SyncDialog(WebDialog):
             )
         )
 
-    def _show_failure(self, peer_id: str, exc: BaseException) -> None:
+    def _show_failure(self, peer_id: str, peer_code: str, exc: BaseException) -> None:
         # A SyncError already carries the sentence that names its own fix; anything else is a bug
         # HERE, and the user still gets words rather than a dialog full of traceback.
         if isinstance(exc, SyncError):
@@ -207,14 +228,25 @@ class SyncDialog(WebDialog):
         else:
             logger.error("sync: asking the other machine failed", exc_info=exc)
             message = "Something went wrong on this computer — see the Omnia log."
-        self._show(self._with_status(peer_id, message))
+        self._show(self._with_status(peer_id, peer_code, message))
 
-    def _with_status(self, peer_id: str, status: str) -> PanelState:
+    def _with_status(self, peer_id: str, peer_code: str, status: str) -> PanelState:
         """This machine's half unchanged, the other machine's half replaced by ``status``."""
         return PanelState(
             sharing=self._state.sharing,
             machine_id=self._state.machine_id,
+            access_code=self._state.access_code,
             peer_id=peer_id,
+            peer_code=peer_code,
+            status=status,
+        )
+
+    def _off(self, *, status: str = "") -> PanelState:
+        """Sharing off, with whatever the user typed about the OTHER machine left alone."""
+        return PanelState(
+            sharing=False,
+            peer_id=self._state.peer_id,
+            peer_code=self._state.peer_code,
             status=status,
         )
 

@@ -21,6 +21,7 @@ import pytest
 
 from omnia.core.sync import (
     HELLO_PATH,
+    MAX_ATTEMPTS,
     TOKEN_HEADER,
     DeckEntry,
     Inventory,
@@ -399,12 +400,126 @@ class TestEveryFailureNamesItsFix:
                 SyncClient(address, timeout=5).inventory()
 
     def test_a_refusal_says_what_to_do_about_it_not_only_what_happened(self):
-        # The service cannot say why: it must answer the same for a missing key and a wrong one,
-        # or the difference tells a caller which half they got right. THIS side knows there is a
-        # fix — the ID was regenerated over there — so the sentence the user reads carries it.
+        # The service cannot say why: it must answer the same for a missing code and a wrong
+        # one, or the difference tells a caller which half they got right. THIS side knows there
+        # is a fix — the code was regenerated over there — so the sentence carries it.
         with _peer(
-            b'{"error": "that ID does not open this machine"}', status=403
+            b'{"error": "that code does not open this machine"}', status=403
         ) as address:
             message = check(address, timeout=5)
 
-        assert "copy it again" in message
+        assert "read it off that screen again" in message
+
+    def test_a_locked_out_machine_says_to_wait_rather_than_to_retype(self):
+        # Driven against the REAL session rather than a stub, because the sentence and the
+        # lockout that produces it have to agree: a 429 means the code may well be right, and
+        # telling the user to check it would send them to re-read a number that was fine.
+        key = new_token()
+        session = Session(_inventory, key=key, host="127.0.0.1", port=0)
+        assert session.start()
+        try:
+            wrong = PairingAddress("127.0.0.1", session.port, "0" * len(key))
+            for _ in range(MAX_ATTEMPTS):
+                check(wrong, timeout=5)
+
+            message = check(wrong, timeout=5)
+        finally:
+            session.stop()
+
+        assert "wait" in message.lower()
+
+
+class TestTheCodeCannotBeGuessedAt:
+    """The half of the design that makes a nine-digit code safe.
+
+    Nine digits is a billion combinations — an afternoon's work for a script that can try them
+    as fast as the network allows, and centuries for one allowed five tries a minute. The short
+    code and this are one decision; reviewing either alone gets the wrong answer.
+    """
+
+    def _lockout(self):
+        from omnia.core.sync.service import _Lockout
+
+        self.now = 0.0
+        return _Lockout(limit=3, seconds=60.0, clock=lambda: self.now)
+
+    def test_a_few_wrong_codes_are_tolerated(self):
+        # Somebody copying nine digits off another screen WILL get one wrong.
+        lockout = self._lockout()
+
+        assert lockout.record_failure() is False
+        assert lockout.record_failure() is False
+        assert lockout.locked is False
+
+    def test_too_many_closes_the_door(self):
+        lockout = self._lockout()
+        for _ in range(3):
+            lockout.record_failure()
+
+        assert lockout.locked is True
+
+    def test_the_door_opens_again_after_the_wait(self):
+        # A lockout that never lifted would be a way for anyone reachable to disable the feature
+        # permanently; it has to be a delay, not a kill switch.
+        lockout = self._lockout()
+        for _ in range(3):
+            lockout.record_failure()
+
+        self.now += 61.0
+
+        assert lockout.locked is False
+
+    def test_it_closes_again_on_the_next_wrong_code_after_it_lifts(self):
+        # The counter has to RESET when a lockout expires, or the very next wrong code trips it
+        # again instantly and the delay compounds without anyone guessing.
+        lockout = self._lockout()
+        for _ in range(3):
+            lockout.record_failure()
+        self.now += 61.0
+
+        assert lockout.record_failure() is False
+        assert lockout.locked is False
+
+    def test_the_right_code_forgets_the_wrong_ones(self):
+        lockout = self._lockout()
+        lockout.record_failure()
+        lockout.record_failure()
+
+        lockout.record_success()
+
+        assert lockout.record_failure() is False
+        assert lockout.locked is False
+
+    def test_the_collection_is_never_read_while_locked_out(self):
+        # The refusal happens BEFORE the code is compared and before anything touches Anki, so
+        # a machine under a guessing run is not also a machine doing work for it.
+        reads = []
+
+        def _read():
+            reads.append(1)
+            return _inventory()
+
+        key = new_token()
+        session = Session(_read, key=key, host="127.0.0.1", port=0)
+        assert session.start()
+        try:
+            wrong = PairingAddress("127.0.0.1", session.port, "0" * len(key))
+            for _ in range(MAX_ATTEMPTS + 3):
+                check(wrong, timeout=5)
+        finally:
+            session.stop()
+
+        assert reads == []
+
+    def test_the_right_code_still_works_after_a_single_slip(self):
+        key = new_token()
+        session = Session(_inventory, key=key, host="127.0.0.1", port=0)
+        assert session.start()
+        try:
+            check(PairingAddress("127.0.0.1", session.port, "0" * len(key)), timeout=5)
+
+            assert (
+                check(PairingAddress("127.0.0.1", session.port, key), timeout=5) == ""
+            )
+        finally:
+            session.stop()

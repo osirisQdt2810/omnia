@@ -18,34 +18,37 @@
     });
   }
 
+  const peerCode = document.getElementById("sync-peer-code");
+
   if (check) {
     check.addEventListener("click", function () {
       const id = (peer && peer.value) || "";
-      if (!id.trim()) {
-        return;
-      }
+      const code = (peerCode && peerCode.value) || "";
+      // Both halves are required, and the empty one gets the focus rather than a message: the
+      // user knows what is missing the moment the cursor lands in it.
+      if (!id.trim()) { if (peer) peer.focus(); return; }
+      if (!code.trim()) { if (peerCode) peerCode.focus(); return; }
       check.disabled = true;
       check.textContent = "Checking…";
-      send("connect", {id: id});
+      send("connect", {id: id, code: code});
     });
   }
 
-  const copy = document.getElementById("sync-copy");
-  if (copy) {
-    copy.addEventListener("click", function () {
-      const id = document.getElementById("sync-id");
-      if (!id) {
-        return;
-      }
-      // The dialog is a webview inside Anki, where the clipboard API is unreliable; Python
-      // owns the clipboard here so the button works the same on every platform.
-      send("copy", {text: id.textContent || ""});
-      copy.textContent = "Copied";
-      setTimeout(function () {
-        copy.textContent = "Copy";
-      }, 1200);
-    });
-  }
+  // One handler for every Copy button; each names what it copies with data-copy. The dialog is
+  // a webview inside Anki, where the clipboard API is unreliable, so Python owns the clipboard
+  // and the button behaves the same on every platform.
+  Array.prototype.forEach.call(
+    document.querySelectorAll("[data-copy]"),
+    function (button) {
+      button.addEventListener("click", function () {
+        const source = document.getElementById(button.getAttribute("data-copy"));
+        if (!source) { return; }
+        send("copy", {text: source.textContent || ""});
+        button.textContent = "Copied";
+        setTimeout(function () { button.textContent = "Copy"; }, 1200);
+      });
+    }
+  );
 
   const regen = document.getElementById("sync-regen");
   if (regen) {
@@ -55,11 +58,10 @@
     });
   }
 
-  if (peer) {
-    peer.addEventListener("keydown", function (ev) {
-      if (ev.key === "Enter" && check) {
-        check.click();
-      }
+  [peer, peerCode].forEach(function (box) {
+    if (!box) { return; }
+    box.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter" && check) { check.click(); }
     });
-  }
+  });
 })();

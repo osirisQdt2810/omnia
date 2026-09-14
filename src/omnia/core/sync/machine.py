@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional
 
 from omnia.core.sync.pairing import (
+    DEFAULT_PORT,
     PairingAddress,
-    format_pairing_code,
+    format_machine_id,
+    format_passcode,
     new_token,
 )
 from omnia.core.sync.reachability import local_addresses, rank_addresses
@@ -35,9 +37,13 @@ if TYPE_CHECKING:  # typing only — nothing here needs the repository at import
 
 SECTION = "sync"
 
-#: The port this machine offers on. Not one of Anki's, not the lookup service's (8766), and
-#: high enough to need no privileges.
-DEFAULT_PORT = 8767
+__all__ = [
+    "DEFAULT_PORT",
+    "MachineIdentity",
+    "MachineSettings",
+    "access_code",
+    "machine_id",
+]
 
 
 @dataclass(frozen=True)
@@ -123,20 +129,25 @@ def _port(value: Any) -> int:
 def machine_id(
     identity: MachineIdentity, *, addresses: Optional[list[str]] = None
 ) -> str:
-    """The ID this machine shows, or "" when it has no address another machine could dial.
+    """The number this machine shows, or "" when no other machine could dial it.
 
     The empty string is a real answer, not a failure: a machine with only loopback — no network,
     or a VPN that is not up — cannot be pulled from, and the panel says so instead of showing an
     ID that would never connect.
 
     Args:
-        identity: This machine's key and port.
+        identity: This machine's port (the ID carries no secret — the access code is separate).
         addresses: Candidate addresses; discovered from the routing table when omitted.
 
     Returns:
-        The ID, or "".
+        The ID, in groups of digits, or "".
     """
     ranked = rank_addresses(addresses if addresses is not None else local_addresses())
     if not ranked:
         return ""
-    return format_pairing_code(identity.address(ranked[0].ip))
+    return format_machine_id(ranked[0].ip, identity.port)
+
+
+def access_code(identity: MachineIdentity) -> str:
+    """The code this machine shows beneath its ID, grouped for reading aloud."""
+    return format_passcode(identity.key)
