@@ -133,16 +133,6 @@ class TestProfileResolution:
         assert settings.profile_for(f"  {WEB_CLIPPER} ").max_results == 2
 
 
-class TestTheClipperToken:
-    def test_it_starts_empty_so_the_write_path_starts_shut(self):
-        assert WordLookupSettings().token == ""
-
-    def test_it_round_trips(self):
-        stored = WordLookupSettings.parse_obj({"token": "abc"}).dict()
-
-        assert stored["token"] == "abc"
-
-
 class _FakeNote:
     """Only what a lookup reads: the fields in note-type order, and the type's name."""
 

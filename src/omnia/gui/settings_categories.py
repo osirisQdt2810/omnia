@@ -97,10 +97,11 @@ DEFAULT_CATEGORY_STYLE = CategoryStyle(
 
 
 # ``FeaturePlugin.group`` defaults to "General", so a plugin whose author never picked a group
-# lands here — and so does one that genuinely belongs nowhere else. Listed last, and it borrows
-# the default's icon and accents (a catch-all should not compete with the named groups for
-# attention) but says what it holds rather than the fallback's placeholder line: it is a real
-# destination now, not only the shape an unlisted group takes.
+# lands here. Nothing does today — word_lookup was the only occupant and is now always-on, with
+# no card at all — so the section renders only if a future plugin forgets to choose. Kept for
+# exactly that: a plugin with no group must still appear somewhere rather than vanish. It borrows
+# the default's icon and accents, because a catch-all should not compete with the named groups
+# for attention.
 CATEGORY_STYLES["General"] = CategoryStyle(
     icon=DEFAULT_CATEGORY_STYLE.icon,
     blurb="Everything that belongs to none of the above.",

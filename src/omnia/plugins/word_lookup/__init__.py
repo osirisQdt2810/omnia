@@ -67,42 +67,6 @@ STATE_NO_RULE = "no_rule"
 REASON_UNAVAILABLE = "unavailable"
 REASON_OFF = "off"  # it is there, and the user unticked its clipper switch
 
-# 32 bytes of entropy, url-safe (43 characters) — long enough that guessing it over loopback is
-# not a threat model, short enough to paste into the web clipper's options page.
-_TOKEN_BYTES = 32
-_TOKEN_FILE = Path("clippers") / "lookup-token.txt"
-
-
-def token_file_path(user_files_dir: Path) -> Path:
-    """Where the desktop clipper reads the loopback token from."""
-    return Path(user_files_dir) / _TOKEN_FILE
-
-
-def write_token_file(user_files_dir: Path, token: str) -> Path:
-    """Write ``token`` where the desktop clipper can read it, owner-only. Returns the path.
-
-    The clipper is a separate process on the same machine, so a file under ``user_files`` is the
-    one channel both sides already have (the browser extension cannot read files and is given
-    the token by hand instead).
-
-    Created through ``os.open`` with mode ``0o600`` rather than ``write_text`` then ``chmod``:
-    the two-call version leaves the secret world-readable for the instant in between. The mode
-    is honoured on POSIX; Windows ignores everything but the read-only bit, which is why the
-    file lives in the profile's own ``user_files`` rather than anywhere shared.
-    """
-    path = token_file_path(user_files_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        stream.write(token)
-    try:
-        # os.open only applies the mode when it CREATES the file, so a token rotated into an
-        # existing (possibly wider) file would otherwise keep the old permissions.
-        os.chmod(path, 0o600)
-    except OSError:
-        logger.debug("word_lookup: could not tighten the token file's permissions")
-    return path
-
 
 class RegenerationGateway:
     """word_lookup's view of smart_notes' regeneration, taken through the core service seam.
@@ -215,11 +179,14 @@ class WordLookupPlugin(FeaturePlugin):
 
     name = "Word Lookup"
     description = "Let the clippers look a word up in your collection."
-    # NOT "Integrations": that word belongs to the Smart Notes tab holding the clipper cards,
-    # and a same-named category on the main grid read as that place while being somewhere else.
-    # Not "AI" either, tempting as sitting beside Smart Notes is — lookup reads the collection
-    # and calls no model, and that category is described as generating fields with one.
-    group = "General"
+    # No card on the settings grid, and no switch. This is not a feature somebody chooses: it
+    # is what the clippers talk to, and a user who finds it switched off experiences it as the
+    # clippers being broken rather than as a setting they changed. The grid reads as "the
+    # features you can turn on", and a row in it whose only effect is to break another program
+    # dilutes every other row.
+    #
+    # It was the only thing in "General", so that category goes with it.
+    always_on = True
     tooltip = (
         "Answers a clipper's magnifier: “is this word already in my collection?”\n"
         "\n"
@@ -228,13 +195,13 @@ class WordLookupPlugin(FeaturePlugin):
         "• Each clipper gets its own profile: the note types it searches, the fields it "
         "shows, how many hits it gets. Edit it in Tools → Omnia → Smart Notes → "
         "Integrations, with that clipper's “Lookup…” button — Configure here only holds the "
-        "port and the token, which are shared by every clipper.\n"
+        "port, which is shared by every clipper.\n"
         "• A matching note is returned display-ready: fields keep the note type's own order, "
         "the ones with nothing in them sort last (so a clipper can offer to fill them), and "
         "the card's state (new/learning/review + interval, reps, lapses) comes along.\n"
         "• A clipper may also ask Smart Notes to regenerate a field. That single write path "
-        "needs a token, is refused for anything a web page started, and does nothing at all "
-        "unless Smart Notes is on with “Regenerate from clippers” enabled.\n"
+        "is refused for anything a web page started, and does nothing at all unless Smart "
+        "Notes is on with “Regenerate from clippers” enabled.\n"
         "• Turn this off and the clipper's magnifier simply reports the lookup service is "
         "unavailable; nothing else changes."
     )
@@ -253,7 +220,6 @@ class WordLookupPlugin(FeaturePlugin):
             self.lookup,
             media_dir=self._media_dir,
             generate=self.generate,
-            token=self._ensure_token(ctx, settings),
             port=port,
             run_on_main=anki_compat.run_on_main,
         )
@@ -267,45 +233,6 @@ class WordLookupPlugin(FeaturePlugin):
             self._service.stop()
         self._service = None
         self._ctx = None
-        # The token file is left in place on purpose: the socket is closed, so nothing can act
-        # on the token, and the value stays in config either way. Deleting it would buy no
-        # secrecy and would make a re-enable look like a first run to the desktop clipper.
-
-    # -- the write path's key -------------------------------------------------------------
-
-    def _ensure_token(self, ctx: PluginContext, settings: WordLookupSettings) -> str:
-        """Return the clipper token, issuing and persisting one the first time.
-
-        The token is what separates "the user's clipper" from "anything else that can open a
-        socket on this machine" — every other process, and every page in the browser, can reach
-        127.0.0.1 too. It is written to config (so it survives a restart) and to a file the
-        desktop clipper reads.
-        """
-        token = str(getattr(settings, "token", "") or "").strip()
-        if not token:
-            token = secrets.token_urlsafe(_TOKEN_BYTES)
-            try:
-                ctx.config.update_section(self.id, {"token": token})
-            except Exception:
-                # An unsaved token still works for this session, and the next start simply
-                # issues another one into the file below. Losing the write path entirely
-                # because config could not be written would be the worse failure.
-                logger.exception("word_lookup: could not persist the clipper token")
-        self._publish_token(ctx, token)
-        return token
-
-    @staticmethod
-    def _publish_token(ctx: PluginContext, token: str) -> None:
-        """Write the token to the file the desktop clipper reads (best effort)."""
-        user_files = getattr(getattr(ctx, "paths", None), "user_files_dir", None)
-        if user_files is None:
-            return
-        try:
-            write_token_file(Path(user_files), token)
-        except OSError:
-            # The lookup itself never needs the token, so a read-only user_files degrades to
-            # "the desktop clipper cannot regenerate" rather than "the feature will not start".
-            logger.exception("word_lookup: could not write the clipper token file")
 
     # No ``custom_config_dialog``. What lookup returns is now a property of the CLIPPER asking,
     # not of the collection, so the picker is reached from each clipper's card in

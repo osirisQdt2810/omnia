@@ -8,7 +8,7 @@ extension and the desktop app — and they are not looking at the same thing: th
 clipper floats over a book and wants the whole note, the web clipper sits next to a web page
 and usually wants two fields. So every *content* setting (which note types are searched, which
 fields are shown, …) lives in a :class:`LookupProfile` under ``clients``, keyed by the client
-that asked. Only :attr:`WordLookupSettings.port` and :attr:`WordLookupSettings.token` stay
+that asked. Only :attr:`WordLookupSettings.port` stays
 top-level: there is exactly ONE server, and its port is machine-specific (a port that is free
 on this machine may be taken on the next one, so it must not be a per-client — or synced —
 choice).
@@ -143,18 +143,6 @@ class WordLookupSettings(PersistedModel):
             "• Takes effect after Anki restarts (or after you switch Word Lookup off and on "
             "again) — the port is bound to a socket when the feature starts. Every other "
             "lookup setting applies to the very next lookup."
-        ),
-    )
-    token: str = Field(
-        "",
-        title="Clipper access token",
-        description=(
-            "Shared secret a clipper must send (header ``X-Omnia-Token``) to REGENERATE a "
-            "field. Looking a word up never needs it — only the write path does.\n"
-            "• Issued automatically the first time the feature is enabled, and written to "
-            "``user_files/clippers/lookup-token.txt`` so the desktop clipper can read it.\n"
-            "• Clear it to have a new one issued (then paste the new value into the web "
-            "clipper)."
         ),
     )
 

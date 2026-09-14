@@ -1,4 +1,4 @@
-"""Tests for the regeneration glue: the service seam, per-field state, and the token.
+"""Tests for the regeneration glue: the service seam and per-field state.
 
 Two rules drive almost every test here:
 
@@ -14,7 +14,6 @@ Nothing here needs smart_notes, Anki or a network: the seam is a stand-in inject
 
 from __future__ import annotations
 
-import os
 import socket
 import sys
 import types
@@ -32,8 +31,6 @@ from omnia.plugins.word_lookup import (
     STATE_UNAVAILABLE,
     RegenerationGateway,
     WordLookupPlugin,
-    token_file_path,
-    write_token_file,
 )
 from omnia.plugins.word_lookup.config import WEB_CLIPPER, WordLookupSettings
 from omnia.plugins.word_lookup.service import (
@@ -510,33 +507,6 @@ class TestAFinishedGenerationIsNeverThrownAway:
         assert results[1]["message"] == "TTS refused"
 
 
-class TestTheTokenFile:
-    def test_it_holds_the_token(self, tmp_path):
-        path = write_token_file(tmp_path, "s3cret")
-
-        assert path == token_file_path(tmp_path)
-        assert path.read_text(encoding="utf-8") == "s3cret"
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-    def test_only_the_owner_can_read_it(self, tmp_path):
-        path = write_token_file(tmp_path, "s3cret")
-
-        assert path.stat().st_mode & 0o777 == 0o600
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-    def test_a_rotated_token_tightens_a_file_that_was_already_wide(self, tmp_path):
-        """``os.open`` only applies its mode when it CREATES the file."""
-        path = token_file_path(tmp_path)
-        path.parent.mkdir(parents=True)
-        path.write_text("old", encoding="utf-8")
-        os.chmod(path, 0o666)
-
-        write_token_file(tmp_path, "new")
-
-        assert path.stat().st_mode & 0o777 == 0o600
-        assert path.read_text(encoding="utf-8") == "new"
-
-
 def _shows(payload: dict) -> list[str]:
     """The field names the first card of a lookup payload shows."""
     return [field["name"] for field in payload["cards"][0]["fields"]]
@@ -628,59 +598,3 @@ class _FakeConfig:
         if self._fail:
             raise OSError("config is read-only")
         self.writes.append((section, values))
-
-
-class TestIssuingTheToken:
-    @pytest.fixture
-    def enabled(self, tmp_path):
-        """Enable the plugin against a temp user_files, and always disable it again."""
-        started: list[tuple[WordLookupPlugin, SimpleNamespace]] = []
-
-        def enable(settings: WordLookupSettings, config=None) -> SimpleNamespace:
-            ctx = SimpleNamespace(
-                settings=settings.copy(update={"port": _free_port()}),
-                config=config or _FakeConfig(),
-                paths=SimpleNamespace(user_files_dir=tmp_path),
-            )
-            instance = WordLookupPlugin()
-            instance.on_enable(ctx)
-            started.append((instance, ctx))
-            return ctx
-
-        yield enable
-        for instance, ctx in started:
-            instance.on_disable(ctx)
-
-    def test_a_first_enable_issues_persists_and_publishes_one(self, enabled, tmp_path):
-        ctx = enabled(WordLookupSettings())
-
-        section, values = ctx.config.writes[0]
-        assert section == "word_lookup"
-        token = values["token"]
-        assert len(token) >= 32
-        assert token_file_path(tmp_path).read_text(encoding="utf-8") == token
-
-    def test_an_existing_token_is_reused_and_never_rewritten(self, enabled, tmp_path):
-        ctx = enabled(WordLookupSettings.parse_obj({"token": "already-issued"}))
-
-        assert ctx.config.writes == []
-        assert token_file_path(tmp_path).read_text(encoding="utf-8") == "already-issued"
-
-    def test_a_config_that_cannot_be_written_still_serves(self, enabled, tmp_path):
-        """A read-only config must not cost the user the write path for this session."""
-        enabled(WordLookupSettings(), config=_FakeConfig(fail=True))
-
-        assert token_file_path(tmp_path).read_text(encoding="utf-8")
-
-    def test_a_missing_user_files_path_is_not_a_crash(self):
-        instance = WordLookupPlugin()
-        ctx = SimpleNamespace(
-            settings=WordLookupSettings(port=_free_port()),
-            config=_FakeConfig(),
-            paths=None,
-        )
-
-        instance.on_enable(ctx)
-        instance.on_disable(ctx)
-
-        assert ctx.config.writes, "the token was still issued and persisted"
