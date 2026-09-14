@@ -7,10 +7,12 @@ twice — which language the explanations come back in, and which model to spend
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
-from omnia.plugins.phrase_check.correction import MODES, WRITTEN
+from omnia.plugins.phrase_check.correction import WRITTEN
 
 
 class PhraseCheckSettings(PersistedModel):
@@ -32,7 +34,17 @@ class PhraseCheckSettings(PersistedModel):
             "Codes are accepted and translated for the common ones."
         ),
     )
-    default_mode: str = Field(
+    # ``Literal``, not ``str`` + a choices hint. It both validates the value and drives the
+    # generic form's dropdown (core/config/schema.py reads the annotation, and nothing else).
+    # Spelled out rather than ``Literal[SPOKEN, WRITTEN]``, because mypy requires literal values
+    # there and rejects the names — so ``test_wiring`` pins these against ``correction.MODES``,
+    # which stays the single source of truth everywhere else.
+    # The v2 spelling of that hint — ``json_schema_extra`` — is swallowed without error by the
+    # Pydantic 1.10 this add-on vendors, so the field rendered as a free-text box: a user could
+    # type "speech", have it save without complaint, and get every correction judged in the
+    # wrong register with nothing on screen saying so. Which is exactly the failure the two
+    # registers exist to prevent, reintroduced through the settings dialog.
+    default_mode: Literal["spoken", "written"] = Field(
         default=WRITTEN,
         title="Check as",
         description=(
@@ -43,7 +55,6 @@ class PhraseCheckSettings(PersistedModel):
             "ordinary in speech, so a corrector with one standard is wrong half the time with "
             "total confidence."
         ),
-        json_schema_extra={"choices": list(MODES)},
     )
     model: str = Field(
         default="",

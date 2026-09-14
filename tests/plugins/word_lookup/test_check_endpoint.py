@@ -242,6 +242,13 @@ class TestTellingOffApartFromBroken:
         assert "invalid api key" in body["error"]
 
     def test_an_unexpected_error_is_a_500_that_leaks_nothing(self, serve):
+        # A 500 and a flat sentence, the same way /generate treats a failure it did not expect.
+        # An AttributeError's repr, or a provider error embedding a request URL with a key in
+        # it, must not be echoed to a clipper just because it happened to be raised here.
+        #
+        # The previous version of this test read `status in (500, 502)` and
+        # `"internal detail" not in body or status == 502`, which is true whatever the code
+        # does — it asserted nothing at all.
         def check(*_args):
             raise ValueError("an internal detail nobody should see")
 
@@ -249,8 +256,26 @@ class TestTellingOffApartFromBroken:
 
         status, body = _post(port, "/check", {"text": "x"})
 
-        assert status in (500, 502)
-        assert "internal detail" not in json.dumps(body) or status == 502
+        assert status == 500
+        assert "internal detail" not in json.dumps(body)
+
+    def test_a_message_the_plugin_marked_for_a_person_does_reach_the_panel(self, serve):
+        # The other half of the same rule. The provider's own sentence names the thing only the
+        # user can fix, so an error the plugin deliberately wrote is passed through as a 502.
+        class CuratedError(RuntimeError):
+            user_facing = True
+
+        def check(*_args):
+            raise CuratedError(
+                "Could not check that phrase — HTTP 401: invalid api key"
+            )
+
+        port = serve(check)
+
+        status, body = _post(port, "/check", {"text": "x"})
+
+        assert status == 502
+        assert "invalid api key" in body["error"]
 
 
 class TestItDoesNotDisturbTheRest:

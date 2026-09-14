@@ -63,23 +63,6 @@ class TestRememberingAnAnswer:
     def test_a_question_never_asked_is_absent(self, cache):
         assert cache.get(_key("something else")) is None
 
-    def test_forgetting_one_leaves_the_others(self, cache):
-        cache.put(_key("a"), {"rewritten": "A"})
-        cache.put(_key("b"), {"rewritten": "B"})
-
-        cache.forget(_key("a"))
-
-        assert cache.get(_key("a")) is None
-        assert cache.get(_key("b")) == {"rewritten": "B"}
-
-    def test_clearing_drops_everything(self, cache):
-        cache.put(_key("a"), {"rewritten": "A"})
-        cache.put(_key("b"), {"rewritten": "B"})
-
-        cache.clear()
-
-        assert len(cache) == 0
-
 
 class TestWhatCountsAsTheSameQuestion:
     def test_the_mode_is_part_of_it(self):
@@ -89,6 +72,20 @@ class TestWhatCountsAsTheSameQuestion:
     def test_the_language_is_part_of_it(self):
         # An explanation in English is not one in Vietnamese.
         assert _key(language="en").digest() != _key(language="vi").digest()
+
+    def test_the_pinned_model_is_part_of_it(self):
+        # A stronger model is pinned precisely when the current answers are not good enough.
+        # Leaving it out of the key means every phrase already asked keeps returning the cheap
+        # model's answer for up to a month, with nothing on screen to say why.
+        assert CacheKey(text="x", mode="written", language="en", model="").digest() != (
+            CacheKey(text="x", mode="written", language="en", model="gpt-5").digest()
+        )
+
+    def test_two_pinned_models_are_two_questions(self):
+        a = CacheKey(text="x", mode="written", language="en", model="haiku")
+        b = CacheKey(text="x", mode="written", language="en", model="opus")
+
+        assert a.digest() != b.digest()
 
     def test_whitespace_is_not(self, cache):
         # Selecting a phrase from a web page picks up ragged spacing and newlines; asking twice

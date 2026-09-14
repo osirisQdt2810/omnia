@@ -76,6 +76,11 @@ class CacheKey:
     text: str
     mode: str
     language: str
+    #: The pinned model, when the user set one. Part of the question because a stronger model
+    #: is asked for precisely when the current answers are not good enough: without this,
+    #: switching to one keeps handing back the cheap model's work for up to a month, with
+    #: nothing on screen to say why and no way past it but the per-phrase refresh.
+    model: str = ""
 
     def digest(self) -> str:
         """A stable, short id for this question.
@@ -86,7 +91,7 @@ class CacheKey:
         different questions with different right answers.
         """
         normalised = " ".join(self.text.split())
-        raw = f"{self.mode} {self.language} {normalised}"
+        raw = f"{self.mode} {self.language} {self.model} {normalised}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -121,17 +126,22 @@ class CorrectionCache:
 
         An entry past its age is treated as absent AND removed, rather than returned with a
         warning: a stale correction that still renders is one the user acts on.
+
+        Under the lock too, not only :meth:`put` — the expiry sweep WRITES, so without it a
+        sweep on one HTTP worker can save a snapshot taken before a concurrent put on another
+        and drop the entry it just paid for. A read that only read would not need this.
         """
-        store = self._load()
-        entry = store.get(key.digest())
-        if not isinstance(entry, dict):
-            return None
-        if self._expired(entry):
-            store.pop(key.digest(), None)
-            self._save(store)
-            return None
-        payload = entry.get("payload")
-        return payload if isinstance(payload, dict) else None
+        with _MUTATE_LOCK:
+            store = self._load()
+            entry = store.get(key.digest())
+            if not isinstance(entry, dict):
+                return None
+            if self._expired(entry):
+                store.pop(key.digest(), None)
+                self._save(store)
+                return None
+            payload = entry.get("payload")
+            return payload if isinstance(payload, dict) else None
 
     def put(self, key: CacheKey, payload: dict[str, Any]) -> None:
         """Remember an answer, evicting the oldest if there are now too many."""
@@ -139,17 +149,6 @@ class CorrectionCache:
             store = self._load()
             store[key.digest()] = {"at": self._clock(), "payload": payload}
             self._save(self._evict(store))
-
-    def forget(self, key: CacheKey) -> None:
-        """Drop one answer — what a "correct it again" button does."""
-        with _MUTATE_LOCK:
-            store = self._load()
-            if store.pop(key.digest(), None) is not None:
-                self._save(store)
-
-    def clear(self) -> None:
-        """Drop everything."""
-        self._save({})
 
     def __len__(self) -> int:
         return len(self._load())

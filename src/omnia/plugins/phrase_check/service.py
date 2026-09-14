@@ -43,7 +43,17 @@ TEMPERATURE = 0.2
 
 
 class PhraseCheckError(RuntimeError):
-    """A correction that could not be produced, with a reason a person can act on."""
+    """A correction that could not be produced, with a reason a person can act on.
+
+    The attribute is the contract with ``word_lookup``, which serves this over HTTP and may not
+    import it (ADR-019). It marks the message as one deliberately WRITTEN for a person: the
+    provider's own sentence, or a limit being named. Anything without it is an internal detail —
+    an ``AttributeError``, a repr with a request URL and a key in it — and is answered with a
+    flat 500 instead of being echoed to a clipper.
+    """
+
+    #: See the class docstring. Read by name, never by type, so no import crosses plugins.
+    user_facing = True
 
 
 class PhraseChecker:
@@ -98,7 +108,9 @@ class PhraseChecker:
                 f"limit is {MAX_CHARACTERS:,}. Select a sentence or two."
             )
 
-        key = CacheKey(text=phrase, mode=mode, language=self._language)
+        key = CacheKey(
+            text=phrase, mode=mode, language=self._language, model=self._model
+        )
         if self._cache is not None and not refresh:
             remembered = self._cache.get(key)
             if remembered is not None:

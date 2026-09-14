@@ -446,8 +446,15 @@ class LookupService:
         except (PhraseCheckUnavailableError, CheckFailedError):
             raise
         except Exception as exc:
-            # Whatever the plugin raised carries the user-facing sentence; it is re-labelled
-            # rather than re-worded, so the reason the provider gave survives to the panel.
+            # Only a message the plugin MARKED as written for a person is passed on; it is
+            # re-labelled rather than re-worded, so the reason the provider gave survives to
+            # the panel. Everything else is an internal detail — an AttributeError, a repr
+            # carrying a request URL with a key in it — and goes out as a flat 500, the same
+            # way /generate treats a failure it did not expect.
+            #
+            # By ATTRIBUTE, not by type: word_lookup may not import phrase_check (ADR-019).
+            if not getattr(exc, "user_facing", False):
+                raise
             raise CheckFailedError(str(exc) or "the check could not finish") from exc
 
     def _build_handler(self) -> type[BaseHTTPRequestHandler]:

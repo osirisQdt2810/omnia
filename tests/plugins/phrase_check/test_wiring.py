@@ -14,8 +14,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 import pytest
+from pydantic import ValidationError
 
 from omnia.core import services
+from omnia.core.config.schema import schema_from_model
 from omnia.plugins.phrase_check import (
     CHECK_SERVICE,
     PhraseCheckPlugin,
@@ -23,7 +25,7 @@ from omnia.plugins.phrase_check import (
     as_payload,
 )
 from omnia.plugins.phrase_check.config import PhraseCheckSettings
-from omnia.plugins.phrase_check.correction import SPOKEN, WRITTEN, parse
+from omnia.plugins.phrase_check.correction import MODES, SPOKEN, WRITTEN, parse
 
 
 def _correction(payload: Optional[dict[str, Any]] = None, original: str = ""):
@@ -134,10 +136,37 @@ class TestWhichRegister:
     def test_a_register_nobody_recognises_falls_back_rather_than_failing(self):
         assert _mode("shouted", PhraseCheckSettings(default_mode=SPOKEN)) == SPOKEN
 
-    def test_a_setting_nobody_recognises_still_produces_a_usable_register(self):
-        # The settings model is extra="allow" and the value is a free string, so this is
-        # reachable from a hand-edited config as well as from an older build.
-        assert _mode("", PhraseCheckSettings(default_mode="prose")) == WRITTEN
+    def test_the_model_refuses_a_register_that_does_not_exist(self):
+        # The fix that matters. `default_mode` was a bare `str` carrying a v2-only choices hint
+        # that Pydantic 1.10 swallows without error, so the settings dialog rendered a free-text
+        # box: a user could type "speech", have it save without complaint, and get every
+        # correction judged in the wrong register with nothing on screen saying so.
+        with pytest.raises(ValidationError):
+            PhraseCheckSettings(default_mode="prose")
+
+    def test_the_settings_choices_are_the_registers_the_code_knows(self):
+        # The annotation has to spell the values out (mypy rejects names inside a Literal), so
+        # this is what stops it drifting from `correction.MODES`, which everything else uses.
+        fields = {field.key: field for field in schema_from_model(PhraseCheckSettings)}
+
+        assert set(fields["default_mode"].choices) == set(MODES)
+
+    def test_the_settings_form_offers_a_dropdown_rather_than_a_text_box(self):
+        # Asserted on the GENERATED schema, not on the annotation: the annotation is only half
+        # the mechanism, and it was the other half (how the form derives a choice field) that
+        # made the v2 spelling fail silently.
+        fields = {field.key: field for field in schema_from_model(PhraseCheckSettings)}
+
+        assert fields["default_mode"].kind == "choice"
+        assert set(fields["default_mode"].choices) == {SPOKEN, WRITTEN}
+
+    def test_a_settings_object_that_is_not_one_still_produces_a_usable_register(self):
+        # `_mode` reads the value with getattr, so it must survive whatever it is handed —
+        # including a model built by `construct()`, which skips validation.
+        class NotReallySettings:
+            default_mode = "prose"
+
+        assert _mode("", NotReallySettings()) == WRITTEN
 
 
 class TestTheServiceSeam:
