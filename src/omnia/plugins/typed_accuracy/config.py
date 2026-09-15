@@ -24,20 +24,34 @@ class TypedAccuracySettings(PersistedModel):
         description=(
             "Fraction of the typed answer that must be correct to count as a pass.\n"
             "• 0.7 = 70% of characters right.\n"
-            "• At or above this → the pass ease below is staged.\n"
-            "• Below this → the card is forced to Hard."
+            "• At or above this → the pass ease is staged.\n"
+            "• Below this → the fail ease is staged."
         ),
     )
     # Auto-answer on a pass: "good"/"easy" stage that ease; "no" stages nothing (the user's
-    # own press stands). A fail always forces Hard regardless of this setting. ``Literal``
-    # both validates the value and drives the generic form's choice widget.
+    # own press stands). ``Literal`` both validates the value and drives the settings form's
+    # choice widget.
     pass_ease: Literal["good", "easy", "no"] = Field(
         "good",
         description=(
             "Which ease to auto-stage when the typed answer passes.\n"
             "• good / easy: stage that grade for you on a pass.\n"
+            "• no: stage nothing — your own key press stands."
+        ),
+    )
+    # The other side of the threshold, and it was hard-coded to Hard until now. Default kept at
+    # "hard" so nobody's grading changes by upgrading.
+    fail_ease: Literal["again", "hard", "no"] = Field(
+        "hard",
+        description=(
+            "Which ease to auto-stage when the typed answer fails.\n"
+            "• again: send it straight back into the queue — strict, for spelling drills.\n"
+            "• hard: keep it in rotation but set it back. The default.\n"
             "• no: stage nothing — your own key press stands.\n"
-            "• A fail always forces Hard, regardless of this setting."
+            "\n"
+            "How wrong a typo should count depends on what you are drilling, which is why "
+            "this is a choice and not a rule. A missed accent in a language deck is not the "
+            "same mistake as a misspelt term you are being examined on."
         ),
     )
     show_stats: bool = Field(

@@ -105,11 +105,16 @@ class TypedAccuracyPlugin(FeaturePlugin):
         self._injector: Optional[StatsInjector] = None
         self._threshold = 0.7
         self._pass_ease = "good"
+        self._fail_ease = "hard"
 
     def on_enable(self, ctx: PluginContext) -> None:
         settings = ctx.settings
         self._threshold = settings.threshold
         self._pass_ease = settings.pass_ease
+        # getattr, not attribute access: a settings object stored by a build without this field
+        # is loaded as-is (PersistedModel is extra="allow"), and a plugin that raised on the
+        # first review after an upgrade would be a worse bug than a default.
+        self._fail_ease = getattr(settings, "fail_ease", "hard")
         # Only build the stats-panel injector when the user wants the donut; leaving it None
         # (and skipping the style hook below) means the panel is never injected.
         self._injector = StatsInjector(_WEB_DIR) if settings.show_stats else None
@@ -166,7 +171,7 @@ class TypedAccuracyPlugin(FeaturePlugin):
             return {"ok": False, "error": "no current card"}
 
         ratio = float(data.get("ratio", 0.0))
-        ease = decide_ease(ratio, self._threshold, self._pass_ease)
+        ease = decide_ease(ratio, self._threshold, self._pass_ease, self._fail_ease)
         if ease is not None:
             self._pending[cid] = ease
         else:

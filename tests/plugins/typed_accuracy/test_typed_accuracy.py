@@ -65,9 +65,36 @@ class TestAccuracyLogic:
         assert decide_ease(0.9, 0.7, "easy") == 4
         assert decide_ease(0.5, 0.7, "good") == 2  # fail -> Hard
 
-    def test_decide_ease_no_stages_nothing_on_pass_but_hard_on_fail(self):
+    def test_decide_ease_no_stages_nothing_on_pass(self):
         assert decide_ease(0.9, 0.7, "no") is None  # pass -> stage nothing
-        assert decide_ease(0.0, 0.7, "no") == 2  # fail still forces Hard
+        assert decide_ease(0.0, 0.7, "no") == 2  # fail -> the default fail ease
+
+    def test_the_fail_side_is_the_users_choice_too(self):
+        # It was hard-coded to Hard. How wrong a typo counts depends on what is being drilled:
+        # a missed accent in a language deck is not the misspelt term you are examined on.
+        assert decide_ease(0.5, 0.7, "good", "again") == 1
+        assert decide_ease(0.5, 0.7, "good", "hard") == 2
+        assert decide_ease(0.5, 0.7, "good", "no") is None
+
+    def test_the_fail_choice_does_not_touch_the_pass_side(self):
+        # The two are independent settings, and a strict fail must not quietly restage a pass.
+        for fail in ("again", "hard", "no"):
+            assert decide_ease(0.9, 0.7, "good", fail) == 3, fail
+            assert decide_ease(0.9, 0.7, "easy", fail) == 4, fail
+            assert decide_ease(0.9, 0.7, "no", fail) is None, fail
+
+    def test_omitting_it_still_forces_hard(self):
+        # Every existing caller and every stored config predates the setting.
+        assert decide_ease(0.5, 0.7, "good") == 2
+
+    def test_an_unrecognised_fail_choice_falls_back_rather_than_grading_nothing(self):
+        # A hand-edited config, or one from a newer build. A grader that quietly stops grading
+        # is harder to notice than one that grades plainly.
+        assert decide_ease(0.5, 0.7, "good", "sideways") == 2
+
+    def test_the_boundary_belongs_to_the_pass_side(self):
+        # "at or above" — a threshold nobody can actually hit is a threshold set wrong.
+        assert decide_ease(0.7, 0.7, "good", "again") == 3
 
     def test_result_code_precedence(self):
         assert result_code(True, True, True) == RESULT_MISS  # miss wins
@@ -268,6 +295,67 @@ class TestTypedAccuracyPlugin:
         )
         assert ctx.ease.compute_ease(fake_mw.card, 3) == 2  # Hard
         assert _logged_rows(fake_mw.conn) == [(42, 7, 7, RESULT_BAD)]
+
+    def test_a_fail_grades_what_the_setting_says(self, fake_mw):
+        # The wiring, not the rule: `decide_ease` being right means nothing if the plugin never
+        # passes the setting to it. This one failed before the field was threaded through.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        for choice, expected in (("again", 1), ("hard", 2)):
+            ctx = _context(
+                TypedAccuracySettings(threshold=0.7, pass_ease="good", fail_ease=choice)
+            )
+            TypedAccuracyPlugin().on_enable(ctx)
+            ctx.web._router.dispatch(
+                build_message(
+                    "typed_accuracy",
+                    "rated",
+                    {"ratio": 0.4, "hasGood": True, "hasBad": True, "hasMiss": False},
+                ),
+                None,
+            )
+            assert ctx.ease.compute_ease(fake_mw.card, 3) == expected, choice
+
+    def test_a_fail_set_to_no_leaves_the_users_own_press_alone(self, fake_mw):
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(
+            TypedAccuracySettings(threshold=0.7, pass_ease="good", fail_ease="no")
+        )
+        TypedAccuracyPlugin().on_enable(ctx)
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.4, "hasGood": True, "hasBad": True, "hasMiss": False},
+            ),
+            None,
+        )
+
+        # 3 in, 3 out: nothing was staged, so the grade the reviewer asked for stands.
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 3
+
+    def test_settings_stored_without_the_field_still_grade(self, fake_mw):
+        # PersistedModel is extra="allow", so a config written before this field exists loads
+        # fine — and a plugin that raised on the first review after an upgrade would be a worse
+        # bug than a default.
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(threshold=0.7, pass_ease="good"))
+        plugin = TypedAccuracyPlugin()
+        # Simulate the older shape by removing the attribute the plugin reads with getattr.
+        del ctx.settings.__dict__["fail_ease"]
+        plugin.on_enable(ctx)
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": 0.4, "hasGood": True, "hasBad": True, "hasMiss": False},
+            ),
+            None,
+        )
+
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 2  # the old behaviour: Hard
 
     def test_empty_no_markup_forces_hard_and_logs_empty(self, fake_mw):
         from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
