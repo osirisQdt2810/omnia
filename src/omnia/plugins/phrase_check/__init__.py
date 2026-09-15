@@ -22,6 +22,7 @@ reached from a selection in a browser or on the desktop, through the same loopba
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Optional
 
 from omnia.core import services
@@ -115,36 +116,63 @@ class PhraseCheckPlugin(FeaturePlugin):
         )
         return as_payload(correction, shown=_fixes_shown(settings))
 
-    def _save(self, text: str, mode: str = "", col: Any = None) -> dict[str, Any]:
+    def _save(
+        self,
+        text: str,
+        mode: str = "",
+        col: Any = None,
+        on_main: Optional[Callable[[Callable[[], Any]], Any]] = None,
+    ) -> dict[str, Any]:
         """Save the correction for ``text`` as a note, and say where it went.
 
-        The correction is looked up again rather than taken from the caller. It is almost always
-        a cache hit, so it costs nothing — and the alternative is letting a clipper post whatever
-        it likes into the collection, which is a different feature with a different risk.
+        Two phases on two threads, and the split is the point.
+
+        **Resolving** the correction happens on the calling (worker) thread, because it is
+        usually a cache hit but NOT always — a changed model or language is a guaranteed miss,
+        and so is an entry that aged out — and a miss is a synchronous call to an LLM. Doing
+        that on the Qt main thread froze Anki for the length of it, and then `call_on_main`'s
+        five-second patience expired and answered "nothing was saved" while the main thread went
+        on to add the note regardless, so a second press added a duplicate.
+
+        **Writing** happens through ``on_main``, because ``col`` may not be touched from a
+        worker at all.
+
+        The correction is looked up again rather than taken from the caller: the alternative is
+        letting a clipper post whatever it likes into the collection, which is a different
+        feature with a different risk.
 
         Args:
             text: The phrase, as it was checked.
             mode: The register it was checked in.
-            col: The collection. Supplied by the caller because this MUST run on the Qt main
-                thread and the caller is the one that marshalled it there.
+            col: The collection, when the caller has one. ``None`` reads it inside the write,
+                on the thread that is about to use it — which is also what stops a stale handle
+                surviving a profile switch.
+            on_main: Marshals a callable onto the Qt main thread and waits. ``None`` writes
+                inline, which is right headless and in tests.
 
         Raises:
             PhraseCheckError: With a sentence the clipper shows as-is.
         """
         settings = self._settings()
         checker = self._checker(settings)
+        # Worker thread. May call the model.
         correction = checker.check(text, mode=_mode(mode, settings), refresh=False)
-        if col is None:
-            from omnia.core import anki_compat
 
-            col = anki_compat.main_window().col
-        try:
-            saved = library.save_correction(
-                col,
+        def write() -> Any:
+            target = col
+            if target is None:
+                from omnia.core import anki_compat
+
+                target = anki_compat.main_window().col
+            return library.save_correction(
+                target,
                 correction,
                 deck=str(getattr(settings, "save_deck", library.DEFAULT_DECK) or ""),
                 note_type=str(getattr(settings, "save_note_type", "") or ""),
             )
+
+        try:
+            saved = on_main(write) if on_main is not None else write()
         except library.SaveError as exc:
             raise PhraseCheckError(str(exc)) from exc
         return {

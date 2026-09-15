@@ -245,49 +245,48 @@ class TestLifecycle:
         assert service.running is False
 
 
-class TestSavingGoesThroughTheMainThread:
-    """A save WRITES to the collection, and ``col`` may not be touched from an HTTP worker.
+class TestSavingIsNotMarshalledWholesale:
+    """The service hands the save to its callable on the WORKER thread, and waits.
 
-    This is the one route in this service that mutates anything, so "it runs on the right
-    thread" is not a detail — it is the difference between a saved card and a corrupted
-    collection. Everything else here reads.
+    It used to wrap the whole thing in ``call_on_main``, which looked safer and was not: the
+    first thing a save does is resolve the correction, and on a cache miss that is a synchronous
+    LLM call. On the Qt main thread that froze Anki — and then ``call_on_main`` gave up after
+    five seconds and answered "nothing was saved" while the main thread went on to add the note,
+    so a second press added a duplicate. The hop now lives where the writes start, and the
+    service hands over the marshaller instead.
     """
 
-    def test_the_save_is_handed_to_the_main_thread(self, service_factory):
+    def test_the_save_runs_without_a_main_thread_of_its_own(self, service_factory):
         handed: list = []
-
-        def run_on_main(work):
-            handed.append(work)
-            work()
-
         saved: list = []
-        service, port = service_factory(
+        _service, port = service_factory(
             _lookup,
             save=lambda text, mode: saved.append(text) or {"summary": "ok"},
-            run_on_main=run_on_main,
+            run_on_main=lambda work: handed.append(work) or work(),
         )
-        _ = service
 
-        _post(port, "/check/save", {"text": "I have went."})
+        status, body = _post(port, "/check/save", {"text": "I have went."})
 
-        assert handed, "the write was done on the HTTP worker thread"
+        assert status == 200
         assert saved == ["I have went."]
+        assert handed == [], "the whole save was marshalled again"
 
-    def test_a_main_thread_that_never_runs_it_saves_nothing(self, service_factory):
-        # Anki busy or frozen. The request must end, and it must end saying nothing happened
-        # rather than leaving the panel to guess.
-        saved: list = []
-        service, port = service_factory(
-            _lookup,
-            save=lambda text, mode: saved.append(text) or {},
-            run_on_main=lambda work: None,  # handed over, and never run
+    def test_a_saver_that_takes_its_time_is_not_cut_off_at_five_seconds(
+        self, service_factory
+    ):
+        # The old shape answered 503 after `_MAIN_THREAD_TIMEOUT_SECONDS` while the work carried
+        # on — a false negative over a note that did get written. Nothing here is on a clock.
+        import time
+
+        def slow(text, _mode):
+            time.sleep(0.4)
+            return {"summary": "Saved to Omnia::Phrase Check."}
+
+        _service, port = service_factory(
+            _lookup, save=slow, run_on_main=lambda work: work()
         )
-        _ = service
 
-        # Longer than the service's own main-thread wait, so this reads the 503 rather than
-        # giving up first and proving nothing.
         status, body = _post(port, "/check/save", {"text": "x"}, timeout=20)
 
-        assert saved == []
-        assert status == 503
-        assert "nothing was saved" in body["error"]
+        assert status == 200
+        assert body["summary"] == "Saved to Omnia::Phrase Check."

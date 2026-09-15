@@ -333,10 +333,11 @@ class WordLookupPlugin(FeaturePlugin):
 
         Found by NAME through the core seam, like :meth:`check_phrase` (ADR-019).
 
-        Already ON the Qt main thread when this runs: ``LookupService._save_phrase`` marshals
-        before calling, because every line below writes to the collection. That is why the
-        handle is read here rather than captured anywhere — reading it on the thread that is
-        about to use it is also what stops a stale one surviving a profile switch.
+        Runs on the HTTP WORKER thread, and must: the first thing a save does is resolve the
+        correction, which on a cache miss is a synchronous call to an LLM. What is handed over
+        is the marshaller, so phrase_check can put the COLLECTION work — and only that — on the
+        Qt main thread. One implementation of "hop and wait" is the point; a second copy would
+        be a second timeout policy to keep in step with this one.
 
         Raises:
             PhraseCheckUnavailableError: When Phrase Check is not running.
@@ -348,7 +349,11 @@ class WordLookupPlugin(FeaturePlugin):
             raise PhraseCheckUnavailableError(
                 "Phrase Check is switched off in Omnia — turn it on to save a correction"
             )
-        return dict(save(text, mode, anki_compat.main_window().col))
+        service = self._service
+        # None in tests and headless runs: there is no Qt loop to marshal onto, so the write
+        # happens inline, which is where it already was.
+        on_main = service.call_on_main if service is not None else None
+        return dict(save(text, mode, None, on_main))
 
     def generate(
         self, client: str, note_id: int, fields: Optional[list[str]]

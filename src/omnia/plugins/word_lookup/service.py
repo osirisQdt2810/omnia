@@ -435,29 +435,30 @@ class LookupService:
         return self._generate(client, note_id, fields)
 
     def _save_phrase(self, text: str, mode: str) -> dict[str, Any]:
-        """Save one checked phrase through whatever was injected, ON THE MAIN THREAD.
+        """Save one checked phrase through whatever was injected.
 
-        Marshalled HERE rather than left to the injected callable, which is the opposite of what
-        :meth:`_regenerate` and :meth:`_check_phrase` do — and deliberately. Those two call a
-        provider and take tens of seconds; holding the Qt main thread for that would freeze
-        Anki, so they run on the worker and marshal only the parts that touch the collection.
+        Runs on the WORKER thread, like :meth:`_regenerate` and :meth:`_check_phrase`, and for
+        the same reason: a save resolves the correction first, and on a cache miss that is a
+        synchronous call to an LLM. Marshalling the whole operation froze Anki for the length of
+        that call — and worse, ``call_on_main`` gave up after five seconds and answered "nothing
+        was saved" while the main thread went on to add the note anyway, so pressing Save again
+        added a second one.
 
-        This one is the other shape: it is short, and every line of it writes to ``col``, which
-        may not be touched from an HTTP worker at all. Putting the hop in the service means a
-        future saver cannot forget it — the rule is structural rather than remembered.
+        The hop moved to where the writes actually start: the callable is handed
+        :meth:`call_on_main` and marshals the collection work itself, which is the same division
+        ``_stored_fields`` already uses.
 
         Raises:
             PhraseCheckUnavailableError: When nothing is wired.
             CheckFailedError: When the save was attempted and could not finish.
-            TimeoutError: The main thread never ran it, so nothing was saved.
+            TimeoutError: The main thread never ran the write, so nothing was saved.
         """
         if self._save is None:
             raise PhraseCheckUnavailableError(
                 "Phrase Check is switched off in Omnia — turn it on to save a correction"
             )
-        saver = self._save
         try:
-            return self.call_on_main(lambda: saver(text, mode))
+            return self._save(text, mode)
         except (PhraseCheckUnavailableError, CheckFailedError, TimeoutError):
             raise
         except Exception as exc:
