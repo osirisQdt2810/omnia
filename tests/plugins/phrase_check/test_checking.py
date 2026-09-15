@@ -166,6 +166,67 @@ class TestAskingAtMostOnce:
         assert len(again.fixes) == 1
 
 
+class TestACacheHitReadsAsItsOwnAnswer:
+    """The half a digest test cannot see: what a HIT actually renders as.
+
+    The key ignores punctuation at the edges, so a stored answer is served for a phrase spelled
+    slightly differently from the one that produced it. Everything a panel shows —
+    ``already_good``, ``changed``, which words are marked — is derived by comparing the original
+    with the rewrite, so a hit read against the wrong sentence looks like a correction nobody
+    asked for.
+    """
+
+    def test_a_correct_sentence_does_not_become_a_corrected_one(self):
+        # The exact failure: ask with the full stop, get "nothing to change"; ask again without
+        # it and the panel said the sentence had been changed, bolded a stop nobody wrote, and
+        # listed no fix explaining it.
+        echoed = json.dumps({"rewritten": "It is fine.", "fixes": []})
+        checker = PhraseChecker(_Hub(_Provider(echoed)), _cache())
+
+        first = checker.check("It is fine.")
+        hit = checker.check("It is fine")
+
+        assert first.already_good is True
+        assert (
+            hit.already_good is True
+        ), "a cache hit reported a correct sentence as corrected"
+        assert hit.changed is False
+        assert hit.fixes == ()
+        assert not any(is_new for _text, is_new in hit.highlighted())
+
+    def test_it_is_answered_from_the_cache_at_all(self):
+        # Guards the test above: if the second call reached the model, everything it asserts
+        # would be true for the wrong reason.
+        hub = _Hub(_Provider(json.dumps({"rewritten": "It is fine.", "fixes": []})))
+        checker = PhraseChecker(hub, _cache())
+
+        checker.check("It is fine.")
+        checker.check("It is fine")
+
+        assert len(hub.provider.prompts) == 1
+
+    def test_a_fix_is_not_replayed_against_text_that_does_not_have_it(self):
+        # The same mechanism the other way: an answer cached for a phrase WITHOUT the stop,
+        # served for one with it, must not advise adding a stop that is already there.
+        checker = PhraseChecker(_Hub(), _cache())
+
+        first = checker.check(PHRASE)
+        hit = checker.check(PHRASE.rstrip("."))
+
+        assert hit.rewritten == first.rewritten
+        assert [f.before for f in hit.fixes] == [f.before for f in first.fixes]
+        assert hit.already_good == first.already_good
+        assert hit.changed == first.changed
+
+    def test_the_marked_words_are_the_same_either_way(self):
+        checker = PhraseChecker(_Hub(), _cache())
+
+        first = checker.check(PHRASE)
+        hit = checker.check(PHRASE + " ")
+
+        assert hit.highlighted() == first.highlighted()
+
+
 class TestWhatItRefusesToDo:
     def test_an_unreadable_answer_is_not_retried(self):
         hub = _Hub(_Provider("this is not JSON at all"))
