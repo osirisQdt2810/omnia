@@ -54,6 +54,7 @@
   const optionsClose = document.getElementById("sn-options-close");
   const optionsDone = document.getElementById("sn-options-done");
   const optGenReview = document.getElementById("sn-opt-gen-review");
+  const optBatchBackground = document.getElementById("sn-opt-batch-background");
   const optRegenBatch = document.getElementById("sn-opt-regen-batch");
   const optAllowEmpty = document.getElementById("sn-opt-allow-empty");
   const optRegenClippers = document.getElementById("sn-opt-regen-clippers");

@@ -44,6 +44,7 @@ HANDLERS = {
     "configure": "_on_configure",
     "save-config": "_on_save_config",
     "sync": "_on_sync",
+    "stop-job": "_on_stop_job",
 }
 
 
@@ -58,6 +59,9 @@ class SettingsDialog(WebDialog):
         #: What the button currently shows, so an unchanged state is not repainted 120 times a
         #: minute into a webview that is also rendering a settings grid.
         self._sync_shown: Any = (None, "")
+        #: Same, per plugin card. Keyed by plugin id because the cards update independently and
+        #: a single "last state" would repaint all of them whenever any one changed.
+        self._jobs_shown: dict[str, Any] = {}
         super().__init__(
             parent,
             title="Omnia — All-in-One Toolkit",
@@ -200,20 +204,26 @@ class SettingsDialog(WebDialog):
         self._push_card_state(plugin.id)
         return {}
 
-    def _watch_sync(self) -> None:
-        """Keep the Sync button showing how far a background pull has got.
+    def _watch_jobs(self) -> None:
+        """Keep the Sync button and every plugin card showing what is running behind them.
 
-        The pull outlives every window that can show it — that is the point of running it in the
-        background — so this polls rather than being called back into: a closed dialog simply
-        stops asking, where a callback held by one is a call into a deleted webview.
+        A background job outlives every window that can show it — that is the point of running
+        it in the background — so this polls rather than being called back into: a closed dialog
+        simply stops asking, where a callback held by one is a call into a deleted webview.
+
+        ONE timer for both. Two would double the wake-ups for the same 500ms of nothing
+        happening, and would let the Sync button and the cards disagree about what "now" is.
         """
         from aqt import mw
 
         if self._sync_timer is None:
-            self._sync_timer = mw.progress.timer(
-                500, self._sync_tick, True, parent=self
-            )
+            self._sync_timer = mw.progress.timer(500, self._tick, True, parent=self)
+        self._tick()
+
+    def _tick(self) -> None:
+        """One poll: the sync button, then every plugin card."""
         self._sync_tick()
+        self._jobs_tick()
 
     def _sync_tick(self) -> None:
         from omnia.core.sync.progress import DONE, FAILED
@@ -229,6 +239,77 @@ class SettingsDialog(WebDialog):
             None if finished else progress.percent,
             job.result if finished else progress.summary(),
         )
+
+    def _jobs_tick(self) -> None:
+        """Keep every plugin card showing whatever its plugin says it is doing.
+
+        Generic on purpose: this asks each card's plugin for ``<id>.progress`` and renders what
+        answers, so a plugin gains a progress bar by publishing a
+        :class:`~omnia.core.progress.JobTracker` and this file learns nothing about it. A plugin
+        that publishes none is simply not drawn — ``lookup`` answering ``None`` is the whole
+        answer.
+
+        Polled, like the sync watcher and for the same reason: the job outlives every window
+        that can show it, so a closed dialog stops asking where a callback held by one is a call
+        into a deleted webview.
+        """
+        from omnia.core import services
+        from omnia.core.progress import progress_service
+
+        for plugin in self._manager.plugins():
+            tracker = services.lookup(progress_service(plugin.id))
+            if tracker is None:
+                # Either the plugin has no jobs, or it is switched off and withdrew the
+                # service mid-run. Clear whatever was last drawn rather than leaving a stale
+                # bar sitting at 60% forever.
+                self._push_card_progress(plugin.id, None, "", False)
+                continue
+            try:
+                progress = tracker.snapshot()
+            except Exception:  # pragma: no cover - a third-party tracker is not ours
+                logger.exception("settings: %s reported unreadable progress", plugin.id)
+                continue
+            self._push_card_progress(
+                plugin.id,
+                progress.percent,
+                progress.summary(),
+                bool(progress.active and not progress.cancelled),
+            )
+
+    def _push_card_progress(
+        self, plugin_id: str, percent: Any, text: str, stoppable: bool
+    ) -> None:
+        if self._jobs_shown.get(plugin_id) == (percent, text, stoppable):
+            return  # nothing changed; do not repaint the page for it
+        self._jobs_shown[plugin_id] = (percent, text, stoppable)
+        self.eval_js(
+            "window.omniaSettings.setCardProgress("
+            + json.dumps(plugin_id)
+            + ", "
+            + json.dumps(percent)
+            + ", "
+            + json.dumps(text)
+            + ", "
+            + json.dumps(stoppable)
+            + ");"
+        )
+
+    def _on_stop_job(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Ask one plugin's running job to stop.
+
+        Asks; it does not force. The job stops where stopping is safe — for a batch that is
+        between notes, so none is left half-generated — which is why the button goes to
+        "Stopping…" rather than straight to gone.
+        """
+        from omnia.core import services
+        from omnia.core.progress import progress_service
+
+        tracker = services.lookup(progress_service(str(data.get("id", ""))))
+        cancel = getattr(tracker, "cancel", None)
+        if callable(cancel):
+            cancel()
+        self._jobs_tick()
+        return {}
 
     def _push_sync_progress(self, percent: Any, tip: str) -> None:
         if (percent, tip) == self._sync_shown:
@@ -291,7 +372,9 @@ class SettingsDialog(WebDialog):
         """Start watching once the page is on screen.
 
         Here rather than in ``__init__``: the page has to exist before anything can be pushed
-        into it, and a pull may already have been running before this window was opened.
+        into it, and a pull — or a batch — may already have been running before this window was
+        opened. That is the ordinary case for the background batch: it is started from the
+        browser, and this window is opened afterwards to see how it is getting on.
         """
         super().showEvent(evt)
-        self._watch_sync()
+        self._watch_jobs()

@@ -161,6 +161,62 @@
 
   // `:not(.omnia-config-back)`: the config panel's Back wears the same class for the same look
   // but returns to the CATEGORY it was opened from, not to the landing.
+  /**
+   * Show how far a background job on a PLUGIN CARD has got.
+   *
+   * The same idea as `setActionProgress`, on a different element: pushed in by Python rather
+   * than polled from here, because the job outlives this page and a page that asked would have
+   * to know what to ask about. A card is left alone — and its strip stays hidden — unless
+   * Python sends something for it, so a plugin with no job never grows a bar.
+   *
+   * @param {string} id The plugin id, matched against the card's data-id.
+   * @param {?number} percent 0-100, or null when the size is not yet known.
+   * @param {string} text The count, e.g. "142 of 300". Empty hides the whole strip.
+   * @param {boolean} stoppable Whether the Stop button accepts a press.
+   */
+  function setCardProgress(id, percent, text, stoppable) {
+    const cards = document.querySelectorAll(".omnia-card");
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute("data-id") !== id) {
+        continue;
+      }
+      const job = cards[i].querySelector(".omnia-card-job");
+      if (!job) {
+        return;
+      }
+      const readout = job.querySelector(".omnia-card-job-text");
+      if (readout) {
+        readout.textContent = text || "";
+      }
+      const stop = job.querySelector(".omnia-card-job-stop");
+      if (stop) {
+        stop.disabled = !stoppable;
+      }
+      if (!text) {
+        job.setAttribute("data-progress", "none");
+        job.style.removeProperty("--progress");
+        return;
+      }
+      if (percent === null || percent === undefined) {
+        job.setAttribute("data-progress", "unknown");
+        job.style.removeProperty("--progress");
+        return;
+      }
+      job.setAttribute("data-progress", "known");
+      job.style.setProperty("--progress", percent + "%");
+      return;
+    }
+  }
+
+  document.querySelectorAll(".omnia-card-job-stop").forEach(function (button) {
+    button.addEventListener("click", function () {
+      // Disabled immediately so a second press cannot ask twice, and left that way: the next
+      // poll re-states it from what the job actually reports.
+      button.disabled = true;
+      send("stop-job", {id: button.getAttribute("data-stop")}, null);
+    });
+  });
+
   document.querySelectorAll(".omnia-back:not(.omnia-config-back)").forEach(function (btn) {
     btn.addEventListener("click", showLanding);
   });
@@ -229,6 +285,7 @@
    */
   window.omniaSettings = {
     setActionProgress: setActionProgress,
+    setCardProgress: setCardProgress,
     setCardState: function (state) {
       // Matched by attribute rather than a built selector: a plugin id is not our string.
       const cards = document.querySelectorAll(".omnia-card");

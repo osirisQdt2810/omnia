@@ -20,6 +20,7 @@ from omnia.core import anki_compat, services
 from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
+from omnia.core.progress import JobTracker, progress_service
 from omnia.core.registry import register
 from omnia.plugins.smart_notes.config import SmartNotesSettings
 from omnia.plugins.smart_notes.engine import (
@@ -38,12 +39,22 @@ from omnia.plugins.smart_notes.integration import (
     note_materializer,
     set_button_enabled,
 )
+from omnia.plugins.smart_notes.integration.progress import surface_for
 from omnia.plugins.smart_notes.integration.regen import (
     REGENERATION_SERVICE,
     RegenerationService,
 )
 
 logger = get_logger("smart_notes")
+
+#: How far a background batch has got, for anyone drawing it.
+#:
+#: Module-level rather than per-instance, and that is the point rather than convenience.
+#: ``PluginManager.reload`` rebuilds the plugin object — saving a setting is enough to do it —
+#: and a tracker owned by the instance would be replaced mid-batch by an empty one, so a running
+#: generation would appear to have stopped. A batch outlives the object that started it, so what
+#: reports on it has to as well.
+_BATCH_PROGRESS = JobTracker("Generating")
 
 _BROWSER_HOOK = "browser_will_show_context_menu"
 _SIDEBAR_HOOK = "browser_sidebar_will_show_context_menu"
@@ -106,6 +117,11 @@ class SmartNotesPlugin(FeaturePlugin):
         # a consumer holds no import of this plugin, only a name that stops resolving.
         self._regen = RegenerationService(self._settings, self._service)
         services.provide(REGENERATION_SERVICE, self._regen)
+        # Published for as long as the feature is on, not just while a batch runs: a reader
+        # polls it, and one that has to cope with the name appearing and disappearing under it
+        # would need to re-look-up on every tick. An idle tracker answers "nothing running",
+        # which is the same thing said without the race.
+        services.provide(progress_service(self.id), _BATCH_PROGRESS)
         anki_compat.subscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
         anki_compat.subscribe_hook(_SIDEBAR_HOOK, self._on_sidebar_menu)
         anki_compat.subscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
@@ -117,6 +133,7 @@ class SmartNotesPlugin(FeaturePlugin):
 
     def on_disable(self, ctx: PluginContext) -> None:
         services.revoke(REGENERATION_SERVICE)
+        services.revoke(progress_service(self.id))
         anki_compat.unsubscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
         anki_compat.unsubscribe_hook(_SIDEBAR_HOOK, self._on_sidebar_menu)
         anki_compat.unsubscribe_hook(_EDITOR_HOOK, self._on_editor_buttons)
@@ -216,8 +233,17 @@ class SmartNotesPlugin(FeaturePlugin):
         if service is None or not settings.note_types or not note_ids:
             tooltip("Omnia: no smart_notes config for the selection.")
             return
+        if _BATCH_PROGRESS.active:
+            # One at a time. Two batches would share one tracker, so the bar would report
+            # whichever started last while both spent the provider budget.
+            tooltip("Omnia: a batch is already running.")
+            return
         BatchGenerator(service, settings).run(
-            [int(nid) for nid in note_ids], self._on_batch_done
+            [int(nid) for nid in note_ids],
+            self._on_batch_done,
+            surface=surface_for(
+                background=settings.batch_in_background, tracker=_BATCH_PROGRESS
+            ),
         )
 
     @staticmethod

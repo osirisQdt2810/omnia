@@ -432,6 +432,36 @@ class TestPageAssets:
         for feature in ("color-mix(", ":has(", "@container", "@property"):
             assert feature not in css
 
+    def test_every_custom_property_used_is_one_that_is_defined(self):
+        """A `var(--name)` nobody defines resolves to nothing, silently.
+
+        Not a hypothetical: the plugin-card progress bar shipped painted with
+        `linear-gradient(90deg, var(--accent-from), var(--accent-to))`, and this page's palette
+        calls them `--accent` and `--accent-2`. The gradient was transparent — the bar was there,
+        the width was right, the count was right, and there was nothing to see. No unit test
+        could tell, because nothing was wrong with any value; only a screenshot showed it.
+
+        Two other producers are legitimate and neither is in the sheet, so both are looked for
+        where they actually are: Python writes the per-category accents into an inline `style`
+        attribute, and JS sets the ones that carry a live number.
+        """
+        import re
+
+        html_page = build_settings_html(
+            [("Reviewing", [_card("a")]), ("AI", [_card("b")])], dark=False
+        )
+        css = _page_css(html_page)
+        set_from_js = {"--progress", "--fill", "--i"}
+        set_inline_by_python = set(re.findall(r"(--[a-z0-9-]+)\s*:", html_page))
+        defined = (
+            set(re.findall(r"(--[a-z0-9-]+)\s*:", css))
+            | set_from_js
+            | set_inline_by_python
+        )
+        used = set(re.findall(r"var\(\s*(--[a-z0-9-]+)", css))
+
+        assert not (used - defined), f"undefined: {sorted(used - defined)}"
+
     def test_no_stylesheet_rule_is_left_without_a_producer(self):
         # The flat-list markup is gone; its rules must not linger as dead weight.
         css = _page_css(build_settings_html([], dark=False))

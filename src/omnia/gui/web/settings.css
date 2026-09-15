@@ -100,6 +100,48 @@ body {
   box-shadow: 0 1px 2px var(--shadow);
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
+/* A background job on this card: a bar that fills, the count, and a way to stop it. Hidden
+   entirely until something is running, so a card whose plugin publishes no progress — which is
+   most of them — looks exactly as it did. `data-progress` is set from JS:
+     none    -> not running (display: none)
+     known   -> --progress carries a percentage
+     unknown -> running, size not yet known: a sweep rather than a lying bar at 0% */
+.omnia-card-job {
+  position: relative; flex: 0 0 auto;
+  display: none; align-items: center; gap: 8px;
+  min-width: 148px; padding: 5px 8px;
+  border-radius: 9px; overflow: hidden;
+  border: 1px solid var(--card-border);
+  background: var(--card-top);
+}
+.omnia-card-job[data-progress="known"],
+.omnia-card-job[data-progress="unknown"] { display: flex; }
+.omnia-card-job-fill {
+  position: absolute; inset: 0; width: var(--progress, 0%);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  /* Strong enough to read at a glance from across the dialog — at 0.22 a bar a fifth of the
+     way along was invisible against the card, which is the moment it most needs to be seen. */
+  opacity: 0.42; transition: width 0.4s ease;
+}
+.omnia-card-job[data-progress="unknown"] .omnia-card-job-fill {
+  width: 40%; animation: omnia-sweep 1.3s ease-in-out infinite;
+}
+@keyframes omnia-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.omnia-card-job-text {
+  position: relative; font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--fg); white-space: nowrap;
+}
+.omnia-card-job-stop {
+  position: relative; margin-left: auto;
+  font-size: 10px; padding: 2px 7px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--card-border); background: transparent; color: var(--muted);
+}
+.omnia-card-job-stop:hover { color: var(--accent); border-color: var(--accent); }
+.omnia-card-job-stop[disabled] { opacity: 0.55; cursor: default; }
+
 .omnia-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 8px 20px var(--shadow);
