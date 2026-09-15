@@ -60,8 +60,14 @@ Turning off *Generate in the background* (Smart Notes → Options → General) r
 **Notes / rollback:**
 - **Stop asks, it does not force.** The batch halts between cohorts so no note is left
   half-generated; the button reads "Stopping…" until it does.
-- **Notes are still written when the batch ENDS, not per note.** So mid-run you see progress but
-  no new cards. Unchanged by this work, and the obvious follow-up if it turns out to matter.
+- **The write-back is sliced** (25 notes, each posted through `run_on_main`), and a slice is ONE
+  `update_notes` rather than one `update_note` per note. Both matter at size: a single pass over
+  1500 notes froze Anki completely at the very end of a batch that had run in the background so
+  the user could keep studying, and per-note writes meant 1500 backend transactions, 1500 undo
+  entries and 1500 `operation_did_execute` firings for every add-on to react to. Cards now appear
+  as they are written.
+- **A finished run reports nothing.** `JobProgress.summary()` used to keep the final count, and
+  since nothing cleared it, "4 of 4" and a Stop button stayed on the card for the session.
 - **One batch at a time** — a second is refused with a tooltip, because both would share one
   tracker and the bar would report whichever started last.
 - The tracker is module-level, not per-plugin-instance: `PluginManager.reload` rebuilds the

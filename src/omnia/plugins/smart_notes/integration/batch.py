@@ -66,6 +66,14 @@ logger = get_logger("smart_notes")
 # the main thread for a bar the user cannot read that fast.
 _PROGRESS_INTERVAL_SECONDS = 0.25
 
+# How many notes are written to the collection before the main thread is handed back to Qt.
+#
+# Small enough that a slice is well under a frame's worth of work even with media, large enough
+# that a 1500-note batch is ~60 posted closures rather than 1500. The number that matters is not
+# the throughput — the writes take what they take — but whether Anki repaints and answers input
+# while they happen, and anything in this range does.
+_WRITE_SLICE = 25
+
 # The ceilings this build honours live on the settings model, next to the fields they bound
 # (``SmartNotesSettings.workers`` / ``.notes_per_call``), so the batch runner, the editor
 # button, review-time pre-generation and the GUI controller cannot disagree about them.
@@ -502,18 +510,19 @@ class BatchGenerator:
 
         def on_success(result: tuple[list[_NoteOutcome], bool]) -> None:
             outcomes, cancelled = result
-            try:
-                summary = self._apply(outcomes)
+
+            def finished(summary: BatchSummary) -> None:
                 summary.skipped += deck_skipped
                 summary.cancelled = cancelled
-            finally:
-                # In a `finally`: the modal surface's start() incremented Anki's GLOBAL progress
-                # refcount, and a raise between here and its finish() leaks it permanently — no
-                # mw.progress.timer ever fires again and no dialog ever opens again, for the
-                # rest of the session, in every add-on. (Which is also why ModalDialog.finish
-                # swallows: this `finally` cannot be allowed to raise either.)
+                # The modal surface's start() incremented Anki's GLOBAL progress refcount, and
+                # never reaching its finish() leaks it permanently — no mw.progress.timer ever
+                # fires again and no dialog ever opens again, for the rest of the session, in
+                # every add-on. So this runs on every path out of the write, which is why
+                # `_write_back` guarantees it is called exactly once.
                 progress.finish()
-            on_done(summary)
+                on_done(summary)
+
+            self._write_back(outcomes, finished)
 
         def on_failure(exc: Exception) -> None:
             progress.finish()
@@ -676,15 +685,73 @@ class BatchGenerator:
             return None
         return _LiveNote(plan, run, materialize_once)
 
-    def _apply(self, outcomes: list[_NoteOutcome]) -> BatchSummary:
-        """Write generated content back to the notes + media (main thread); count outcomes."""
+    def _write_back(
+        self,
+        outcomes: list[_NoteOutcome],
+        done: Callable[[BatchSummary], None],
+    ) -> None:
+        """Write every outcome back, in slices, handing the main thread back between each.
+
+        Writing is main-thread work — ``col`` may not be touched from anywhere else — and it was
+        done in ONE pass over every outcome. At the sizes this feature is for that is not a
+        pause, it is a freeze: 1500 notes is 1500 backend transactions plus their media, and for
+        the whole of it Anki paints nothing, answers no input, and cannot show or dismiss a
+        window. A batch that ran in the background specifically so the user could keep studying
+        then took the screen away at the very end, which is the one moment they had stopped
+        watching for it.
+
+        So the work is cut into slices and each is POSTED rather than called: ``run_on_main``
+        appends to Anki's closure queue and emits, so Qt returns to its event loop between one
+        slice and the next. Cards also appear as they are written instead of all at once.
+
+        ``done`` is called exactly once, on the main thread, whatever happens — the progress
+        surface's refcount depends on it.
+        """
         summary = BatchSummary()
+        cursor = {"at": 0}
+
+        def step() -> None:
+            try:
+                chunk = outcomes[cursor["at"] : cursor["at"] + _WRITE_SLICE]
+                cursor["at"] += len(chunk)
+                self._apply(chunk, summary)
+            except Exception:
+                # One bad slice must not strand the run: the counts are already in `summary`,
+                # and abandoning here would leak the progress refcount with it.
+                logger.exception("smart_notes: writing a slice of the batch failed")
+                done(summary)
+                return
+            if cursor["at"] < len(outcomes):
+                anki_compat.run_on_main(step)
+                return
+            done(summary)
+
+        step()
+
+    def _apply(
+        self, outcomes: list[_NoteOutcome], summary: Optional[BatchSummary] = None
+    ) -> BatchSummary:
+        """Write generated content back to the notes + media (main thread); count outcomes.
+
+        Counts INTO ``summary`` when one is given, because the caller writes in slices and one
+        run's totals span all of them. Without one it answers for just what it was handed, which
+        is what a caller writing everything at once wants.
+        """
+        summary = BatchSummary() if summary is None else summary
+        # Filled as the outcomes are walked and persisted ONCE at the end, because one
+        # `col.update_note` per note is one backend transaction, one undo entry and one
+        # `operation_did_execute` per note. At 1500 notes that is 1500 of each — the Browser,
+        # the sidebar and every other add-on listening re-run 1500 times, and the user's undo
+        # history becomes 1500 steps deep. `update_notes` is the same write as one batch.
+        pending: list[Any] = []
         for outcome in outcomes:
             if outcome.failed:
                 # Write whatever it managed before it broke (usually nothing), then count it as
                 # failed. It must NOT reach ``empty_note_ids``: we do not know there was nothing
                 # to make here, and that list's consumer DELETES the note.
-                self._write_note(outcome)
+                prepared = self._prepare_note(outcome)
+                if prepared is not None:
+                    pending.append(prepared)
                 summary.failed += 1
                 continue
             summary.blocked += outcome.blocked
@@ -710,13 +777,37 @@ class BatchGenerator:
                 else:
                     summary.empty_note_ids.append(outcome.nid)
                 continue
-            if self._write_note(outcome):
+            prepared = self._prepare_note(outcome)
+            if prepared is not None:
+                pending.append(prepared)
                 summary.processed += 1
             else:
                 summary.failed += 1
+        self._persist(pending, summary)
         return summary
 
-    def _write_note(self, outcome: _NoteOutcome) -> bool:
+    def _persist(self, notes: list[Any], summary: BatchSummary) -> None:
+        """Write the prepared notes as ONE batch, and count them as failed if that will not.
+
+        The counts were already moved to ``processed`` while preparing, because that is where
+        "did this note get content" is known; a batch that then cannot be written moves them
+        back rather than reporting a save that did not happen.
+        """
+        if not notes:
+            return
+        try:
+            anki_compat.update_notes(notes)
+        except Exception:
+            logger.exception("smart_notes: writing %d notes failed", len(notes))
+            summary.processed -= len(notes)
+            summary.failed += len(notes)
+
+    def _prepare_note(self, outcome: _NoteOutcome) -> Optional[Any]:
+        """The note with this outcome's content in it, unsaved, or ``None``.
+
+        Separate from writing so a slice can be persisted as one batch. ``None`` means there is
+        nothing to save — either the note could not be read, or no rule targeted a field it has.
+        """
         try:
             note = anki_compat.get_note(outcome.nid)
             wrote = False
@@ -725,12 +816,10 @@ class BatchGenerator:
                     continue
                 note[rule.target_field] = outcome.materialize(rule, result)
                 wrote = True
-            if wrote:
-                anki_compat.update_note(note)
-            return wrote
+            return note if wrote else None
         except Exception:
-            logger.exception("smart_notes: failed to write note %s", outcome.nid)
-            return False
+            logger.exception("smart_notes: failed to fill note %s", outcome.nid)
+            return None
 
 
 def _fell_back(rule: SmartNotesFieldRule, result: GenerationResult) -> bool:
