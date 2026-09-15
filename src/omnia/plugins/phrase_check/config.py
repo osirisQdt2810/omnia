@@ -12,7 +12,11 @@ from typing import Literal
 from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
-from omnia.plugins.phrase_check.correction import WRITTEN
+from omnia.plugins.phrase_check.correction import (
+    DEFAULT_FIXES_SHOWN,
+    MAX_FIXES_SHOWN,
+    WRITTEN,
+)
 
 
 class PhraseCheckSettings(PersistedModel):
@@ -54,6 +58,20 @@ class PhraseCheckSettings(PersistedModel):
             "It matters more than it sounds: “I ain’t got none” is a mistake in writing and "
             "ordinary in speech, so a corrector with one standard is wrong half the time with "
             "total confidence."
+        ),
+    )
+    fixes_shown: int = Field(
+        default=DEFAULT_FIXES_SHOWN,
+        ge=1,
+        le=MAX_FIXES_SHOWN,
+        title="Show at most",
+        description=(
+            "How many fixes the correction panel lists at once, most important first.\n"
+            "\n"
+            "The corrected phrase always fixes everything that was found, and a phrase saved "
+            "to Anki keeps every fix — this only decides how much of it is on screen. Ten "
+            "cards for one sentence is a wall nobody reads to the end of, and the mistake "
+            "worth learning is usually near the top."
         ),
     )
     model: str = Field(

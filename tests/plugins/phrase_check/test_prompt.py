@@ -140,3 +140,30 @@ class TestThePhraseItself:
 
     def test_surrounding_whitespace_from_a_web_selection_is_trimmed(self):
         assert build("  \n I have went. \n ").rstrip().endswith("I have went.")
+
+
+class TestTheOrderIsAskedFor:
+    """The panel shows the first few, so the ORDER is what a reader in a hurry sees.
+
+    Left alone a model returns fixes in the order they appear in the sentence, which puts a
+    stray comma above a wrong tense whenever the comma came first. Asking is the only lever
+    there is — nothing downstream can re-rank what it cannot judge.
+    """
+
+    def test_it_asks_for_the_most_important_first(self):
+        prompt = build("I have went.")
+
+        assert "Order 'fixes'" in prompt
+        assert "first" in prompt
+
+    def test_it_says_the_order_does_not_limit_the_rewrite(self):
+        # The trap: a model told "only the first few are shown" helpfully corrects only those.
+        # The rewrite has to fix everything found, or the sentence handed back is still wrong
+        # in the ways nobody had room to explain.
+        prompt = build("I have went.")
+
+        assert "must still fix EVERYTHING" in prompt
+
+    def test_both_registers_carry_it(self):
+        for mode in (SPOKEN, WRITTEN):
+            assert "Order 'fixes'" in build("x", mode=mode), mode

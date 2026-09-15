@@ -17,6 +17,10 @@ Four things it insists on, each because the obvious prompt gets them wrong:
   "errors" will pass them.
 * **Leave correct text alone.** Models rewrite for style when nobody asked, and a panel that
   always finds five things to change teaches the reader to ignore it.
+* **Ordered by what matters.** The panel shows the first few and the saved card keeps them all,
+  so the ORDER decides what a reader in a hurry sees. A model left to its own devices returns
+  them in the order they appear in the sentence, which puts a stray comma above a wrong tense
+  whenever the comma came first.
 
 Pure string building: no provider, no HTTP, no ``aqt``. What comes back is parsed by
 :mod:`omnia.plugins.phrase_check.correction`.
@@ -98,6 +102,11 @@ def build(text: str, *, mode: str = WRITTEN, language: str = "English") -> str:
             "",
             "Rules:",
             "  - One entry per change. Never bundle two unrelated problems into one entry.",
+            "  - Order 'fixes' by how much each one matters to a reader: the mistake that most "
+            "changes the meaning or most marks the writer as non-fluent first, a stray comma "
+            "last. Only the first few may be shown, so the order is the judgement.",
+            "  - 'rewritten' must still fix EVERYTHING you found, including anything far down "
+            "the list. The order decides what is shown, never what is corrected.",
             "  - 'before' must be text copied EXACTLY from the phrase, so it can be found in it.",
             "  - Change nothing that is already correct. If the phrase is fine, say so with "
             "already_good: true, echo it back unchanged in 'rewritten', and return no fixes. "

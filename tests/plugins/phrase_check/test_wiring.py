@@ -21,11 +21,19 @@ from omnia.core.config.schema import schema_from_model
 from omnia.plugins.phrase_check import (
     CHECK_SERVICE,
     PhraseCheckPlugin,
+    _fixes_shown,
     _mode,
     as_payload,
 )
 from omnia.plugins.phrase_check.config import PhraseCheckSettings
-from omnia.plugins.phrase_check.correction import MODES, SPOKEN, WRITTEN, parse
+from omnia.plugins.phrase_check.correction import (
+    DEFAULT_FIXES_SHOWN,
+    MAX_FIXES_SHOWN,
+    MODES,
+    SPOKEN,
+    WRITTEN,
+    parse,
+)
 
 
 def _correction(payload: Optional[dict[str, Any]] = None, original: str = ""):
@@ -85,6 +93,7 @@ class TestTheWireContract:
             "changed",
             "fixes",
             "highlight",
+            "shown",
         }
 
     def test_a_fix_carries_everything_its_card_renders(self):
@@ -207,3 +216,79 @@ class TestTheServiceSeam:
 
     def test_the_plugin_is_off_by_default_like_every_other(self):
         assert PhraseCheckPlugin.always_on is False
+
+
+class TestHowManyFixesAPanelLists:
+    """The limit is a display setting, and it must not become a limit on the correction.
+
+    The panel lists a few; the rewrite fixes everything; a saved card keeps every fix. Truncating
+    the list before it is stored would lose exactly the fixes nobody had room for — the ones
+    worth coming back to, which is what a card is for.
+    """
+
+    def test_the_limit_travels_with_the_answer(self):
+        payload = as_payload(_correction(), shown=3)
+
+        assert payload["shown"] == 3
+
+    def test_every_fix_travels_whatever_the_limit_says(self):
+        payload = as_payload(_correction(), shown=1)
+
+        assert (
+            len(payload["fixes"]) == 2
+        ), "the answer was truncated before it was stored"
+
+    def test_the_rewrite_is_untouched_by_the_limit(self):
+        # It fixes everything that was found; the limit decides what is SHOWN, never what is
+        # corrected. A rewrite trimmed to match the visible list would be a sentence that is
+        # still wrong in the ways nobody had room to explain.
+        full = as_payload(_correction(), shown=99)
+        clipped = as_payload(_correction(), shown=1)
+
+        assert clipped["rewritten"] == full["rewritten"]
+        assert clipped["highlight"] == full["highlight"]
+
+    def test_a_nonsense_limit_still_produces_a_usable_one(self):
+        assert as_payload(_correction(), shown=0)["shown"] == 1
+        assert as_payload(_correction(), shown=-4)["shown"] == 1
+
+    def test_it_defaults_rather_than_requiring_a_caller_to_know(self):
+        from omnia.plugins.phrase_check.correction import DEFAULT_FIXES_SHOWN
+
+        assert as_payload(_correction())["shown"] == DEFAULT_FIXES_SHOWN
+
+
+class TestReadingTheLimitFromSettings:
+    def test_it_comes_off_the_settings(self):
+        assert _fixes_shown(PhraseCheckSettings(fixes_shown=3)) == 3
+
+    def test_settings_stored_without_it_fall_back(self):
+        # extra="allow", so a config written before the field exists loads fine — and a
+        # correction that failed on the first check after an upgrade would be a worse bug.
+        settings = PhraseCheckSettings()
+        del settings.__dict__["fixes_shown"]
+
+        assert _fixes_shown(settings) == DEFAULT_FIXES_SHOWN
+
+    def test_something_that_is_not_a_number_falls_back(self):
+        class NotReally:
+            fixes_shown = "lots"
+
+        assert _fixes_shown(NotReally()) == DEFAULT_FIXES_SHOWN
+
+    def test_it_is_clamped_at_both_ends(self):
+        class Silly:
+            fixes_shown = 0
+
+        class Sillier:
+            fixes_shown = 10_000
+
+        assert _fixes_shown(Silly()) == 1
+        assert _fixes_shown(Sillier()) == MAX_FIXES_SHOWN
+
+    def test_the_model_itself_refuses_an_out_of_range_value(self):
+        # The form is a slider between the two bounds, but a hand-edited config is not.
+        with pytest.raises(ValidationError):
+            PhraseCheckSettings(fixes_shown=0)
+        with pytest.raises(ValidationError):
+            PhraseCheckSettings(fixes_shown=MAX_FIXES_SHOWN + 1)
