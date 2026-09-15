@@ -30,7 +30,13 @@ from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.plugins.phrase_check.cache import STORE_FILENAME, CorrectionCache, file_store
 from omnia.plugins.phrase_check.config import PhraseCheckSettings
-from omnia.plugins.phrase_check.correction import MODES, WRITTEN, Correction
+from omnia.plugins.phrase_check.correction import (
+    DEFAULT_FIXES_SHOWN,
+    MAX_FIXES_SHOWN,
+    MODES,
+    WRITTEN,
+    Correction,
+)
 from omnia.plugins.phrase_check.prompt import language_name
 from omnia.plugins.phrase_check.service import PhraseChecker, PhraseCheckError
 
@@ -98,7 +104,7 @@ class PhraseCheckPlugin(FeaturePlugin):
         correction = checker.check(
             text, mode=_mode(mode, settings), refresh=bool(refresh)
         )
-        return as_payload(correction)
+        return as_payload(correction, shown=_fixes_shown(settings))
 
     def _checker(self, settings: PhraseCheckSettings) -> PhraseChecker:
         ctx = self._ctx
@@ -133,6 +139,21 @@ class PhraseCheckPlugin(FeaturePlugin):
         )
 
 
+def _fixes_shown(settings: PhraseCheckSettings) -> int:
+    """How many fixes the panel should list, read defensively.
+
+    ``getattr`` and a clamp, because this is read per request from a settings object that may
+    have been stored by a build without the field (``PersistedModel`` is ``extra="allow"``), or
+    hand-edited to something that is not a number. A panel showing five is a far better answer
+    than a correction that fails.
+    """
+    try:
+        value = int(getattr(settings, "fixes_shown", DEFAULT_FIXES_SHOWN))
+    except (TypeError, ValueError):
+        return DEFAULT_FIXES_SHOWN
+    return max(1, min(value, MAX_FIXES_SHOWN))
+
+
 def _mode(requested: str, settings: PhraseCheckSettings) -> str:
     """The register to use: what the panel asked for, else the configured default."""
     if requested in MODES:
@@ -141,12 +162,23 @@ def _mode(requested: str, settings: PhraseCheckSettings) -> str:
     return configured if configured in MODES else WRITTEN
 
 
-def as_payload(correction: Correction) -> dict[str, Any]:
+def as_payload(
+    correction: Correction, *, shown: int = DEFAULT_FIXES_SHOWN
+) -> dict[str, Any]:
     """A correction as the clippers render it.
 
     The highlighted runs are computed HERE and sent, rather than sending both sentences and
     letting each clipper diff them: two implementations of "which words changed" is two answers
     to a question with one right one, and the web and desktop panels would slowly disagree.
+
+    Every fix travels, and ``shown`` says how many of them a PANEL should list. The list is not
+    truncated here on purpose: the same answer is what a saved card is built from, and a card is
+    for coming back to — cutting the tail off before it is stored would lose the fixes nobody
+    had room for, which are exactly the ones worth a second look.
+
+    Args:
+        correction: What the model said.
+        shown: How many fixes the panel should list, most important first.
     """
     return {
         "original": correction.original,
@@ -154,6 +186,8 @@ def as_payload(correction: Correction) -> dict[str, Any]:
         "mode": correction.mode,
         "already_good": correction.already_good,
         "changed": correction.changed,
+        # How many of `fixes` a panel should list. A clipper slices; nothing is dropped here.
+        "shown": max(1, int(shown)),
         "fixes": [
             {
                 "before": fix.before,

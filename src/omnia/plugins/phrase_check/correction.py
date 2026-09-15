@@ -32,6 +32,17 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+#: How many fixes a panel lists by default, and the most it will offer to.
+#:
+#: Five is about what fits beside a sentence without the list becoming the page. The ceiling is
+#: not a layout limit but an honesty one: past a couple of dozen the phrase wants rewriting
+#: rather than annotating, and a panel pretending otherwise is a wall nobody reads to the end of.
+#:
+#: Neither number limits what is CORRECTED. The rewrite fixes everything found and a saved card
+#: keeps every fix; this is only how much is on screen at once.
+DEFAULT_FIXES_SHOWN = 5
+MAX_FIXES_SHOWN = 20
+
 #: How formal the rewrite should be. The distinction the user asked for: the same sentence is
 #: wrong in different ways depending on whether it is being said or written.
 SPOKEN = "spoken"
