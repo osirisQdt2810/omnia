@@ -359,6 +359,7 @@ class TestTheProgressThrottle:
     def test_it_coalesces_the_middle_of_a_run(self, monkeypatch):
         from omnia.plugins.smart_notes.integration import batch as batch_module
 
+        monkeypatch.setattr(batch_module.time, "monotonic", lambda: 3.5)
         monkeypatch.setattr(batch_module, "_PROGRESS_INTERVAL_SECONDS", 3600.0)
         reporter, surface = self._reporter(10)
 
@@ -373,6 +374,7 @@ class TestTheProgressThrottle:
     ):
         from omnia.plugins.smart_notes.integration import batch as batch_module
 
+        monkeypatch.setattr(batch_module.time, "monotonic", lambda: 3.5)
         monkeypatch.setattr(batch_module, "_PROGRESS_INTERVAL_SECONDS", 3600.0)
         reporter, surface = self._reporter(3)
         reporter.advance(1)
@@ -381,6 +383,26 @@ class TestTheProgressThrottle:
         reporter.advance(1)
 
         assert surface.published[-1] == (3, 3), surface.published
+
+    def test_the_first_update_publishes_on_a_clock_that_has_just_started(
+        self, monkeypatch
+    ):
+        """`time.monotonic()` counts from an arbitrary origin — on Linux, boot.
+
+        Seeding "last published" with 0.0 and subtracting made the first update's age depend on
+        how long the machine had been up. On a long-running box it was huge and everything
+        worked; on a fresh CI runner it was a few seconds, the first publish was throttled away,
+        and a batch showed nothing until its final note. This is that machine.
+        """
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module.time, "monotonic", lambda: 3.5)
+        monkeypatch.setattr(batch_module, "_PROGRESS_INTERVAL_SECONDS", 3600.0)
+        reporter, surface = self._reporter(10)
+
+        reporter.advance(1)
+
+        assert surface.published == [(1, 10)]
 
     def test_advancing_by_nothing_publishes_nothing(self):
         reporter, surface = self._reporter(4)

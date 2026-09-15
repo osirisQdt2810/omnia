@@ -383,7 +383,12 @@ class _ProgressReporter:
         self._total = total
         self._surface = surface
         self._done = 0
-        self._last_published = 0.0
+        # None, NOT 0.0. `time.monotonic()` counts from an arbitrary origin — on Linux, boot —
+        # so `now - 0.0` is only reliably "a long time" on a machine that has been up a while.
+        # On a freshly started one it is a few seconds, and the FIRST update was throttled away:
+        # a batch showed nothing at all until its last note. A sentinel says "never published"
+        # without asking the clock what it means.
+        self._last_published: Optional[float] = None
 
     def advance(self, count: int) -> None:
         """Record ``count`` more finished notes and publish if it is time to."""
@@ -392,7 +397,8 @@ class _ProgressReporter:
         self._done += count
         now = time.monotonic()
         if (
-            now - self._last_published < _PROGRESS_INTERVAL_SECONDS
+            self._last_published is not None
+            and now - self._last_published < _PROGRESS_INTERVAL_SECONDS
             and self._done < self._total
         ):
             return
