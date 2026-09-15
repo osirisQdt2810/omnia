@@ -21,9 +21,20 @@ from omnia.plugins.typed_accuracy.store import (
     RESULT_MISS,
 )
 
+EASE_AGAIN = 1
 EASE_HARD = 2
 EASE_GOOD = 3
 EASE_EASY = 4
+
+#: What a FAILING answer may be graded as, and the ease each name means.
+#:
+#: ``"no"`` is in both this and the pass map for the same reason: staging nothing is a real
+#: answer to "what should happen", not the absence of one — the user's own key press stands.
+FAIL_EASES: dict[str, Optional[int]] = {
+    "again": EASE_AGAIN,
+    "hard": EASE_HARD,
+    "no": None,
+}
 
 
 def accuracy_ratio(good: int, bad: int, missed: int) -> float:
@@ -32,21 +43,30 @@ def accuracy_ratio(good: int, bad: int, missed: int) -> float:
     return good / total if total > 0 else 0.0
 
 
-def decide_ease(ratio: float, threshold: float, pass_ease: str) -> Optional[int]:
+def decide_ease(
+    ratio: float, threshold: float, pass_ease: str, fail_ease: str = "hard"
+) -> Optional[int]:
     """Map an accuracy ``ratio`` to an Anki ease (or None to stage nothing).
+
+    Both sides of the threshold are the user's to choose. A fail used to force Hard with no way
+    to say otherwise, which suits a forgiving deck and not a strict one: someone drilling
+    spelling wants a miss to go straight back into the queue (Again), and someone using typing
+    as a hint wants their own press to stand (no).
 
     Args:
         ratio: accuracy in [0, 1] (0 for an empty / no-markup answer).
         threshold: pass cutoff.
-        pass_ease: ``"good"``, ``"easy"`` or ``"no"`` — the ease used on a pass. ``"no"``
-            stages no ease (the user's own press stands), while a fail still forces Hard.
+        pass_ease: ``"good"``, ``"easy"`` or ``"no"`` — the ease used on a pass.
+        fail_ease: ``"again"``, ``"hard"`` or ``"no"`` — the ease used on a fail. Defaults to
+            ``"hard"``, which is what this did before it was configurable.
 
     Returns:
-        2 (Hard) on a fail; 4 (Easy) / 3 (Good) on a pass; None when ``pass_ease == "no"``
-        and the answer passed (nothing is staged).
+        The ease to stage, or ``None`` to stage nothing (the user's own press stands). An
+        unrecognised name falls back to the default for its side rather than staging nothing:
+        a grader that quietly stops grading is harder to notice than one that grades plainly.
     """
     if ratio < threshold:
-        return EASE_HARD
+        return FAIL_EASES.get(fail_ease, EASE_HARD)
     if pass_ease == "easy":
         return EASE_EASY
     if pass_ease == "no":
