@@ -192,6 +192,9 @@ class ConfigController:
                     "generate_at_review": bool(
                         opts.get("generate_at_review", settings.generate_at_review)
                     ),
+                    "batch_in_background": bool(
+                        opts.get("batch_in_background", settings.batch_in_background)
+                    ),
                     "regenerate_when_batching": bool(
                         opts.get(
                             "regenerate_when_batching",
@@ -519,6 +522,7 @@ class ConfigController:
         settings = self._ctx.settings()
         return {
             "generate_at_review": settings.generate_at_review,
+            "batch_in_background": settings.batch_in_background,
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
             "regenerate_from_clippers": settings.regenerate_from_clippers,

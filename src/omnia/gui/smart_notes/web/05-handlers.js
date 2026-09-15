@@ -82,12 +82,14 @@
   // Options modal — global Smart Notes flags, seeded from the load response, collected on save.
   /**
    * Seed the option checkboxes from the load response (regenerate defaults to true).
-   * @param {?Object} opts {generate_at_review, regenerate_when_batching, allow_empty_fields,
+   * @param {?Object} opts {generate_at_review, batch_in_background, regenerate_when_batching,
+   *     allow_empty_fields,
    *     auto_generate_integrations, integration_status}
    */
   function applyOptions(opts) {
     opts = opts || {};
     optGenReview.checked = !!opts.generate_at_review;
+    optBatchBackground.checked = !!opts.batch_in_background;
     optRegenBatch.checked = opts.regenerate_when_batching !== false;
     optAllowEmpty.checked = !!opts.allow_empty_fields;
     if (optRegenClippers) {
@@ -386,6 +388,7 @@
     }
     const opts = {
       generate_at_review: optGenReview.checked,
+      batch_in_background: optBatchBackground.checked,
       regenerate_when_batching: optRegenBatch.checked,
       allow_empty_fields: optAllowEmpty.checked,
       discard_unfilled_clips: optDiscardUnfilled ? optDiscardUnfilled.checked : true,

@@ -359,6 +359,18 @@ def _card_html(card: PluginCardModel, index: int) -> str:
         f'<div class="omnia-card-desc">{html.escape(card.description)}</div>'
         f'<div class="omnia-card-status">{html.escape(status_text(enabled=card.enabled, active=card.active))}</div>'
         "</div>"
+        # Where a background job says how far it has got. Built empty for every card and filled
+        # by JS from whatever the plugin publishes under "<id>.progress" — a card whose plugin
+        # has no such service never shows it, so nothing here knows which plugins have jobs.
+        '<div class="omnia-card-job" data-progress="none">'
+        '<div class="omnia-card-job-fill"></div>'
+        '<span class="omnia-card-job-text"></span>'
+        # No native `title=`: this page uses its own popovers throughout, and a test pins that
+        # (a native tooltip looks nothing like the rest and cannot be styled). "Stop" beside a
+        # running count needs no explaining anyway.
+        f'<button class="omnia-card-job-stop" data-stop="{html.escape(card.id)}">'
+        "Stop</button>"
+        "</div>"
         '<div class="omnia-card-actions">'
         f"{configure}"
         '<label class="omnia-switch">'

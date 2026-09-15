@@ -21,6 +21,60 @@ Format for each entry:
 
 ---
 
+## 2026-09-15 — Background batch generation, and a progress seam any plugin can use
+
+**What:** A Smart Notes batch started from the Browser no longer opens Anki's modal progress
+dialog by default — it runs quietly, and Anki stays usable while it does. Progress appears on the
+Smart Notes card in the settings page (a fill, a live count, a Stop button) instead of in a window
+that owns the screen. The mechanism is general: `core/progress.py` adds a counted `JobProgress` +
+thread-safe `JobTracker`, a plugin publishes one under `"<id>.progress"` through the service
+registry (ADR-019), and every plugin card polls for it. Smart Notes gains
+`batch_in_background` (default on).
+
+**Why:** Generating a few hundred cards made Anki unusable for the whole run — no reviewing, no
+browsing. The generation itself had always run off the Qt main thread; what blocked everything was
+the progress surface. Anki has exactly one and it is `ApplicationModal`, so while it is up no
+other window accepts input. Someone who starts a long batch does it precisely so they can study
+meanwhile, and that was the one thing they could not do. Background auto-generation from the
+clippers already ran without the dialog and proved the work itself is fine there — it just had
+nowhere to report, so it reported nothing, which the same seam fixes.
+
+**Files:**
+- `src/omnia/core/progress.py` (new seam — pure; imports no plugin)
+- `src/omnia/plugins/smart_notes/integration/progress.py` (new — the three surfaces)
+- `src/omnia/plugins/smart_notes/integration/batch.py` (takes a surface; `show_progress` gone)
+- `src/omnia/plugins/smart_notes/{__init__.py,config.py}`, `integration/gateway.py`
+- `src/omnia/gui/{settings_dialog.py,settings_html.py}`, `gui/web/settings.{css,js}`
+- `src/omnia/gui/smart_notes/{web/page.html,web/01-bridge.js,web/05-handlers.js,dialogs/controllers/config.py}`
+- `tests/core/test_progress.py`, `tests/gui/test_settings_card_progress.py`,
+  `tests/plugins/smart_notes/test_batch_progress.py`
+
+**How to verify:**
+```bash
+bash scripts/run_tests.sh -p no:randomly    # 3446 passed
+```
+By hand: select many notes in the Browser → *Omnia · Generate Smart Fields* → Anki stays usable;
+open Tools → Omnia → AI and the Smart Notes card shows "Generating n of N" with a Stop button.
+Turning off *Generate in the background* (Smart Notes → Options → General) restores the dialog.
+
+**Notes / rollback:**
+- **Stop asks, it does not force.** The batch halts between cohorts so no note is left
+  half-generated; the button reads "Stopping…" until it does.
+- **Notes are still written when the batch ENDS, not per note.** So mid-run you see progress but
+  no new cards. Unchanged by this work, and the obvious follow-up if it turns out to matter.
+- **One batch at a time** — a second is refused with a tooltip, because both would share one
+  tracker and the bar would report whichever started last.
+- The tracker is module-level, not per-plugin-instance: `PluginManager.reload` rebuilds the
+  plugin (saving a setting is enough) and a batch outlives the object that started it.
+- Rollback is the `batch_in_background` switch; the modal path is untouched and still the
+  default for every entry point that does not ask otherwise.
+- Two bugs here were invisible to unit tests and caught only by driving the real page in Chrome:
+  a gradient painted with `var(--accent-from)`/`var(--accent-to)` when the palette calls them
+  `--accent`/`--accent-2` (so it rendered transparent), and `var(--text)` where the palette says
+  `--fg`. A test now fails on any `var(--x)` nothing defines.
+
+---
+
 ## 2026-09-15 — Phrase Check: correcting a phrase, one fix at a time
 
 **What:** A new feature plugin (`plugins/phrase_check/`) that corrects a selected phrase and

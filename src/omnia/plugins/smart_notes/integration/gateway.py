@@ -28,6 +28,7 @@ from omnia.plugins.smart_notes.integration.integrations import (
     AUTOGEN_TAG,
     integration_for_tags,
 )
+from omnia.plugins.smart_notes.integration.progress import Silent
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesSettings
@@ -176,10 +177,10 @@ class IntegrationGateway:
             if self._pending:
                 self._arm_flush()
 
-        # show_progress=False: background auto-gen must not open a modal dialog (that is what
-        # froze Anki when many clips ran back-to-back); a summary tooltip still reports the result.
+        # Silent: background auto-gen must not open a modal dialog (that is what froze Anki when
+        # many clips ran back-to-back); a summary tooltip still reports the result.
         try:
-            BatchGenerator(self._service, settings).run(nids, done, show_progress=False)
+            BatchGenerator(self._service, settings).run(nids, done, surface=Silent())
         except Exception:
             # run() does synchronous work (build plans / read notes) before dispatching; if it
             # raises we must clear _running here — otherwise the async ``done`` never fires and the
