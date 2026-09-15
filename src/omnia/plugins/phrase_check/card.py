@@ -48,7 +48,7 @@ FIELD_FIXES = "Fixes"
 FIELD_REGISTER = "Register"
 FIELDS = (FIELD_PHRASE, FIELD_CORRECTED, FIELD_FIXES, FIELD_REGISTER)
 
-#: Above this many fixes the list splits into two columns. Three still reads as a list; four in
+#: From this many fixes the list splits into two columns. Three still reads as a list; four in
 #: one column is when the answer starts running off the bottom of a review.
 TWO_COLUMN_FROM = 4
 

@@ -70,13 +70,34 @@ class _Col:
         self.models = _Models()
         self.decks = _Decks()
         self.added: list = []
+        self.notes: dict = {}
+        self.searches: list = []
+        self._next_id = 4242
 
     def new_note(self, _model):
         return _Note()
 
     def add_note(self, note, deck_id):
-        note.id = 4242
+        note.id = self._next_id
+        self._next_id += 1
+        self.notes[note.id] = note
         self.added.append((dict(note), deck_id))
+
+    def find_notes(self, query):
+        """Every note, whatever was asked for.
+
+        Deliberately not a query engine. `find_existing` treats the search as a FILTER and
+        confirms every hit field-by-field, because Anki's grammar treats `*` and `_` as
+        wildcards even inside quotes and a phrase is arbitrary user text. A fake that
+        over-matches is the honest stand-in for that: it exercises the comparison that is
+        actually load-bearing, where a fake that re-implemented the escaping would only
+        test my reading of it twice.
+        """
+        self.searches.append(query)
+        return list(self.notes)
+
+    def get_note(self, nid):
+        return self.notes[nid]
 
 
 def _correction(original="I have went to the shop.", rewritten="I went to the shop."):
@@ -215,10 +236,14 @@ class TestSavingOne:
         assert fields[card.FIELD_PHRASE] == "I have went to the shop."
 
     def test_a_second_save_reuses_the_note_type(self):
+        # Two DIFFERENT phrases: saving the same one twice is deduplicated now, which would
+        # make this pass for the wrong reason (one note, one note type, nothing reused).
         col = _Col()
 
         library.save_correction(col, _correction())
-        library.save_correction(col, _correction())
+        library.save_correction(
+            col, _correction(original="I has a cat.", rewritten="I have a cat.")
+        )
 
         assert list(col.models.models) == [card.NOTE_TYPE_NAME]
         assert len(col.added) == 2
@@ -289,3 +314,134 @@ class TestSavingOne:
         # The clipper does nothing with it today, but "which note" is the first thing anyone
         # asks when a save goes somewhere unexpected.
         assert library.save_correction(_Col(), _correction()).note_id == 4242
+
+
+class TestSavingTheSamePhraseTwice:
+    """One press can reach `save_correction` twice, so it has to be idempotent.
+
+    The HTTP hop gives up after five seconds and answers "nothing was saved" while the queued
+    write still runs — so the retry that message invites is a second identical note. The ordinary
+    "pressed Save twice" case does the same thing more simply.
+    """
+
+    def test_the_second_save_adds_nothing(self):
+        col = _Col()
+        library.save_correction(col, _correction())
+
+        library.save_correction(col, _correction())
+
+        assert len(col.added) == 1
+
+    def test_it_hands_back_the_note_that_is_already_there(self):
+        col = _Col()
+        first = library.save_correction(col, _correction())
+
+        second = library.save_correction(col, _correction())
+
+        assert second.note_id == first.note_id
+
+    def test_it_says_so_rather_than_claiming_a_fresh_save(self):
+        # "Saved" over a press that added nothing sends the user hunting for a new card.
+        col = _Col()
+        library.save_correction(col, _correction())
+
+        second = library.save_correction(col, _correction())
+
+        assert second.already_there is True
+        assert "already" in second.summary().lower()
+
+    def test_the_other_register_is_a_different_card(self):
+        """The same sentence judged as spoken and as written is two answers worth keeping.
+
+        The panel treats switching register as a new question for exactly this reason;
+        deduplicating on the phrase alone would refuse the second and hand back the first, which
+        is the wrong card.
+        """
+        from omnia.plugins.phrase_check.correction import SPOKEN
+
+        col = _Col()
+        library.save_correction(col, _correction())
+
+        spoken = parse(
+            {
+                "rewritten": "I went to the shop.",
+                "fixes": [{"before": "have went", "after": "went"}],
+            },
+            original="I have went to the shop.",
+            mode=SPOKEN,
+        )
+        library.save_correction(col, spoken)
+
+        assert len(col.added) == 2
+
+    def test_a_different_phrase_is_still_saved(self):
+        col = _Col()
+        library.save_correction(col, _correction())
+
+        library.save_correction(
+            col, _correction(original="I has a cat.", rewritten="I have a cat.")
+        )
+
+        assert len(col.added) == 2
+
+    def test_a_search_the_collection_refuses_does_not_block_the_save(self):
+        # Falling through adds the note, which is the behaviour without the check at all. A
+        # query this cannot express must never cost the user their card.
+        class _Refuses(_Col):
+            def find_notes(self, query):
+                raise RuntimeError("unparseable search")
+
+        col = _Refuses()
+
+        saved = library.save_correction(col, _correction())
+
+        assert len(col.added) == 1 and saved.note_id
+
+    def test_a_note_deleted_between_the_search_and_the_read_is_skipped(self):
+        class _Vanishes(_Col):
+            def get_note(self, nid):
+                raise KeyError(nid)
+
+        col = _Vanishes()
+        library.save_correction(col, _correction())
+
+        library.save_correction(col, _correction())
+
+        assert (
+            len(col.added) == 2
+        ), "a missing note stopped the save instead of being skipped"
+
+    def test_the_search_is_scoped_to_our_note_type(self):
+        # Otherwise a phrase saved by something else's note type would be mistaken for ours.
+        col = _Col()
+
+        library.save_correction(col, _correction())
+
+        assert card.NOTE_TYPE_NAME in col.searches[0]
+        assert card.FIELD_PHRASE in col.searches[0]
+
+
+class TestEscapingAPhraseForTheSearch:
+    """Anki treats `*` and `_` as wildcards inside quotes, and a phrase is arbitrary text."""
+
+    def test_a_quote_cannot_break_out_of_the_term(self):
+        assert '\\"' in library._search_value('he said "hi"')
+
+    def test_wildcards_are_escaped(self):
+        escaped = library._search_value("a * and an _")
+
+        assert "\\*" in escaped and "\\_" in escaped
+
+    def test_a_phrase_containing_a_wildcard_still_deduplicates(self):
+        # The whole point of escaping it: over-matching is harmless (every hit is confirmed),
+        # under-matching costs a duplicate.
+        col = _Col()
+        library.save_correction(
+            col, _correction(original="2 * 3 is 6", rewritten="2 × 3 is 6")
+        )
+
+        library.save_correction(
+            col, _correction(original="2 * 3 is 6", rewritten="2 × 3 is 6")
+        )
+
+        assert len(col.added) == 1

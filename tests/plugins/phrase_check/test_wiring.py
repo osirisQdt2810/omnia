@@ -11,6 +11,7 @@ guarantee is only worth anything if the runs are checked to join back to exactly
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
 import tempfile
 from typing import Any, Optional
@@ -398,6 +399,48 @@ class TestSavingDoesNotFreezeAnki:
 
         return on_main
 
+    @staticmethod
+    def _gave_up():
+        """A marshaller that has already stopped waiting by the time the work runs.
+
+        What `call_on_main` really does when it times out: it cannot take the closure off Qt's
+        queue, so the work runs anyway — after the 503 saying "nothing was saved" has been sent.
+        A write that goes ahead there makes that answer a lie about a note that exists, and the
+        retry it invites is a duplicate.
+        """
+        import threading
+
+        def on_main(work):
+            abandoned = threading.Event()
+            abandoned.set()  # the caller is already gone
+            return work(abandoned)
+
+        return on_main
+
+    def test_a_write_the_caller_gave_up_on_does_not_happen(self):
+        from omnia.plugins.phrase_check import PhraseCheckError
+
+        col = self._Col()
+        plugin = self._plugin([])
+
+        with contextlib.suppress(PhraseCheckError):
+            # It reports that it did not happen, which is the honest answer; what this test is
+            # about is the collection, checked below.
+            plugin._save("I have went.", "written", col, self._gave_up())
+
+        assert col.added == [], (
+            "the note was written after the caller was told nothing was saved — "
+            "which is what made the retry produce a duplicate"
+        )
+
+    def test_it_says_the_save_did_not_happen_rather_than_returning_a_fake_one(self):
+        from omnia.plugins.phrase_check import PhraseCheckError
+
+        plugin = self._plugin([])
+
+        with pytest.raises(PhraseCheckError):
+            plugin._save("I have went.", "written", self._Col(), self._gave_up())
+
     def test_the_model_call_does_not_happen_on_the_marshalled_thread(self):
         # The rule the review asked to see pinned: a save whose checker WOULD call the provider
         # must not do so inside `on_main`. On the Qt main thread that is a frozen Anki.
@@ -499,3 +542,33 @@ class _Decks:
     def get(self, did):
         name = self.by_id.get(did)
         return {"name": name} if name else None
+
+
+class TestTheTooltipDescribesWhatItActuallyDoes:
+    """The settings card renders `plugin.tooltip` verbatim, and it is read before enabling.
+
+    It used to end "nothing is written to your collection — it only reads what you selected",
+    which stopped being true the moment Save existed: the first press creates a note type, a deck
+    and a note, all of which sync. The one sentence a cautious user reads before switching on an
+    AI feature was the one that was wrong, and wrong specifically about writes.
+    """
+
+    def _tooltip(self) -> str:
+        from omnia.plugins.phrase_check import PhraseCheckPlugin
+
+        return PhraseCheckPlugin.tooltip
+
+    def test_it_does_not_claim_to_write_nothing(self):
+        text = self._tooltip().lower()
+
+        assert "nothing is written to your collection" not in text
+
+    def test_it_says_saving_adds_a_note(self):
+        text = self._tooltip().lower()
+
+        assert "save" in text
+        assert "note" in text
+
+    def test_it_still_says_a_check_alone_changes_nothing(self):
+        # The distinction is the useful part: reading is free, keeping is not.
+        assert "changes nothing" in self._tooltip().lower()

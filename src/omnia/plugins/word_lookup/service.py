@@ -29,8 +29,12 @@ clippers reported a mistyped one as "Omnia rejected the access token" with no wa
 from a service that was simply not running.
 
 What that costs, stated plainly: any process on this machine can now ask for a field to be
-regenerated, which rewrites a note and spends LLM credits. What it does not cost is the thing the
-token was mostly protecting against, because the remaining guard covers it:
+regenerated, which rewrites a note and spends LLM credits — and, since ``/check/save``, can also
+CREATE: a note, and on first use the note type and deck to hold it. That is a wider blast radius
+than regeneration, and it is a considered outcome rather than a drift: what a local process can
+do here is bounded by what the clippers legitimately need, and the guard the token was actually
+carrying is the next one, which still stands. What it does not cost is the thing the token was
+mostly protecting against, because the remaining guard covers it:
 
 **No request a web page started.** A ``POST`` whose ``Origin`` is a web origin
    (``http://…``/``https://…``) is refused outright. This service
@@ -62,6 +66,7 @@ no web page can reach it however it is coaxed.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import threading
@@ -105,6 +110,23 @@ class RegenerationDisabledError(RuntimeError):
     Answered as ``409``, carrying the message the clipper shows verbatim — it names the option
     to turn back on, which no client should have to guess at.
     """
+
+
+def _accepts_abandon(work: Callable[..., Any]) -> bool:
+    """Whether ``work`` wants the "stopped waiting" event passed to it.
+
+    By signature rather than by a flag at the call site, so a caller that gains a reason to care
+    gains it by adding the parameter — nothing has to be threaded through the two hops in
+    between, and every existing zero-argument reader keeps working untouched.
+
+    A callable whose signature cannot be read (a builtin, a C extension) is treated as not
+    wanting it: calling it with an argument it does not take would turn a working read into a
+    ``TypeError``, and the event is only ever an optimisation over "assume the worst".
+    """
+    try:
+        return bool(inspect.signature(work).parameters)
+    except (TypeError, ValueError):
+        return False
 
 
 def _json_object(raw: bytes) -> dict[str, Any]:
@@ -389,6 +411,17 @@ class LookupService:
         one implementation of "hop to the main thread and wait" is the point: a second copy
         would be a second timeout policy to keep in step with this one.
 
+        **Giving up does not cancel the queued work**, and it cannot: the closure is already on
+        Qt's event queue and there is no way to take it back. Timing out therefore means "I no
+        longer know what happened", not "it did not happen" — which was harmless while every
+        caller was a READ, and is not once one of them writes to the collection. A write that
+        landed after the wait was abandoned answered "nothing was saved" and then existed, so the
+        retry the message invites produced a second note.
+
+        ``work`` is therefore passed an ``abandoned`` event when it accepts one. It is set the
+        moment this stops waiting, and a writer that checks it before touching ``col`` makes the
+        503 true again. Optional because a read has nothing to check it for.
+
         Raises:
             TimeoutError: The main thread did not run the work in time.
         """
@@ -396,10 +429,12 @@ class LookupService:
             return work()  # headless/tests: no Qt loop to marshal onto
         box: dict[str, Any] = {}
         done = threading.Event()
+        abandoned = threading.Event()
+        wants_event = _accepts_abandon(work)
 
         def runner() -> None:
             try:
-                box["value"] = work()
+                box["value"] = work(abandoned) if wants_event else work()
             except Exception as exc:  # carried back to the requesting thread
                 box["error"] = exc
             finally:
@@ -407,6 +442,10 @@ class LookupService:
 
         self._run_on_main(runner)
         if not done.wait(_MAIN_THREAD_TIMEOUT_SECONDS):
+            # BEFORE raising, so a writer that has not yet reached `col` sees it and declines.
+            # One that is already past that point is unaffected — this is cooperative, and the
+            # honest name for what it buys is "a much smaller window", not "no window".
+            abandoned.set()
             raise TimeoutError("Anki's main thread did not answer in time")
         if "error" in box:
             raise box["error"]

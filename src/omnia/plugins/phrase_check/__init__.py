@@ -73,8 +73,9 @@ class PhraseCheckPlugin(FeaturePlugin):
         "• It flags sentences that are grammatically perfect and that no fluent speaker "
         "would actually say, which is the part a learner most needs.\n"
         "• Answers are remembered, so coming back to a phrase costs nothing.\n"
-        "• Uses the LLM provider Omnia is configured with. No card is changed and nothing is "
-        "written to your collection — it only reads what you selected."
+        "• Uses the LLM provider Omnia is configured with. Checking a phrase changes nothing "
+        "— it only reads what you selected. Pressing Save adds a note to the deck named in "
+        "this feature's settings, creating that deck and its note type the first time."
     )
     order = 60
     config_model = PhraseCheckSettings
@@ -158,7 +159,17 @@ class PhraseCheckPlugin(FeaturePlugin):
         # Worker thread. May call the model.
         correction = checker.check(text, mode=_mode(mode, settings), refresh=False)
 
-        def write() -> Any:
+        def write(abandoned: Any = None) -> Any:
+            # `abandoned` is set when the caller stopped waiting for this closure. It cannot be
+            # taken off Qt's queue, so it runs anyway — and writing THEN means the 503 the
+            # caller already sent ("nothing was saved") becomes a lie about a note that exists,
+            # which is what made the retry it invites produce a duplicate. Checked as late as
+            # possible, immediately before the first write, so the window where it is true and
+            # the note is still added is as small as this design allows.
+            if abandoned is not None and abandoned.is_set():
+                raise library.SaveError(
+                    "Anki was busy for too long — nothing was saved. Try again."
+                )
             target = col
             if target is None:
                 from omnia.core import anki_compat

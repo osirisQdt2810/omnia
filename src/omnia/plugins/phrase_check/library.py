@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
+from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.plugins.phrase_check import card
 
@@ -44,9 +45,15 @@ class Saved:
     #: "(copy)" was used instead. The clipper says so: silently writing into a name the user did
     #: not choose is how a note ends up somewhere they will never look.
     renamed: bool = False
+    #: True when this phrase was already in the collection, so nothing new was added. Said out
+    #: loud rather than passed off as a fresh save: "Saved" over a press that added nothing is
+    #: the kind of small lie that has the user hunting for a card that is not where they think.
+    already_there: bool = False
 
     def summary(self) -> str:
         """One sentence naming where it went."""
+        if self.already_there:
+            return f"Already saved in {self.deck}."
         where = f"Saved to {self.deck}"
         if self.renamed:
             return (
@@ -161,8 +168,21 @@ def save_correction(
             col, (note_type or "").strip() or card.NOTE_TYPE_NAME
         )
         deck_id = ensure_deck(col, deck)
+        fields = card.note_fields(correction)
+        existing = find_existing(col, model, fields)
+        if existing is not None:
+            # Already here. Answered as a save rather than refused: from the reader's side
+            # "keep this" has been honoured either way, and the alternative is an error about
+            # something that is not wrong.
+            return Saved(
+                note_id=int(existing),
+                deck=_deck_name(col, deck_id, deck),
+                note_type=str(model["name"]),
+                renamed=renamed,
+                already_there=True,
+            )
         note = col.new_note(model)
-        for field, value in card.note_fields(correction).items():
+        for field, value in fields.items():
             note[field] = value
         col.add_note(note, deck_id)
     except SaveError:
@@ -177,6 +197,64 @@ def save_correction(
         note_type=str(model["name"]),
         renamed=renamed,
     )
+
+
+def find_existing(col: Any, model: Any, fields: dict[str, str]) -> Optional[int]:
+    """The id of a note of ``model`` already holding this phrase in this register, or ``None``.
+
+    Why a save is idempotent at all: one press can reach here twice. The HTTP hop gives up after
+    five seconds and answers "nothing was saved" while the queued write still runs, so the retry
+    that message invites is a second identical note — and the ordinary case of pressing Save
+    twice does the same thing more simply.
+
+    The key is phrase AND register, not phrase alone. The same sentence judged as spoken and as
+    written is two different answers and two cards worth keeping; the panel treats switching
+    register as a new question for exactly that reason, and deduplicating on the phrase alone
+    would silently refuse the second one and hand back the first, which is the wrong card.
+
+    The search is a FILTER and the comparison is the answer: Anki's search grammar treats ``*``
+    and ``_`` as wildcards even inside quotes, and a phrase is arbitrary user text, so the query
+    is escaped as well as it can be and every hit is then confirmed field-by-field. An escape
+    this misses costs a duplicate — which is what happens today — never a wrong match.
+    """
+    phrase = fields.get(card.FIELD_PHRASE, "")
+    register = fields.get(card.FIELD_REGISTER, "")
+    if not phrase:
+        return None
+    query = (
+        f'note:"{anki_compat.escape_search_term(str(model["name"]))}" '
+        f'"{card.FIELD_PHRASE}:{_search_value(phrase)}"'
+    )
+    try:
+        candidates = list(col.find_notes(query))
+    except Exception:
+        # A search this cannot express is not a reason to refuse the save. Falling through adds
+        # the note, which is the behaviour without this check at all.
+        logger.debug("phrase_check: duplicate search failed", exc_info=True)
+        return None
+    for nid in candidates:
+        try:
+            note = col.get_note(nid)
+            if (
+                note[card.FIELD_PHRASE] == phrase
+                and note[card.FIELD_REGISTER] == register
+            ):
+                return int(nid)
+        except Exception:  # a note deleted between the search and the read
+            continue
+    return None
+
+
+def _search_value(text: str) -> str:
+    """``text`` as a value inside a quoted Anki field search.
+
+    Beyond :func:`~omnia.core.anki_compat.escape_search_term`'s backslash and quote, ``*`` and
+    ``_`` are wildcards inside quotes too, so a phrase containing either would otherwise match
+    more than itself. Over-matching is harmless here — every hit is confirmed — but it makes the
+    search do work for nothing on a collection of any size.
+    """
+    escaped = anki_compat.escape_search_term(text)
+    return escaped.replace("*", "\\*").replace("_", "\\_")
 
 
 def _deck_name(col: Any, deck_id: int, fallback: str) -> str:

@@ -21,6 +21,57 @@ Format for each entry:
 
 ---
 
+## 2026-09-15 — Phrase Check: keeping a correction as a card
+
+**What:** A correction can now be SAVED as an Anki note, from either clipper. New pure modules
+`plugins/phrase_check/card.py` (the note type: four fields, the front/back templates and their
+CSS) and `library.py` (creating the deck and note type, naming around a collision, writing the
+note), a new `POST /check/save` on the socket `word_lookup` already serves, and a `Save to Anki`
+button in both clipper panels. The back of the card lays every fix out in one view — two columns
+from four fixes — with the corrected phrase underneath, so nothing needs scrolling during a
+review. Settings gained the deck, the note type name, the explanation language, an optional model
+override, and how many fixes the PANEL shows (the card always keeps them all).
+
+**Why:** A correction was read once and gone. The whole value of finding out that a sentence you
+wrote is wrong is meeting it again in a week, which is what Anki is for — so the feature that
+diagnoses had no way to turn its answer into practice.
+
+**Files:**
+- `src/omnia/plugins/phrase_check/{card.py,library.py}` (new, pure — no `aqt`/`anki` imports)
+- `src/omnia/plugins/phrase_check/{__init__.py,config.py,correction.py,cache.py,service.py}`
+- `src/omnia/plugins/word_lookup/{__init__.py,service.py}` (the endpoint + the marshalling)
+- `3rdparty/omnia-web-clipper/src/{content.js,correct_view.js}`
+- `3rdparty/omnia-desktop-clipper/omnia_desktop_clipper/{ui/correct_panel.py,lookup/{check.py,correction_state.py},ui/theme.py}`
+- `tests/plugins/phrase_check/{test_card.py,test_library.py,test_wiring.py}`
+
+**How to verify:**
+```bash
+pytest tests/plugins/phrase_check tests/plugins/word_lookup -q -p no:randomly
+```
+By hand: select a wrong sentence in either clipper → the wand → **Save to Anki** → the note lands
+in `Omnia::Phrase Check`. The card was rendered at a 740×560 reviewer viewport in all four
+fix-count variants to confirm it fits without scrolling.
+
+**Notes / rollback:**
+- **The phrase is sent, not the correction.** Omnia looks it up again (a cache hit) and builds
+  the note itself; letting a page post note content into a collection is a different feature with
+  a different risk.
+- **The save is idempotent** on (phrase, register). One press can reach the writer twice — the
+  main-thread hop gives up after five seconds but cannot cancel the queued write — and pressing
+  Save twice does the same thing more simply. The register is part of the key because the same
+  sentence judged as spoken and as written is two cards worth keeping.
+- **`call_on_main` now tells the work when it has stopped waiting** (`core`-adjacent behaviour in
+  `word_lookup/service.py`): abandoning the wait cannot take the closure off Qt's queue, so a
+  writer checks the flag before touching `col`. Without it the 503 "nothing was saved" was
+  asserted about a note that then existed. Cooperative — a much smaller window, not no window.
+- **`/check/save` widened what a local process can do** from "rewrite a note" to "create a note,
+  a note type and a deck". The access token was removed earlier by decision; the page-origin
+  guard still stands. Said out loud in the module's threat-model paragraph.
+- The plugin tooltip used to say "nothing is written to your collection". It says what saving
+  does now, and a test fails if that sentence comes back.
+
+---
+
 ## 2026-09-15 — Phrase Check: correcting a phrase, one fix at a time
 
 **What:** A new feature plugin (`plugins/phrase_check/`) that corrects a selected phrase and

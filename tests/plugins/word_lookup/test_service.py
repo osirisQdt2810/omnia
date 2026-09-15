@@ -290,3 +290,71 @@ class TestSavingIsNotMarshalledWholesale:
 
         assert status == 200
         assert body["summary"] == "Saved to Omnia::Phrase Check."
+
+
+class TestGivingUpOnTheMainThreadDoesNotSilentlyWrite:
+    """Abandoning the wait cannot cancel the queued work — so the work has to be told.
+
+    `call_on_main` posts a closure to Qt's event loop and stops waiting after five seconds. The
+    closure is still on that queue and runs whenever the main thread frees up. That was harmless
+    while every caller was a READ; once one of them writes to the collection, the 503 saying
+    "nothing was saved" is asserted about a note that then exists — and the retry the message
+    invites is a duplicate.
+    """
+
+    def test_work_that_wants_it_is_handed_the_abandoned_event(self, service_factory):
+        seen: list = []
+        service, _port = service_factory(_lookup, run_on_main=lambda work: work())
+
+        service.call_on_main(lambda abandoned: seen.append(abandoned))
+
+        assert seen and hasattr(seen[0], "is_set")
+
+    def test_it_is_not_set_while_the_caller_is_still_waiting(self, service_factory):
+        service, _port = service_factory(_lookup, run_on_main=lambda work: work())
+
+        assert service.call_on_main(lambda abandoned: abandoned.is_set()) is False
+
+    def test_it_is_set_once_the_caller_has_given_up(self, service_factory, monkeypatch):
+        monkeypatch.setattr(
+            "omnia.plugins.word_lookup.service._MAIN_THREAD_TIMEOUT_SECONDS", 0.2
+        )
+        started = threading.Event()
+        state: dict = {}
+
+        def late(work):
+            def run():
+                started.set()
+                threading.Event().wait(0.6)  # outlast the caller's patience
+                work()
+
+            threading.Thread(target=run, daemon=True).start()
+
+        service, _port = service_factory(_lookup, run_on_main=late)
+
+        def writer(abandoned):
+            state["abandoned_when_it_ran"] = abandoned.is_set()
+
+        with pytest.raises(TimeoutError):
+            service.call_on_main(writer)
+        assert started.wait(5)
+        threading.Event().wait(1.0)  # let the queued work finish
+
+        assert (
+            state["abandoned_when_it_ran"] is True
+        ), "the write had no way to know nobody was listening, so it wrote anyway"
+
+    def test_a_plain_zero_argument_read_is_untouched(self, service_factory):
+        # Every existing caller is one of these; passing them an argument they do not take
+        # would turn a working read into a TypeError.
+        service, _port = service_factory(_lookup, run_on_main=lambda work: work())
+
+        assert service.call_on_main(lambda: "read") == "read"
+
+    def test_a_callable_whose_signature_cannot_be_read_is_treated_as_a_read(
+        self, service_factory
+    ):
+        # A builtin has no inspectable signature; guessing "it wants the event" would break it.
+        service, _port = service_factory(_lookup, run_on_main=lambda work: work())
+
+        assert service.call_on_main(dict) == {}
