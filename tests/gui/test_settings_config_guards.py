@@ -21,15 +21,12 @@ from __future__ import annotations
 import pytest
 
 import omnia.plugins  # noqa: F401 — registers plugins so config_model resolves
-from omnia.core.config import ConfigLoader, ConfigRepository
 
 
 @pytest.fixture
-def repo(tmp_path):
-    """A repository over a throwaway config tree."""
-    from tests.core.test_config import _tmp_config
-
-    return ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+def repo(config_repo):
+    """A writable repository over a throwaway config tree (conftest's, renamed for reading)."""
+    return config_repo
 
 
 class _Manager:
