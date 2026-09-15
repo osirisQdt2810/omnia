@@ -149,6 +149,10 @@ _GENERATE_PATH = "/generate"
 #: Corrects a phrase. A POST because the phrase is a paragraph, not a query parameter, and
 #: because it spends LLM credits — so it sits behind the same page-origin refusal as /generate.
 _CHECK_PATH = "/check"
+#: Saves a checked phrase as a note. Its own path rather than a flag on /check, because it does
+#: a different thing with a different consequence: /check spends money and touches nothing,
+#: this writes to the collection and spends nothing.
+_SAVE_PATH = "/check/save"
 #: The most a clipper may ask to have corrected in one request.
 #:
 #: The HTTP contract, checked here so that too much text is a 400 — the request being wrong —
@@ -243,6 +247,7 @@ class LookupService:
             Callable[[str, int, Optional[list[str]]], dict[str, Any]]
         ] = None,
         check: Optional[Callable[[str, str, bool], dict[str, Any]]] = None,
+        save: Optional[Callable[[str, str], dict[str, Any]]] = None,
         port: int = 8766,
         host: str = "127.0.0.1",
         run_on_main: Optional[Callable[[Callable[[], None]], None]] = None,
@@ -274,6 +279,7 @@ class LookupService:
         self._media_dir = media_dir
         self._generate = generate
         self._check = check
+        self._save = save
         self._port = port
         self._host = host
         self._run_on_main = run_on_main
@@ -428,6 +434,39 @@ class LookupService:
             raise RegenerationUnavailableError("this service cannot regenerate fields")
         return self._generate(client, note_id, fields)
 
+    def _save_phrase(self, text: str, mode: str) -> dict[str, Any]:
+        """Save one checked phrase through whatever was injected, ON THE MAIN THREAD.
+
+        Marshalled HERE rather than left to the injected callable, which is the opposite of what
+        :meth:`_regenerate` and :meth:`_check_phrase` do — and deliberately. Those two call a
+        provider and take tens of seconds; holding the Qt main thread for that would freeze
+        Anki, so they run on the worker and marshal only the parts that touch the collection.
+
+        This one is the other shape: it is short, and every line of it writes to ``col``, which
+        may not be touched from an HTTP worker at all. Putting the hop in the service means a
+        future saver cannot forget it — the rule is structural rather than remembered.
+
+        Raises:
+            PhraseCheckUnavailableError: When nothing is wired.
+            CheckFailedError: When the save was attempted and could not finish.
+            TimeoutError: The main thread never ran it, so nothing was saved.
+        """
+        if self._save is None:
+            raise PhraseCheckUnavailableError(
+                "Phrase Check is switched off in Omnia — turn it on to save a correction"
+            )
+        saver = self._save
+        try:
+            return self.call_on_main(lambda: saver(text, mode))
+        except (PhraseCheckUnavailableError, CheckFailedError, TimeoutError):
+            raise
+        except Exception as exc:
+            # Same rule as the check: only a message the plugin MARKED as written for a person
+            # is passed on. Anything else is an internal detail and becomes a flat 500.
+            if not getattr(exc, "user_facing", False):
+                raise
+            raise CheckFailedError(str(exc) or "the save could not finish") from exc
+
     def _check_phrase(self, text: str, mode: str, refresh: bool) -> dict[str, Any]:
         """Correct one phrase through whatever was injected.
 
@@ -523,7 +562,7 @@ class LookupService:
                 that exists twice is one that will eventually differ.
                 """
                 route = urlparse(self.path).path.rstrip("/")
-                if route not in (_GENERATE_PATH, _CHECK_PATH):
+                if route not in (_GENERATE_PATH, _CHECK_PATH, _SAVE_PATH):
                     self._respond(404, {"error": "unknown endpoint"})
                     return
                 try:
@@ -556,6 +595,9 @@ class LookupService:
                 if route == _CHECK_PATH:
                     self._serve_check(raw)
                     return
+                if route == _SAVE_PATH:
+                    self._serve_save(raw)
+                    return
                 try:
                     payload = self._parse_generate(raw)
                 except _BadRequestError as exc:
@@ -571,6 +613,35 @@ class LookupService:
                 except Exception:
                     logger.exception("word_lookup: generating note %s failed", note_id)
                     self._respond(500, {"error": "generate failed"})
+                else:
+                    self._respond(200, result)
+
+            def _serve_save(self, raw: bytes) -> None:
+                """Answer ``POST /check/save``: keep a correction as a note."""
+                try:
+                    body = _json_object(raw)
+                except _BadRequestError as exc:
+                    self._respond(400, {"error": str(exc)})
+                    return
+                text = str(body.get("text") or "").strip()
+                if not text:
+                    self._respond(400, {"error": "there is nothing to save"})
+                    return
+                try:
+                    result = service._save_phrase(text, str(body.get("mode") or ""))
+                except PhraseCheckUnavailableError as exc:
+                    self._respond(503, {"error": str(exc)})
+                except CheckFailedError as exc:
+                    self._respond(502, {"error": str(exc)})
+                except TimeoutError:
+                    # The main thread never got round to the write. Anki is busy, not broken,
+                    # and nothing was saved — so this is "try again", not "it failed".
+                    self._respond(
+                        503, {"error": "Anki was busy — nothing was saved. Try again."}
+                    )
+                except Exception:
+                    logger.exception("word_lookup: saving a phrase failed")
+                    self._respond(500, {"error": "the save failed"})
                 else:
                     self._respond(200, result)
 

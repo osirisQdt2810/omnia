@@ -56,6 +56,7 @@ logger = get_logger("word_lookup")
 #: The name phrase_check publishes its corrector under. A literal rather than an import: this
 #: plugin must load and serve lookups in a build where phrase_check does not exist at all.
 _CHECK_SERVICE = "phrase_check.check"
+_SAVE_SERVICE = "phrase_check.save"
 
 # The service seam smart_notes publishes its regeneration on (see ``core/services``).
 REGENERATION_SERVICE = "smart_notes.regeneration"
@@ -226,6 +227,7 @@ class WordLookupPlugin(FeaturePlugin):
             media_dir=self._media_dir,
             generate=self.generate,
             check=self.check_phrase,
+            save=self.save_phrase,
             port=port,
             run_on_main=anki_compat.run_on_main,
         )
@@ -325,6 +327,28 @@ class WordLookupPlugin(FeaturePlugin):
                 "Phrase Check is switched off in Omnia — turn it on to correct a phrase"
             )
         return dict(checker(text, mode, refresh))
+
+    def save_phrase(self, text: str, mode: str) -> dict[str, Any]:
+        """Save a checked phrase as a note, through phrase_check.
+
+        Found by NAME through the core seam, like :meth:`check_phrase` (ADR-019).
+
+        Already ON the Qt main thread when this runs: ``LookupService._save_phrase`` marshals
+        before calling, because every line below writes to the collection. That is why the
+        handle is read here rather than captured anywhere — reading it on the thread that is
+        about to use it is also what stops a stale one surviving a profile switch.
+
+        Raises:
+            PhraseCheckUnavailableError: When Phrase Check is not running.
+        """
+        from omnia.core import services
+
+        save = services.lookup(_SAVE_SERVICE)
+        if not callable(save):
+            raise PhraseCheckUnavailableError(
+                "Phrase Check is switched off in Omnia — turn it on to save a correction"
+            )
+        return dict(save(text, mode, anki_compat.main_window().col))
 
     def generate(
         self, client: str, note_id: int, fields: Optional[list[str]]

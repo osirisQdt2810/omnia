@@ -30,6 +30,30 @@ def _get(port: int, path: str) -> tuple[int, dict]:
         return exc.code, json.loads(exc.read().decode())
 
 
+def _post(port: int, path: str, body: dict, *, timeout: float = 5) -> tuple[int, dict]:
+    """POST ``body`` as JSON and return ``(status, parsed_json)``.
+
+    ``timeout`` is the CLIENT's patience. It has to outlast the server's own wait for the Qt
+    main thread, or a test about that wait times out here instead of reading the answer.
+    """
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read().decode())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode() or "{}")
+
+
+def _lookup(word, _client):
+    """A lookup that answers without a collection."""
+    return {"word": word, "found": False, "cards": []}
+
+
 @pytest.fixture
 def service_factory():
     """Start services and guarantee they are stopped, so no test leaks a bound port."""
@@ -219,3 +243,51 @@ class TestLifecycle:
         )
         assert service.start() is False
         assert service.running is False
+
+
+class TestSavingGoesThroughTheMainThread:
+    """A save WRITES to the collection, and ``col`` may not be touched from an HTTP worker.
+
+    This is the one route in this service that mutates anything, so "it runs on the right
+    thread" is not a detail — it is the difference between a saved card and a corrupted
+    collection. Everything else here reads.
+    """
+
+    def test_the_save_is_handed_to_the_main_thread(self, service_factory):
+        handed: list = []
+
+        def run_on_main(work):
+            handed.append(work)
+            work()
+
+        saved: list = []
+        service, port = service_factory(
+            _lookup,
+            save=lambda text, mode: saved.append(text) or {"summary": "ok"},
+            run_on_main=run_on_main,
+        )
+        _ = service
+
+        _post(port, "/check/save", {"text": "I have went."})
+
+        assert handed, "the write was done on the HTTP worker thread"
+        assert saved == ["I have went."]
+
+    def test_a_main_thread_that_never_runs_it_saves_nothing(self, service_factory):
+        # Anki busy or frozen. The request must end, and it must end saying nothing happened
+        # rather than leaving the panel to guess.
+        saved: list = []
+        service, port = service_factory(
+            _lookup,
+            save=lambda text, mode: saved.append(text) or {},
+            run_on_main=lambda work: None,  # handed over, and never run
+        )
+        _ = service
+
+        # Longer than the service's own main-thread wait, so this reads the 503 rather than
+        # giving up first and proving nothing.
+        status, body = _post(port, "/check/save", {"text": "x"}, timeout=20)
+
+        assert saved == []
+        assert status == 503
+        assert "nothing was saved" in body["error"]

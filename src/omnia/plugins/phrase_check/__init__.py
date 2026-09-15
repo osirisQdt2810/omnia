@@ -28,6 +28,7 @@ from omnia.core import services
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
+from omnia.plugins.phrase_check import library
 from omnia.plugins.phrase_check.cache import STORE_FILENAME, CorrectionCache, file_store
 from omnia.plugins.phrase_check.config import PhraseCheckSettings
 from omnia.plugins.phrase_check.correction import (
@@ -46,6 +47,12 @@ logger = get_logger("phrase_check")
 #: ``word_lookup``'s socket, and ``word_lookup`` finds it here by NAME rather than by importing
 #: this module — plugins never import each other (ADR-019).
 CHECK_SERVICE = "phrase_check.check"
+
+#: Saving one as a note. A second name rather than a flag on the first: they are different
+#: operations with different failure modes — one spends money and touches nothing, the other
+#: spends nothing and writes to the collection — and a clipper that can do one is not thereby
+#: entitled to do the other.
+SAVE_SERVICE = "phrase_check.save"
 
 
 @register("phrase_check")
@@ -80,10 +87,12 @@ class PhraseCheckPlugin(FeaturePlugin):
         # serves the clippers and calls this, and two plugins that import each other cannot be
         # switched off independently.
         services.provide(CHECK_SERVICE, self._check)
+        services.provide(SAVE_SERVICE, self._save)
         logger.info("phrase_check: ready")
 
     def on_disable(self, _ctx: PluginContext) -> None:
         services.revoke(CHECK_SERVICE)
+        services.revoke(SAVE_SERVICE)
         self._ctx = None
 
     # --- what a clipper reaches ------------------------------------------------------------
@@ -105,6 +114,46 @@ class PhraseCheckPlugin(FeaturePlugin):
             text, mode=_mode(mode, settings), refresh=bool(refresh)
         )
         return as_payload(correction, shown=_fixes_shown(settings))
+
+    def _save(self, text: str, mode: str = "", col: Any = None) -> dict[str, Any]:
+        """Save the correction for ``text`` as a note, and say where it went.
+
+        The correction is looked up again rather than taken from the caller. It is almost always
+        a cache hit, so it costs nothing — and the alternative is letting a clipper post whatever
+        it likes into the collection, which is a different feature with a different risk.
+
+        Args:
+            text: The phrase, as it was checked.
+            mode: The register it was checked in.
+            col: The collection. Supplied by the caller because this MUST run on the Qt main
+                thread and the caller is the one that marshalled it there.
+
+        Raises:
+            PhraseCheckError: With a sentence the clipper shows as-is.
+        """
+        settings = self._settings()
+        checker = self._checker(settings)
+        correction = checker.check(text, mode=_mode(mode, settings), refresh=False)
+        if col is None:
+            from omnia.core import anki_compat
+
+            col = anki_compat.main_window().col
+        try:
+            saved = library.save_correction(
+                col,
+                correction,
+                deck=str(getattr(settings, "save_deck", library.DEFAULT_DECK) or ""),
+                note_type=str(getattr(settings, "save_note_type", "") or ""),
+            )
+        except library.SaveError as exc:
+            raise PhraseCheckError(str(exc)) from exc
+        return {
+            "note_id": saved.note_id,
+            "deck": saved.deck,
+            "note_type": saved.note_type,
+            "renamed": saved.renamed,
+            "summary": saved.summary(),
+        }
 
     def _checker(self, settings: PhraseCheckSettings) -> PhraseChecker:
         ctx = self._ctx
