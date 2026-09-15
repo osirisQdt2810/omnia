@@ -86,12 +86,13 @@ class CacheKey:
         """A stable, short id for this question.
 
         Hashed rather than stored verbatim: a phrase can be a paragraph, and a five-hundred
-        character key makes the stored map unreadable. Normalised for WHITESPACE only — case and
-        punctuation are part of what is being corrected, so "i went" and "I went" are genuinely
-        different questions with different right answers.
+        character key makes the stored map unreadable.
+
+        Normalised by :func:`_normalise`, which collapses whitespace and drops punctuation at
+        the ENDS. Case and inner punctuation stay: they are part of what is being corrected, so
+        "i went" and "I went", or "lets go" and "let\'s go", are genuinely different questions.
         """
-        normalised = " ".join(self.text.split())
-        raw = f"{self.mode} {self.language} {self.model} {normalised}"
+        raw = f"{self.mode} {self.language} {self.model} {_normalise(self.text)}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -189,6 +190,27 @@ class CorrectionCache:
             return alive
         newest = sorted(alive.items(), key=lambda item: _at(item[1]), reverse=True)
         return dict(newest[: self._max_entries])
+
+
+#: Punctuation that carries no question of its own when it sits at the very start or end of a
+#: selection. Dragging over a sentence catches the full stop about half the time, and a comma or
+#: a quote whenever the phrase was mid-sentence — none of which changes what is being asked, and
+#: all of which used to cost a second LLM call and a second, possibly different, answer.
+#:
+#: ``?`` and ``!`` are deliberately NOT here. They change what the sentence IS — "you are coming"
+#: and "you are coming?" are a statement and a question, and a corrector judging the wrong one is
+#: wrong about everything that follows.
+_EDGE_PUNCTUATION = ".,;:\u2026\"'\u201c\u201d\u2018\u2019()[]"
+
+
+def _normalise(text: str) -> str:
+    """The comparable form of a selected phrase.
+
+    Whitespace collapsed, and :data:`_EDGE_PUNCTUATION` stripped from both ends — repeatedly,
+    so a selection that caught ``a quote and a stop."`` is the same question as without them.
+    Everything else is left exactly as written, including case and any punctuation inside.
+    """
+    return " ".join((text or "").split()).strip(_EDGE_PUNCTUATION + " ")
 
 
 def _at(entry: Any) -> float:

@@ -101,10 +101,48 @@ class TestWhatCountsAsTheSameQuestion:
 
         assert cache.get(_key("I went.")) is None
 
-    def test_punctuation_is_part_of_it_too(self, cache):
-        cache.put(_key("I went"), {"rewritten": "x"})
+    def test_punctuation_INSIDE_it_is_part_of_it(self, cache):
+        # "lets" and "let's" are the correction, so they cannot share an answer.
+        cache.put(_key("lets go"), {"rewritten": "x"})
 
-        assert cache.get(_key("I went.")) is None
+        assert cache.get(_key("let's go")) is None
+
+    def test_a_full_stop_on_the_END_is_not(self, cache):
+        # Dragging over a sentence catches the full stop about half the time. It is the same
+        # question either way, and charging a second LLM call for it — with a second, possibly
+        # different, answer — is a tax on how carefully someone selected text.
+        cache.put(_key("I have went"), {"rewritten": "I have gone"})
+
+        assert cache.get(_key("I have went.")) == {"rewritten": "I have gone"}
+
+    def test_nor_one_on_the_front(self, cache):
+        cache.put(_key("I have went"), {"rewritten": "I have gone"})
+
+        assert cache.get(_key(".I have went")) == {"rewritten": "I have gone"}
+
+    def test_commas_quotes_and_brackets_go_too(self, cache):
+        # What a selection picks up when the phrase was mid-sentence.
+        cache.put(_key("I have went"), {"rewritten": "I have gone"})
+
+        for ragged in (
+            '"I have went,"',
+            "(I have went)",
+            "I have went…",
+            " I have went . ",
+        ):
+            assert cache.get(_key(ragged)) == {"rewritten": "I have gone"}, ragged
+
+    def test_a_question_mark_is_NOT_stripped(self, cache):
+        # It changes what the sentence IS. "you are coming" is a statement and "you are coming?"
+        # is a question, and a corrector judging the wrong one is wrong about what follows.
+        cache.put(_key("you are coming"), {"rewritten": "x"})
+
+        assert cache.get(_key("you are coming?")) is None
+
+    def test_an_exclamation_mark_is_not_either(self, cache):
+        cache.put(_key("what a day"), {"rewritten": "x"})
+
+        assert cache.get(_key("what a day!")) is None
 
     def test_the_digest_is_short_enough_to_read(self):
         # It is a key in a stored map; a five-hundred-character one makes that unreadable.
