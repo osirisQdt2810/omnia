@@ -265,7 +265,7 @@ class TestSavingIsNotMarshalledWholesale:
             run_on_main=lambda work: handed.append(work) or work(),
         )
 
-        status, body = _post(port, "/check/save", {"text": "I have went."})
+        status, _body = _post(port, "/check/save", {"text": "I have went."})
 
         assert status == 200
         assert saved == ["I have went."]
