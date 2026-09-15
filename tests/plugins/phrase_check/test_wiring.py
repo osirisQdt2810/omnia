@@ -11,6 +11,9 @@ guarantee is only worth anything if the runs are checked to join back to exactly
 
 from __future__ import annotations
 
+import contextlib
+import pathlib
+import tempfile
 from typing import Any, Optional
 
 import pytest
@@ -292,3 +295,280 @@ class TestReadingTheLimitFromSettings:
             PhraseCheckSettings(fixes_shown=0)
         with pytest.raises(ValidationError):
             PhraseCheckSettings(fixes_shown=MAX_FIXES_SHOWN + 1)
+
+
+class TestSavingDoesNotFreezeAnki:
+    """The two halves of a save run on two threads, and which is which matters.
+
+    Resolving the correction is usually a cache hit but NOT always — a changed model or language
+    is a guaranteed miss, an entry can age out, and nothing in the HTTP contract requires a
+    phrase to have been checked before it is saved. A miss is a synchronous LLM call.
+
+    Doing that on the Qt main thread froze Anki for the length of it; worse, the marshaller gave
+    up after five seconds and reported "nothing was saved" while the main thread went on to add
+    the note, so pressing Save again added a duplicate. Frozen UI, a false negative, and two
+    cards.
+    """
+
+    class _Col:
+        """Enough of a collection for `library.save_correction`, recording the thread it ran on."""
+
+        def __init__(self):
+            self.thread = None
+            self.models = _Models()
+            self.decks = _Decks()
+            self.added: list = []
+
+        def new_note(self, _model):
+            return dict()
+
+        def add_note(self, note, deck_id):
+            import threading
+
+            self.thread = threading.current_thread().name
+            self.added.append((dict(note), deck_id))
+
+    def _plugin(self, provider_threads):
+        """A plugin whose checker records which thread the model call happened on."""
+        import json
+        import threading
+
+        from omnia.plugins.phrase_check import PhraseCheckPlugin
+
+        class _Provider:
+            def generate_text(self, _prompt, **_kw):
+                provider_threads.append(threading.current_thread().name)
+                return json.dumps(
+                    {
+                        "rewritten": "I went.",
+                        "fixes": [{"before": "have went", "after": "went"}],
+                    }
+                )
+
+        class _Hub:
+            def llm(self, **_kw):
+                return _Provider()
+
+        class _Config:
+            def feature_settings(self, _plugin_id):
+                return PhraseCheckSettings()
+
+            def llm_settings(self):
+                raise RuntimeError("not needed here")
+
+        class _Paths:
+            user_files_dir = pathlib.Path(tempfile.mkdtemp())
+
+        class _Ctx:
+            providers = _Hub()
+            config = _Config()
+            paths = _Paths()
+
+        plugin = PhraseCheckPlugin()
+        plugin._ctx = _Ctx()
+        return plugin
+
+    @staticmethod
+    def _elsewhere():
+        """A marshaller that runs the work on ANOTHER thread and waits, like the real one.
+
+        Running it inline would make this test unable to fail: "inside the hop" and "outside
+        it" would be the same thread, and putting the model call back on the marshalled side
+        would look identical. The first version of this test did exactly that and passed while
+        sabotaged.
+        """
+        import threading
+
+        def on_main(work):
+            box: dict = {}
+
+            def runner():
+                try:
+                    box["value"] = work()
+                except (
+                    BaseException
+                ) as exc:  # carried back to the caller, like call_on_main
+                    box["error"] = exc
+
+            thread = threading.Thread(target=runner, name="pretend-main")
+            thread.start()
+            thread.join(10)
+            if "error" in box:
+                raise box["error"]
+            return box["value"]
+
+        return on_main
+
+    @staticmethod
+    def _gave_up():
+        """A marshaller that has already stopped waiting by the time the work runs.
+
+        What `call_on_main` really does when it times out: it cannot take the closure off Qt's
+        queue, so the work runs anyway — after the 503 saying "nothing was saved" has been sent.
+        A write that goes ahead there makes that answer a lie about a note that exists, and the
+        retry it invites is a duplicate.
+        """
+        import threading
+
+        def on_main(work):
+            abandoned = threading.Event()
+            abandoned.set()  # the caller is already gone
+            return work(abandoned)
+
+        return on_main
+
+    def test_a_write_the_caller_gave_up_on_does_not_happen(self):
+        from omnia.plugins.phrase_check import PhraseCheckError
+
+        col = self._Col()
+        plugin = self._plugin([])
+
+        with contextlib.suppress(PhraseCheckError):
+            # It reports that it did not happen, which is the honest answer; what this test is
+            # about is the collection, checked below.
+            plugin._save("I have went.", "written", col, self._gave_up())
+
+        assert col.added == [], (
+            "the note was written after the caller was told nothing was saved — "
+            "which is what made the retry produce a duplicate"
+        )
+
+    def test_it_says_the_save_did_not_happen_rather_than_returning_a_fake_one(self):
+        from omnia.plugins.phrase_check import PhraseCheckError
+
+        plugin = self._plugin([])
+
+        with pytest.raises(PhraseCheckError):
+            plugin._save("I have went.", "written", self._Col(), self._gave_up())
+
+    def test_the_model_call_does_not_happen_on_the_marshalled_thread(self):
+        # The rule the review asked to see pinned: a save whose checker WOULD call the provider
+        # must not do so inside `on_main`. On the Qt main thread that is a frozen Anki.
+        import threading
+
+        provider_threads: list[str] = []
+        col = self._Col()
+
+        plugin = self._plugin(provider_threads)
+        plugin._save("I have went.", "written", col, self._elsewhere())
+
+        assert provider_threads, "the checker never reached the provider"
+        assert (
+            provider_threads[0] == threading.current_thread().name
+        ), "the model was called on the marshalled thread — that is a frozen Anki"
+        assert (
+            col.thread == "pretend-main"
+        ), "the collection was written off the main thread"
+        assert col.added, "nothing was written"
+
+    def test_the_write_goes_through_the_marshaller(self):
+        provider_threads: list[str] = []
+        went_through: list = []
+        col = self._Col()
+
+        plugin = self._plugin(provider_threads)
+        plugin._save(
+            "I have went.",
+            "written",
+            col,
+            lambda work: went_through.append(1) or work(),
+        )
+
+        assert went_through == [1], "the collection was written without hopping"
+
+    def test_without_a_marshaller_it_still_writes(self):
+        # Headless and in tests there is no Qt loop to hop onto.
+        provider_threads: list[str] = []
+        col = self._Col()
+
+        plugin = self._plugin(provider_threads)
+        result = plugin._save("I have went.", "written", col, None)
+
+        assert col.added
+        assert result["deck"]
+
+    def test_a_second_save_of_the_same_phrase_does_not_re_ask_the_model(self):
+        # The cache is what makes a save cheap; this pins that it is actually used, since the
+        # whole thread split exists because a MISS is expensive.
+        provider_threads: list[str] = []
+        col = self._Col()
+        plugin = self._plugin(provider_threads)
+
+        plugin._save("I have went.", "written", col, None)
+        plugin._save("I have went.", "written", col, None)
+
+        assert len(provider_threads) == 1, "the second save asked the model again"
+        assert len(col.added) == 2
+
+
+class _Models:
+    def __init__(self):
+        self.models: dict = {}
+
+    def by_name(self, name):
+        return self.models.get(name)
+
+    def new(self, name):
+        return {"name": name, "flds": [], "tmpls": [], "css": ""}
+
+    def new_field(self, name):
+        return {"name": name}
+
+    def add_field(self, model, field):
+        model["flds"].append(field)
+
+    def new_template(self, name):
+        return {"name": name}
+
+    def add_template(self, model, template):
+        model["tmpls"].append(template)
+
+    def add(self, model):
+        self.models[model["name"]] = model
+
+
+class _Decks:
+    def __init__(self):
+        self.by_id: dict = {}
+
+    def id(self, name):
+        for did, existing in self.by_id.items():
+            if existing == name:
+                return did
+        did = len(self.by_id) + 2
+        self.by_id[did] = name
+        return did
+
+    def get(self, did):
+        name = self.by_id.get(did)
+        return {"name": name} if name else None
+
+
+class TestTheTooltipDescribesWhatItActuallyDoes:
+    """The settings card renders `plugin.tooltip` verbatim, and it is read before enabling.
+
+    It used to end "nothing is written to your collection — it only reads what you selected",
+    which stopped being true the moment Save existed: the first press creates a note type, a deck
+    and a note, all of which sync. The one sentence a cautious user reads before switching on an
+    AI feature was the one that was wrong, and wrong specifically about writes.
+    """
+
+    def _tooltip(self) -> str:
+        from omnia.plugins.phrase_check import PhraseCheckPlugin
+
+        return PhraseCheckPlugin.tooltip
+
+    def test_it_does_not_claim_to_write_nothing(self):
+        text = self._tooltip().lower()
+
+        assert "nothing is written to your collection" not in text
+
+    def test_it_says_saving_adds_a_note(self):
+        text = self._tooltip().lower()
+
+        assert "save" in text
+        assert "note" in text
+
+    def test_it_still_says_a_check_alone_changes_nothing(self):
+        # The distinction is the useful part: reading is free, keeping is not.
+        assert "changes nothing" in self._tooltip().lower()

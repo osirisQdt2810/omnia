@@ -56,6 +56,7 @@ logger = get_logger("word_lookup")
 #: The name phrase_check publishes its corrector under. A literal rather than an import: this
 #: plugin must load and serve lookups in a build where phrase_check does not exist at all.
 _CHECK_SERVICE = "phrase_check.check"
+_SAVE_SERVICE = "phrase_check.save"
 
 # The service seam smart_notes publishes its regeneration on (see ``core/services``).
 REGENERATION_SERVICE = "smart_notes.regeneration"
@@ -226,6 +227,7 @@ class WordLookupPlugin(FeaturePlugin):
             media_dir=self._media_dir,
             generate=self.generate,
             check=self.check_phrase,
+            save=self.save_phrase,
             port=port,
             run_on_main=anki_compat.run_on_main,
         )
@@ -325,6 +327,33 @@ class WordLookupPlugin(FeaturePlugin):
                 "Phrase Check is switched off in Omnia — turn it on to correct a phrase"
             )
         return dict(checker(text, mode, refresh))
+
+    def save_phrase(self, text: str, mode: str) -> dict[str, Any]:
+        """Save a checked phrase as a note, through phrase_check.
+
+        Found by NAME through the core seam, like :meth:`check_phrase` (ADR-019).
+
+        Runs on the HTTP WORKER thread, and must: the first thing a save does is resolve the
+        correction, which on a cache miss is a synchronous call to an LLM. What is handed over
+        is the marshaller, so phrase_check can put the COLLECTION work — and only that — on the
+        Qt main thread. One implementation of "hop and wait" is the point; a second copy would
+        be a second timeout policy to keep in step with this one.
+
+        Raises:
+            PhraseCheckUnavailableError: When Phrase Check is not running.
+        """
+        from omnia.core import services
+
+        save = services.lookup(_SAVE_SERVICE)
+        if not callable(save):
+            raise PhraseCheckUnavailableError(
+                "Phrase Check is switched off in Omnia — turn it on to save a correction"
+            )
+        service = self._service
+        # None in tests and headless runs: there is no Qt loop to marshal onto, so the write
+        # happens inline, which is where it already was.
+        on_main = service.call_on_main if service is not None else None
+        return dict(save(text, mode, None, on_main))
 
     def generate(
         self, client: str, note_id: int, fields: Optional[list[str]]

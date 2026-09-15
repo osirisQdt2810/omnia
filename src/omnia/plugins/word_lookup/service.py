@@ -29,8 +29,12 @@ clippers reported a mistyped one as "Omnia rejected the access token" with no wa
 from a service that was simply not running.
 
 What that costs, stated plainly: any process on this machine can now ask for a field to be
-regenerated, which rewrites a note and spends LLM credits. What it does not cost is the thing the
-token was mostly protecting against, because the remaining guard covers it:
+regenerated, which rewrites a note and spends LLM credits — and, since ``/check/save``, can also
+CREATE: a note, and on first use the note type and deck to hold it. That is a wider blast radius
+than regeneration, and it is a considered outcome rather than a drift: what a local process can
+do here is bounded by what the clippers legitimately need, and the guard the token was actually
+carrying is the next one, which still stands. What it does not cost is the thing the token was
+mostly protecting against, because the remaining guard covers it:
 
 **No request a web page started.** A ``POST`` whose ``Origin`` is a web origin
    (``http://…``/``https://…``) is refused outright. This service
@@ -62,6 +66,7 @@ no web page can reach it however it is coaxed.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import threading
@@ -107,6 +112,23 @@ class RegenerationDisabledError(RuntimeError):
     """
 
 
+def _accepts_abandon(work: Callable[..., Any]) -> bool:
+    """Whether ``work`` wants the "stopped waiting" event passed to it.
+
+    By signature rather than by a flag at the call site, so a caller that gains a reason to care
+    gains it by adding the parameter — nothing has to be threaded through the two hops in
+    between, and every existing zero-argument reader keeps working untouched.
+
+    A callable whose signature cannot be read (a builtin, a C extension) is treated as not
+    wanting it: calling it with an argument it does not take would turn a working read into a
+    ``TypeError``, and the event is only ever an optimisation over "assume the worst".
+    """
+    try:
+        return bool(inspect.signature(work).parameters)
+    except (TypeError, ValueError):
+        return False
+
+
 def _json_object(raw: bytes) -> dict[str, Any]:
     """One request body as a JSON object.
 
@@ -149,6 +171,10 @@ _GENERATE_PATH = "/generate"
 #: Corrects a phrase. A POST because the phrase is a paragraph, not a query parameter, and
 #: because it spends LLM credits — so it sits behind the same page-origin refusal as /generate.
 _CHECK_PATH = "/check"
+#: Saves a checked phrase as a note. Its own path rather than a flag on /check, because it does
+#: a different thing with a different consequence: /check spends money and touches nothing,
+#: this writes to the collection and spends nothing.
+_SAVE_PATH = "/check/save"
 #: The most a clipper may ask to have corrected in one request.
 #:
 #: The HTTP contract, checked here so that too much text is a 400 — the request being wrong —
@@ -243,6 +269,7 @@ class LookupService:
             Callable[[str, int, Optional[list[str]]], dict[str, Any]]
         ] = None,
         check: Optional[Callable[[str, str, bool], dict[str, Any]]] = None,
+        save: Optional[Callable[[str, str], dict[str, Any]]] = None,
         port: int = 8766,
         host: str = "127.0.0.1",
         run_on_main: Optional[Callable[[Callable[[], None]], None]] = None,
@@ -274,6 +301,7 @@ class LookupService:
         self._media_dir = media_dir
         self._generate = generate
         self._check = check
+        self._save = save
         self._port = port
         self._host = host
         self._run_on_main = run_on_main
@@ -383,6 +411,17 @@ class LookupService:
         one implementation of "hop to the main thread and wait" is the point: a second copy
         would be a second timeout policy to keep in step with this one.
 
+        **Giving up does not cancel the queued work**, and it cannot: the closure is already on
+        Qt's event queue and there is no way to take it back. Timing out therefore means "I no
+        longer know what happened", not "it did not happen" — which was harmless while every
+        caller was a READ, and is not once one of them writes to the collection. A write that
+        landed after the wait was abandoned answered "nothing was saved" and then existed, so the
+        retry the message invites produced a second note.
+
+        ``work`` is therefore passed an ``abandoned`` event when it accepts one. It is set the
+        moment this stops waiting, and a writer that checks it before touching ``col`` makes the
+        503 true again. Optional because a read has nothing to check it for.
+
         Raises:
             TimeoutError: The main thread did not run the work in time.
         """
@@ -390,10 +429,12 @@ class LookupService:
             return work()  # headless/tests: no Qt loop to marshal onto
         box: dict[str, Any] = {}
         done = threading.Event()
+        abandoned = threading.Event()
+        wants_event = _accepts_abandon(work)
 
         def runner() -> None:
             try:
-                box["value"] = work()
+                box["value"] = work(abandoned) if wants_event else work()
             except Exception as exc:  # carried back to the requesting thread
                 box["error"] = exc
             finally:
@@ -401,6 +442,10 @@ class LookupService:
 
         self._run_on_main(runner)
         if not done.wait(_MAIN_THREAD_TIMEOUT_SECONDS):
+            # BEFORE raising, so a writer that has not yet reached `col` sees it and declines.
+            # One that is already past that point is unaffected — this is cooperative, and the
+            # honest name for what it buys is "a much smaller window", not "no window".
+            abandoned.set()
             raise TimeoutError("Anki's main thread did not answer in time")
         if "error" in box:
             raise box["error"]
@@ -427,6 +472,40 @@ class LookupService:
         if self._generate is None:
             raise RegenerationUnavailableError("this service cannot regenerate fields")
         return self._generate(client, note_id, fields)
+
+    def _save_phrase(self, text: str, mode: str) -> dict[str, Any]:
+        """Save one checked phrase through whatever was injected.
+
+        Runs on the WORKER thread, like :meth:`_regenerate` and :meth:`_check_phrase`, and for
+        the same reason: a save resolves the correction first, and on a cache miss that is a
+        synchronous call to an LLM. Marshalling the whole operation froze Anki for the length of
+        that call — and worse, ``call_on_main`` gave up after five seconds and answered "nothing
+        was saved" while the main thread went on to add the note anyway, so pressing Save again
+        added a second one.
+
+        The hop moved to where the writes actually start: the callable is handed
+        :meth:`call_on_main` and marshals the collection work itself, which is the same division
+        ``_stored_fields`` already uses.
+
+        Raises:
+            PhraseCheckUnavailableError: When nothing is wired.
+            CheckFailedError: When the save was attempted and could not finish.
+            TimeoutError: The main thread never ran the write, so nothing was saved.
+        """
+        if self._save is None:
+            raise PhraseCheckUnavailableError(
+                "Phrase Check is switched off in Omnia — turn it on to save a correction"
+            )
+        try:
+            return self._save(text, mode)
+        except (PhraseCheckUnavailableError, CheckFailedError, TimeoutError):
+            raise
+        except Exception as exc:
+            # Same rule as the check: only a message the plugin MARKED as written for a person
+            # is passed on. Anything else is an internal detail and becomes a flat 500.
+            if not getattr(exc, "user_facing", False):
+                raise
+            raise CheckFailedError(str(exc) or "the save could not finish") from exc
 
     def _check_phrase(self, text: str, mode: str, refresh: bool) -> dict[str, Any]:
         """Correct one phrase through whatever was injected.
@@ -523,7 +602,7 @@ class LookupService:
                 that exists twice is one that will eventually differ.
                 """
                 route = urlparse(self.path).path.rstrip("/")
-                if route not in (_GENERATE_PATH, _CHECK_PATH):
+                if route not in (_GENERATE_PATH, _CHECK_PATH, _SAVE_PATH):
                     self._respond(404, {"error": "unknown endpoint"})
                     return
                 try:
@@ -556,6 +635,9 @@ class LookupService:
                 if route == _CHECK_PATH:
                     self._serve_check(raw)
                     return
+                if route == _SAVE_PATH:
+                    self._serve_save(raw)
+                    return
                 try:
                     payload = self._parse_generate(raw)
                 except _BadRequestError as exc:
@@ -571,6 +653,35 @@ class LookupService:
                 except Exception:
                     logger.exception("word_lookup: generating note %s failed", note_id)
                     self._respond(500, {"error": "generate failed"})
+                else:
+                    self._respond(200, result)
+
+            def _serve_save(self, raw: bytes) -> None:
+                """Answer ``POST /check/save``: keep a correction as a note."""
+                try:
+                    body = _json_object(raw)
+                except _BadRequestError as exc:
+                    self._respond(400, {"error": str(exc)})
+                    return
+                text = str(body.get("text") or "").strip()
+                if not text:
+                    self._respond(400, {"error": "there is nothing to save"})
+                    return
+                try:
+                    result = service._save_phrase(text, str(body.get("mode") or ""))
+                except PhraseCheckUnavailableError as exc:
+                    self._respond(503, {"error": str(exc)})
+                except CheckFailedError as exc:
+                    self._respond(502, {"error": str(exc)})
+                except TimeoutError:
+                    # The main thread never got round to the write. Anki is busy, not broken,
+                    # and nothing was saved — so this is "try again", not "it failed".
+                    self._respond(
+                        503, {"error": "Anki was busy — nothing was saved. Try again."}
+                    )
+                except Exception:
+                    logger.exception("word_lookup: saving a phrase failed")
+                    self._respond(500, {"error": "the save failed"})
                 else:
                     self._respond(200, result)
 

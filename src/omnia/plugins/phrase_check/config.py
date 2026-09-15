@@ -12,11 +12,13 @@ from typing import Literal
 from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
+from omnia.plugins.phrase_check.card import NOTE_TYPE_NAME
 from omnia.plugins.phrase_check.correction import (
     DEFAULT_FIXES_SHOWN,
     MAX_FIXES_SHOWN,
     WRITTEN,
 )
+from omnia.plugins.phrase_check.library import DEFAULT_DECK
 
 
 class PhraseCheckSettings(PersistedModel):
@@ -72,6 +74,32 @@ class PhraseCheckSettings(PersistedModel):
             "to Anki keeps every fix — this only decides how much of it is on screen. Ten "
             "cards for one sentence is a wall nobody reads to the end of, and the mistake "
             "worth learning is usually near the top."
+        ),
+    )
+    save_deck: str = Field(
+        default=DEFAULT_DECK,
+        title="Save to deck",
+        description=(
+            "Where a correction goes when you save it from a clipper. Created if it is not "
+            "there, sub-decks and all — ``Parent::Child`` is how Anki spells a deck inside "
+            "another one.\n"
+            "\n"
+            "A sub-deck of its own by default, because these accumulate: keeping them together "
+            "is what lets you suspend or delete the lot without hunting through a deck you "
+            "care about."
+        ),
+    )
+    save_note_type: str = Field(
+        default=NOTE_TYPE_NAME,
+        title="Note type",
+        description=(
+            "The note type saved corrections use. Created on the first save.\n"
+            "\n"
+            "If a note type of this name already exists and is not one of Omnia's, a copy is "
+            "made rather than writing into it — somebody else's note type has somebody else's "
+            "fields, and a note added to it would land with the phrase in their “Front”. "
+            "Rename it here if you would rather it were called something else; a note type you "
+            "renamed in Anki is still recognised, because it is matched by its fields."
         ),
     )
     model: str = Field(

@@ -22,6 +22,7 @@ reached from a selection in a browser or on the desktop, through the same loopba
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, Optional
 
@@ -29,6 +30,7 @@ from omnia.core import services
 from omnia.core.logging import get_logger
 from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
 from omnia.core.registry import register
+from omnia.plugins.phrase_check import library
 from omnia.plugins.phrase_check.cache import STORE_FILENAME, CorrectionCache, file_store
 from omnia.plugins.phrase_check.config import PhraseCheckSettings
 from omnia.plugins.phrase_check.correction import (
@@ -48,6 +50,12 @@ logger = get_logger("phrase_check")
 #: this module — plugins never import each other (ADR-019).
 CHECK_SERVICE = "phrase_check.check"
 
+#: Saving one as a note. A second name rather than a flag on the first: they are different
+#: operations with different failure modes — one spends money and touches nothing, the other
+#: spends nothing and writes to the collection — and a clipper that can do one is not thereby
+#: entitled to do the other.
+SAVE_SERVICE = "phrase_check.save"
+
 
 @register("phrase_check")
 class PhraseCheckPlugin(FeaturePlugin):
@@ -66,8 +74,9 @@ class PhraseCheckPlugin(FeaturePlugin):
         "• It flags sentences that are grammatically perfect and that no fluent speaker "
         "would actually say, which is the part a learner most needs.\n"
         "• Answers are remembered, so coming back to a phrase costs nothing.\n"
-        "• Uses the LLM provider Omnia is configured with. No card is changed and nothing is "
-        "written to your collection — it only reads what you selected."
+        "• Uses the LLM provider Omnia is configured with. Checking a phrase changes nothing "
+        "— it only reads what you selected. Pressing Save adds a note to the deck named in "
+        "this feature's settings, creating that deck and its note type the first time."
     )
     order = 60
     config_model = PhraseCheckSettings
@@ -135,10 +144,12 @@ class PhraseCheckPlugin(FeaturePlugin):
         # serves the clippers and calls this, and two plugins that import each other cannot be
         # switched off independently.
         services.provide(CHECK_SERVICE, self._check)
+        services.provide(SAVE_SERVICE, self._save)
         logger.info("phrase_check: ready")
 
     def on_disable(self, _ctx: PluginContext) -> None:
         services.revoke(CHECK_SERVICE)
+        services.revoke(SAVE_SERVICE)
         self._ctx = None
 
     # --- what a clipper reaches ------------------------------------------------------------
@@ -160,6 +171,83 @@ class PhraseCheckPlugin(FeaturePlugin):
             text, mode=_mode(mode, settings), refresh=bool(refresh)
         )
         return as_payload(correction, shown=_fixes_shown(settings))
+
+    def _save(
+        self,
+        text: str,
+        mode: str = "",
+        col: Any = None,
+        on_main: Optional[Callable[[Callable[[], Any]], Any]] = None,
+    ) -> dict[str, Any]:
+        """Save the correction for ``text`` as a note, and say where it went.
+
+        Two phases on two threads, and the split is the point.
+
+        **Resolving** the correction happens on the calling (worker) thread, because it is
+        usually a cache hit but NOT always — a changed model or language is a guaranteed miss,
+        and so is an entry that aged out — and a miss is a synchronous call to an LLM. Doing
+        that on the Qt main thread froze Anki for the length of it, and then `call_on_main`'s
+        five-second patience expired and answered "nothing was saved" while the main thread went
+        on to add the note regardless, so a second press added a duplicate.
+
+        **Writing** happens through ``on_main``, because ``col`` may not be touched from a
+        worker at all.
+
+        The correction is looked up again rather than taken from the caller: the alternative is
+        letting a clipper post whatever it likes into the collection, which is a different
+        feature with a different risk.
+
+        Args:
+            text: The phrase, as it was checked.
+            mode: The register it was checked in.
+            col: The collection, when the caller has one. ``None`` reads it inside the write,
+                on the thread that is about to use it — which is also what stops a stale handle
+                surviving a profile switch.
+            on_main: Marshals a callable onto the Qt main thread and waits. ``None`` writes
+                inline, which is right headless and in tests.
+
+        Raises:
+            PhraseCheckError: With a sentence the clipper shows as-is.
+        """
+        settings = self._settings()
+        checker = self._checker(settings)
+        # Worker thread. May call the model.
+        correction = checker.check(text, mode=_mode(mode, settings), refresh=False)
+
+        def write(abandoned: Any = None) -> Any:
+            # `abandoned` is set when the caller stopped waiting for this closure. It cannot be
+            # taken off Qt's queue, so it runs anyway — and writing THEN means the 503 the
+            # caller already sent ("nothing was saved") becomes a lie about a note that exists,
+            # which is what made the retry it invites produce a duplicate. Checked as late as
+            # possible, immediately before the first write, so the window where it is true and
+            # the note is still added is as small as this design allows.
+            if abandoned is not None and abandoned.is_set():
+                raise library.SaveError(
+                    "Anki was busy for too long — nothing was saved. Try again."
+                )
+            target = col
+            if target is None:
+                from omnia.core import anki_compat
+
+                target = anki_compat.main_window().col
+            return library.save_correction(
+                target,
+                correction,
+                deck=str(getattr(settings, "save_deck", library.DEFAULT_DECK) or ""),
+                note_type=str(getattr(settings, "save_note_type", "") or ""),
+            )
+
+        try:
+            saved = on_main(write) if on_main is not None else write()
+        except library.SaveError as exc:
+            raise PhraseCheckError(str(exc)) from exc
+        return {
+            "note_id": saved.note_id,
+            "deck": saved.deck,
+            "note_type": saved.note_type,
+            "renamed": saved.renamed,
+            "summary": saved.summary(),
+        }
 
     def _checker(self, settings: PhraseCheckSettings) -> PhraseChecker:
         ctx = self._ctx

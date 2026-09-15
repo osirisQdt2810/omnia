@@ -68,8 +68,8 @@ def serve():
     """Start a service on a free loopback port and always stop it."""
     started: list[LookupService] = []
 
-    def make(check=None) -> int:
-        service = LookupService(_lookup, check=check, port=_free_port())
+    def make(check=None, save=None) -> int:
+        service = LookupService(_lookup, check=check, save=save, port=_free_port())
         assert service.start(), "the service did not bind"
         started.append(service)
         return service._port
@@ -317,6 +317,123 @@ class TestItDoesNotDisturbTheRest:
         port = serve(lambda *_a: (_ for _ in ()).throw(RuntimeError("boom")))
 
         _post(port, "/check", {"text": "x"})
+
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/lookup?word=after", timeout=5
+        ) as response:
+            assert response.status == 200
+
+
+class TestSavingAPhrase:
+    """``POST /check/save`` — the one route in this service that WRITES to the collection."""
+
+    def test_it_saves_and_says_where(self, serve):
+        saved = {
+            "note_id": 42,
+            "deck": "Omnia::Phrase Check",
+            "note_type": "Omnia Phrase Check",
+            "renamed": False,
+            "summary": "Saved to Omnia::Phrase Check.",
+        }
+        port = serve(save=lambda text, mode: saved)
+
+        status, body = _post(
+            port, "/check/save", {"text": "I have went.", "mode": "written"}
+        )
+
+        assert status == 200
+        assert body == saved
+
+    def test_the_phrase_and_the_register_both_arrive(self):
+        # The register is part of what was checked, so it has to be part of what is saved —
+        # otherwise a phrase checked as speech is re-checked as writing on the way to the card.
+        seen = {}
+        service = LookupService(
+            _lookup,
+            save=lambda text, mode: seen.update(text=text, mode=mode) or {},
+            port=_free_port(),
+        )
+        assert service.start()
+        try:
+            _post(service._port, "/check/save", {"text": "x", "mode": "spoken"})
+        finally:
+            service.stop()
+
+        assert seen == {"text": "x", "mode": "spoken"}
+
+    def test_an_empty_phrase_is_a_400_and_writes_nothing(self, serve):
+        called = []
+        port = serve(save=lambda *a: called.append(1) or {})
+
+        status, body = _post(port, "/check/save", {"text": "   "})
+
+        assert status == 400
+        assert "nothing to save" in body["error"]
+        assert called == []
+
+    def test_a_request_a_web_page_started_is_refused(self, serve):
+        # The same guard as /check and /generate, and it matters more here: this one writes.
+        called = []
+        port = serve(save=lambda *a: called.append(1) or {})
+
+        status, _body = _post(
+            port, "/check/save", {"text": "x"}, Origin="https://example.com"
+        )
+
+        assert status == 403
+        assert called == []
+
+    def test_no_saver_wired_is_a_503_that_names_the_switch(self, serve):
+        port = serve()
+
+        status, body = _post(port, "/check/save", {"text": "x"})
+
+        assert status == 503
+        assert "switched off" in body["error"]
+
+    def test_a_busy_main_thread_says_nothing_was_saved(self, serve):
+        # A TimeoutError here means the write never ran. Reporting it as a failure would be
+        # true but useless; reporting it as "try again" is what the user should do, and saying
+        # nothing was saved is what stops them wondering whether it half-happened.
+        def save(*_args):
+            raise TimeoutError("main thread never got round to it")
+
+        port = serve(save=save)
+
+        status, body = _post(port, "/check/save", {"text": "x"})
+
+        assert status == 503
+        assert "nothing was saved" in body["error"]
+
+    def test_a_curated_failure_reaches_the_panel(self, serve):
+        class CuratedError(RuntimeError):
+            user_facing = True
+
+        def save(*_args):
+            raise CuratedError("“Omnia Phrase Check” is taken by another note type.")
+
+        port = serve(save=save)
+
+        status, body = _post(port, "/check/save", {"text": "x"})
+
+        assert status == 502
+        assert "another note type" in body["error"]
+
+    def test_an_unexpected_error_is_a_500_that_leaks_nothing(self, serve):
+        def save(*_args):
+            raise ValueError("an internal detail nobody should see")
+
+        port = serve(save=save)
+
+        status, body = _post(port, "/check/save", {"text": "x"})
+
+        assert status == 500
+        assert "internal detail" not in json.dumps(body)
+
+    def test_saving_does_not_disturb_looking_up(self, serve):
+        port = serve(save=lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        _post(port, "/check/save", {"text": "x"})
 
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/lookup?word=after", timeout=5
