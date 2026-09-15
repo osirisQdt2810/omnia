@@ -153,14 +153,48 @@ def _choices_with(field: ConfigField, current: Any) -> list[str]:
 
 
 def _as_json(value: Any, field: ConfigField) -> Any:
-    """``value`` in a shape ``json.dumps`` accepts and the page can compare against."""
-    if field.kind == "bool":
-        return bool(value)
-    if field.kind == "int":
-        return int(value or 0)
-    if field.kind == "float":
-        return float(value or 0.0)
+    """``value`` in a shape ``json.dumps`` accepts and the page can compare against.
+
+    A stored value that will not coerce falls back to the field's DEFAULT rather than raising.
+    It is reached with a raw, unvalidated section — that is the point of the caller's fallback,
+    which exists so a section the settings model refuses can still be opened and corrected —
+    and a number box has no way to hold ``"soon"``. Raising here would put the panel back
+    exactly where it could not be opened, one layer down.
+
+    ``_choices_with`` keeps an unrecognised value instead, and the difference is what the
+    control can represent: a dropdown can carry one more option, a number input cannot carry a
+    word. Neither DESTROYS anything on its own — nothing is written until the reader saves.
+    """
+    try:
+        if field.kind == "bool":
+            return bool(value)
+        if field.kind == "int":
+            return int(value or 0)
+        if field.kind == "float":
+            return float(value or 0.0)
+    except (TypeError, ValueError):
+        return _fallback(field)
     return "" if value is None else str(value)
+
+
+def _fallback(field: ConfigField) -> Any:
+    """Something of the field's own kind, for when the stored value is not.
+
+    The declared default first, since that is what the plugin considers reasonable; a blank of
+    the right type if even that will not coerce (a hand-written ``ConfigField``, not a shape
+    this add-on ships). Deliberately not recursive into :func:`_as_json` — a bad default would
+    then bounce between the two.
+    """
+    try:
+        if field.kind == "bool":
+            return bool(field.default)
+        if field.kind == "int":
+            return int(field.default or 0)
+        if field.kind == "float":
+            return float(field.default or 0.0)
+    except (TypeError, ValueError):
+        pass
+    return {"bool": False, "int": 0, "float": 0.0}.get(field.kind, "")
 
 
 def panel_payload(

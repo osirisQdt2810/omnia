@@ -501,6 +501,25 @@ class TestTheConfigPanelIsReachable:
         for control in CONTROLS:
             assert f"{control}:" in js or f'"{control}"' in js, control
 
+    def test_both_numeric_controls_clamp_what_they_read(self):
+        """A control whose bounds are only advisory writes a value the settings model refuses.
+
+        `min`/`max` on an `<input>` drive `:invalid` STYLING; `.value` still returns whatever
+        was typed. `sliderControl` clamped from the start and `numberControl` did not, and the
+        widest-bounded fields (`word_lookup.port`, `overdue_guard.force_again_after_days`) are
+        exactly the ones the slider-step rule sends to the number box. Python refuses such a
+        save now, but a control that cannot produce the value is the half that keeps the panel
+        from arguing with the person using it.
+        """
+        js = _page_js(self._page())
+
+        for control in ("sliderControl", "numberControl"):
+            start = js.index("function " + control)
+            body = js[start : js.index("\n  function ", start + 1)]
+            assert "Math.max" in body and "Math.min" in body, (
+                control + " reads its input without clamping it to the field's bounds"
+            )
+
     def test_the_save_op_has_a_handler(self):
         from aqt_stubs import install_gui_stubs
 

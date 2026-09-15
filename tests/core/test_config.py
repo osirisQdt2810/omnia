@@ -150,6 +150,60 @@ class TestRawSection:
         assert repo.raw_section("auto_flip")["per_deck"]["1"]["enabled"] is False
 
 
+class TestSectionRejects:
+    """The check `update_section` does not do, for the caller that has to do it.
+
+    A section is validated lazily, so writing a value the plugin's model refuses raises
+    nothing at the time. What it costs is everything afterwards: the plugin will not
+    activate, and `feature_settings` raises for the whole section from then on — including
+    for the panel that would let the value be corrected.
+    """
+
+    def test_a_value_the_model_refuses_is_reported(self, tmp_path):
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+
+        # WordLookupSettings bounds the port at 1024; 80 is a real port and an invalid one.
+        assert repo.section_rejects("word_lookup", {"port": 80})
+
+    def test_the_message_names_the_field(self, tmp_path):
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+
+        # Not pydantic's multi-line dump: this goes in a settings panel.
+        message = repo.section_rejects("word_lookup", {"port": 80})
+        assert "port" in message
+        assert "\n" not in message
+
+    def test_a_value_the_model_accepts_is_not(self, tmp_path):
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+
+        assert repo.section_rejects("word_lookup", {"port": 8080}) == ""
+
+    def test_it_judges_the_MERGE_not_the_keys_handed_in(self, tmp_path):
+        """A partial write is checked against what is already stored, not on its own.
+
+        The panel sends only the fields it drew. Parsing those alone would reject every
+        required field it did not send, and would miss a value that is only invalid beside
+        one already in the file.
+        """
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo.update_section("typed_accuracy", {"threshold": 0.9})
+
+        assert repo.section_rejects("typed_accuracy", {"pass_ease": "easy"}) == ""
+
+    def test_a_plugin_with_no_model_rejects_nothing(self, config_repo):
+        # Nothing to validate against is not the same as invalid.
+        assert config_repo.section_rejects("not_a_plugin", {"anything": 1}) == ""
+
+    def test_it_does_not_write(self, tmp_path):
+        # The point of asking first is that asking changes nothing.
+        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        before = repo.raw_section("word_lookup")
+
+        repo.section_rejects("word_lookup", {"port": 80})
+
+        assert repo.raw_section("word_lookup") == before
+
+
 class TestProviderConfigWrites:
     """The Account dialog's writes: default-model picker + Keys subtab secret edits."""
 

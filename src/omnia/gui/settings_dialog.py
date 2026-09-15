@@ -140,7 +140,17 @@ class SettingsDialog(WebDialog):
 
     def _panel_payload(self, plugin: FeaturePlugin) -> dict[str, Any]:
         """What the page needs to draw this plugin's settings."""
-        settings = self._manager.config.feature_settings(plugin.id)
+        try:
+            settings = self._manager.config.feature_settings(plugin.id)
+            values = settings.dict() if settings is not None else {}
+        except Exception:
+            # An unparseable section — written by an older build, hand-edited, or carried in by
+            # sync — makes `feature_settings` raise for the WHOLE section. Refusing to open
+            # here is what turns that into a dead button with no message and no way back. The
+            # stored values are shown raw instead, so the offending field can be corrected in
+            # the panel that will then refuse to save it wrong again.
+            logger.exception("settings: %s has an unreadable section", plugin.id)
+            values = self._manager.config.raw_section(plugin.id)
         style = category_style(plugin.group)
         return panel_payload(
             plugin_id=plugin.id,
@@ -148,7 +158,7 @@ class SettingsDialog(WebDialog):
             # The repo, so a plugin whose options depend on current settings answers the same
             # whether or not the feature is switched on. See FeaturePlugin.config_schema.
             fields=plugin.config_schema(self._manager.config),
-            values=settings.dict() if settings is not None else {},
+            values=values,
             # The key the page uses for `data-category`, so Back returns to the right view —
             # built by the same function the markup used, never re-derived here.
             category=category_key(plugin.group, self._category_names),
@@ -168,6 +178,12 @@ class SettingsDialog(WebDialog):
         values = data.get("values")
         if not isinstance(values, dict):
             return {"error": "Nothing to save."}
+        # BEFORE the write, not after: `update_section` does not validate, and a rejected
+        # value persisted here deactivates the plugin AND makes this panel unopenable — so the
+        # one place that can still report the problem is this one, while it is still on screen.
+        rejected = self._manager.config.section_rejects(plugin.id, values)
+        if rejected:
+            return {"error": f"Not saved — {rejected}."}
         try:
             self._manager.config.update_section(plugin.id, values)
         except Exception:

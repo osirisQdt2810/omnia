@@ -562,7 +562,16 @@
       node: input,
       read: function () {
         const n = isInt ? parseInt(input.value, 10) : parseFloat(input.value);
-        return isNaN(n) ? field.value : n;
+        if (isNaN(n)) {
+          return field.value;
+        }
+        // CLAMPED, like the slider. `min`/`max` on a number input only drive `:invalid`
+        // styling — `.value` still hands back whatever was typed, and a bound the settings
+        // model enforces (`Field(ge=…, le=…)`) would then reject the saved section. That
+        // leaves the plugin unloadable AND its panel unopenable, with nothing said.
+        const low = field.min === null || field.min === undefined ? n : Number(field.min);
+        const high = field.max === null || field.max === undefined ? n : Number(field.max);
+        return Math.min(high, Math.max(low, n));
       },
     };
   }
