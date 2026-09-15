@@ -58,7 +58,7 @@ class TestRememberingAnAnswer:
     def test_what_went_in_comes_back(self, cache):
         cache.put(_key(), {"rewritten": "I have gone."})
 
-        assert cache.get(_key()) == {"rewritten": "I have gone."}
+        assert cache.get(_key()).payload == {"rewritten": "I have gone."}
 
     def test_a_question_never_asked_is_absent(self, cache):
         assert cache.get(_key("something else")) is None
@@ -92,7 +92,7 @@ class TestWhatCountsAsTheSameQuestion:
         # because of them is paying twice for one answer.
         cache.put(_key("I  have\n went."), {"rewritten": "ok"})
 
-        assert cache.get(_key("I have went.")) == {"rewritten": "ok"}
+        assert cache.get(_key("I have went.")).payload == {"rewritten": "ok"}
 
     def test_case_IS_part_of_it(self, cache):
         # Capitalisation is one of the things being corrected, so "i went" and "I went" are
@@ -113,12 +113,12 @@ class TestWhatCountsAsTheSameQuestion:
         # different, answer — is a tax on how carefully someone selected text.
         cache.put(_key("I have went"), {"rewritten": "I have gone"})
 
-        assert cache.get(_key("I have went.")) == {"rewritten": "I have gone"}
+        assert cache.get(_key("I have went.")).payload == {"rewritten": "I have gone"}
 
     def test_nor_one_on_the_front(self, cache):
         cache.put(_key("I have went"), {"rewritten": "I have gone"})
 
-        assert cache.get(_key(".I have went")) == {"rewritten": "I have gone"}
+        assert cache.get(_key(".I have went")).payload == {"rewritten": "I have gone"}
 
     def test_commas_quotes_and_brackets_go_too(self, cache):
         # What a selection picks up when the phrase was mid-sentence.
@@ -130,7 +130,9 @@ class TestWhatCountsAsTheSameQuestion:
             "I have went…",
             " I have went . ",
         ):
-            assert cache.get(_key(ragged)) == {"rewritten": "I have gone"}, ragged
+            assert cache.get(_key(ragged)).payload == {
+                "rewritten": "I have gone"
+            }, ragged
 
     def test_a_question_mark_is_NOT_stripped(self, cache):
         # It changes what the sentence IS. "you are coming" is a statement and "you are coming?"
@@ -138,6 +140,18 @@ class TestWhatCountsAsTheSameQuestion:
         cache.put(_key("you are coming"), {"rewritten": "x"})
 
         assert cache.get(_key("you are coming?")) is None
+
+    def test_a_trailing_apostrophe_is_NOT_stripped(self, cache):
+        # It is a possessive, which is the correction itself — the same category as `lets` vs
+        # `let's`. Collapsing these would hand one phrase the other's answer.
+        cache.put(_key("that hat is the boys'"), {"rewritten": "x"})
+
+        assert cache.get(_key("that hat is the boys")) is None
+
+    def test_a_leading_one_is_not_either(self, cache):
+        cache.put(_key("'Tis fine"), {"rewritten": "x"})
+
+        assert cache.get(_key("Tis fine")) is None
 
     def test_an_exclamation_mark_is_not_either(self, cache):
         cache.put(_key("what a day"), {"rewritten": "x"})
@@ -158,7 +172,7 @@ class TestItDoesNotGrowForEver:
         cache.put(_key("d"), {"rewritten": "d"})
 
         assert cache.get(_key("a")) is None
-        assert cache.get(_key("d")) == {"rewritten": "d"}
+        assert cache.get(_key("d")).payload == {"rewritten": "d"}
         assert len(cache) == 3
 
     def test_an_old_answer_is_re_asked_rather_than_shown(self, cache, clock):
@@ -234,9 +248,12 @@ class TestTheFileBackedStore:
             _key(), {"rewritten": "I have gone."}
         )
 
-        assert CorrectionCache(read, write, clock=clock).get(_key()) == {
-            "rewritten": "I have gone."
-        }
+        remembered = CorrectionCache(read, write, clock=clock).get(_key())
+
+        assert remembered.payload == {"rewritten": "I have gone."}
+        # The phrase travels with the answer, through the file too — that is what keeps a hit
+        # readable against the sentence it was an answer to.
+        assert remembered.text == _key().text
 
     def test_a_store_that_was_never_written_reads_as_empty(self, clock, tmp_path):
         read, _write = file_store(tmp_path / "nothing-here.json")
@@ -309,3 +326,40 @@ class TestTheFileBackedStore:
 
         read, _write = file_store(path)
         assert len(read()) == 8, "a concurrent write was lost"
+
+
+class TestAnAnswerRemembersItsQuestion:
+    """A hit hands back what it answered, not only the answer.
+
+    The key ignores punctuation at the edges, so the phrase being asked now and the one that
+    produced the stored answer can differ by a full stop. Everything a panel shows —
+    ``already_good``, ``changed``, which words are marked — is derived by comparing the original
+    with the rewrite, so an answer re-read against the wrong sentence reports a correct phrase as
+    corrected and bolds a stop nobody wrote.
+    """
+
+    def test_the_phrase_that_produced_it_comes_back_with_it(self, cache):
+        cache.put(_key("It is fine."), {"rewritten": "It is fine."})
+
+        remembered = cache.get(_key("It is fine"))
+
+        assert remembered.payload == {"rewritten": "It is fine."}
+        assert remembered.text == "It is fine.", "the answer forgot what it answered"
+
+    def test_it_is_the_stored_phrase_not_the_one_being_asked(self, cache):
+        cache.put(_key("I have went"), {"rewritten": "I have gone"})
+
+        assert cache.get(_key('"I have went,"')).text == "I have went"
+
+    def test_an_entry_written_before_this_still_reads(self, clock):
+        # Entries stored by an older build have no "text". They fall back to the phrase in hand,
+        # which is what they were written under, and age out on their own — nothing migrates.
+        store = {_key().digest(): {"at": clock(), "payload": {"rewritten": "x"}}}
+        cache = CorrectionCache(
+            lambda: store, lambda new: store.clear() or store.update(new), clock=clock
+        )
+
+        remembered = cache.get(_key())
+
+        assert remembered.payload == {"rewritten": "x"}
+        assert remembered.text == ""

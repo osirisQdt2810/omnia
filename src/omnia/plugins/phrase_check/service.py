@@ -115,7 +115,13 @@ class PhraseChecker:
             remembered = self._cache.get(key)
             if remembered is not None:
                 logger.debug("phrase_check: answered from the cache")
-                return self._read(remembered, phrase, mode)
+                # Re-read against the phrase the answer was FOR, not the one just selected.
+                # They differ by punctuation at the edges — that is what the key ignores — and
+                # `already_good`, `changed` and the marked words are all derived by comparing
+                # the original with the rewrite. Reading a hit against the wrong sentence
+                # reports a correct phrase as corrected, marks a full stop nobody wrote, and
+                # lists no fix explaining it.
+                return self._read(remembered.payload, remembered.text or phrase, mode)
 
         payload = self._ask(phrase, mode)
         correction = self._read(payload, phrase, mode)
