@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from omnia.gui.assets import read_asset
@@ -133,6 +134,30 @@ def build_settings_html(
         categories=views,
         js=read_asset(__file__, "web", "settings.js"),
     )
+
+
+def category_key(group_name: str, rendered: Sequence[str]) -> str:
+    """The ``data-category`` handle for a group, as the rendered page spelled it.
+
+    The handle carries the group's POSITION, which is why this takes the groups the page
+    ACTUALLY rendered rather than the configured category order. Those two are not the same
+    list: ``group_plugins`` drops a group with no plugins in it and skips always-on ones
+    entirely, so a configured order of five names can render as four sections — and every index
+    after the gap shifts. Deriving the handle from the configured order would then point Back at
+    a category that is not there, on exactly the installs where some feature happens to be
+    absent.
+
+    Args:
+        group_name: The plugin's ``group``.
+        rendered: The group names the page was built from, in order.
+
+    Returns:
+        The handle, e.g. ``"ai-2"``. An unrendered group gets the end of the list rather than
+        an exception; nothing can open its panel anyway, since it has no card to press.
+    """
+    names = list(rendered)
+    index = names.index(group_name) if group_name in names else len(names)
+    return _slug(group_name, index)
 
 
 def _slug(name: str, index: int) -> str:

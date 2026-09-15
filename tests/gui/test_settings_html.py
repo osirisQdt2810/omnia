@@ -9,6 +9,7 @@ from omnia.gui.settings_html import (
     HEADER_ACTIONS,
     PluginCardModel,
     build_settings_html,
+    category_key,
     category_models,
     status_text,
 )
@@ -163,12 +164,16 @@ class TestLandingView:
         assert '<button type="button" class="omnia-tile omnia-on"' in on
         assert '<button type="button" class="omnia-tile"' in off
 
-    def test_landing_is_visible_and_every_category_is_hidden(self):
+    def test_landing_is_visible_and_everything_else_is_hidden(self):
         html = build_settings_html(
             [("Reviewing", [_card("a")]), ("AI", [_card("b")])], dark=False
         )
         assert '<section id="omnia-landing" class="omnia-landing omnia-enter">' in html
-        assert html.count("hidden>") == 2  # both category sections, and nothing else
+        # Both category sections AND the config panel. Counted rather than named so a third
+        # view added without being hidden shows up here as an off-by-one rather than as a
+        # section that is simply always on screen under the landing.
+        assert html.count("hidden>") == 3
+        assert '<section class="omnia-config" id="omnia-config" hidden>' in html
         assert 'data-view="landing"' in html
 
     def test_tiles_carry_a_stagger_index(self):
@@ -462,3 +467,102 @@ class TestEveryTileIsWiredToSomething:
 
         for op, method in HANDLERS.items():
             assert hasattr(SettingsDialog, method), f"{op!r} names a missing {method}"
+
+
+class TestTheConfigPanelIsReachable:
+    """The panel is a third view of this page, so the page has to carry it and wire it."""
+
+    @staticmethod
+    def _page() -> str:
+        return build_settings_html(
+            [("Reviewing", [_card("a")]), ("AI", [_card("b")])], dark=False
+        )
+
+    def test_the_panel_ships_in_the_document(self):
+        # Built once in the markup and filled by JS, so a new plugin needs no markup of its own.
+        html = self._page()
+
+        for handle in (
+            'id="omnia-config"',
+            'id="omnia-config-fields"',
+            'id="omnia-config-name"',
+            "omnia-config-save",
+            "omnia-config-cancel",
+            "omnia-config-back",
+        ):
+            assert handle in html, handle
+
+    def test_the_js_renders_every_control_the_payload_can_ask_for(self):
+        # Python decides which control a field gets; a name it can produce and this page cannot
+        # draw is a settings row that silently is not there.
+        from omnia.gui.config_panel import CONTROLS
+
+        js = _page_js(self._page())
+        for control in CONTROLS:
+            assert f"{control}:" in js or f'"{control}"' in js, control
+
+    def test_the_save_op_has_a_handler(self):
+        from aqt_stubs import install_gui_stubs
+
+        install_gui_stubs()
+        from omnia.gui.settings_dialog import HANDLERS, SettingsDialog
+
+        assert "save-config" in HANDLERS
+        assert callable(getattr(SettingsDialog, HANDLERS["save-config"], None))
+
+    def test_the_page_sends_exactly_the_ops_the_dialog_answers(self):
+        # Both directions. An op the page sends that nothing answers is an inert control;
+        # a handler nothing sends is dead weight that reads as a feature.
+        import re
+
+        from aqt_stubs import install_gui_stubs
+
+        install_gui_stubs()
+        from omnia.gui.settings_dialog import HANDLERS
+
+        js = _page_js(self._page())
+        sent = set(re.findall(r'send\(\s*"([a-z-]+)"', js))
+        # `send(button.getAttribute("data-action"), …)` covers the header actions, which are
+        # checked against HANDLERS by TestEveryTileIsWiredToSomething.
+        assert sent, "no literal op found in the page JS"
+        assert sent <= set(HANDLERS), sorted(sent - set(HANDLERS))
+
+    def test_the_panel_back_is_not_swept_up_by_the_landing_handler(self):
+        # It wears .omnia-back for the same look but must return to the CATEGORY. Binding the
+        # generic handler to it would send the reader to the landing instead, losing their place.
+        js = _page_js(self._page())
+
+        assert ".omnia-back:not(.omnia-config-back)" in js
+
+
+class TestTheCategoryHandleMatchesTheMarkup:
+    """The handle carries a POSITION, so it has to come from what was actually rendered."""
+
+    def test_it_matches_the_rendered_section(self):
+        import re
+
+        groups = [("Reviewing", [_card("a")]), ("AI", [_card("b")])]
+        html = build_settings_html(groups, dark=False)
+        rendered = [name for name, _ in groups]
+
+        for name in rendered:
+            key = category_key(name, rendered)
+            assert f'data-category="{key}"' in html, (name, key)
+        # And nothing else claims to be a category.
+        assert set(
+            re.findall(r'class="omnia-category" data-category="([^"]+)"', html)
+        ) == {category_key(name, rendered) for name in rendered}
+
+    def test_a_group_with_no_plugins_shifts_the_ones_after_it(self):
+        # `group_plugins` drops an empty group, so the configured order and the rendered one are
+        # different lists. Deriving the handle from the configured order would point Back at a
+        # category that is not on the page — on exactly the installs where a feature is absent.
+        full = ["Reviewing", "Grading", "AI"]
+        without_grading = ["Reviewing", "AI"]
+
+        assert category_key("AI", full) != category_key("AI", without_grading)
+        assert category_key("AI", without_grading).endswith("-1")
+
+    def test_an_unrendered_group_does_not_raise(self):
+        # Nothing can open its panel anyway — it has no card to press.
+        assert category_key("Nowhere", ["Reviewing"]) == "nowhere-1"

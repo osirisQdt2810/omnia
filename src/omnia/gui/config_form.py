@@ -1,13 +1,17 @@
-"""A generic config dialog that renders a plugin's ``config_schema()`` into a form.
+"""Qt controls for a declared :class:`~omnia.core.plugin.ConfigField`.
 
-Each :class:`~omnia.core.plugin.ConfigField` maps to a Qt widget by ``kind`` (bool→checkbox,
-int→spinbox, float→double spinbox, text/secret→line edit, choice→combo, color→colour picker).
-This is how every feature gets a settings panel without a bespoke dialog — declare fields,
-get a form.
+Each field maps to a widget by ``kind`` (bool→checkbox, int→spinbox, float→double spinbox,
+text/secret→line edit, choice→combo, color→colour picker).
 
-That mapping lives in :class:`ConfigFieldEditor` rather than in the dialog, so a BESPOKE
-dialog that still renders declared fields (the Note Maintenance per-task panel) reuses the
-same controls instead of growing a second widget factory that drifts from this one.
+This used to back a generic per-plugin settings DIALOG. It no longer does: a plugin's declared
+options are rendered by the settings page itself (:mod:`omnia.gui.config_panel` decides the
+controls, ``web/settings.js`` draws them), so pressing Configure no longer opens a second window
+made of spin boxes next to a page made of gradients.
+
+What is left is the BESPOKE-dialog case. The Note Maintenance per-task panel is its own Qt
+dialog that still renders declared fields, and it reuses these controls rather than growing a
+second widget factory. Both renderers read the same ``ConfigField`` list, so the schema is still
+the one source of truth for what a plugin has — only the drawing differs, because the hosts do.
 """
 
 from __future__ import annotations
@@ -20,25 +24,15 @@ from aqt.qt import (
     QColor,
     QColorDialog,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFont,
-    QFormLayout,
-    QHBoxLayout,
     QIcon,
-    QLabel,
     QLineEdit,
     QPainter,
     QPixmap,
-    QPoint,
     QPushButton,
-    QSize,
     QSpinBox,
     Qt,
-    QToolButton,
-    QToolTip,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -202,93 +196,3 @@ class ConfigFieldEditor:
         if field.kind == "secret":
             w.setEchoMode(QLineEdit.EchoMode.Password)
         return w
-
-
-class PluginConfigDialog(QDialog):
-    """Edits a plugin's settings from its declared :class:`ConfigField` list."""
-
-    def __init__(
-        self,
-        title: str,
-        fields: list[ConfigField],
-        current: dict[str, Any],
-        parent: object | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle(f"{title} — settings")
-        self.setMinimumWidth(420)
-        self._fields = fields
-        self._editors: dict[str, ConfigFieldEditor] = {}
-        self._build(current)
-
-    def _build(self, current: dict[str, Any]) -> None:
-        outer = QVBoxLayout(self)
-        form = QFormLayout()
-        form.setSpacing(10)
-        for field in self._fields:
-            editor = ConfigFieldEditor(field, current.get(field.key, field.default))
-            self._editors[field.key] = editor
-            label = QLabel(field.label)
-            if field.help:
-                # The clickable (i) icon in the value row is the SINGLE help source — a
-                # width-limited, wrapped tooltip plus click-to-show. Deliberately NO tooltip on
-                # the label or the widget: those were unbounded and popped a screen-wide
-                # one-line strip on hover/click, duplicating the (i).
-                form.addRow(label, self._field_row(editor.widget, field.help))
-            else:
-                form.addRow(label, editor.widget)
-        outer.addLayout(form)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
-
-    @staticmethod
-    def _field_row(widget: QWidget, help_text: str) -> QWidget:
-        """Field cell: a clickable (i) info button, then the value control.
-
-        The icon sits at the start of the value column (right after the label, before the
-        value) so the icons line up in a column; a gap separates it from both.
-        """
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Wrap the help as width-limited HTML so a long tooltip wraps onto several readable
-        # lines instead of one screen-wide strip; _help_html also keeps authored line breaks.
-        rich = (
-            "<div style='max-width:320px; font-size:13px; line-height:1.45;'>"
-            f"{_help_html(help_text)}</div>"
-        )
-
-        info = QToolButton()
-        info.setIcon(_info_icon())
-        info.setIconSize(QSize(16, 16))
-        info.setToolTip(rich)
-        info.setCursor(Qt.CursorShape.PointingHandCursor)
-        info.setAutoRaise(True)
-        info.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        # Flat, borderless — just the circular icon, no square button frame.
-        info.setStyleSheet(
-            "QToolButton{border:none;background:transparent;padding:0;margin:0;}"
-            "QToolButton:hover,QToolButton:pressed{border:none;background:transparent;}"
-        )
-        info.setAccessibleName("Field help")
-        # Click → show the help right at the icon (independent of the hover-tooltip delay).
-        info.clicked.connect(
-            lambda _=False, b=info, t=rich: QToolTip.showText(
-                b.mapToGlobal(QPoint(0, b.height())), t, b
-            )
-        )
-        layout.addWidget(info, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addSpacing(10)  # gap between the icon and the value
-        layout.addWidget(widget, 1)
-        return row
-
-    def values(self) -> dict[str, Any]:
-        """Return the edited values keyed by field key."""
-        return {key: editor.value() for key, editor in self._editors.items()}
