@@ -22,9 +22,8 @@ reached from a selection in a browser or on the desktop, through the same loopba
 
 from __future__ import annotations
 
-from typing import Any, Optional
-
 from dataclasses import replace
+from typing import Any, Optional
 
 from omnia.core import services
 from omnia.core.logging import get_logger

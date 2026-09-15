@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, Optional
 from aqt.theme import theme_manager
 
 from omnia.core.logging import get_logger
-
 from omnia.core.manager import grouped_plugins
 from omnia.gui.config_panel import panel_payload
 from omnia.gui.settings_categories import category_order, category_style
