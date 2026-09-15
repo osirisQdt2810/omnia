@@ -43,6 +43,11 @@ from omnia.plugins.smart_notes.engine import (
     dedupe_preserving_order,
 )
 from omnia.plugins.smart_notes.engine.batching import SOLO_PLANNER, run_wave
+from omnia.plugins.smart_notes.integration.progress import (
+    ModalDialog,
+    ProgressSurface,
+    Silent,
+)
 
 if TYPE_CHECKING:
     from omnia.core.concurrency.dispatch import Dispatch
@@ -358,50 +363,47 @@ class _LiveNote:
 
 
 class _ProgressReporter:
-    """Publishes "generating (n/total)" to the Qt main thread, monotonically and rarely.
+    """Counts committed notes, monotonically and rarely, and hands the count to a surface.
 
     The counter is only ever advanced from the single driver thread, at commit, so it needs no
     lock and cannot go backwards — the "bar jumps around" failure mode of overlapping notes is
-    designed out rather than patched. The closure reads the counter when the MAIN thread runs
-    it (``ProgressManager.update`` keeps whatever value lands last), and publishes are
-    coalesced so a fast round cannot flood the main thread with closures.
+    designed out rather than patched.
+
+    Publishes are coalesced. That is load-bearing for the modal surface, which has to reach the
+    Qt main thread and would otherwise be handed hundreds of closures a second for a bar nobody
+    can read that fast; it is merely harmless for the background one, which writes two integers
+    under a lock. Keeping the throttle here rather than in each surface is what stops the two
+    from disagreeing about how often "often" is.
+
+    The LAST note always publishes, whatever the clock says — a batch that ends between ticks
+    would otherwise leave its final frame one note short for as long as anyone is looking.
     """
 
-    def __init__(self, total: int, *, enabled: bool = True) -> None:
+    def __init__(self, total: int, surface: ProgressSurface) -> None:
         self._total = total
-        self._enabled = enabled
+        self._surface = surface
         self._done = 0
-        self._last_published = 0.0
+        # None, NOT 0.0. `time.monotonic()` counts from an arbitrary origin — on Linux, boot —
+        # so `now - 0.0` is only reliably "a long time" on a machine that has been up a while.
+        # On a freshly started one it is a few seconds, and the FIRST update was throttled away:
+        # a batch showed nothing at all until its last note. A sentinel says "never published"
+        # without asking the clock what it means.
+        self._last_published: Optional[float] = None
 
     def advance(self, count: int) -> None:
         """Record ``count`` more finished notes and publish if it is time to."""
         if count <= 0:
             return
         self._done += count
-        if not self._enabled:
-            return
         now = time.monotonic()
         if (
-            now - self._last_published < _PROGRESS_INTERVAL_SECONDS
+            self._last_published is not None
+            and now - self._last_published < _PROGRESS_INTERVAL_SECONDS
             and self._done < self._total
         ):
             return
         self._last_published = now
-        anki_compat.run_on_main(self._publish)
-
-    def _publish(self) -> None:
-        """Push the CURRENT counter to the dialog (runs on the Qt main thread)."""
-        # Guarded inside the closure, not around the schedule: this runs later, on the main
-        # thread, where an exception surfaces as a user-visible Anki error dialog for a
-        # background job the user never asked about. A cosmetic count is not worth that.
-        try:
-            anki_compat.progress_update(
-                f"Omnia: generating… ({self._done}/{self._total})",
-                self._done,
-                self._total,
-            )
-        except Exception:  # pragma: no cover - defensive
-            logger.exception("smart_notes: progress update failed")
+        self._surface.publish(self._done, self._total)
 
 
 def _cohorts(plans: list[_NotePlan], size: int) -> Iterator[list[_NotePlan]]:
@@ -444,7 +446,7 @@ class BatchGenerator:
         note_ids: list[int],
         on_done: Callable[[BatchSummary], None],
         *,
-        show_progress: bool = True,
+        surface: Optional[ProgressSurface] = None,
     ) -> None:
         """Generate smart fields for ``note_ids`` in the background, then call ``on_done``.
 
@@ -455,10 +457,16 @@ class BatchGenerator:
         Args:
             note_ids: The notes to process (deduped here; cards of one note collapse to it).
             on_done: Main-thread callback receiving the :class:`BatchSummary`.
-            show_progress: Open the modal progress dialog. Off for background auto-generation
-                (the integration gateway) so a stream of clipped notes never stacks modal
-                dialogs — which would freeze Anki; a summary tooltip still reports the result.
+            surface: Where to report progress. Defaults to Anki's modal dialog. The choice
+                decides whether Anki is usable while this runs: that dialog is
+                ``ApplicationModal``, so the reviewer accepts no input until the batch is over.
+                A :class:`~omnia.plugins.smart_notes.integration.progress.BackgroundBar` leaves
+                the screen alone, which is what a user who started two hundred cards and went
+                back to studying asked for. Background auto-generation passes ``Silent()``
+                rather than a dialog, because a stream of clipped notes would otherwise stack
+                modal windows — a summary tooltip still reports the result.
         """
+        progress = surface if surface is not None else ModalDialog()
         plans, deck_skipped = self._build_plans(dedupe_preserving_order(note_ids))
         if not plans:
             on_done(BatchSummary(skipped=deck_skipped))
@@ -475,8 +483,7 @@ class BatchGenerator:
         # One planner for the whole run: it carries the per-field output budget, which is only
         # worth learning if it survives from one chunk to the next.
         planner = self._service.batch_planner(notes_per_call=notes_per_call)
-        if show_progress:
-            anki_compat.progress_start(f"Omnia: generating… (0/{total})", total)
+        progress.start(total)
 
         def op() -> tuple[list[_NoteOutcome], bool]:
             # The pool is built HERE, inside the QueryOp body, and torn down before this
@@ -487,7 +494,7 @@ class BatchGenerator:
                     plans,
                     total,
                     force_overwrite=force_overwrite,
-                    show_progress=show_progress,
+                    progress=progress,
                     dispatch=dispatch,
                     planner=planner,
                     cohort_size=max(workers, notes_per_call),
@@ -500,17 +507,16 @@ class BatchGenerator:
                 summary.skipped += deck_skipped
                 summary.cancelled = cancelled
             finally:
-                # In a `finally`: progress_start incremented Anki's GLOBAL progress refcount,
-                # and a raise between here and progress_finish leaks it permanently — no
+                # In a `finally`: the modal surface's start() incremented Anki's GLOBAL progress
+                # refcount, and a raise between here and its finish() leaks it permanently — no
                 # mw.progress.timer ever fires again and no dialog ever opens again, for the
-                # rest of the session, in every add-on.
-                if show_progress:
-                    anki_compat.progress_finish()
+                # rest of the session, in every add-on. (Which is also why ModalDialog.finish
+                # swallows: this `finally` cannot be allowed to raise either.)
+                progress.finish()
             on_done(summary)
 
         def on_failure(exc: Exception) -> None:
-            if show_progress:
-                anki_compat.progress_finish()
+            progress.finish()
             logger.exception("smart_notes batch failed")
             on_done(BatchSummary(failed=total))
 
@@ -551,7 +557,7 @@ class BatchGenerator:
         total: int,
         *,
         force_overwrite: bool,
-        show_progress: bool,
+        progress: ProgressSurface,
         dispatch: Dispatch,
         planner: WavePlanner,
         cohort_size: int,
@@ -575,12 +581,13 @@ class BatchGenerator:
         verdict DELETES clipped notes.
         """
         outcomes: list[_NoteOutcome] = []
-        progress = _ProgressReporter(total, enabled=show_progress)
+        counter = _ProgressReporter(total, progress)
         for cohort in _cohorts(plans, cohort_size):
-            # want_cancel() is a plain thread-safe flag on Anki's progress manager, so it can be
-            # polled straight from this background thread. It is APP-wide, not run-scoped, so it
-            # is read once per cohort and latched; nothing downstream re-reads the global.
-            if show_progress and anki_compat.progress_was_cancelled():
+            # Asked once per cohort and latched. Both surfaces answer this from a plain
+            # thread-safe flag, so it can be read straight from this background thread; the
+            # dialog's is Anki's APP-wide want_cancel(), which is why nothing downstream
+            # re-reads it.
+            if progress.cancelled():
                 return outcomes, True
             outcomes.extend(
                 self._run_cohort(
@@ -588,7 +595,7 @@ class BatchGenerator:
                     force_overwrite=force_overwrite,
                     dispatch=dispatch,
                     planner=planner,
-                    progress=progress,
+                    progress=counter,
                 )
             )
         return outcomes, False
@@ -615,7 +622,7 @@ class BatchGenerator:
         The keyword defaults describe a cohort of one with nothing to report to and nothing to
         batch — run it here, in this thread — which is what a single note is.
         """
-        progress = progress or _ProgressReporter(len(plans), enabled=False)
+        progress = progress or _ProgressReporter(len(plans), Silent())
         # Kept per PLAN, including the ones that could not even be planned, so the outcomes
         # come back in selection order however the cohort actually resolved.
         entries = [

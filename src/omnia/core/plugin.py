@@ -132,12 +132,24 @@ class FeaturePlugin:
         """Fully deactivate the feature, removing everything :meth:`on_enable` added."""
         raise NotImplementedError
 
-    def config_schema(self) -> list[ConfigField]:
+    def config_schema(self, repo: Any = None) -> list[ConfigField]:
         """Return the configurable options for the settings GUI.
 
         Derived from :attr:`config_model` (the plugin's Pydantic settings class) — each scalar
         field becomes a :class:`ConfigField`; complex fields (lists/dicts/nested models) are
         skipped for the bespoke dialogs. Returns ``[]`` when the plugin declares no model.
+
+        Args:
+            repo: The :class:`~omnia.core.config.repository.ConfigRepository`, when the caller
+                has one. Optional, and ignored by this default — it exists for a plugin whose
+                OPTIONS depend on current settings rather than only on its own model, such as a
+                model picker that can only list what the configured provider serves.
+
+                Passed in rather than read off the activation context on purpose: Configure is
+                offered for any plugin that declares a schema, enabled or not, so a plugin that
+                sourced this from ``on_enable`` would answer differently depending on whether
+                the feature happened to be switched on — and silently, since the fallback is a
+                plain text box rather than an error.
         """
         if self.config_model is None:
             return []

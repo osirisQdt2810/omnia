@@ -156,6 +156,57 @@ _SELECT_DEMO = """
 _SHOW_GRAPH = "document.getElementById('sn-view-graph')?.click()"
 
 
+def _shoot_settings_panels(shot, out: Path) -> list[str]:
+    """Photograph the settings page, and one plugin's settings panel inside it.
+
+    The per-feature form is no longer a window, so there is no dialog to grab one at a time. It
+    is a third view of the settings page, reached by pressing Configure — which is what this
+    drives, because a screenshot of the page that never opens a panel would not show the thing
+    that changed.
+
+    Args:
+        shot: The smoke context (``manager``, ``repo``).
+        out: Where to write the PNGs.
+
+    Returns:
+        The file names written.
+    """
+    from omnia.gui.settings_dialog import SettingsDialog
+
+    dialog = SettingsDialog(shot.manager, None)
+    written = []
+    _save(dialog, out / "settings-landing.png", settle_ms=2500)
+    written.append("settings-landing.png")
+
+    # A plugin whose settings are declared fields — the panel is the point of the shot. Chosen by
+    # asking the manager rather than hard-coding an id, so this keeps working when the plugin
+    # list changes.
+    target = next(
+        (
+            p
+            for p in shot.manager.plugins()
+            if not p.has_custom_config_dialog() and p.config_schema()
+        ),
+        None,
+    )
+    if target is None:
+        print("SKIP settings panel: no plugin renders declared fields")
+        return written
+
+    # Press the real button rather than calling the handler: it is the wiring between the card
+    # and the panel that this is here to photograph.
+    _run_js(
+        dialog,
+        f'document.querySelector(\'.omnia-card[data-id="{target.id}"]'
+        " .omnia-configure').click();",
+        settle_ms=1600,
+    )
+    _save(dialog, out / "settings-panel.png", settle_ms=600)
+    written.append("settings-panel.png")
+    print(f"     settings panel captured for {target.id}")
+    return written
+
+
 def main(argv: list[str]) -> int:
     out = Path(argv[1] if len(argv) > 1 else "docs/images").resolve()
     workdir = Path(tempfile.mkdtemp(prefix="omnia-shots-"))
@@ -189,25 +240,20 @@ def main(argv: list[str]) -> int:
         ][:1],
     )
 
-    from omnia.gui.config_form import PluginConfigDialog
-
-    written: list[str] = []
+    written: list[str] = _shoot_settings_panels(shot, out)
     for plugin in shot.manager.plugins():
-        if plugin.has_custom_config_dialog():
-            dialog = plugin.custom_config_dialog(shot.repo, None)
-        else:
-            settings = shot.repo.feature_settings(plugin.id)
-            dialog = PluginConfigDialog(
-                plugin.name or plugin.id,
-                plugin.config_schema(),
-                settings.dict() if settings is not None else {},
-                None,
-            )
+        if not plugin.has_custom_config_dialog():
+            # Its settings are no longer a window. They render as a view INSIDE the settings
+            # page, which is captured whole by the settings shot rather than one dialog at a
+            # time — see _shoot_settings_panels.
+            print(f"SKIP {plugin.id}: settings render in the settings page")
+            continue
+        dialog = plugin.custom_config_dialog(shot.repo, None)
         if dialog is None:
             print(f"SKIP {plugin.id}: no dialog")
             continue
-        # A webview dialog needs longer than a plain Qt form before it has painted.
-        settle = 2500 if type(dialog).__name__ != "PluginConfigDialog" else 400
+        # A webview dialog needs time before it has painted.
+        settle = 2500
         try:
             if plugin.id == "smart_notes":
                 # Two shots of the flagship: the field table on a configured note type, and the

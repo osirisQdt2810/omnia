@@ -298,6 +298,10 @@
         <input type="checkbox" id="sn-opt-gen-review" class="sn-check">
         <span><b>Pre-generate at review</b> — when a card is shown, fill its empty smart fields in the background.</span>
       </label>
+      <label class="sn-opt-row" title="ON: a batch started from the browser runs quietly in the background — you can keep reviewing while your cards are generated. Its progress shows on the Smart Notes card in Omnia settings, where you can also stop it.&#10;OFF: Anki&#39;s own progress window opens, with a bar and a Cancel button. That window is modal: nothing else accepts input until the batch finishes.&#10;&#10;Example: 200 cards at a few seconds each is several minutes of waiting with it OFF, and several minutes of studying with it ON.">
+        <input type="checkbox" id="sn-opt-batch-background" class="sn-check">
+        <span><b>Generate in the background</b> — keep studying while a batch runs, instead of waiting behind Anki&#39;s progress window.</span>
+      </label>
       <label class="sn-opt-row" title="ON: a batch re-generates fields that ALREADY have content, replacing them.&#10;OFF: a batch skips filled fields and only generates the blank ones.&#10;&#10;Example: you improved a prompt and want every existing card refreshed → turn ON, then batch. Leave OFF to top up only missing fields cheaply.">
         <input type="checkbox" id="sn-opt-regen-batch" class="sn-check">
         <span><b>Regenerate when batching</b> — during a batch, re-generate fields that already have content.</span>

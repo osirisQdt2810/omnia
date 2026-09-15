@@ -110,10 +110,10 @@ def _install(monkeypatch, notes, *, run_deferred=True):
             self._service = service
             self._settings = settings
 
-        def run(self, note_ids, _on_done, *, show_progress=True):
+        def run(self, note_ids, _on_done, *, surface=None):
             # Background auto-gen must run WITHOUT the modal progress dialog (else rapid clips
             # stack dialogs and freeze Anki).
-            assert show_progress is False
+            assert type(surface).__name__ == "Silent"
             batch_calls.append([int(n) for n in note_ids])
 
     monkeypatch.setattr(gw, "BatchGenerator", _FakeBatch)

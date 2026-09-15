@@ -333,6 +333,197 @@ class TestBatchGenerator:
         assert summaries[0].processed == len(touched)
 
 
+class TestTheProgressThrottle:
+    """Publishes are coalesced, and the LAST one escapes the coalescing.
+
+    Load-bearing for the modal surface, which reaches the Qt main thread and would otherwise be
+    handed hundreds of closures a second for a bar nobody can read that fast. The escape is what
+    stops a batch that ends between ticks leaving its final frame short — which, for a
+    background batch nobody is watching in real time, is the frame they actually read.
+    """
+
+    def _reporter(self, total: int):
+        from omnia.plugins.smart_notes.integration.batch import _ProgressReporter
+        from omnia.plugins.smart_notes.integration.progress import ProgressSurface
+
+        class Recorder(ProgressSurface):
+            def __init__(self):
+                self.published: list = []
+
+            def publish(self, done, total):
+                self.published.append((done, total))
+
+        surface = Recorder()
+        return _ProgressReporter(total, surface), surface
+
+    def test_it_coalesces_the_middle_of_a_run(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module.time, "monotonic", lambda: 3.5)
+        monkeypatch.setattr(batch_module, "_PROGRESS_INTERVAL_SECONDS", 3600.0)
+        reporter, surface = self._reporter(10)
+
+        reporter.advance(1)  # the first always publishes
+        reporter.advance(1)
+        reporter.advance(1)
+
+        assert surface.published == [(1, 10)], surface.published
+
+    def test_the_last_unit_publishes_however_recently_the_last_one_did(
+        self, monkeypatch
+    ):
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module.time, "monotonic", lambda: 3.5)
+        monkeypatch.setattr(batch_module, "_PROGRESS_INTERVAL_SECONDS", 3600.0)
+        reporter, surface = self._reporter(3)
+        reporter.advance(1)
+
+        reporter.advance(1)
+        reporter.advance(1)
+
+        assert surface.published[-1] == (3, 3), surface.published
+
+    def test_the_first_update_publishes_on_a_clock_that_has_just_started(
+        self, monkeypatch
+    ):
+        """`time.monotonic()` counts from an arbitrary origin — on Linux, boot.
+
+        Seeding "last published" with 0.0 and subtracting made the first update's age depend on
+        how long the machine had been up. On a long-running box it was huge and everything
+        worked; on a fresh CI runner it was a few seconds, the first publish was throttled away,
+        and a batch showed nothing until its final note. This is that machine.
+        """
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module.time, "monotonic", lambda: 3.5)
+        monkeypatch.setattr(batch_module, "_PROGRESS_INTERVAL_SECONDS", 3600.0)
+        reporter, surface = self._reporter(10)
+
+        reporter.advance(1)
+
+        assert surface.published == [(1, 10)]
+
+    def test_advancing_by_nothing_publishes_nothing(self):
+        reporter, surface = self._reporter(4)
+
+        reporter.advance(0)
+
+        assert surface.published == []
+
+
+class TestTheBatchReportsToWhicheverSurfaceItWasGiven:
+    """The runner calls four methods and never asks which surface it has.
+
+    That is what let the background mode arrive without touching the cohort/round/wave logic —
+    and it is the property worth pinning, because the alternative (a ``show_progress`` boolean
+    branched on in five places) is what this replaced.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _recorder(self):
+        from omnia.plugins.smart_notes.integration.progress import ProgressSurface
+
+        class Recorder(ProgressSurface):
+            def __init__(self):
+                self.calls: list = []
+                self.stop = False
+
+            def start(self, total):
+                self.calls.append(("start", total))
+
+            def publish(self, done, total):
+                self.calls.append(("publish", done, total))
+
+            def finish(self):
+                self.calls.append(("finish",))
+
+            def cancelled(self):
+                return self.stop
+
+        return Recorder()
+
+    def test_it_is_told_the_size_the_run_is_starting(self, monkeypatch):
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""}),
+            2: _FakeNote(2, "Basic", {"Word": "dog", "Def": ""}),
+        }
+        _patch_compat(monkeypatch, _FakeCompat(notes))
+        surface = self._recorder()
+
+        BatchGenerator(self._generator(), self._settings()).run(
+            [1, 2], lambda _s: None, surface=surface
+        )
+
+        assert surface.calls[0] == ("start", 2)
+
+    def test_the_count_reaches_the_surface(self, monkeypatch):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
+        _patch_compat(monkeypatch, _FakeCompat(notes))
+        surface = self._recorder()
+
+        BatchGenerator(self._generator(), self._settings()).run(
+            [1], lambda _s: None, surface=surface
+        )
+
+        assert ("publish", 1, 1) in surface.calls
+
+    def test_it_is_always_told_the_run_is_over(self, monkeypatch):
+        # In a `finally`. The modal surface's start() bumped Anki's GLOBAL progress refcount,
+        # and never finishing leaks it for the session — in every add-on, not just this one.
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
+        _patch_compat(monkeypatch, _FakeCompat(notes))
+        surface = self._recorder()
+
+        BatchGenerator(self._generator(), self._settings()).run(
+            [1], lambda _s: None, surface=surface
+        )
+
+        assert surface.calls[-1] == ("finish",)
+
+    def test_a_surface_that_says_stop_stops_the_run(self, monkeypatch):
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": "w", "Def": ""})
+            for nid in range(1, 5)
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        surface = self._recorder()
+        surface.stop = True
+        summaries: list = []
+
+        BatchGenerator(self._generator(), self._settings()).run(
+            [1, 2, 3, 4], summaries.append, surface=surface
+        )
+
+        assert fake.updated == [], "it generated after being told to stop"
+        assert summaries[0].cancelled is True
+
+    def test_the_default_is_still_the_modal_dialog(self, monkeypatch):
+        # Every caller that wants otherwise says so. A default of "background" would silently
+        # change what an existing entry point does.
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+        from omnia.plugins.smart_notes.integration.progress import ModalDialog
+
+        seen: list = []
+        monkeypatch.setattr(
+            batch_module, "ModalDialog", lambda: seen.append(1) or ModalDialog()
+        )
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
+        _patch_compat(monkeypatch, _FakeCompat(notes))
+
+        BatchGenerator(self._generator(), self._settings()).run([1], lambda _s: None)
+
+        assert seen, "the default surface was not the dialog"
+
+    def _generator(self):
+        return _generator(self._settings())
+
+
 class TestBatchGeneratorDisabledRules:
     def test_disabled_fields_are_skipped_in_batch(self, monkeypatch):
         notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}

@@ -108,6 +108,7 @@ from omnia.core.providers.usage import (  # noqa: E402
     RecordingTTSProvider,
 )
 from omnia.plugins.smart_notes.integration import batch as batch_module  # noqa: E402
+from omnia.plugins.smart_notes.integration.progress import Silent  # noqa: E402
 
 #: Field types skipped in every arm. Image is a constant per note, so dropping it cannot change
 #: the comparison — only the absolute seconds, which are stated as such.
@@ -859,7 +860,7 @@ class ArmRunner:
                 batch_module.BatchGenerator(self._service, settings).run(
                     [s.nid for s in self._samples],
                     summaries.append,
-                    show_progress=False,
+                    surface=Silent(),
                 )
             finally:
                 result.seconds = time.perf_counter() - started

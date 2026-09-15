@@ -23,11 +23,12 @@ reached from a selection in a browser or on the desktop, through the same loopba
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, Optional
 
 from omnia.core import services
 from omnia.core.logging import get_logger
-from omnia.core.plugin import FeaturePlugin, PluginContext
+from omnia.core.plugin import ConfigField, FeaturePlugin, PluginContext
 from omnia.core.registry import register
 from omnia.plugins.phrase_check import library
 from omnia.plugins.phrase_check.cache import STORE_FILENAME, CorrectionCache, file_store
@@ -82,6 +83,60 @@ class PhraseCheckPlugin(FeaturePlugin):
 
     def __init__(self) -> None:
         self._ctx: Optional[PluginContext] = None
+
+    def config_schema(self, repo: Any = None) -> list[ConfigField]:
+        """The declared fields, with ``model`` turned into a list of what can actually be picked.
+
+        A model id is not free text: it has to be one the ACTIVE provider serves, and typing one
+        it does not is a failed check with a provider error nobody can act on. The list is not
+        declarable on the settings model either — it depends on which provider is configured
+        right now, which is why it is filled here, per open, rather than baked into a
+        ``Literal`` the way ``default_mode`` is.
+
+        The empty option leads and means "whatever Omnia is set to", which is the answer for
+        almost everybody; pinning one is for spending less (a correction is short and frequent)
+        or more (when the answers are not good enough) than the rest of the add-on does.
+        """
+        fields = super().config_schema(repo)
+        models = self._available_models(repo)
+        if not models:
+            # Nothing to offer — no provider configured, or one whose catalogue we do not carry.
+            # It stays a TEXT box, because a dropdown holding only "Omnia's default" is a
+            # control that cannot be used, and it would take away the one thing that still
+            # works here: typing the id yourself.
+            return fields
+        choices = ("", *models)
+        return [
+            (
+                replace(field, kind="choice", choices=choices)
+                if field.key == "model"
+                else field
+            )
+            for field in fields
+        ]
+
+    def _available_models(self, repo: Any = None) -> tuple[str, ...]:
+        """The text models the configured provider serves, or none when that cannot be read.
+
+        The repo comes from the CALLER when there is one, and only falls back to the activation
+        context. Reading it off ``on_enable`` alone meant the dropdown appeared only while the
+        feature was switched on: tick it off, press Configure, and the model field was the
+        free-text box this replaced — with nothing on screen saying why.
+        """
+        config = repo if repo is not None else getattr(self._ctx, "config", None)
+        if config is None:
+            return ()
+        try:
+            from omnia.core.providers.catalog import text_models
+
+            provider = str(config.llm_settings().provider or "")
+            return tuple(text_models(provider))
+        except Exception:
+            # No settings, an unknown provider, a config that will not load. A free-text box
+            # beats a dropdown with one empty row in it, and `_choices_with` keeps whatever is
+            # already stored either way.
+            logger.debug("phrase_check: could not list models", exc_info=True)
+            return ()
 
     def on_enable(self, ctx: PluginContext) -> None:
         self._ctx = ctx

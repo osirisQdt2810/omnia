@@ -322,6 +322,14 @@ class SmartNotesSettings(PersistedModel):
     regenerate_when_batching: bool = True
     # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
     generate_at_review: bool = False
+    # Whether a batch started from the Browser reports to Anki's progress dialog or quietly in
+    # the background. The dialog is ApplicationModal — while it is up NOTHING else accepts
+    # input, including the reviewer — so a batch of two hundred cards locks Anki for as long as
+    # the provider takes. Off by default is the wrong default for the case this is for: the
+    # reason to start a long batch is to go and do something else. The dialog remains available
+    # for anyone who would rather watch it, and for whom a bar with a Cancel button on it is
+    # the more obvious thing.
+    batch_in_background: bool = True
     # Gates the per-field / whole-note regenerate buttons the clippers show. A SEPARATE switch
     # from ``regenerate_when_batching``: that one decides whether an automatic batch overwrites
     # what it already filled, while this one decides whether a human sitting in the clipper may
