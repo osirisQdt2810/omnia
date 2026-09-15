@@ -153,6 +153,7 @@ class TestThePluginPublishesItsProgress:
 
             assert services.lookup(name) is None
         finally:
+            plugin.on_disable(ctx)  # idempotent; guarantees the hooks are unsubscribed
             services.revoke(name)
 
     def test_the_same_tracker_survives_a_reload(self):
@@ -167,14 +168,18 @@ class TestThePluginPublishesItsProgress:
 
         name = progress_service("smart_notes")
         plugin, ctx = self._plugin_and_ctx()
+        rebuilt, ctx2 = self._plugin_and_ctx()
         try:
             plugin.on_enable(ctx)
             first = services.lookup(name)
             plugin.on_disable(ctx)
 
-            rebuilt, ctx2 = self._plugin_and_ctx()
             rebuilt.on_enable(ctx2)
 
             assert services.lookup(name) is first
         finally:
+            # on_enable SUBSCRIBES hooks; leaving the rebuilt plugin enabled leaks a second
+            # subscription into whatever runs next, which is how this first showed up — as a
+            # failure in another file's "enable subscribes exactly one of each" test.
+            rebuilt.on_disable(ctx2)
             services.revoke(name)
