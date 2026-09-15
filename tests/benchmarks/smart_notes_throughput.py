@@ -231,6 +231,15 @@ class _BenchCompat:
     def note_deck_ids(self, note, col=None):
         return [1]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what a batch slice actually uses.
+
+        Recorded through the singular form so `updated` stays the list of notes persisted,
+        which is what these tests assert on; how many transactions it took is not.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self.updated.append(note.id)
 

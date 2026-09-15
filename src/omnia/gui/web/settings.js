@@ -180,30 +180,29 @@
       if (cards[i].getAttribute("data-id") !== id) {
         continue;
       }
-      const job = cards[i].querySelector(".omnia-card-job");
-      if (!job) {
-        return;
-      }
-      const readout = job.querySelector(".omnia-card-job-text");
+      // The CARD carries the state: it is the bar, and the readout beside Configure is a
+      // reading of it. Both are driven from the one attribute so they cannot disagree.
+      const card = cards[i];
+      const readout = card.querySelector(".omnia-card-job-text");
       if (readout) {
         readout.textContent = text || "";
       }
-      const stop = job.querySelector(".omnia-card-job-stop");
+      const stop = card.querySelector(".omnia-card-job-stop");
       if (stop) {
         stop.disabled = !stoppable;
       }
       if (!text) {
-        job.setAttribute("data-progress", "none");
-        job.style.removeProperty("--progress");
+        card.setAttribute("data-progress", "none");
+        card.style.removeProperty("--progress");
         return;
       }
       if (percent === null || percent === undefined) {
-        job.setAttribute("data-progress", "unknown");
-        job.style.removeProperty("--progress");
+        card.setAttribute("data-progress", "unknown");
+        card.style.removeProperty("--progress");
         return;
       }
-      job.setAttribute("data-progress", "known");
-      job.style.setProperty("--progress", percent + "%");
+      card.setAttribute("data-progress", "known");
+      card.style.setProperty("--progress", percent + "%");
       return;
     }
   }

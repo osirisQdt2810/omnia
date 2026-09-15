@@ -90,6 +90,15 @@ class _FakeCompat:
             raise KeyError(f"no note {nid}")
         return self._notes[nid]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what a batch slice actually uses.
+
+        Recorded through the singular form so `updated` stays the list of notes persisted,
+        which is what these tests assert on; how many transactions it took is not.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self._require_main("update_note")
         self.updated.append(note.id)
@@ -152,6 +161,7 @@ def _patch(monkeypatch, fake):
         "run_on_main",
         "get_note",
         "update_note",
+        "update_notes",
         "note_deck_ids",
         "add_media_file",
     ):

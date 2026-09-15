@@ -99,6 +99,15 @@ class _FakeCompat:
     def note_deck_ids(self, note, col=None):
         return [int(c.did) for c in note.cards()]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what the batch actually uses.
+
+        Recorded into the same `updated` list as the singular form, because what every test
+        here cares about is WHICH notes were persisted, not how many transactions it took.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self.updated.append(note.id)
 
@@ -142,6 +151,7 @@ def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
         "get_note",
         "note_deck_ids",
         "update_note",
+        "update_notes",
         "add_media_file",
         "progress_start",
         "progress_update",
@@ -331,6 +341,162 @@ class TestBatchGenerator:
             assert notes[nid]["Extra"], f"note {nid} lost its second level"
         # And every touched note is accounted for — none silently in no bucket.
         assert summaries[0].processed == len(touched)
+
+
+class TestWritingBackDoesNotHogTheMainThread:
+    """Writing is main-thread work, and it used to be done in ONE pass over every outcome.
+
+    At the sizes this feature exists for that is not a pause, it is a freeze: 1500 notes is 1500
+    backend transactions plus their media, and for the whole of it Anki paints nothing and
+    answers no input. A batch that ran in the background so the user could keep studying then
+    took the screen away at the very end — the one moment they had stopped watching for it.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _many(self, monkeypatch, count: int, slice_size: int):
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module, "_WRITE_SLICE", slice_size)
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        return fake, list(notes)
+
+    def test_it_hands_the_main_thread_back_between_slices(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        fake, nids = self._many(monkeypatch, 60, 10)
+        settings = self._settings()
+
+        # Silent, so every hand-back counted here is the WRITE yielding. The modal surface
+        # marshals its own publishes, and counting those too would make this pass whatever the
+        # write did.
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=Silent()
+        )
+
+        # 60 notes in slices of 10 is five hand-backs — after every slice but the last. Zero
+        # would mean it wrote the lot without ever returning to Qt's event loop.
+        assert fake.run_on_main_calls == 5, fake.run_on_main_calls
+
+    def test_every_note_is_still_written(self, monkeypatch):
+        # Slicing must not drop the tail, which is the obvious way to get this wrong.
+        fake, nids = self._many(monkeypatch, 57, 10)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(nids, lambda _s: None)
+
+        assert fake.updated == nids
+
+    def test_the_counts_span_every_slice(self, monkeypatch):
+        # One summary for the run, not one per slice.
+        _fake, nids = self._many(monkeypatch, 57, 10)
+        settings = self._settings()
+        summaries: list = []
+
+        BatchGenerator(_generator(settings), settings).run(nids, summaries.append)
+
+        assert (
+            len(summaries) == 1
+        ), "the caller was told the batch finished more than once"
+        assert summaries[0].processed == 57
+
+    def test_a_slice_is_one_write_not_one_per_note(self, monkeypatch):
+        """One `col.update_note` per note is one backend transaction, one undo entry and one
+        `operation_did_execute` PER NOTE.
+
+        At 1500 notes that is 1500 of each: the Browser, the sidebar and every other add-on
+        listening re-run 1500 times, and the user's undo history becomes 1500 steps deep. The
+        same content written as a batch is one of each per slice.
+        """
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        _fake, nids = self._many(monkeypatch, 40, 10)
+        settings = self._settings()
+        batches: list[int] = []
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        monkeypatch.setattr(
+            batch_module.anki_compat,
+            "update_notes",
+            lambda notes, col=None: batches.append(len(notes)),
+        )
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=Silent()
+        )
+
+        assert batches == [10, 10, 10, 10], batches
+
+    def test_a_batch_that_cannot_be_written_is_counted_as_failed(self, monkeypatch):
+        # Not as processed. Reporting a save that did not happen is how a user goes looking for
+        # cards that are not there.
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        _fake, nids = self._many(monkeypatch, 20, 10)
+        settings = self._settings()
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        def refuse(notes, col=None):
+            raise RuntimeError("collection is locked")
+
+        monkeypatch.setattr(batch_module.anki_compat, "update_notes", refuse)
+        summaries: list = []
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, summaries.append, surface=Silent()
+        )
+
+        assert summaries[0].processed == 0
+        assert summaries[0].failed == 20
+
+    def test_the_progress_surface_is_finished_exactly_once(self, monkeypatch):
+        # It is a refcount on Anki's GLOBAL progress manager: finishing twice, or never,
+        # breaks every add-on's dialogs for the rest of the session.
+        from omnia.plugins.smart_notes.integration.progress import ProgressSurface
+
+        class Counter(ProgressSurface):
+            finishes = 0
+
+            def finish(self):
+                Counter.finishes += 1
+
+        _fake, nids = self._many(monkeypatch, 40, 10)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=Counter()
+        )
+
+        assert Counter.finishes == 1
+
+    def test_a_slice_that_explodes_still_ends_the_run(self, monkeypatch):
+        # Abandoning mid-chain would strand the caller AND leak the progress refcount.
+        _fake, nids = self._many(monkeypatch, 40, 10)
+        settings = self._settings()
+        gen = BatchGenerator(_generator(settings), settings)
+        calls = {"n": 0}
+        real = gen._apply
+
+        def boom(outcomes, summary=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("disk on fire")
+            return real(outcomes, summary)
+
+        monkeypatch.setattr(gen, "_apply", boom)
+        summaries: list = []
+
+        gen.run(nids, summaries.append)
+
+        assert len(summaries) == 1, "the run never reported back"
 
 
 class TestTheProgressThrottle:
@@ -621,7 +787,15 @@ class TestEmptyNoteTracking:
         return _NoteOutcome(nid, **kw)
 
     def _apply(self, outcomes):
+        """Count these outcomes without writing anything.
+
+        These tests are about the SUMMARY, not the collection, and they build a generator with
+        no Anki behind it — so the persist step is stubbed out rather than being given a fake to
+        talk to. Preparation is left alone: whether a note came out with content in it is part
+        of what is being counted.
+        """
         gen = BatchGenerator.__new__(BatchGenerator)
+        gen._persist = lambda notes, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_a_note_with_no_results_is_recorded(self):
@@ -629,7 +803,11 @@ class TestEmptyNoteTracking:
         assert summary.empty_note_ids == [11]
 
     def test_a_note_that_generated_something_is_not_recorded(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+        )
         summary = self._apply([self._outcome(12, results=[("rule", "result")])])
         assert summary.empty_note_ids == []
 
@@ -660,7 +838,15 @@ class TestErroredNotesAreKeptForRetry:
         return _NoteOutcome(nid, **kw)
 
     def _apply(self, outcomes):
+        """Count these outcomes without writing anything.
+
+        These tests are about the SUMMARY, not the collection, and they build a generator with
+        no Anki behind it — so the persist step is stubbed out rather than being given a fake to
+        talk to. Preparation is left alone: whether a note came out with content in it is part
+        of what is being counted.
+        """
         gen = BatchGenerator.__new__(BatchGenerator)
+        gen._persist = lambda notes, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_an_all_errored_note_is_kept_not_discarded(self):
@@ -690,7 +876,11 @@ class TestErroredNotesAreKeptForRetry:
         )
 
     def test_a_clean_run_says_nothing_about_retries(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+        )
         summary = self._apply([self._outcome(25, results=[("rule", "result")])])
 
         assert summary.errored_note_ids == []
@@ -706,7 +896,15 @@ class TestToolChainCounters:
     """
 
     def _apply(self, outcomes):
+        """Count these outcomes without writing anything.
+
+        These tests are about the SUMMARY, not the collection, and they build a generator with
+        no Anki behind it — so the persist step is stubbed out rather than being given a fake to
+        talk to. Preparation is left alone: whether a note came out with content in it is part
+        of what is being counted.
+        """
         gen = BatchGenerator.__new__(BatchGenerator)
+        gen._persist = lambda notes, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def _outcome(self, nid, **kw):
@@ -843,7 +1041,11 @@ class TestToolChainCounters:
         assert summary.empty_note_ids == [1]
 
     def test_a_later_tool_producing_counts_as_a_fallback(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+        )
 
         outcome = self._generate_one(
             [(self._rule("cloze", "ai"), self._result("ai"))], []
@@ -855,7 +1057,11 @@ class TestToolChainCounters:
         )
 
     def test_the_first_tool_producing_is_not_a_fallback(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+        )
 
         outcome = self._generate_one(
             [(self._rule("cloze", "ai"), self._result("cloze"))], []
@@ -866,7 +1072,11 @@ class TestToolChainCounters:
 
     def test_an_unstamped_result_never_counts(self, monkeypatch):
         # Nothing in the legacy path stamps a tool; the counter must stay silent, not guess.
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+        )
 
         outcome = self._generate_one([(self._rule("ai"), self._result(""))], [])
 
@@ -988,7 +1198,7 @@ class TestNoteMaterializer:
             7, materialize=materialize_once, results=[(rule, result)]
         )
         settings = SmartNotesSettings(note_types=[])
-        BatchGenerator(object(), settings)._write_note(outcome)
+        BatchGenerator(object(), settings)._prepare_note(outcome)
 
         assert (
             len(writes) == 1

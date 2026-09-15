@@ -349,8 +349,14 @@ def _card_html(card: PluginCardModel, index: int) -> str:
         else ""
     )
     return (
+        # `data-progress` on the CARD, not on an inner strip: the whole card is the bar now, and
+        # the count beside Configure is a readout of it rather than a thing of its own.
         f'<div class="omnia-card{failed}" data-id="{html.escape(card.id)}" '
-        f'style="--i:{index}">'
+        f'data-progress="none" style="--i:{index}">'
+        # The fill, first and behind everything. It clips ITSELF rather than the card clipping
+        # it: `overflow: hidden` on the card would cut off the (i) popover, which is the bug
+        # the config panel's field rows already had once.
+        '<div class="omnia-card-fill"><i></i></div>'
         '<div class="omnia-card-text">'
         '<div class="omnia-card-title">'
         f"{html.escape(card.name or card.id)}"
@@ -359,11 +365,12 @@ def _card_html(card: PluginCardModel, index: int) -> str:
         f'<div class="omnia-card-desc">{html.escape(card.description)}</div>'
         f'<div class="omnia-card-status">{html.escape(status_text(enabled=card.enabled, active=card.active))}</div>'
         "</div>"
-        # Where a background job says how far it has got. Built empty for every card and filled
-        # by JS from whatever the plugin publishes under "<id>.progress" — a card whose plugin
-        # has no such service never shows it, so nothing here knows which plugins have jobs.
-        '<div class="omnia-card-job" data-progress="none">'
-        '<div class="omnia-card-job-fill"></div>'
+        '<div class="omnia-card-actions">'
+        # How far a background job has got, directly above Configure. Built empty for every card
+        # and filled by JS from whatever the plugin publishes under "<id>.progress" — a card
+        # whose plugin has no such service never shows it, so nothing here knows which plugins
+        # have jobs.
+        '<div class="omnia-card-job">'
         '<span class="omnia-card-job-text"></span>'
         # No native `title=`: this page uses its own popovers throughout, and a test pins that
         # (a native tooltip looks nothing like the rest and cannot be styled). "Stop" beside a
@@ -371,12 +378,13 @@ def _card_html(card: PluginCardModel, index: int) -> str:
         f'<button class="omnia-card-job-stop" data-stop="{html.escape(card.id)}">'
         "Stop</button>"
         "</div>"
-        '<div class="omnia-card-actions">'
+        '<div class="omnia-card-controls">'
         f"{configure}"
         '<label class="omnia-switch">'
         f'<input type="checkbox" data-id="{html.escape(card.id)}"{checked}>'
         '<span class="omnia-slider"></span>'
         "</label>"
+        "</div>"
         "</div>"
         "</div>"
     )

@@ -436,6 +436,15 @@ class _RecordingCompat:
     def note_deck_ids(self, note, col=None):
         return [int(c.did) for c in note.cards()]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what a batch slice actually uses.
+
+        Recorded through the singular form so `updated` stays the list of notes persisted,
+        which is what these tests assert on; how many transactions it took is not.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self.updated.append(note.id)
 
@@ -473,6 +482,7 @@ def _patch_compat(monkeypatch, fake):
         "get_note",
         "note_deck_ids",
         "update_note",
+        "update_notes",
         "add_media_file",
         "progress_start",
         "progress_update",
