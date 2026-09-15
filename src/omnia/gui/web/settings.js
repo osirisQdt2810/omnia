@@ -461,8 +461,18 @@
     // produces — see `snap` — it just no longer rewrites the value on the way in.
     input.step = "any";
     input.value = String(field.value);
-    const readout = el("span", "omnia-slide-value");
     const isInt = field.kind === "int";
+    // An EDITABLE readout, not a label. Dragging is for "about here"; a particular value is
+    // typed. Without it the reachable values are whatever the track's pixel count allows, and
+    // a default you nudged off can be unreachable — which is what a range input is, and why the
+    // spin box this replaced was not simply worse.
+    const readout = document.createElement("input");
+    readout.type = "number";
+    readout.className = "omnia-slide-value";
+    readout.min = String(field.min);
+    readout.max = String(field.max);
+    readout.step = String(field.step);
+    readout.setAttribute("aria-label", field.label);
     const step = Number(field.step) || (isInt ? 1 : 0.1);
 
     /**
@@ -481,20 +491,53 @@
     // a form must not change a setting because it was looked at.
     let picked = isInt ? Math.round(Number(field.value)) : Number(field.value);
 
-    const paint = function () {
-      const min = Number(field.min);
-      const span = Number(field.max) - min;
-      const at = span ? ((picked - min) / span) * 100 : 0;
+    const low = Number(field.min);
+    const high = Number(field.max);
+    const clamp = function (value) { return Math.min(high, Math.max(low, value)); };
+
+    // `writeBox` is skipped while the box itself is being typed into: rewriting the input under
+    // the cursor turns "1" on the way to "12" into a fight with the user.
+    const paint = function (writeBox) {
+      const span = high - low;
+      const at = span ? ((picked - low) / span) * 100 : 0;
       input.style.setProperty("--fill", Math.max(0, Math.min(100, at)) + "%");
-      readout.textContent = isInt ? String(picked) : String(picked);
-    };
-    input.addEventListener("input", function () {
-      picked = snap(input.value);
-      // Put the thumb back on the grid so it cannot drift away from the number shown.
       input.value = String(picked);
-      paint();
+      if (writeBox) {
+        readout.value = String(picked);
+      }
+    };
+
+    input.addEventListener("input", function () {
+      picked = clamp(snap(input.value));
+      paint(true);
     });
-    paint();
+    // The range's own arrow keys move by a fraction of the span, because `step` is "any" — so
+    // they are handled here instead, by exactly one step, which is what the declared step is
+    // for. Page keys move ten, the way a spin box does.
+    input.addEventListener("keydown", function (ev) {
+      const by = {ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1,
+                  PageDown: -10, PageUp: 10}[ev.key];
+      if (by === undefined) {
+        return;
+      }
+      ev.preventDefault();
+      picked = clamp(snap(picked + by * step));
+      paint(true);
+    });
+    readout.addEventListener("input", function () {
+      const typed = isInt ? parseInt(readout.value, 10) : parseFloat(readout.value);
+      if (isNaN(typed)) {
+        return;  // mid-edit: "", "-", "1." are all on the way to something
+      }
+      picked = clamp(typed);
+      paint(false);
+    });
+    // Only once editing ends is the box allowed to tidy what was typed — out-of-range back
+    // inside it, an abandoned edit back to the value that is actually stored.
+    readout.addEventListener("blur", function () {
+      paint(true);
+    });
+    paint(true);
 
     row.appendChild(input);
     row.appendChild(readout);

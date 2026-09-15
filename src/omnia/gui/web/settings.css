@@ -510,13 +510,22 @@ body {
 .omnia-range:active::-webkit-slider-thumb { transform: scale(1.02); }
 .omnia-range:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 4px;
   border-radius: 999px; }
-/* The readout. Tabular figures so it does not jiggle as the number changes width. */
+/* The readout — an input, not a label: dragging is for "about here" and a particular value is
+   typed. Tabular figures so it does not jiggle as the number changes width. */
 .omnia-slide-value {
-  flex: none; min-width: 58px; text-align: center;
-  padding: 5px 10px; border-radius: 9px;
-  font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  flex: none; width: 74px; text-align: center;
+  padding: 5px 8px; border: 1px solid transparent; border-radius: 9px;
+  font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
   color: #fff; background: linear-gradient(135deg, var(--cat-from), var(--cat-to));
   box-shadow: 0 4px 12px var(--shadow);
+  /* The spinners would be a third way to change one number, in 20px of a 74px box. */
+  -moz-appearance: textfield; appearance: textfield;
+}
+.omnia-slide-value::-webkit-outer-spin-button,
+.omnia-slide-value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.omnia-slide-value:focus {
+  outline: none; border-color: #fff;
+  box-shadow: 0 0 0 3px rgba(91, 110, 245, 0.35);
 }
 
 /* -- colour --------------------------------------------------------------------------- */

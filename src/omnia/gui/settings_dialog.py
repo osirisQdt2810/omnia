@@ -145,7 +145,9 @@ class SettingsDialog(WebDialog):
         return panel_payload(
             plugin_id=plugin.id,
             name=plugin.name or plugin.id,
-            fields=plugin.config_schema(),
+            # The repo, so a plugin whose options depend on current settings answers the same
+            # whether or not the feature is switched on. See FeaturePlugin.config_schema.
+            fields=plugin.config_schema(self._manager.config),
             values=settings.dict() if settings is not None else {},
             # The key the page uses for `data-category`, so Back returns to the right view —
             # built by the same function the markup used, never re-derived here.

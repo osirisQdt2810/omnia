@@ -38,6 +38,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: control reads as two groups of unrelated buttons.
 SEGMENTED_MAX = 3
 
+#: The most steps a slider may span before it stops being a control and becomes a lottery.
+#:
+#: Bounds alone are not the question — the GRID is. The dialog is 720px wide, so a slider's track
+#: is roughly 500; ``overdue_guard.force_again_after_days`` is 0–3650 in steps of one, which is
+#: about seven days per pixel. Its default of 7 sits inside the first two pixels with 0 and 13,
+#: so nudging it off 7 means never getting back. ``word_lookup.port`` is worse: 64,511 steps.
+#:
+#: At this ceiling a step is about four pixels, which is a target a hand can actually hit.
+#: Anything wider is a number field, where the value is typed and exact.
+MAX_SLIDER_STEPS = 120
+
 #: The control names the page knows how to draw. Kept here so a typo is a failing test rather
 #: than a field that silently renders as nothing.
 CONTROLS = (
@@ -67,13 +78,27 @@ def control_for(field: ConfigField) -> str:
     if kind == "choice":
         return "segmented" if len(field.choices) <= SEGMENTED_MAX else "dropdown"
     if kind in ("int", "float"):
-        bounded = field.minimum is not None and field.maximum is not None
-        return "slider" if bounded else "number"
+        return "slider" if _is_draggable(field) else "number"
     if kind == "color":
         return "color"
     if kind == "secret":
         return "secret"
     return "text"
+
+
+def _is_draggable(field: ConfigField) -> bool:
+    """Whether a number is better dragged than typed.
+
+    Two conditions, and the second is the one that was missing. A slider needs somewhere to stop
+    (both bounds), AND few enough stops between them that a particular value can be reached —
+    see :data:`MAX_SLIDER_STEPS`.
+    """
+    if field.minimum is None or field.maximum is None:
+        return False
+    span = float(field.maximum) - float(field.minimum)
+    if span <= 0:
+        return False
+    return span / _step(field) <= MAX_SLIDER_STEPS
 
 
 def _step(field: ConfigField) -> float:
