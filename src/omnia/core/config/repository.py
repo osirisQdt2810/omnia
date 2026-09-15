@@ -88,6 +88,40 @@ class ConfigRepository:
             return None
         return model_cls.parse_obj(self._merged.get(plugin_id, {}))
 
+    def section_rejects(self, plugin_id: str, values: dict[str, Any]) -> str:
+        """Why merging ``values`` into ``plugin_id``'s section would not parse, or ``""``.
+
+        The write side of :meth:`feature_settings`, and the reason it exists: a section is
+        validated LAZILY, so :meth:`update_section` will happily persist a value the plugin's
+        own model rejects. Nothing raises at write time; what breaks is everything after it —
+        the plugin cannot be activated (``PluginManager._activate`` catches the
+        ``ValidationError`` and reports a failed enable), and ``feature_settings`` raises for
+        the whole section from then on, so the panel that wrote the value cannot be reopened
+        to correct it. The user is left hand-editing TOML.
+
+        The check is the real merge, not a field-by-field one: a model may constrain two
+        fields against each other, and a value only valid beside the one already stored would
+        pass a per-field check and fail the save.
+
+        Args:
+            plugin_id: The plugin whose section is being written.
+            values: The keys the caller intends to merge in.
+
+        Returns:
+            A message naming the offending fields, or ``""`` when the merge would parse (which
+            includes a plugin that declares no ``config_model`` — there is nothing to reject).
+        """
+        plugin_cls = get_registered().get(plugin_id)
+        model_cls = getattr(plugin_cls, "config_model", None) if plugin_cls else None
+        if model_cls is None:
+            return ""
+        merged = {**self.raw_section(plugin_id), **values}
+        try:
+            model_cls.parse_obj(merged)
+        except Exception as exc:
+            return _rejection(exc)
+        return ""
+
     def raw_section(self, section: str) -> dict[str, Any]:
         """Return the merged RAW ``section``, unvalidated — the read side of a shallow write.
 
@@ -321,3 +355,29 @@ class ConfigRepository:
         self._config = self._loader.load()
         self._resolve_secrets()
         self._merged = self._loader.load_merged()
+
+
+def _rejection(exc: Exception) -> str:
+    """Render a validation failure as one line a person can act on.
+
+    Names the FIELD and what it wanted. Pydantic's own ``str(exc)`` is several lines of model
+    name, location tuples and a repeated "(type=value_error.number.not_le; limit_value=…)" —
+    accurate, and not something to put in a settings panel.
+    """
+    errors = getattr(exc, "errors", None)
+    details: list[str] = []
+    if callable(errors):
+        try:
+            for error in errors():
+                where = ".".join(
+                    str(part) for part in error.get("loc", ()) if part != ""
+                )
+                why = str(error.get("msg", "is not valid"))
+                details.append(f"{where}: {why}" if where else why)
+        except (
+            Exception
+        ):  # a model that renders its own errors oddly is not worth raising over
+            details = []
+    if not details:
+        details = [" ".join(str(exc).split())[:200]]
+    return "; ".join(details[:3])

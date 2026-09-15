@@ -321,3 +321,260 @@ body {
   .omnia-card, .omnia-configure, .omnia-back, .omnia-back-arrow,
   .omnia-slider, .omnia-slider::before, .omnia-tip { transition: none; }
 }
+
+/* ======================================================================================
+   Config panel — one plugin's settings, opened from its Configure button.
+
+   A third view beside the landing and a category, not a second window. Pressing Configure used
+   to open a Qt form: spin boxes and combos, one button away from a page made of gradients and
+   animated switches. Two different products.
+
+   It wears the CATEGORY's accent (--cat-from/--cat-to), so the panel you arrive at is visibly
+   the same colour as the tile you came from.
+   ====================================================================================== */
+
+.omnia-config[hidden] { display: none; }
+.omnia-config-fields { display: flex; flex-direction: column; gap: 10px; }
+
+/* One option. The accent spine is the panel's own, not the card list's, so a row reads as
+   belonging to this plugin rather than to the grid behind it. */
+.omnia-field {
+  /* NOT overflow:hidden. The hover wash needs clipping, but so would the dropdown that opens
+     out of this card — and a dropdown clipped to its own row shows two options and a cut edge.
+     The wash gets its own clipped layer instead (.omnia-field-wash), the way the Sync button's
+     progress fill already does. */
+  position: relative; isolation: isolate;
+  padding: 13px 15px 14px; border-radius: 14px;
+  border: 1px solid var(--card-border);
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  box-shadow: 0 1px 2px var(--shadow);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+/* The row holding an open dropdown lifts above the rows after it. Each field isolates, so
+   without this the list is painted over by whatever comes next in the column. */
+.omnia-field.omnia-raised { z-index: 40; }
+/* The same radial wash the tiles use, lit on hover. Its own layer, clipped to the card's
+   rounded shape, behind the text (negative z-index inside an isolated stacking context) so it
+   never washes out what it is decorating. */
+.omnia-field-wash {
+  position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  border-radius: inherit; overflow: hidden;
+}
+.omnia-field-wash::before {
+  content: ""; position: absolute; inset: -60% -30% auto -30%; height: 200%;
+  background: radial-gradient(52% 52% at 22% 0%, var(--cat-from), transparent 70%);
+  opacity: 0; transform: translateY(-10%);
+  transition: opacity .3s ease, transform .6s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.omnia-field:hover { border-color: var(--cat-from); box-shadow: 0 8px 20px var(--shadow); }
+.omnia-field:hover .omnia-field-wash::before { opacity: .13; transform: translateY(0); }
+.omnia-field:focus-within { border-color: var(--cat-to); }
+
+.omnia-field-head { display: flex; align-items: center; gap: 10px; }
+.omnia-field-label { flex: 1; min-width: 0; font-size: 14px; font-weight: 650; }
+.omnia-field-help {
+  margin-top: 8px; color: var(--muted); font-size: 12.5px; line-height: 1.55;
+  white-space: pre-line;
+}
+/* Inline code in the help, e.g. a value you could type. The plugins author these with RST
+   double backticks; leaving them as literal characters put ``vi`` on screen. */
+.omnia-field-help code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+  padding: 1px 5px; border-radius: 5px;
+  background: var(--card-top); border: 1px solid var(--card-border);
+}
+/* The rest of the help, behind a toggle. The first paragraph says what the setting does; what
+   follows is why it is worth setting, and printing all of it under every row turns a form into
+   an essay. */
+.omnia-field-more[hidden] { display: none; }
+.omnia-field-more { margin-top: 7px; animation: omnia-rise .22s ease backwards; }
+.omnia-field-why {
+  margin-top: 7px; padding: 0; font: inherit; font-size: 12px; font-weight: 650;
+  color: var(--cat-from); background: none; border: 0; cursor: pointer;
+}
+.omnia-field-why:hover { text-decoration: underline; }
+.omnia-field-why:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 2px;
+  border-radius: 4px; }
+/* The control sits under the label for everything that needs width, and inline with it for the
+   two that do not (a switch and a colour chip). */
+.omnia-field-control { margin-top: 10px; }
+.omnia-field[data-control="switch"] .omnia-field-control,
+.omnia-field[data-control="color"] .omnia-field-control { margin-top: 0; flex: none; }
+
+/* -- text / secret / number ----------------------------------------------------------- */
+.omnia-input {
+  width: 100%; padding: 9px 12px; font: inherit; font-size: 13.5px;
+  color: var(--fg); border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: var(--card-top);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.omnia-input:focus {
+  outline: none; border-color: var(--cat-from);
+  /* A plain rgba ring rather than a colour-mixing function: those are past the QtWebEngine floor Anki
+     ships on some platforms, where the whole declaration is dropped and the ring vanishes. */
+  box-shadow: 0 0 0 3px rgba(91, 110, 245, 0.28);
+}
+.omnia-field[data-control="number"] .omnia-input { max-width: 190px; }
+
+/* -- segmented control (a choice of two or three) ------------------------------------- */
+.omnia-seg {
+  display: inline-flex; padding: 3px; gap: 3px; border-radius: 12px;
+  border: 1px solid var(--card-border); background: var(--card-top);
+}
+.omnia-seg-btn {
+  position: relative; padding: 6px 15px; font: inherit; font-size: 13px; font-weight: 600;
+  color: var(--muted); background: transparent; border: 0; border-radius: 9px;
+  cursor: pointer; transition: color .18s ease;
+}
+.omnia-seg-btn:hover { color: var(--fg); }
+.omnia-seg-btn[aria-pressed="true"] {
+  color: #fff;
+  background: linear-gradient(135deg, var(--cat-from), var(--cat-to));
+  box-shadow: 0 4px 12px var(--shadow);
+  cursor: default;
+}
+.omnia-seg-btn:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 2px; }
+
+/* -- dropdown (a choice of more) ------------------------------------------------------ */
+/* Omnia's own, not a native <select>: a <select>'s popup is drawn by the OS and cannot be
+   given this page's gradient, its radius, or an animation. */
+.omnia-drop { position: relative; max-width: 340px; }
+.omnia-drop-btn {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 9px 12px; font: inherit; font-size: 13.5px; text-align: left;
+  color: var(--fg); cursor: pointer; border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: linear-gradient(150deg, var(--card-top), var(--card-bottom));
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.omnia-drop-btn:hover { border-color: var(--cat-from); }
+.omnia-drop-btn:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 2px; }
+.omnia-drop-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.omnia-drop-caret { flex: none; color: var(--muted); transition: transform .2s ease; }
+.omnia-drop.omnia-open .omnia-drop-caret { transform: rotate(180deg); }
+.omnia-drop-list {
+  position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 30;
+  max-height: 232px; overflow-y: auto; padding: 5px;
+  border-radius: 12px; border: 1px solid var(--card-border);
+  background: linear-gradient(160deg, var(--card-top), var(--card-bottom));
+  box-shadow: 0 16px 36px var(--shadow);
+  /* The translucency the rest of the page has. backdrop-filter is what keeps it readable over
+     a gradient rather than muddy. */
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  animation: omnia-drop-open .18s cubic-bezier(0.2, 0.7, 0.3, 1);
+  transform-origin: top center;
+}
+.omnia-drop-list[hidden] { display: none; }
+@keyframes omnia-drop-open {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+.omnia-drop-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; font: inherit; font-size: 13px; text-align: left;
+  color: var(--fg); background: transparent; border: 0; border-radius: 8px; cursor: pointer;
+  transition: background .12s ease;
+}
+/* Same reason as the focus ring above: no colour-mixing functions below the floor. A wash at
+   low alpha reads correctly against both themes' card gradients without naming either. */
+.omnia-drop-item:hover, .omnia-drop-item:focus-visible {
+  outline: none; background: rgba(127, 140, 255, 0.20);
+}
+.omnia-drop-item[aria-selected="true"] { font-weight: 650; }
+.omnia-drop-tick { flex: none; width: 14px; color: var(--cat-from); opacity: 0; }
+.omnia-drop-item[aria-selected="true"] .omnia-drop-tick { opacity: 1; }
+
+/* -- slider (a number with both ends) ------------------------------------------------- */
+.omnia-slide-row { display: flex; align-items: center; gap: 14px; }
+.omnia-range {
+  flex: 1; min-width: 0; height: 22px; -webkit-appearance: none; appearance: none;
+  background: transparent; cursor: pointer;
+}
+.omnia-range::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 999px;
+  /* Filled to the thumb by --fill, which JS sets — one number, same idea as the Sync button. */
+  background: linear-gradient(90deg, var(--cat-from) 0 var(--fill, 50%),
+                              var(--switch-off) var(--fill, 50%) 100%);
+}
+.omnia-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; margin-top: -6px;
+  width: 18px; height: 18px; border-radius: 999px; border: 2px solid #fff;
+  background: linear-gradient(135deg, var(--cat-from), var(--cat-to));
+  box-shadow: 0 3px 10px var(--shadow);
+  transition: transform .12s ease;
+}
+.omnia-range:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.omnia-range:active::-webkit-slider-thumb { transform: scale(1.02); }
+.omnia-range:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 4px;
+  border-radius: 999px; }
+/* The readout — an input, not a label: dragging is for "about here" and a particular value is
+   typed. Tabular figures so it does not jiggle as the number changes width. */
+.omnia-slide-value {
+  flex: none; width: 74px; text-align: center;
+  padding: 5px 8px; border: 1px solid transparent; border-radius: 9px;
+  font: inherit; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+  color: #fff; background: linear-gradient(135deg, var(--cat-from), var(--cat-to));
+  box-shadow: 0 4px 12px var(--shadow);
+  /* The spinners would be a third way to change one number, in 20px of a 74px box. */
+  -moz-appearance: textfield; appearance: textfield;
+}
+.omnia-slide-value::-webkit-outer-spin-button,
+.omnia-slide-value::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.omnia-slide-value:focus {
+  outline: none; border-color: #fff;
+  box-shadow: 0 0 0 3px rgba(91, 110, 245, 0.35);
+}
+
+/* -- colour --------------------------------------------------------------------------- */
+.omnia-color { display: inline-flex; align-items: center; gap: 10px; }
+.omnia-color input[type="color"] {
+  width: 38px; height: 30px; padding: 0; cursor: pointer;
+  border: 1px solid var(--card-border); border-radius: 9px; background: var(--card-top);
+}
+.omnia-color-hex {
+  font-variant-numeric: tabular-nums; font-size: 12.5px; color: var(--muted);
+}
+
+/* -- footer --------------------------------------------------------------------------- */
+.omnia-config-foot {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--card-border);
+}
+.omnia-config-note { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; }
+.omnia-btn {
+  padding: 8px 18px; font: inherit; font-size: 13.5px; font-weight: 650;
+  border-radius: 10px; cursor: pointer; color: var(--fg);
+  border: 1px solid var(--card-border); background: var(--card-top);
+  transition: border-color .15s ease, transform .1s ease, box-shadow .15s ease;
+}
+.omnia-btn:hover { border-color: var(--cat-from); }
+.omnia-btn:active { transform: scale(0.98); }
+.omnia-btn-primary {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(135deg, var(--cat-from), var(--cat-to));
+  box-shadow: 0 6px 16px var(--shadow);
+}
+.omnia-btn-primary:hover { box-shadow: 0 10px 24px var(--shadow); }
+.omnia-btn:focus-visible { outline: 2px solid var(--cat-from); outline-offset: 2px; }
+.omnia-config-empty { color: var(--muted); padding: 26px 2px; text-align: center; }
+
+/* -- motion --------------------------------------------------------------------------- */
+.omnia-config.omnia-enter {
+  animation: omnia-slide-in 0.32s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+}
+.omnia-config.omnia-enter .omnia-field {
+  animation: omnia-rise 0.42s cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+@media (prefers-reduced-motion: reduce) {
+  .omnia-config.omnia-enter, .omnia-config.omnia-enter .omnia-field { animation: none; }
+  .omnia-drop-list { animation: none; }
+  .omnia-field-more { animation: none; }
+  .omnia-field, .omnia-field-wash::before, .omnia-input, .omnia-seg-btn, .omnia-drop-btn,
+  .omnia-drop-caret, .omnia-drop-item, .omnia-range::-webkit-slider-thumb, .omnia-btn {
+    transition: none;
+  }
+}

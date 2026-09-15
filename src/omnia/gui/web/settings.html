@@ -16,6 +16,24 @@
   <main class="omnia-body">
 {landing}
 {categories}
+    <!-- One panel, reused for every plugin: its contents are built by settings.js from the
+         schema Python hands over, so a new plugin needs no markup here. -->
+    <section class="omnia-config" id="omnia-config" hidden>
+      <div class="omnia-cat-head">
+        <button class="omnia-back omnia-config-back" type="button">
+          <span class="omnia-back-arrow">&#8249;</span> Back
+        </button>
+        <div class="omnia-cat-heading">
+          <h2 class="omnia-cat-name" id="omnia-config-name" tabindex="-1"></h2>
+        </div>
+      </div>
+      <div class="omnia-config-fields" id="omnia-config-fields"></div>
+      <div class="omnia-config-foot">
+        <div class="omnia-config-note" id="omnia-config-note"></div>
+        <button class="omnia-btn omnia-config-cancel" type="button">Cancel</button>
+        <button class="omnia-btn omnia-btn-primary omnia-config-save" type="button">Save</button>
+      </div>
+    </section>
   </main>
 </div>
 <script>{js}</script>

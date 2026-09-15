@@ -91,7 +91,6 @@ from omnia.core.manager import PluginManager  # noqa: E402
 from omnia.core.plugin import AddonPaths  # noqa: E402
 from omnia.core.reviewer.ease_pipeline import EasePipeline  # noqa: E402
 from omnia.core.reviewer.web_injector import WebInjector, build_message  # noqa: E402
-from omnia.gui.config_form import PluginConfigDialog  # noqa: E402
 
 # Anki card states (``card.type``): 0=new 1=learning 2=review 3=relearning.
 _CARD_TYPE_REVIEW = 2
@@ -836,13 +835,20 @@ def _check_smart_notes_surfaces(smoke: OmniaSmoke) -> None:
 
 
 def _check_every_configure_dialog(smoke: OmniaSmoke) -> None:
-    """Construct what the settings screen's Configure button opens, for EVERY plugin.
+    """Exercise what the settings screen's Configure button produces, for EVERY plugin.
 
-    Mirrors ``SettingsDialog._configure``: a bespoke dialog when the plugin declares one, else the
-    generic ``ConfigField`` form. Driven off ``manager.plugins()`` rather than a hard-coded id
-    list, so plugin number eight is covered the day it is registered — a hard-coded tuple of three
-    is exactly how "constructs every dialog" quietly stopped being true.
+    Mirrors ``SettingsDialog._on_configure``, which now answers two different ways: a plugin that
+    owns a bespoke dialog still gets one CONSTRUCTED here (that is the part only real Qt can
+    check), and a plugin whose settings are declared fields is answered with a payload the
+    settings page renders in place — so that half is checked by building the payload and
+    asserting every field came out with a control the page knows how to draw.
+
+    Driven off ``manager.plugins()`` rather than a hard-coded id list, so plugin number eight is
+    covered the day it is registered — a hard-coded tuple of three is exactly how "constructs
+    every dialog" quietly stopped being true.
     """
+    from omnia.gui.config_panel import CONTROLS, panel_payload
+
     built: dict[str, str] = {}
     for plugin in smoke.manager.plugins():
         if plugin.has_custom_config_dialog():
@@ -856,12 +862,20 @@ def _check_every_configure_dialog(smoke: OmniaSmoke) -> None:
                 schema
             ), f"{plugin.id}: no custom dialog and no config schema to render"
             settings = smoke.repo.feature_settings(plugin.id)
-            dialog = PluginConfigDialog(
-                plugin.name or plugin.id,
-                schema,
-                settings.dict() if settings is not None else {},
-                None,
+            payload = panel_payload(
+                plugin_id=plugin.id,
+                name=plugin.name or plugin.id,
+                fields=schema,
+                values=settings.dict() if settings is not None else {},
             )
+            assert len(payload["fields"]) == len(schema), plugin.id
+            for field in payload["fields"]:
+                # A control the page has no renderer for draws as nothing at all, and a settings
+                # row that is simply absent is the hardest kind of missing to notice.
+                assert field["control"] in CONTROLS, (plugin.id, field)
+            dialog = None
+            built[plugin.id] = f"panel({len(payload['fields'])} fields)"
+            continue
         built[plugin.id] = type(dialog).__name__
     assert set(built) == set(smoke.plugin_ids()), sorted(built)
     print(f"     {built}")

@@ -159,13 +159,28 @@
     button.style.setProperty("--progress", percent + "%");
   }
 
-  document.querySelectorAll(".omnia-back").forEach(function (btn) {
+  // `:not(.omnia-config-back)`: the config panel's Back wears the same class for the same look
+  // but returns to the CATEGORY it was opened from, not to the landing.
+  document.querySelectorAll(".omnia-back:not(.omnia-config-back)").forEach(function (btn) {
     btn.addEventListener("click", showLanding);
   });
 
-  // Escape leaves a category; on the landing it is left alone so the dialog still closes.
+  // Escape unwinds ONE step: config -> category -> landing. On the landing it is left alone so
+  // the dialog still closes, which is the behaviour people expect of the outermost view.
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && document.body.dataset.view === "category") {
+    if (ev.key !== "Escape") {
+      return;
+    }
+    const view = document.body.dataset.view;
+    if (view === "config") {
+      ev.preventDefault();
+      // A dropdown swallows the first Escape: closing a popup is what that key does there.
+      if (!closeOpenDropdown()) {
+        leaveConfig();
+      }
+      return;
+    }
+    if (view === "category") {
       ev.preventDefault();
       showLanding();
     }
@@ -194,7 +209,14 @@
 
   document.querySelectorAll(".omnia-configure").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      send("configure", {id: btn.getAttribute("data-id")}, null);
+      // Python answers with the panel payload for a plugin whose settings are declared fields,
+      // and with null for one that owns a bespoke dialog — which it opens itself, on a later
+      // event-loop turn (see SettingsDialog._on_configure).
+      send("configure", {id: btn.getAttribute("data-id")}, function (payload) {
+        if (payload && payload.fields) {
+          openConfig(payload, btn);
+        }
+      });
     });
   });
 
@@ -245,4 +267,533 @@
     info.addEventListener("mouseenter", flip);
     info.addEventListener("focus", flip);
   });
+
+  // ======================================================================================
+  // Config panel — one plugin's settings, rendered in place of a second window.
+  //
+  // Everything below builds DOM with createElement and textContent rather than innerHTML. Not
+  // ceremony: a field's value is whatever the user last typed into it, and a label is authored
+  // by a plugin — neither has any business being parsed as markup.
+  //
+  // WHICH control a field gets is decided in Python (gui/config_panel.py), where it can be
+  // tested without a browser. This half draws what it is told and reads the answers back.
+  // ======================================================================================
+
+  const configView = document.getElementById("omnia-config");
+  const configFields = document.getElementById("omnia-config-fields");
+  const configName = document.getElementById("omnia-config-name");
+  const configNote = document.getElementById("omnia-config-note");
+
+  // The open panel: which plugin, which category to go back to, and one reader per field.
+  let config = null;
+  // The Configure button that opened it, so Back/Escape hands focus to where the eye was.
+  let configButton = null;
+
+  /** @return {?Element} The open dropdown, if any. */
+  function openDropdown() {
+    return configView.querySelector(".omnia-drop.omnia-open");
+  }
+
+  /**
+   * Close whichever dropdown is open.
+   * @return {boolean} Whether one was actually open — Escape uses this to decide whether it
+   *     has already been spent on closing a popup, or should leave the panel.
+   */
+  function closeOpenDropdown() {
+    const drop = openDropdown();
+    if (!drop) {
+      return false;
+    }
+    drop.classList.remove("omnia-open");
+    const row = drop.closest(".omnia-field");
+    if (row) { row.classList.remove("omnia-raised"); }
+    const list = drop.querySelector(".omnia-drop-list");
+    const btn = drop.querySelector(".omnia-drop-btn");
+    if (list) { list.hidden = true; }
+    if (btn) { btn.setAttribute("aria-expanded", "false"); btn.focus(); }
+    return true;
+  }
+
+  /**
+   * Build an element.
+   * @param {string} tag The tag name.
+   * @param {string=} cls Class name.
+   * @param {string=} text Text content.
+   * @return {!Element}
+   */
+  function el(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) { node.className = cls; }
+    if (text !== undefined && text !== null) { node.textContent = String(text); }
+    return node;
+  }
+
+  /**
+   * A switch, drawn exactly like the ones on the cards so the page has one kind of switch.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function switchControl(field) {
+    const label = el("label", "omnia-switch");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = !!field.value;
+    label.appendChild(input);
+    label.appendChild(el("span", "omnia-slider"));
+    return {node: label, read: function () { return input.checked; }};
+  }
+
+  /**
+   * A segmented control: every option visible, one click to pick.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function segmentedControl(field) {
+    const group = el("div", "omnia-seg");
+    group.setAttribute("role", "group");
+    let current = String(field.value);
+    const buttons = [];
+    (field.choices || []).forEach(function (choice) {
+      const btn = el("button", "omnia-seg-btn", choice);
+      btn.type = "button";
+      btn.setAttribute("aria-pressed", String(choice === current));
+      btn.addEventListener("click", function () {
+        current = choice;
+        buttons.forEach(function (other) {
+          other.setAttribute("aria-pressed", String(other === btn));
+        });
+      });
+      buttons.push(btn);
+      group.appendChild(btn);
+    });
+    return {node: group, read: function () { return current; }};
+  }
+
+  /**
+   * A dropdown. Omnia's own rather than a native `<select>`, whose popup is drawn by the OS
+   * and cannot be given this page's gradient, radius or animation.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function dropdownControl(field) {
+    const wrap = el("div", "omnia-drop");
+    const btn = el("button", "omnia-drop-btn");
+    btn.type = "button";
+    btn.setAttribute("aria-haspopup", "listbox");
+    btn.setAttribute("aria-expanded", "false");
+    const value = el("span", "omnia-drop-value", labelFor(field, field.value));
+    btn.appendChild(value);
+    btn.appendChild(el("span", "omnia-drop-caret", "\u25be"));
+    const list = el("div", "omnia-drop-list");
+    list.setAttribute("role", "listbox");
+    list.hidden = true;
+    let current = String(field.value);
+
+    (field.choices || []).forEach(function (choice) {
+      const item = el("button", "omnia-drop-item");
+      item.type = "button";
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(choice === current));
+      item.appendChild(el("span", "omnia-drop-tick", "\u2713"));
+      item.appendChild(el("span", null, labelFor(field, choice)));
+      item.addEventListener("click", function () {
+        current = choice;
+        value.textContent = labelFor(field, choice);
+        list.querySelectorAll(".omnia-drop-item").forEach(function (other) {
+          other.setAttribute("aria-selected", String(other === item));
+        });
+        closeOpenDropdown();
+      });
+      list.appendChild(item);
+    });
+
+    btn.addEventListener("click", function () {
+      const isOpen = wrap.classList.contains("omnia-open");
+      closeOpenDropdown();
+      if (isOpen) {
+        return;  // it was open and the click closed it
+      }
+      wrap.classList.add("omnia-open");
+      const row = wrap.closest(".omnia-field");
+      if (row) { row.classList.add("omnia-raised"); }
+      list.hidden = false;
+      btn.setAttribute("aria-expanded", "true");
+      const selected = list.querySelector('[aria-selected="true"]');
+      if (selected) { selected.focus(); }
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(list);
+    return {node: wrap, read: function () { return current; }};
+  }
+
+  /**
+   * What a choice reads as on screen.
+   *
+   * An empty option means "whatever Omnia is set to" rather than "nothing", and a blank line in
+   * a dropdown is a line people skip over wondering whether it is broken.
+   * @param {!Object} field The field payload.
+   * @param {*} choice The stored value.
+   * @return {string}
+   */
+  function labelFor(field, choice) {
+    const text = choice === null || choice === undefined ? "" : String(choice);
+    return text === "" ? "Omnia\u2019s default" : text;
+  }
+
+  /**
+   * A slider with a live readout, for a number that has both ends. The bounds are the useful
+   * part of such a setting and a spin box hides them.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function sliderControl(field) {
+    const row = el("div", "omnia-slide-row");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.className = "omnia-range";
+    input.min = String(field.min);
+    input.max = String(field.max);
+    // `any`, NOT the field's step. A range input snaps its value to `min + n * step`, and the
+    // two are rarely aligned: Audio Speed's rate is min 0.25 step 0.1, so a stored 1.0 landed
+    // on 1.05 the moment the panel opened. Opening settings to LOOK at them and pressing Save
+    // would then have shifted every rate by 0.05, silently. The step still governs what a drag
+    // produces — see `snap` — it just no longer rewrites the value on the way in.
+    input.step = "any";
+    input.value = String(field.value);
+    const isInt = field.kind === "int";
+    // An EDITABLE readout, not a label. Dragging is for "about here"; a particular value is
+    // typed. Without it the reachable values are whatever the track's pixel count allows, and
+    // a default you nudged off can be unreachable — which is what a range input is, and why the
+    // spin box this replaced was not simply worse.
+    const readout = document.createElement("input");
+    readout.type = "number";
+    readout.className = "omnia-slide-value";
+    readout.min = String(field.min);
+    readout.max = String(field.max);
+    readout.step = String(field.step);
+    readout.setAttribute("aria-label", field.label);
+    const step = Number(field.step) || (isInt ? 1 : 0.1);
+
+    /**
+     * The nearest value on the step grid, anchored at zero rather than at `min`.
+     *
+     * Anchored at zero so a rate lands on 1.0, 1.1, 1.2 — the numbers someone means — instead
+     * of on 1.05, 1.15 as it would if the grid started wherever the minimum happened to be.
+     * `toFixed` mops up the binary-float dust that `round(v / 0.1) * 0.1` leaves behind.
+     */
+    const snap = function (value) {
+      const on = Math.round(Number(value) / step) * step;
+      return isInt ? Math.round(on) : Number(on.toFixed(4));
+    };
+
+    // The value to report. Until the slider is actually moved it is the STORED one, untouched:
+    // a form must not change a setting because it was looked at.
+    let picked = isInt ? Math.round(Number(field.value)) : Number(field.value);
+
+    const low = Number(field.min);
+    const high = Number(field.max);
+    const clamp = function (value) { return Math.min(high, Math.max(low, value)); };
+
+    // `writeBox` is skipped while the box itself is being typed into: rewriting the input under
+    // the cursor turns "1" on the way to "12" into a fight with the user.
+    const paint = function (writeBox) {
+      const span = high - low;
+      const at = span ? ((picked - low) / span) * 100 : 0;
+      input.style.setProperty("--fill", Math.max(0, Math.min(100, at)) + "%");
+      input.value = String(picked);
+      if (writeBox) {
+        readout.value = String(picked);
+      }
+    };
+
+    input.addEventListener("input", function () {
+      picked = clamp(snap(input.value));
+      paint(true);
+    });
+    // The range's own arrow keys move by a fraction of the span, because `step` is "any" — so
+    // they are handled here instead, by exactly one step, which is what the declared step is
+    // for. Page keys move ten, the way a spin box does.
+    input.addEventListener("keydown", function (ev) {
+      const by = {ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1,
+                  PageDown: -10, PageUp: 10}[ev.key];
+      if (by === undefined) {
+        return;
+      }
+      ev.preventDefault();
+      picked = clamp(snap(picked + by * step));
+      paint(true);
+    });
+    readout.addEventListener("input", function () {
+      const typed = isInt ? parseInt(readout.value, 10) : parseFloat(readout.value);
+      if (isNaN(typed)) {
+        return;  // mid-edit: "", "-", "1." are all on the way to something
+      }
+      picked = clamp(typed);
+      paint(false);
+    });
+    // Only once editing ends is the box allowed to tidy what was typed — out-of-range back
+    // inside it, an abandoned edit back to the value that is actually stored.
+    readout.addEventListener("blur", function () {
+      paint(true);
+    });
+    paint(true);
+
+    row.appendChild(input);
+    row.appendChild(readout);
+    return {node: row, read: function () { return picked; }};
+  }
+
+  /**
+   * A plain number field, for a number with an open end — a slider needs somewhere to stop.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function numberControl(field) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.className = "omnia-input";
+    input.value = String(field.value);
+    input.step = String(field.step);
+    if (field.min !== null && field.min !== undefined) { input.min = String(field.min); }
+    if (field.max !== null && field.max !== undefined) { input.max = String(field.max); }
+    const isInt = field.kind === "int";
+    return {
+      node: input,
+      read: function () {
+        const n = isInt ? parseInt(input.value, 10) : parseFloat(input.value);
+        if (isNaN(n)) {
+          return field.value;
+        }
+        // CLAMPED, like the slider. `min`/`max` on a number input only drive `:invalid`
+        // styling — `.value` still hands back whatever was typed, and a bound the settings
+        // model enforces (`Field(ge=…, le=…)`) would then reject the saved section. That
+        // leaves the plugin unloadable AND its panel unopenable, with nothing said.
+        const low = field.min === null || field.min === undefined ? n : Number(field.min);
+        const high = field.max === null || field.max === undefined ? n : Number(field.max);
+        return Math.min(high, Math.max(low, n));
+      },
+    };
+  }
+
+  /**
+   * A text field. `secret` is the same control with the characters hidden.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function textControl(field) {
+    const input = document.createElement("input");
+    input.type = field.control === "secret" ? "password" : "text";
+    input.className = "omnia-input";
+    input.value = String(field.value);
+    return {node: input, read: function () { return input.value; }};
+  }
+
+  /**
+   * A colour swatch plus the hex it stands for, because a colour people can also type is a
+   * colour they can copy out of somewhere else.
+   * @param {!Object} field The field payload.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function colorControl(field) {
+    const wrap = el("div", "omnia-color");
+    const input = document.createElement("input");
+    input.type = "color";
+    const start = /^#[0-9a-fA-F]{6}$/.test(String(field.value)) ? String(field.value) : "#000000";
+    input.value = start;
+    const hex = el("span", "omnia-color-hex", start);
+    input.addEventListener("input", function () { hex.textContent = input.value; });
+    wrap.appendChild(input);
+    wrap.appendChild(hex);
+    return {node: wrap, read: function () { return input.value; }};
+  }
+
+  const CONTROLS = {
+    switch: switchControl,
+    segmented: segmentedControl,
+    dropdown: dropdownControl,
+    slider: sliderControl,
+    number: numberControl,
+    text: textControl,
+    secret: textControl,
+    color: colorControl,
+  };
+
+  /**
+   * Build one field row.
+   * @param {!Object} field The field payload.
+   * @param {number} index Its position, for the entrance stagger.
+   * @return {{node: !Element, read: function(): *}}
+   */
+  function fieldRow(field, index) {
+    const row = el("div", "omnia-field");
+    row.style.setProperty("--i", String(index));
+    row.setAttribute("data-control", field.control);
+    // The hover wash, on its own clipped layer so the row itself can let a dropdown out.
+    row.appendChild(el("span", "omnia-field-wash"));
+    const head = el("div", "omnia-field-head");
+    head.appendChild(el("div", "omnia-field-label", field.label));
+    const control = (CONTROLS[field.control] || textControl)(field);
+    const holder = el("div", "omnia-field-control");
+    holder.appendChild(control.node);
+    // A switch and a colour chip are small enough to sit on the label's line; everything else
+    // needs the width and goes underneath.
+    if (field.control === "switch" || field.control === "color") {
+      head.appendChild(holder);
+      row.appendChild(head);
+    } else {
+      row.appendChild(head);
+      row.appendChild(holder);
+    }
+    appendHelp(row, field.help || "");
+    return {node: row, read: control.read};
+  }
+
+  /**
+   * Render help text into `parent`: the first paragraph, then the rest behind a toggle.
+   *
+   * A plugin's help is written for someone deciding what to set, so the first paragraph says
+   * what the setting does and what follows says why it is worth setting. Printing all of it
+   * under every row turns a form into an essay — which is what the first draft of this panel
+   * looked like.
+   *
+   * @param {!Element} parent The field row.
+   * @param {string} help The authored help text.
+   */
+  function appendHelp(parent, help) {
+    const paragraphs = String(help).split(/\n\s*\n/).filter(function (p) { return p.trim(); });
+    if (!paragraphs.length) {
+      return;
+    }
+    parent.appendChild(helpBlock(paragraphs[0]));
+    if (paragraphs.length === 1) {
+      return;
+    }
+    const rest = el("div", "omnia-field-more");
+    rest.hidden = true;
+    paragraphs.slice(1).forEach(function (text) { rest.appendChild(helpBlock(text)); });
+    const toggle = el("button", "omnia-field-why", "Why this matters");
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.addEventListener("click", function () {
+      rest.hidden = !rest.hidden;
+      toggle.textContent = rest.hidden ? "Why this matters" : "Show less";
+      toggle.setAttribute("aria-expanded", String(!rest.hidden));
+    });
+    parent.appendChild(toggle);
+    parent.appendChild(rest);
+  }
+
+  /**
+   * One paragraph of help, with ``inline code`` rendered as code.
+   *
+   * The plugins author these with RST double backticks, which reached the screen as literal
+   * characters — `` ``vi`` `` rather than a value you could type. Built as nodes rather than
+   * markup: the text is authored by a plugin, and nothing here needs an HTML parser.
+   *
+   * @param {string} text One paragraph.
+   * @return {!Element}
+   */
+  function helpBlock(text) {
+    const block = el("div", "omnia-field-help");
+    // Split on ``code`` spans, keeping them: odd indexes are the code, even the prose.
+    String(text).split(/``([^`]+)``/).forEach(function (part, index) {
+      if (!part) {
+        return;
+      }
+      block.appendChild(index % 2 ? el("code", null, part) : document.createTextNode(part));
+    });
+    return block;
+  }
+
+  /**
+   * Show one plugin's settings.
+   * @param {!Object} payload What Python sent: id, name, category, accent, fields.
+   * @param {?Element} button The Configure button that opened it.
+   */
+  function openConfig(payload, button) {
+    configButton = button || null;
+    const readers = {};
+    configFields.textContent = "";
+    (payload.fields || []).forEach(function (field, index) {
+      const built = fieldRow(field, index);
+      readers[field.key] = built.read;
+      configFields.appendChild(built.node);
+    });
+    if (!(payload.fields || []).length) {
+      configFields.appendChild(el("div", "omnia-config-empty", "This feature has no options."));
+    }
+    config = {id: payload.id, category: payload.category || "", readers: readers};
+
+    configName.textContent = payload.name || "";
+    configNote.textContent = "";
+    // The category's own gradient, so the panel is visibly the same colour as the tile that
+    // opened it rather than a generic form that could belong to anything.
+    const accent = payload.accent || [];
+    if (accent.length === 2) {
+      configView.style.setProperty("--cat-from", accent[0]);
+      configView.style.setProperty("--cat-to", accent[1]);
+    }
+
+    document.querySelectorAll(".omnia-category").forEach(function (view) { view.hidden = true; });
+    landing.hidden = true;
+    configView.hidden = false;
+    replay(configView);
+    document.body.dataset.view = "config";
+    window.scrollTo(0, 0);
+    configName.focus();
+  }
+
+  /** Leave the panel without saving, back to the category it was opened from. */
+  function leaveConfig() {
+    const key = config ? config.category : "";
+    config = null;
+    configView.hidden = true;
+    const tile = key ? tileFor(key) : null;
+    if (tile) {
+      showCategory(tile);
+      if (configButton) {
+        configButton.focus();
+        configButton = null;
+      }
+      return;
+    }
+    showLanding();
+  }
+
+  /** Read every control and ask Python to persist it. */
+  function saveConfig() {
+    if (!config) {
+      return;
+    }
+    const values = {};
+    Object.keys(config.readers).forEach(function (key) {
+      values[key] = config.readers[key]();
+    });
+    const id = config.id;
+    configNote.textContent = "Saving\u2026";
+    send("save-config", {id: id, values: values}, function (res) {
+      // A save that could not be applied is not a save that did not happen: the value is
+      // stored, and what failed is re-applying it to a running plugin. Saying so beats closing
+      // the panel as though all was well.
+      if (res && res.error) {
+        configNote.textContent = res.error;
+        return;
+      }
+      leaveConfig();
+    });
+  }
+
+  configView.querySelector(".omnia-config-back").addEventListener("click", leaveConfig);
+  configView.querySelector(".omnia-config-cancel").addEventListener("click", leaveConfig);
+  configView.querySelector(".omnia-config-save").addEventListener("click", saveConfig);
+
+  // A click anywhere else closes an open dropdown, which is what a popup does.
+  document.addEventListener("click", function (ev) {
+    const drop = openDropdown();
+    if (drop && !drop.contains(ev.target)) {
+      closeOpenDropdown();
+    }
+  }, true);
+
 })();
