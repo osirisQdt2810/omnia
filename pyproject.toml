@@ -79,4 +79,5 @@ markers = [
     "integration: marks tests that hit a real provider API (run `-m 'not integration'` to stay free/offline)",
     "llm: marks tests that call a REAL LLM provider (consumes LLM quota; auto-skip without creds; xfail on quota/token limits)",
     "tts: marks tests that call a REAL cloud/keyed TTS provider (network/quota; auto-skip without creds; xfail on limits). Keyless/offline TTS (google_translate, edge_tts, piper) is UNMARKED so it always runs.",
+    "live_endpoint: marks tests that reach a third-party endpoint with no key and no fake. They pass on a developer machine and answer datacenter IPs with 403s or DNS failures, so CI skips them by MARKER — a node-id deselect silently stops matching the day a test is renamed or moved into a class, which is exactly what happened to the edge_tts one.",
 ]
