@@ -533,8 +533,6 @@ class TestTheBatchDoesNotHoldAnkisCollectionThread:
         """
         import threading
 
-        from omnia.plugins.smart_notes.integration import batch as batch_module
-
         main = threading.current_thread().name
         offences: list = []
 
