@@ -136,7 +136,13 @@ class _FakeCompat:
         self.run_on_main_calls += 1
         callback()
 
-    def run_in_background(self, op, *, on_success, on_failure=None, label=None):
+    def run_in_background(
+        self, op, *, on_success, on_failure=None, label=None, uses_collection=True
+    ):
+        # `uses_collection` is recorded rather than ignored: a batch that stopped asking
+        # for the collection thread is the difference between Anki staying usable and
+        # Anki putting a modal window over itself for the length of the run.
+        self.uses_collection = uses_collection
         try:
             on_success(op())
         except Exception as exc:  # mirror QueryOp routing
@@ -497,6 +503,113 @@ class TestWritingBackDoesNotHogTheMainThread:
         gen.run(nids, summaries.append)
 
         assert len(summaries) == 1, "the run never reported back"
+
+
+class TestTheBatchDoesNotHoldAnkisCollectionThread:
+    """Why a long batch used to put a modal "Processing…" window over the whole app.
+
+    `TaskManager` owns exactly one collection thread (`ThreadPoolExecutor(max_workers=1)`), so
+    every collection operation in Anki is serialised through it. A batch that held it for the
+    minutes a real run takes made everything else queue behind the WHOLE batch — and
+    `ProgressManager._maybeShow` puts up its unlabelled "Processing…" for anything pending more
+    than half a second. So the window was not a symptom of Anki being busy; it was the editor's
+    own save waiting its turn behind us, and it stayed until the batch ended.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def test_the_op_body_touches_the_collection_only_through_media(self, monkeypatch):
+        """The invariant that makes releasing the thread safe, pinned.
+
+        Anki's rule is one thread on the collection at a time, and the single collection thread
+        is how it enforces that. Letting go of it is only sound while the op's own collection
+        access is marshalled — today that is exactly one call, the media write. A `get_note` or
+        an `update_note` added to the generation path later would break the rule silently, so
+        this runs the op on a REAL second thread and fails if anything but media is reached
+        from it.
+        """
+        import threading
+
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        main = threading.current_thread().name
+        offences: list = []
+
+        class _Strict(_FakeCompat):
+            def _check(self, what):
+                if threading.current_thread().name != main:
+                    offences.append(what)
+
+            def get_note(self, nid, col=None):
+                self._check("get_note")
+                return super().get_note(nid, col)
+
+            def update_notes(self, notes, col=None):
+                self._check("update_notes")
+                return super().update_notes(notes, col)
+
+            def note_deck_ids(self, note, col=None):
+                self._check("note_deck_ids")
+                return super().note_deck_ids(note, col)
+
+            def run_in_background(
+                self,
+                op,
+                *,
+                on_success,
+                on_failure=None,
+                label=None,
+                uses_collection=True,
+            ):
+                # A real second thread, like Anki's. Running the op inline would put it on the
+                # main thread and this test could never fail.
+                self.uses_collection = uses_collection
+                box: dict = {}
+
+                def runner():
+                    try:
+                        box["value"] = op()
+                    except Exception as exc:
+                        box["error"] = exc
+
+                thread = threading.Thread(target=runner, name="op-thread")
+                thread.start()
+                thread.join(10)
+                if "error" in box:
+                    if on_failure:
+                        on_failure(box["error"])
+                    return
+                on_success(box["value"])
+
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, 4)
+        }
+        _patch_compat(monkeypatch, _Strict(notes))
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1, 2, 3], lambda _s: None)
+
+        assert offences == [], (
+            "the generation op reached the collection off the main thread: "
+            + ", ".join(sorted(set(offences)))
+        )
+
+    def test_the_generation_op_releases_it(self, monkeypatch):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+
+        assert fake.uses_collection is False, (
+            "the batch asked for Anki's single collection thread and will hold it for the "
+            "whole run, so every other collection operation queues behind it"
+        )
 
 
 class TestTheProgressThrottle:

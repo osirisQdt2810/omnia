@@ -94,7 +94,13 @@ class _FakeCompat:
     def redraw_reviewer_current_card(self):
         self.redraws += 1
 
-    def run_in_background(self, op, *, on_success, on_failure=None, label=None):
+    def run_in_background(
+        self, op, *, on_success, on_failure=None, label=None, uses_collection=True
+    ):
+        # `uses_collection` is recorded rather than ignored: a batch that stopped asking
+        # for the collection thread is the difference between Anki staying usable and
+        # Anki putting a modal window over itself for the length of the run.
+        self.uses_collection = uses_collection
         try:
             on_success(op())
         except Exception as exc:

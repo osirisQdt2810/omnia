@@ -529,7 +529,18 @@ class BatchGenerator:
             logger.exception("smart_notes batch failed")
             on_done(BatchSummary(failed=total))
 
-        anki_compat.run_in_background(op, on_success=on_success, on_failure=on_failure)
+        # uses_collection=False is the whole reason a batch no longer freezes Anki behind a
+        # modal "Processing…". Anki serialises every collection operation through ONE thread, so
+        # holding it for the minutes this takes made the editor's own saves, and any other
+        # collection work, queue behind the entire batch — and anything pending more than half a
+        # second gets that window put over the app until it clears.
+        #
+        # The op qualifies because it is network and compute: the single piece of collection
+        # access inside it is the media write in `materialize`, and `add_media_file` marshals
+        # that to the main thread for the length of one file.
+        anki_compat.run_in_background(
+            op, on_success=on_success, on_failure=on_failure, uses_collection=False
+        )
 
     def _build_plans(self, note_ids: list[int]) -> tuple[list[_NotePlan], int]:
         """Select the generatable plans; return ``(plans, deck_skipped)``.

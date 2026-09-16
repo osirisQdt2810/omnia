@@ -330,3 +330,139 @@ class TestShortcutAlreadyTaken:
 
         monkeypatch.setattr(aqt, "mw", None, raising=False)
         assert shortcut_already_taken("]") == []
+
+
+class TestBorrowingTheMainThreadForTheCollection:
+    """For an op that runs OFF Anki's collection thread but still has one call to make.
+
+    Anki serialises collection access through a single thread, and an op that holds it for
+    minutes makes everything else queue behind it — which is what put a modal "Processing…"
+    over the app for the length of a Smart Notes batch. Releasing that thread is only safe if
+    the collection access inside the op goes somewhere Anki considers entitled to it.
+    """
+
+    def _window(self, in_main: bool, run):
+        class _Taskman:
+            def __init__(self):
+                self.posted = []
+
+            def run_on_main(self, closure):
+                self.posted.append(closure)
+                run(closure)
+
+        class _Window:
+            def __init__(self):
+                self.taskman = _Taskman()
+
+            def inMainThread(self):  # Anki's own method name
+                return in_main
+
+        return _Window()
+
+    def test_a_worker_hands_the_work_over_and_gets_the_answer_back(self, monkeypatch):
+        import threading
+
+        from omnia.core import anki_compat
+
+        ran_on: list = []
+
+        def elsewhere(closure):
+            # A real second thread, like Anki's. Running it inline would make "on the main
+            # thread" and "on this one" indistinguishable and the test unable to fail.
+            thread = threading.Thread(target=closure, name="pretend-main")
+            thread.start()
+            thread.join(5)
+
+        window = self._window(in_main=False, run=elsewhere)
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        answer = anki_compat.call_on_main_and_wait(
+            lambda: ran_on.append(threading.current_thread().name) or "written"
+        )
+
+        assert answer == "written"
+        assert ran_on == ["pretend-main"]
+
+    def test_on_the_main_thread_it_just_runs(self, monkeypatch):
+        # Posting and then waiting would deadlock: the thread that has to run the closure is
+        # the one doing the waiting.
+        from omnia.core import anki_compat
+
+        window = self._window(in_main=True, run=lambda closure: closure())
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        assert anki_compat.call_on_main_and_wait(lambda: "done") == "done"
+        assert window.taskman.posted == [], "it queued work behind itself"
+
+    def test_an_exception_comes_back_to_the_caller(self, monkeypatch):
+        import pytest
+
+        from omnia.core import anki_compat
+
+        def boom():
+            raise ValueError("no disk")
+
+        window = self._window(in_main=False, run=lambda closure: closure())
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        with pytest.raises(ValueError, match="no disk"):
+            anki_compat.call_on_main_and_wait(boom)
+
+    def test_a_main_thread_that_never_answers_gives_up(self, monkeypatch):
+        # Not unbounded: a worker blocked forever on a main thread that will never answer keeps
+        # the whole batch alive with nothing to show for it.
+        import pytest
+
+        from omnia.core import anki_compat
+
+        monkeypatch.setattr(anki_compat, "_MAIN_THREAD_WAIT_SECONDS", 0.2)
+        window = self._window(in_main=False, run=lambda closure: None)
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        with pytest.raises(TimeoutError):
+            anki_compat.call_on_main_and_wait(lambda: "never")
+
+
+class TestWritingMediaFromAWorker:
+    def test_it_goes_through_the_main_thread(self, monkeypatch):
+        # The one piece of collection access inside the generation op. If it stopped hopping,
+        # the op would be touching the collection from a thread Anki does not expect.
+        from omnia.core import anki_compat
+
+        hopped: list = []
+        monkeypatch.setattr(
+            anki_compat,
+            "call_on_main_and_wait",
+            lambda work: hopped.append(True) or work(),
+        )
+
+        class _Media:
+            def write_data(self, filename, data):
+                return "stored-" + filename
+
+        class _Window:
+            col = type("C", (), {"media": _Media()})()
+
+        monkeypatch.setattr(anki_compat, "main_window", lambda: _Window())
+
+        assert anki_compat.add_media_file("a.mp3", b"x") == "stored-a.mp3"
+        assert hopped == [True], "the media write never left the worker thread"
+
+    def test_an_explicit_collection_is_used_as_given(self, monkeypatch):
+        # The caller named the collection and, by doing so, said it is already on a thread
+        # entitled to touch it — hopping again would be a pointless round trip.
+        from omnia.core import anki_compat
+
+        monkeypatch.setattr(
+            anki_compat,
+            "call_on_main_and_wait",
+            lambda work: (_ for _ in ()).throw(AssertionError("hopped needlessly")),
+        )
+
+        class _Media:
+            def write_data(self, filename, data):
+                return "direct-" + filename
+
+        col = type("C", (), {"media": _Media()})()
+
+        assert anki_compat.add_media_file("b.mp3", b"y", col) == "direct-b.mp3"

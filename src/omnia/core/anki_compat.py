@@ -74,6 +74,7 @@ def run_in_background(
     on_failure: Optional[Callable[[Exception], None]] = None,
     parent: Optional[Any] = None,
     label: Optional[str] = None,
+    uses_collection: bool = True,
 ) -> None:
     """Run ``op`` off the Qt main thread, then call ``on_success`` back on the main thread.
 
@@ -87,11 +88,29 @@ def run_in_background(
         on_failure: Optional main-thread callback receiving an exception.
         parent: Qt parent for the operation (defaults to ``mw``).
         label: Optional progress-dialog label.
+        uses_collection: Whether ``op`` touches the collection. **False takes Anki's word for
+            it**: ``TaskManager`` owns exactly one collection thread
+            (``ThreadPoolExecutor(max_workers=1)``), so every collection operation in the whole
+            app is serialised through it, and an op that holds it for minutes makes everything
+            else queue behind it. Anki shows a modal "Processing…" for anything pending more
+            than half a second (``ProgressManager._maybeShow``), so a long op does not merely
+            delay the next collection operation — it puts a window over the app that stays
+            until the op finishes.
+
+            Pass False ONLY for an op that is genuinely network or compute, and marshal any
+            collection access inside it to the main thread (see :func:`call_on_main_and_wait`).
+            The flag is not a performance hint; getting it wrong means two threads in the
+            backend at once.
     """
     from aqt.operations import QueryOp
 
     mw = main_window()
     query = QueryOp(parent=parent or mw, op=lambda _col: op(), success=on_success)
+    if not uses_collection and hasattr(query, "without_collection"):
+        # hasattr: `without_collection` arrived after some versions this add-on supports, and
+        # its absence costs latency rather than correctness — the op simply keeps the old
+        # behaviour of running on the collection thread.
+        query = query.without_collection()
     if label:
         query = query.with_progress(label)
     if on_failure is not None and hasattr(query, "failure"):
@@ -274,10 +293,25 @@ def main_web_eval(js: str) -> None:
 # at commit. The rest of the calls below still belong on the main thread.
 # ----------------
 def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str:
-    """Write ``data`` as ``filename`` into the collection media folder; return the real name."""
-    if col is None:
-        col = main_window().col
-    return str(col.media.write_data(filename, data))
+    """Write ``data`` as ``filename`` into the collection media folder; return the real name.
+
+    Marshalled to the Qt main thread when called from a worker, because this is the ONE piece of
+    collection access inside smart_notes' generation op — and that op now runs off the
+    collection thread so it cannot make the rest of Anki queue behind it. Borrowing the main
+    thread for the length of one file write is what keeps that trade honest: Anki's rule is one
+    thread on the collection at a time, and this obeys it without holding the collection thread
+    for the minutes a batch takes.
+
+    An explicit ``col`` is used as given — the caller has said which collection and, by passing
+    one, that it is already on a thread entitled to touch it.
+    """
+    if col is not None:
+        return str(col.media.write_data(filename, data))
+    return str(
+        call_on_main_and_wait(
+            lambda: main_window().col.media.write_data(filename, data)
+        )
+    )
 
 
 def media_dir(col: Optional[Any] = None) -> str:
@@ -584,6 +618,57 @@ def progress_label(label: str) -> None:
         window.progress.update(label=label)
 
     run_on_main(_apply)
+
+
+#: How long a worker waits for the Qt main thread before giving up on a collection call.
+#:
+#: Generous on purpose. The hop only fails when the main thread is wedged for longer than this,
+#: and the cost of being impatient is a dropped media file — where the cost of waiting is a
+#: background job that is slow for a moment. Not unbounded, because a worker blocked forever on
+#: a main thread that will never answer (a modal the user left open, a profile being closed)
+#: would keep the whole batch alive with nothing to show for it.
+_MAIN_THREAD_WAIT_SECONDS = 30.0
+
+
+def call_on_main_and_wait(work: Callable[[], T]) -> T:
+    """Run ``work`` on the Qt main thread from a worker, and return what it produced.
+
+    For the one kind of caller that has no alternative: an op running OFF the collection thread
+    (``run_in_background(..., uses_collection=False)``) that nevertheless has to touch the
+    collection for a moment. Anki's rule is that the collection belongs to one thread at a time;
+    this borrows the main thread for the length of one call rather than holding the collection
+    thread for the length of a whole job.
+
+    Called ON the main thread it simply runs the work — posting to the queue and then waiting
+    for it would deadlock, since the thread that must run the closure is the one waiting.
+
+    Raises:
+        TimeoutError: The main thread did not get to it within
+            :data:`_MAIN_THREAD_WAIT_SECONDS`.
+    """
+    window = main_window()
+    if window is None or window.inMainThread():
+        return work()
+
+    import threading
+
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            box["value"] = work()
+        except BaseException as exc:  # carried back to the calling thread
+            box["error"] = exc
+        finally:
+            done.set()
+
+    window.taskman.run_on_main(runner)
+    if not done.wait(_MAIN_THREAD_WAIT_SECONDS):
+        raise TimeoutError("Anki's main thread did not answer in time")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]  # type: ignore[no-any-return]
 
 
 def run_on_main(callback: Callable[[], None]) -> None:
