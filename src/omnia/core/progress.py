@@ -67,6 +67,11 @@ class JobProgress:
     label: str = ""
     active: bool = False
     cancelled: bool = False
+    #: Why the job is not making progress right now, in words, or "" when it is running. A job
+    #: that deliberately waits — for the reviewer to be closed, say — looks identical to a
+    #: stuck one from outside, and the difference matters to whoever is deciding whether to
+    #: press Stop.
+    held: str = ""
 
     @property
     def percent(self) -> Optional[float]:
@@ -95,6 +100,8 @@ class JobProgress:
         counted = f"{self.done} of {self.total}" if self.total > 0 else str(self.done)
         if self.cancelled:
             return f"Stopping… ({counted})"
+        if self.held:
+            return f"{counted} — {self.held}"
         return f"{self.label} {counted}" if self.label else counted
 
 
@@ -116,6 +123,7 @@ class JobTracker:
         self._total = 0
         self._active = False
         self._cancelled = False
+        self._held = ""
 
     def start(self, total: int) -> None:
         """Begin a run of ``total`` units, discarding any previous one's counts."""
@@ -124,6 +132,12 @@ class JobTracker:
             self._total = max(0, int(total))
             self._active = True
             self._cancelled = False
+            self._held = ""
+
+    def hold(self, reason: str) -> None:
+        """Say why the job is deliberately not progressing. ``""`` means it is running again."""
+        with self._lock:
+            self._held = reason
 
     def advance(self, count: int = 1) -> None:
         """Record ``count`` more finished units."""
@@ -181,4 +195,5 @@ class JobTracker:
                 label=self._label,
                 active=self._active,
                 cancelled=self._cancelled,
+                held=self._held,
             )

@@ -74,6 +74,34 @@ _PROGRESS_INTERVAL_SECONDS = 0.25
 # while they happen, and anything in this range does.
 _WRITE_SLICE = 25
 
+# How often to look again when the write-back is holding off for a reviewer.
+#
+# Polled rather than driven by Anki's state hook, because the question is "is it safe NOW" and a
+# poll cannot miss an answer: a hook unsubscribed at the wrong moment, or a state change that
+# happens while a slice is mid-flight, leaves the rest of a batch unwritten with nothing to
+# restart it. Two seconds is under a card's reading time, so nothing waits long after the
+# reviewer is closed.
+_REVIEW_RECHECK_MS = 2000
+
+#: Write-backs that have generated content in hand and have not written all of it yet.
+#:
+#: Held here rather than on the generator, because what has to find them is the profile closing —
+#: a moment that knows nothing about which batch is running. Deferring the write while somebody
+#: reviews is a courtesy; throwing away fields that cost real provider money because they quit
+#: before finishing their reviews is not a trade anyone would choose, so closing flushes them.
+_PENDING_WRITES: set[Callable[[], None]] = set()
+
+
+def flush_pending_writes() -> None:
+    """Write every batch's outstanding notes NOW. Called when the profile is closing."""
+    for flush in list(_PENDING_WRITES):
+        try:
+            flush()
+        except Exception:  # one batch must not strand another's content
+            logger.exception("smart_notes: a pending write-back could not be flushed")
+    _PENDING_WRITES.clear()
+
+
 # The ceilings this build honours live on the settings model, next to the fields they bound
 # (``SmartNotesSettings.workers`` / ``.notes_per_call``), so the batch runner, the editor
 # button, review-time pre-generation and the GUI controller cannot disagree about them.
@@ -522,7 +550,7 @@ class BatchGenerator:
                 progress.finish()
                 on_done(summary)
 
-            self._write_back(outcomes, finished)
+            self._write_back(outcomes, finished, progress)
 
         def on_failure(exc: Exception) -> None:
             progress.finish()
@@ -700,6 +728,7 @@ class BatchGenerator:
         self,
         outcomes: list[_NoteOutcome],
         done: Callable[[BatchSummary], None],
+        progress: ProgressSurface,
     ) -> None:
         """Write every outcome back, in slices, handing the main thread back between each.
 
@@ -720,23 +749,67 @@ class BatchGenerator:
         """
         summary = BatchSummary()
         cursor = {"at": 0}
+        finished = {"yes": False}
+
+        def report(result: BatchSummary) -> None:
+            """Hand the run back exactly once, however it got here."""
+            if finished["yes"]:
+                return
+            finished["yes"] = True
+            _PENDING_WRITES.discard(flush)
+            done(result)
+
+        def write_remaining() -> bool:
+            """Write what is left, one slice. Returns whether there is still more."""
+            chunk = outcomes[cursor["at"] : cursor["at"] + _WRITE_SLICE]
+            cursor["at"] += len(chunk)
+            self._apply(chunk, summary)
+            return cursor["at"] < len(outcomes)
+
+        def flush() -> None:
+            """Write EVERYTHING now, regardless of the reviewer. For profile close.
+
+            Waiting for the reviewer is a courtesy; losing generated content is not a courtesy
+            anybody wants. By the time this runs the user is quitting or switching profiles, so
+            there is no review left to protect — and what is in hand cost real money to make.
+            """
+            if finished["yes"]:
+                return
+            try:
+                while write_remaining():
+                    pass
+            except Exception:
+                logger.exception("smart_notes: flushing the batch on close failed")
+            report(summary)
 
         def step() -> None:
+            if finished["yes"]:
+                return  # a close flushed it while this tick was in the queue
+            if anki_compat.reviewing():
+                # HOLD. Any note write makes the reviewer redraw the card on screen — it keys
+                # on "some note changed", not on which one — and the redraw rebuilds the
+                # webview, throwing away a half-typed answer. Someone who started a long batch
+                # so they could carry on studying would be interrupted by the very thing they
+                # started. The media is already on disk; only the field updates wait, and they
+                # go in the moment the reviewer is left.
+                progress.hold("waiting until you finish reviewing")
+                anki_compat.single_shot(_REVIEW_RECHECK_MS, step)
+                return
+            progress.hold("")
             try:
-                chunk = outcomes[cursor["at"] : cursor["at"] + _WRITE_SLICE]
-                cursor["at"] += len(chunk)
-                self._apply(chunk, summary)
+                more = write_remaining()
             except Exception:
                 # One bad slice must not strand the run: the counts are already in `summary`,
                 # and abandoning here would leak the progress refcount with it.
                 logger.exception("smart_notes: writing a slice of the batch failed")
-                done(summary)
+                report(summary)
                 return
-            if cursor["at"] < len(outcomes):
+            if more:
                 anki_compat.run_on_main(step)
                 return
-            done(summary)
+            report(summary)
 
+        _PENDING_WRITES.add(flush)
         step()
 
     def _apply(

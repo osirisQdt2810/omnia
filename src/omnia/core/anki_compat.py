@@ -671,6 +671,31 @@ def call_on_main_and_wait(work: Callable[[], T]) -> T:
     return box["value"]  # type: ignore[no-any-return]
 
 
+def reviewing() -> bool:
+    """Whether Anki is currently showing a card in the reviewer.
+
+    Asked before writing to notes from a background job. Any note write at all makes the
+    reviewer redraw the card on screen — ``Reviewer.op_executed`` keys on ``changes.note_text``
+    with no check of WHICH note changed, and ``_redraw_current_card`` re-runs ``_showQuestion``,
+    which rebuilds the webview including the type-in box. So a batch writing while someone is
+    reviewing flickers their card and throws away whatever answer they were typing.
+    """
+    window = main_window()
+    return bool(window is not None and getattr(window, "state", "") == "review")
+
+
+def single_shot(milliseconds: int, callback: Callable[[], None]) -> None:
+    """Run ``callback`` on the Qt main thread once, after ``milliseconds``.
+
+    Anki's own timer rather than a thread: it is cancelled with the profile, so a pending
+    callback cannot fire into a collection that has closed underneath it.
+    """
+    window = main_window()
+    if window is None:
+        return
+    window.progress.single_shot(milliseconds, callback)
+
+
 def run_on_main(callback: Callable[[], None]) -> None:
     """Schedule ``callback`` to run on the Qt main thread (from a background thread)."""
     main_window().taskman.run_on_main(callback)

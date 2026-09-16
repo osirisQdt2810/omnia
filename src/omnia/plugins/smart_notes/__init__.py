@@ -39,6 +39,7 @@ from omnia.plugins.smart_notes.integration import (
     note_materializer,
     set_button_enabled,
 )
+from omnia.plugins.smart_notes.integration.batch import flush_pending_writes
 from omnia.plugins.smart_notes.integration.progress import surface_for
 from omnia.plugins.smart_notes.integration.regen import (
     REGENERATION_SERVICE,
@@ -183,6 +184,12 @@ class SmartNotesPlugin(FeaturePlugin):
         )
 
     def on_disable(self, ctx: PluginContext) -> None:
+        # FIRST, before anything is torn down. A batch whose write-back is waiting for the
+        # reviewer to close is holding generated fields that cost real provider money, and this
+        # runs on profile close — which Anki fires BEFORE it closes the collection
+        # (`AnkiQt.unloadProfile`), so there is still somewhere to put them. Waiting for a
+        # reviewer is a courtesy; throwing the work away because the user quit is not.
+        flush_pending_writes()
         services.revoke(REGENERATION_SERVICE)
         services.revoke(progress_service(self.id))
         anki_compat.unsubscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
