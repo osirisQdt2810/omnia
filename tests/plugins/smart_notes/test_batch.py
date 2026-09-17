@@ -27,6 +27,18 @@ from omnia.plugins.smart_notes.integration.batch import (
 )
 
 
+def _text(note, field):
+    """A field as a READER sees it — without Omnia's provenance mark.
+
+    Omnia stamps the text it writes with `<!--omnia:hash-->` so a later regeneration can tell
+    its own output from something the user typed. The mark is invisible while reviewing, so a
+    test asserting what the note now says should not see it either.
+    """
+    from omnia.plugins.smart_notes.provenance import unstamp
+
+    return unstamp(note[field])
+
+
 def _note_type_config(note_type="Basic", *, enabled=True, decks=None):
     """A Basic note type whose 'Def' field is generated from the 'Word' base field."""
     return SmartNotesNoteTypeConfig(
@@ -295,7 +307,7 @@ class TestBatchGenerator:
         BatchGenerator(_generator(settings), settings).run([1, 2], summaries.append)
         assert fake.updated == [1, 2]
         assert summaries[0].processed == 2
-        assert notes[1]["Def"] == "generated"
+        assert _text(notes[1], "Def") == "generated"
 
     def test_dedupes_note_ids(self, monkeypatch):
         notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
@@ -325,7 +337,7 @@ class TestBatchGenerator:
         summaries: list = []
         BatchGenerator(_generator(settings), settings).run([1], summaries.append)
         assert summaries[0].processed == 1
-        assert notes[1]["Def"] == "generated"
+        assert _text(notes[1], "Def") == "generated"
 
     def test_notes_without_matching_rules_are_dropped(self, monkeypatch):
         notes = {1: _FakeNote(1, "Cloze", {"Text": "x"})}
@@ -410,8 +422,8 @@ class TestBatchGenerator:
         assert touched == [1, 2, 3]
         # Complete, not half-walked: BOTH levels are filled on every note that was written.
         for nid in touched:
-            assert notes[nid]["Def"], f"note {nid} lost its first level"
-            assert notes[nid]["Extra"], f"note {nid} lost its second level"
+            assert _text(notes[nid], "Def"), f"note {nid} lost its first level"
+            assert _text(notes[nid], "Extra"), f"note {nid} lost its second level"
         # And every touched note is accounted for — none silently in no bucket.
         assert summaries[0].processed == len(touched)
 
@@ -1106,6 +1118,98 @@ class TestQuittingWhileAWriteIsWaiting:
             plugin.on_disable(None)
 
         assert fake.updated == nids
+
+
+class TestWhoseWorkARegenerationMayDestroy:
+    """`Overwrite` says filled fields should be refreshed. It does not say whose work may go.
+
+    A sentence the user typed and one Omnia generated are indistinguishable to a rule that only
+    knows the field is non-empty, so `overwrite_scope` asks the second question separately.
+    """
+
+    def _settings(self, scope, **kw):
+        base = {
+            "note_types": [_note_type_config()],
+            "regenerate_when_batching": True,
+            "overwrite_scope": scope,
+        }
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _run(self, monkeypatch, scope, existing):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": existing})}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings(scope)
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+        fake.drain_timers()
+        return notes[1]["Def"]
+
+    def test_by_default_a_regeneration_replaces_anything(self, monkeypatch):
+        # What Overwrite already did. Changing that silently would be worse than a setting.
+        from omnia.plugins.smart_notes.provenance import ALWAYS
+
+        after = self._run(monkeypatch, ALWAYS, "<b>written by hand</b>")
+
+        assert "written by hand" not in after
+
+    def test_ours_only_leaves_a_hand_written_field_alone(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import OURS_ONLY
+
+        after = self._run(monkeypatch, OURS_ONLY, "<b>written by hand</b>")
+
+        assert after == "<b>written by hand</b>"
+
+    def test_ours_only_still_refreshes_what_omnia_wrote(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import OURS_ONLY, stamp
+
+        after = self._run(monkeypatch, OURS_ONLY, stamp("an older definition"))
+
+        assert "an older definition" not in after
+
+    def test_ours_only_stops_once_the_user_has_edited_it(self, monkeypatch):
+        """The reason the mark carries a fingerprint rather than just saying "mine".
+
+        The comment survives typing — it is a DOM node — so a bare mark would still authorise
+        destroying the edit.
+        """
+        from omnia.plugins.smart_notes.provenance import OURS_ONLY, stamp
+
+        edited = stamp("an older definition").replace("older", "older, improved by me")
+
+        after = self._run(monkeypatch, OURS_ONLY, edited)
+
+        assert "improved by me" in after
+
+    def test_not_ours_protects_audio_already_paid_for(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import NOT_OURS
+
+        after = self._run(monkeypatch, NOT_OURS, "[sound:omnia-1-Def.mp3]")
+
+        assert after == "[sound:omnia-1-Def.mp3]"
+
+    def test_never_leaves_every_filled_field_alone(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import NEVER, stamp
+
+        assert self._run(monkeypatch, NEVER, "by hand") == "by hand"
+        assert "older" in self._run(monkeypatch, NEVER, stamp("older"))
+
+    def test_an_empty_field_is_filled_whatever_the_scope(self, monkeypatch):
+        # The setting is about OVERWRITING. Even "never" must not stop a blank field from being
+        # generated in the first place — there is nothing there to protect.
+        from omnia.plugins.smart_notes.provenance import NEVER, unstamp
+
+        after = self._run(monkeypatch, NEVER, "")
+
+        assert unstamp(after) == "generated"
+
+    def test_what_omnia_writes_carries_its_mark(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import ALWAYS, is_untouched, unstamp
+
+        after = self._run(monkeypatch, ALWAYS, "")
+
+        assert is_untouched(after), "an unmarked write can never be recognised later"
+        assert unstamp(after) == "generated", "the reader must see only the content"
 
 
 class TestReadingWhichMediaAFieldIsGivingUp:

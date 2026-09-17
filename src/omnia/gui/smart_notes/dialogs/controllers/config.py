@@ -195,6 +195,9 @@ class ConfigController:
                     "batch_in_background": bool(
                         opts.get("batch_in_background", settings.batch_in_background)
                     ),
+                    "overwrite_scope": str(
+                        opts.get("overwrite_scope", settings.overwrite_scope)
+                    ),
                     "regenerate_when_batching": bool(
                         opts.get(
                             "regenerate_when_batching",
@@ -523,6 +526,7 @@ class ConfigController:
         return {
             "generate_at_review": settings.generate_at_review,
             "batch_in_background": settings.batch_in_background,
+            "overwrite_scope": settings.overwrite_scope,
             "regenerate_when_batching": settings.regenerate_when_batching,
             "allow_empty_fields": settings.allow_empty_fields,
             "regenerate_from_clippers": settings.regenerate_from_clippers,

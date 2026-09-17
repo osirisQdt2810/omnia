@@ -16,7 +16,7 @@ stores, stays a :class:`~omnia.core.config.base.StrictModel`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import Field, validator
 
@@ -320,6 +320,19 @@ class SmartNotesSettings(PersistedModel):
     allow_empty_fields: bool = False
     # Whether automatic batch generation regenerates fields it already filled.
     regenerate_when_batching: bool = True
+    # WHAT a regeneration is allowed to replace, once it has decided to regenerate at all.
+    #
+    # `regenerate_when_batching` answers "should filled fields be refreshed"; this answers "whose
+    # work may be thrown away doing it". They are different questions and the second is the one
+    # with a cost: a sentence the user wrote by hand and a sentence Omnia generated look
+    # identical to a rule that only knows the field is non-empty.
+    #
+    # "always" is the default, and deliberately so: it is what Overwrite already did. The marks
+    # this reads are stamped when Omnia writes a field, so every field that existed before this
+    # setting is UNMARKED — and defaulting to "ours_only" would therefore treat a whole
+    # collection as somebody else's work and quietly stop regenerating any of it. Changing what
+    # a switch does to existing content, without being asked, is worse than an extra click.
+    overwrite_scope: Literal["always", "ours_only", "not_ours", "never"] = "always"
     # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
     generate_at_review: bool = False
     # Whether a batch started from the Browser reports to Anki's progress dialog or quietly in

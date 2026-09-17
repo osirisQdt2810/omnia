@@ -21,6 +21,7 @@ from omnia.plugins.smart_notes.engine.interpolation import (
     interpolate,
     split_prompt,
 )
+from omnia.plugins.smart_notes.provenance import ALWAYS, may_overwrite
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
@@ -186,27 +187,41 @@ def should_skip_rule(
     fields: dict[str, str],
     *,
     allow_empty_fields: bool,
+    overwrite_scope: str = ALWAYS,
 ) -> bool:
     """Return whether ``rule`` should be skipped for a note with ``fields``.
 
-    Two skip conditions:
+    Three skip conditions:
 
     * **empty sources** — skip when the rule references fields but they are ALL blank,
       unless ``allow_empty_fields``. (A rule that references no field is never skipped on
       this account.)
     * **already filled** — skip when ``target_field`` already holds a value, unless the
       rule's own ``overwrite`` flag is set.
+    * **not ours to replace** — skip when the rule WOULD overwrite, but the content sitting
+      there is not something ``overwrite_scope`` permits destroying.
 
     Args:
         rule: The compiled generation rule under consideration.
         fields: The note's current field values (including any freshly chained values).
         allow_empty_fields: Generate even when all referenced source fields are blank.
+        overwrite_scope: What a regeneration may replace —
+            :data:`~omnia.plugins.smart_notes.provenance.ALWAYS` (the default, and what Overwrite
+            has always done), ``OURS_ONLY`` (protects what you wrote by hand), ``NOT_OURS``
+            (protects what Omnia already paid to generate) or ``NEVER``.
 
     Returns:
         ``True`` if the rule must be skipped, ``False`` to generate it.
     """
-    if not rule.overwrite and str(fields.get(rule.target_field, "")).strip():
-        return True
+    current = str(fields.get(rule.target_field, ""))
+    if current.strip():
+        if not rule.overwrite:
+            return True
+        # Deciding to regenerate is not the same as being allowed to destroy what is there. A
+        # sentence the user wrote by hand and one Omnia generated are indistinguishable to a
+        # rule that only knows the field is non-empty, so the scope asks whose work it is.
+        if not may_overwrite(current, overwrite_scope):
+            return True
     sources = rule_source_fields(rule)
     if sources and not allow_empty_fields:
         return not any(str(fields.get(name, "")).strip() for name in sources)

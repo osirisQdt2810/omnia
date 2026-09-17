@@ -265,6 +265,17 @@ select:disabled { opacity: 0.7; }
 }
 .sn-opt-row:hover { background: var(--head); }
 .sn-opt-row .sn-check { margin-top: 2px; }
+/* The one option row that is a choice rather than a switch. The label takes the space and the
+   picker sits at the end, so it lines up with the checkboxes above it rather than stretching
+   across the row (`.sn-opt-row` is a flex container, and a bare select would grow). */
+.sn-opt-row .sn-select {
+  margin-left: auto; flex: 0 0 auto; max-width: 46%; font-size: 12px;
+}
+/* A class rather than a parent-matching selector: that selector is below this add-on's
+   QtWebEngine floor (Anki ships Qt 6.6 on some platforms), where it lands as a no-op and the
+   row silently mis-aligns. Spelled out in words rather than in syntax, because the floor test
+   greps the stylesheet including its comments. */
+.sn-opt-row.sn-opt-choice { align-items: center; }
 /* Numeric option input — the shared field rule only covers input[type="text"]. */
 .sn-input-num {
   font-family: inherit; font-size: 13px; color: var(--fg);

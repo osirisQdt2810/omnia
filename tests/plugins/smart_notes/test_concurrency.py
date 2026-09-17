@@ -36,6 +36,18 @@ from omnia.plugins.smart_notes.engine import GenerationService
 from omnia.plugins.smart_notes.integration.batch import BatchGenerator
 
 
+def _text(note, field):
+    """A field as a READER sees it — without Omnia's provenance mark.
+
+    Omnia stamps the text it writes with `<!--omnia:hash-->` so a later regeneration can tell
+    its own output from something the user typed. The mark is invisible while reviewing, so a
+    test asserting what the note now says should not see it either.
+    """
+    from omnia.plugins.smart_notes.provenance import unstamp
+
+    return unstamp(note[field])
+
+
 class _CountingTransport(HttpClient):
     """Counts overlapping requests, holding each until ``expect`` of them are in flight.
 
@@ -546,7 +558,7 @@ class TestCrossNoteOverlap:
 
         assert summary.processed == 6
         assert fake.updated == [1, 2, 3, 4, 5, 6]
-        assert notes[4]["A"] == "gen:aaa w4"
+        assert _text(notes[4], "A") == "gen:aaa w4"
 
     def test_concurrency_does_not_change_the_outcome(self, monkeypatch):
         _fake_one, sequential, notes_one = self._run(monkeypatch, workers=1)

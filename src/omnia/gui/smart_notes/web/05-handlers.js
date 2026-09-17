@@ -90,6 +90,9 @@
     opts = opts || {};
     optGenReview.checked = !!opts.generate_at_review;
     optBatchBackground.checked = !!opts.batch_in_background;
+    // Falls back to "always" — what Overwrite did before this setting existed — so a config
+    // written by an older Omnia does not land on whichever option happens to be first.
+    optOverwriteScope.value = opts.overwrite_scope || "always";
     optRegenBatch.checked = opts.regenerate_when_batching !== false;
     optAllowEmpty.checked = !!opts.allow_empty_fields;
     if (optRegenClippers) {
@@ -389,6 +392,7 @@
     const opts = {
       generate_at_review: optGenReview.checked,
       batch_in_background: optBatchBackground.checked,
+      overwrite_scope: optOverwriteScope.value,
       regenerate_when_batching: optRegenBatch.checked,
       allow_empty_fields: optAllowEmpty.checked,
       discard_unfilled_clips: optDiscardUnfilled ? optDiscardUnfilled.checked : true,

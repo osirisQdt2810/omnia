@@ -49,6 +49,7 @@ from omnia.plugins.smart_notes.integration.progress import (
     ProgressSurface,
     Silent,
 )
+from omnia.plugins.smart_notes.provenance import ALWAYS, stamp
 
 if TYPE_CHECKING:
     from omnia.core.concurrency.dispatch import Dispatch
@@ -514,6 +515,9 @@ class BatchGenerator:
         # Batch overwrite is driven by ``regenerate_when_batching``: when set, the batch
         # regenerates fields it already filled (ignoring per-field overwrite).
         force_overwrite = self._settings.regenerate_when_batching
+        # Separate question from `force_overwrite`: that one says filled fields should be
+        # refreshed, this one says whose work may be destroyed doing it.
+        overwrite_scope = str(getattr(self._settings, "overwrite_scope", ALWAYS))
         workers = self._settings.workers()
         # The env knob's width, or 1 when it is -1 (batching off) — see
         # SmartNotesSettings.notes_per_call. It ships at 10, not off.
@@ -532,6 +536,7 @@ class BatchGenerator:
                     plans,
                     total,
                     force_overwrite=force_overwrite,
+                    overwrite_scope=overwrite_scope,
                     progress=progress,
                     dispatch=dispatch,
                     planner=planner,
@@ -607,6 +612,7 @@ class BatchGenerator:
         total: int,
         *,
         force_overwrite: bool,
+        overwrite_scope: str,
         progress: ProgressSurface,
         dispatch: Dispatch,
         planner: WavePlanner,
@@ -643,6 +649,7 @@ class BatchGenerator:
                 self._run_cohort(
                     cohort,
                     force_overwrite=force_overwrite,
+                    overwrite_scope=overwrite_scope,
                     dispatch=dispatch,
                     planner=planner,
                     progress=counter,
@@ -655,6 +662,7 @@ class BatchGenerator:
         plans: list[_NotePlan],
         *,
         force_overwrite: bool,
+        overwrite_scope: str = ALWAYS,
         dispatch: Dispatch = SEQUENTIAL_DISPATCH,
         planner: WavePlanner = SOLO_PLANNER,
         progress: Optional[_ProgressReporter] = None,
@@ -676,7 +684,15 @@ class BatchGenerator:
         # Kept per PLAN, including the ones that could not even be planned, so the outcomes
         # come back in selection order however the cohort actually resolved.
         entries = [
-            (plan, self._start(plan, force_overwrite=force_overwrite)) for plan in plans
+            (
+                plan,
+                self._start(
+                    plan,
+                    force_overwrite=force_overwrite,
+                    overwrite_scope=overwrite_scope,
+                ),
+            )
+            for plan in plans
         ]
         live = [note for _plan, note in entries if note is not None]
         progress.advance(len(entries) - len(live))
@@ -703,7 +719,9 @@ class BatchGenerator:
             for plan, note in entries
         ]
 
-    def _start(self, plan: _NotePlan, *, force_overwrite: bool) -> Optional[_LiveNote]:
+    def _start(
+        self, plan: _NotePlan, *, force_overwrite: bool, overwrite_scope: str = ALWAYS
+    ) -> Optional[_LiveNote]:
         """Build ``plan``'s run, or return None when even planning it failed.
 
         Compiling the rules can raise (a cyclic config), and one bad note must not abort the
@@ -718,6 +736,7 @@ class BatchGenerator:
                 plan.fields,
                 allow_empty_fields=self._settings.allow_empty_fields,
                 force_overwrite=force_overwrite,
+                overwrite_scope=overwrite_scope,
                 materialize=materialize_once,
                 note_id=plan.nid,
             )
@@ -959,7 +978,15 @@ class BatchGenerator:
                 # referencing can be trashed once the new value is safely stored. Collected
                 # here because this is the only moment both values are in hand.
                 was = superseded_media(note[rule.target_field])
-                note[rule.target_field] = outcome.materialize(rule, result)
+                # Stamped HERE, at the write, rather than in `materialize`. The generation
+                # chain reads the fields it is chained from, and a mark in that input would end
+                # up quoted into the next tool's prompt.
+                value = outcome.materialize(rule, result)
+                # Text only. A media field is one `[sound:omnia-…]` tag whose NAME already says
+                # who wrote it, and a comment beside it would be clutter for no new information.
+                if getattr(result, "kind", "text") == "text":
+                    value = stamp(value)
+                note[rule.target_field] = value
                 # Only what the field STOPPED referencing. A regeneration does not always
                 # produce a new filename: Anki's `add_data_to_folder_uniquely` hashes first and
                 # returns the EXISTING name unchanged when the bytes are identical, renaming
@@ -968,7 +995,7 @@ class BatchGenerator:
                 # deterministic engine gets the same name back — and that name is then both the
                 # note's new reference and a member of this list. Diffing against the new value
                 # is what keeps a re-run from silencing the notes it just regenerated.
-                now = set(superseded_media(note[rule.target_field]))
+                now = set(superseded_media(value))
                 superseded.extend(name for name in was if name not in now)
                 wrote = True
             if not wrote:

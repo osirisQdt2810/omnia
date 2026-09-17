@@ -45,6 +45,18 @@ from omnia.plugins.smart_notes.engine.batching import (
 from omnia.plugins.smart_notes.integration.batch import BatchGenerator
 
 
+def _text(note, field):
+    """A field as a READER sees it — without Omnia's provenance mark.
+
+    Omnia stamps the text it writes with `<!--omnia:hash-->` so a later regeneration can tell
+    its own output from something the user typed. The mark is invisible while reviewing, so a
+    test asserting what the note now says should not see it either.
+    """
+    from omnia.plugins.smart_notes.provenance import unstamp
+
+    return unstamp(note[field])
+
+
 class _BatchingLLM(FakeLLMProvider):
     """Answers a batched request from the ids it was actually sent, and counts its calls.
 
@@ -317,13 +329,15 @@ class TestIdMatchingNeverUsesPosition:
 
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=5)
 
-        assert [notes[n]["Def"] for n in (1, 2, 4, 5)] == [
+        assert [_text(notes[n], "Def") for n in (1, 2, 4, 5)] == [
             "batched:w1",
             "batched:w2",
             "batched:w4",
             "batched:w5",
         ]
-        assert notes[3]["Def"] == "solo:Define w3 clearly."  # the one that fell back
+        assert (
+            _text(notes[3], "Def") == "solo:Define w3 clearly."
+        )  # the one that fell back
         assert len(llm.batch_calls) == 1 and len(llm.solo_calls) == 1
         assert summary.processed == 5
 
@@ -334,7 +348,7 @@ class TestIdMatchingNeverUsesPosition:
 
         notes, _summary, _compat = _run_batch(monkeypatch, llm, notes=5)
 
-        assert [notes[n]["Def"] for n in range(1, 6)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 6)] == [
             f"batched:w{n}" for n in range(1, 6)
         ]
         assert llm.solo_calls == []
@@ -348,7 +362,7 @@ class TestIdMatchingNeverUsesPosition:
 
         notes, _summary, _compat = _run_batch(monkeypatch, llm, notes=4)
 
-        assert [notes[n]["Def"] for n in range(1, 5)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 5)] == [
             f"solo:Define w{n} clearly." for n in range(1, 5)
         ]
         assert [len(ids) for ids in llm.batch_calls] == [4, 2, 2]
@@ -454,9 +468,9 @@ class TestNoNoteEverGetsAnotherNotesContent:
 
         # Notes 1 and 2 (both touched by the duplicate) are generated on their own; note 3's
         # id was untouched, so its batched answer stands.
-        assert notes[1]["Def"] == "solo:Define w1 clearly."
-        assert notes[2]["Def"] == "solo:Define w2 clearly."
-        assert notes[3]["Def"] == "batched:w3"
+        assert _text(notes[1], "Def") == "solo:Define w1 clearly."
+        assert _text(notes[2], "Def") == "solo:Define w2 clearly."
+        assert _text(notes[3], "Def") == "batched:w3"
         assert summary.processed == 3
         assert len(llm.solo_calls) == 2  # the cost: two extra calls, no corruption
 
@@ -473,7 +487,7 @@ class TestNoNoteEverGetsAnotherNotesContent:
 
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=4)
 
-        assert [notes[n]["Def"] for n in range(1, 5)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 5)] == [
             f"solo:Define w{n} clearly." for n in range(1, 5)
         ]
         assert summary.processed == 4
@@ -496,12 +510,12 @@ class TestNoNoteEverGetsAnotherNotesContent:
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=5)
 
         # The four that shared one answer are re-generated on their own...
-        assert [notes[n]["Def"] for n in range(1, 5)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 5)] == [
             f"solo:Define w{n} clearly." for n in range(1, 5)
         ]
         # ...and the one the model really did answer keeps its batched content: the drop is per
         # group, so a partial collapse costs four calls, not five.
-        assert notes[5]["Def"] == "batched:w5"
+        assert _text(notes[5], "Def") == "batched:w5"
         assert len(llm.solo_calls) == 4
         assert summary.processed == 5
         assert summary.field_failures == 0
@@ -532,7 +546,7 @@ class TestNoNoteEverGetsAnotherNotesContent:
             GenerationService(_StubHub(llm=llm), detect_tts_language=False), settings
         ).run([1, 2, 3], summaries.append)
 
-        assert [fake_notes[n]["Def"] for n in (1, 2, 3)] == ["batched:same"] * 3
+        assert [_text(fake_notes[n], "Def") for n in (1, 2, 3)] == ["batched:same"] * 3
         assert llm.solo_calls == []  # one batched call answered all three
 
     def test_an_id_we_never_sent_is_dropped_and_lands_on_nobody(self, monkeypatch):
@@ -541,11 +555,11 @@ class TestNoNoteEverGetsAnotherNotesContent:
 
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=3)
 
-        assert [notes[n]["Def"] for n in (1, 2, 3)] == [
+        assert [_text(notes[n], "Def") for n in (1, 2, 3)] == [
             f"batched:w{n}" for n in (1, 2, 3)
         ]
         assert "nobody" not in json.dumps(
-            {n: notes[n]["Def"] for n in (1, 2, 3)}
+            {n: _text(notes[n], "Def") for n in (1, 2, 3)}
         )  # the invented id reached no note
         assert llm.solo_calls == []
         assert summary.processed == 3
@@ -558,7 +572,7 @@ class TestNoNoteEverGetsAnotherNotesContent:
 
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=4)
 
-        assert [notes[n]["Def"] for n in range(1, 5)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 5)] == [
             f"solo:Define w{n} clearly." for n in range(1, 5)
         ]
         assert summary.processed == 4
@@ -575,7 +589,7 @@ class TestNoNoteEverGetsAnotherNotesContent:
 
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=4)
 
-        assert [notes[n]["Def"] for n in range(1, 5)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 5)] == [
             f"solo:Define w{n} clearly." for n in range(1, 5)
         ]
         assert summary.empty_note_ids == []
@@ -591,7 +605,7 @@ class TestNoNoteEverGetsAnotherNotesContent:
 
         notes, summary, _compat = _run_batch(monkeypatch, llm, notes=4)
 
-        assert [notes[n]["Def"] for n in range(1, 5)] == [
+        assert [_text(notes[n], "Def") for n in range(1, 5)] == [
             f"solo:Define w{n} clearly." for n in range(1, 5)
         ]
         assert summary.processed == 4
@@ -665,7 +679,7 @@ class TestTheEnvKnobDecides:
 
         assert llm.batch_calls == []  # nothing was ever grouped
         assert len(llm.solo_calls) == 5
-        assert [fake_notes[n]["Def"] for n in range(1, 6)] == [
+        assert [_text(fake_notes[n], "Def") for n in range(1, 6)] == [
             f"solo:Define w{n} clearly." for n in range(1, 6)
         ]
 
@@ -694,7 +708,7 @@ class TestFallbackLadder:
 
         assert [len(ids) for ids in llm.batch_calls] == [8, 4, 4]
         assert len(llm.solo_calls) == 8
-        assert notes[1]["Def"] == "solo:Define w1 clearly."
+        assert _text(notes[1], "Def") == "solo:Define w1 clearly."
 
     def test_a_provider_error_goes_straight_to_per_note_without_halving(
         self, monkeypatch
@@ -709,7 +723,7 @@ class TestFallbackLadder:
 
         assert [len(ids) for ids in llm.batch_calls] == [6]
         assert len(llm.solo_calls) == 6
-        assert notes[4]["Def"] == "solo:Define w4 clearly."
+        assert _text(notes[4], "Def") == "solo:Define w4 clearly."
 
     def test_a_429_does_not_fan_out_and_marks_every_note_kind_error(self, monkeypatch):
         """A rate limit must not become K retries — and must not delete anyone's notes.
@@ -729,7 +743,7 @@ class TestFallbackLadder:
         assert summary.field_failures == 6 and summary.unfilled == 0
         assert summary.empty_note_ids == []
         assert sorted(summary.errored_note_ids) == [1, 2, 3, 4, 5, 6]
-        assert all(notes[n]["Def"] == "" for n in range(1, 7))
+        assert all(_text(notes[n], "Def") == "" for n in range(1, 7))
 
     def test_a_half_that_fails_again_falls_back_rather_than_halving_twice(self):
         # Driven at the task level so the halving arithmetic is visible: 4 -> 2 + 2 -> solos.
@@ -897,7 +911,7 @@ class TestEligibility:
 
         assert llm.batch_calls == [llm.batch_calls[0]]  # exactly one, for Def
         assert len(llm.batch_calls[0]) == 4
-        assert all(notes[n]["Audio"].startswith("[sound:") for n in range(1, 5))
+        assert all(_text(notes[n], "Audio").startswith("[sound:") for n in range(1, 5))
 
     def test_only_notes_whose_gate_said_dispatch_enter_a_chunk(self, monkeypatch):
         # Notes 2 and 4 already hold a Def and regenerate_when_batching is off, so they are
@@ -916,7 +930,7 @@ class TestEligibility:
         notes, _summary, _compat = _run_batch(monkeypatch, llm, notes=1)
 
         assert llm.batch_calls == []
-        assert notes[1]["Def"] == "solo:Define w1 clearly."
+        assert _text(notes[1], "Def") == "solo:Define w1 clearly."
 
 
 def _rule(*, kind="text", prompt="Define {{Word}}", tools=("ai",)):
@@ -1114,7 +1128,7 @@ class TestTheShippedDefaultGroups:
 
         assert len(llm.batch_calls) == 1 and len(llm.batch_calls[0]) == 5
         assert llm.solo_calls == []
-        assert notes[1]["Def"] == "batched:w1"
+        assert _text(notes[1], "Def") == "batched:w1"
 
     def test_the_planner_for_k_of_one_is_the_solo_planner_itself(self):
         service = GenerationService(_StubHub(llm=_BatchingLLM()))
@@ -1214,7 +1228,7 @@ class TestConcurrentBatching:
         )
 
         for nid in range(1, 13):
-            assert notes[nid]["Def"] in (
+            assert _text(notes[nid], "Def") in (
                 f"batched:w{nid}",
                 f"solo:Define w{nid} clearly.",
             )
