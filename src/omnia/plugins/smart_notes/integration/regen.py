@@ -43,7 +43,11 @@ from typing import TYPE_CHECKING, Any, Optional, TypeVar
 from omnia.core import anki_compat
 from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
-from omnia.plugins.smart_notes.engine import applies_to_deck, compile_note_type_rules
+from omnia.plugins.smart_notes.engine import (
+    BlockedField,
+    applies_to_deck,
+    compile_note_type_rules,
+)
 from omnia.plugins.smart_notes.engine.rules import (
     rule_prerequisites,
     rule_source_fields,
@@ -447,7 +451,7 @@ class RegenerationService:
             outcomes[block.target_field] = FieldOutcome(
                 block.target_field,
                 STATUS_BLOCKED,
-                f"Needs {_join(block.missing)}, which {_is_are(block.missing)} still empty.",
+                _blocked_message(block),
             )
         for failure in failed:
             # Both FailedField kinds land here: ``error`` (a tool broke) and ``unproductive``
@@ -616,6 +620,29 @@ def _refusal(
         name,
         STATUS_NOT_GENERATABLE,
         f"This version of Omnia cannot generate “{row.type}” fields — update Omnia.",
+    )
+
+
+def _blocked_message(block: BlockedField) -> str:
+    """Why a field did not generate, distinguishing an input from a bare ordering edge.
+
+    "Needs X" is right for a prerequisite the chain READS and wrong for one that only blocks
+    because the row's ``depends_on`` says to wait for it — the tool never opens that field, so
+    the message sends the user to fix a tool that is working.
+    """
+    if not block.unread:
+        return (
+            f"Needs {_join(block.missing)}, which {_is_are(block.missing)} still empty."
+        )
+    waiting = (
+        f"waiting on {_join(block.unread)}, which no tool reads — remove that dependency "
+        "under Dependencies, or fill the field"
+    )
+    if not block.needed:
+        return f"Still {waiting}."
+    return (
+        f"Needs {_join(block.needed)}, which {_is_are(block.needed)} still empty; also "
+        f"{waiting}."
     )
 
 

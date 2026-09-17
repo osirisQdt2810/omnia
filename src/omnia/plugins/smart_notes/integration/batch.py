@@ -37,6 +37,7 @@ from omnia.core.concurrency.dispatch import SEQUENTIAL_DISPATCH
 from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine import (
+    BlockedField,
     GenerationResult,
     GenerationService,
     applies_to_deck,
@@ -387,8 +388,7 @@ class _LiveNote:
             results=results,
             blocked=len(blocked),
             blocked_examples=[
-                f"{item.target_field} needs {', '.join(item.missing)}"
-                for item in blocked[:_MAX_EXAMPLES]
+                _blocked_example(item) for item in blocked[:_MAX_EXAMPLES]
             ],
             # Sliced AFTER the kind filter, not before: a note whose first two failures are
             # errors still has to be able to name an unproductive field further down the list.
@@ -1005,6 +1005,29 @@ class BatchGenerator:
         except Exception:
             logger.exception("smart_notes: failed to fill note %s", outcome.nid)
             return None
+
+
+def _blocked_example(item: BlockedField) -> str:
+    """One line saying why ``item`` did not generate, in terms the user can act on.
+
+    Two different reasons wear the same shape, and calling both "needs" was wrong about one of
+    them. A prerequisite the chain READS is genuinely needed: fill it, or the tool has nothing
+    to work from. A prerequisite that only appears in the row's ``depends_on`` is an ordering
+    edge — the tool never opens it — so "needs" sends the user to fix a tool that is fine,
+    rather than to the edge they can delete.
+
+    That is not hypothetical: a Clone Field row reading one field, carrying a stale edge onto
+    another, reported "needs A, B" with nothing to say B was removable.
+    """
+    if not item.unread:
+        return f"{item.target_field} needs {', '.join(item.missing)}"
+    waiting = (
+        f"waiting on {', '.join(item.unread)} — "
+        f"{'a dependency' if len(item.unread) == 1 else 'dependencies'} no tool reads"
+    )
+    if not item.needed:
+        return f"{item.target_field} is {waiting}"
+    return f"{item.target_field} needs {', '.join(item.needed)}; also {waiting}"
 
 
 def _fell_back(rule: SmartNotesFieldRule, result: GenerationResult) -> bool:
