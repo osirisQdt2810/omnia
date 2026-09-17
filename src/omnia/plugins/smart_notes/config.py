@@ -16,12 +16,13 @@ stores, stays a :class:`~omnia.core.config.base.StrictModel`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Optional
 
 from pydantic import Field, validator
 
 from omnia import envs
 from omnia.core.config.base import PersistedModel, StrictModel
+from omnia.plugins.smart_notes.provenance import ALWAYS
 
 _GENERATION_TYPES = {"text", "image", "tts"}
 
@@ -332,7 +333,17 @@ class SmartNotesSettings(PersistedModel):
     # setting is UNMARKED — and defaulting to "ours_only" would therefore treat a whole
     # collection as somebody else's work and quietly stop regenerating any of it. Changing what
     # a switch does to existing content, without being asked, is worse than an extra click.
-    overwrite_scope: Literal["always", "ours_only", "not_ours"] = "always"
+    #
+    # A plain `str`, NOT a Literal, for the same reason `FieldDep.kind`, `FieldToolConfig.tool`,
+    # `SmartNotesFieldConfig.type` and `max_concurrent_generations` are: `SmartNotesStore.load`
+    # calls `parse_obj` with no try/except, from inside the note-add and review hooks. A Literal
+    # turns a value this build does not know into a hard ValidationError on every load — the
+    # settings dialog will not open and smart-notes dies mid-review. That is not hypothetical
+    # here: an intermediate commit on this very branch shipped a fourth value, `never`, so any
+    # profile that ran it has `never` in its synced blob, and any future release adding a fifth
+    # scope would do it to today's builds. `may_overwrite` already treats an unrecognised scope
+    # as ALWAYS and is tested for it; a Literal made that fallback unreachable.
+    overwrite_scope: str = ALWAYS
     # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
     generate_at_review: bool = False
     # Whether a batch started from the Browser reports to Anki's progress dialog or quietly in

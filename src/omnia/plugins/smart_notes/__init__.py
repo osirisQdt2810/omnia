@@ -45,6 +45,7 @@ from omnia.plugins.smart_notes.integration.regen import (
     REGENERATION_SERVICE,
     RegenerationService,
 )
+from omnia.plugins.smart_notes.provenance import to_store
 
 logger = get_logger("smart_notes")
 
@@ -384,7 +385,9 @@ class SmartNotesPlugin(FeaturePlugin):
             try:
                 if rule.target_field not in note:
                     continue
-                note[rule.target_field] = materialize_once(rule, result)
+                note[rule.target_field] = to_store(
+                    materialize_once(rule, result), getattr(result, "kind", "text")
+                )
                 written += 1
             except Exception:  # one bad field must not abort the rest
                 logger.exception(

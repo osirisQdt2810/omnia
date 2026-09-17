@@ -31,6 +31,12 @@ from omnia.plugins.smart_notes.integration.regen import (
     REGENERATION_SERVICE,
     RegenerationService,
 )
+from omnia.plugins.smart_notes.provenance import (
+    NOT_OURS,
+    OURS_ONLY,
+    to_store,
+    unstamp,
+)
 
 
 class _FakeNote:
@@ -425,7 +431,7 @@ class TestRegenerateGenerated:
         generated = [o for o in outcomes if o.status == "generated"]
         assert [outcome.text for outcome in generated] == ["generated", "generated"]
         assert [outcome.message for outcome in generated] == ["", ""]
-        assert note["Definition"] == "generated"
+        assert unstamp(note["Definition"]) == "generated"
         assert compat.updated == [1]
 
     def test_always_overwrites_an_already_filled_field(self, monkeypatch):
@@ -440,7 +446,7 @@ class TestRegenerateGenerated:
             "Definition": "generated",
             "Example": "generated",
         }
-        assert note["Definition"] == "generated"
+        assert unstamp(note["Definition"]) == "generated"
 
     def test_explicit_fields_touch_only_those(self, monkeypatch):
         note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": "", "Example": "e"})
@@ -511,7 +517,7 @@ class TestRegenerateHonoursTheEnabledCheckbox:
             "Example": "generated",
         }
         assert note["Definition"] == ""
-        assert note["Example"] == "generated"
+        assert unstamp(note["Example"]) == "generated"
 
     def test_regenerate_all_reports_a_disabled_field_rather_than_dropping_it(
         self, monkeypatch
@@ -727,7 +733,7 @@ class TestRegenerateRunOutcomes:
             "Example": "error",
             "Synonyms": "generated",
         }
-        assert note["Synonyms"] == "generated"
+        assert unstamp(note["Synonyms"]) == "generated"
 
 
 class TestRegenerateDependencies:
@@ -945,3 +951,62 @@ class TestWhoIsBlamedForASkip:
 
         assert outcome.status == regen.STATUS_SKIPPED
         assert "empty" in outcome.message
+
+
+class TestTheClipperHonoursTheOverwriteScope:
+    """`overwrite_scope` matters most HERE, and here is where it was not passed.
+
+    This is the one entry point that forces overwrite — the editor button and review
+    pre-generation only fill empty fields, which every scope permits. So a user who chose
+    `ours_only` precisely to protect what they typed by hand, then used the clipper's
+    "generate this field", had it destroyed anyway. The `Regenerate from clippers` tooltip
+    warns about exactly that, and the scope picker sits three rows above it under a label
+    general enough to look like the answer.
+    """
+
+    def _note(self, definition):
+        return _FakeNote(
+            1, "Vocab", {"Word": "cat", "Definition": definition, "Example": ""}
+        )
+
+    def test_ours_only_leaves_a_hand_written_field_alone(self, monkeypatch):
+        note = self._note("a definition I wrote myself")
+        service, _compat = _build(
+            monkeypatch, note, _settings(overwrite_scope=OURS_ONLY)
+        )
+
+        service.regenerate(1, ["Definition"])
+
+        assert (
+            note["Definition"] == "a definition I wrote myself"
+        ), "the clipper destroyed hand-written content under the scope chosen to protect it"
+
+    def test_ours_only_still_refreshes_what_omnia_wrote(self, monkeypatch):
+        # The scope must not become "never regenerate anything".
+        note = self._note(to_store("an older definition", "text"))
+        service, _compat = _build(
+            monkeypatch, note, _settings(overwrite_scope=OURS_ONLY)
+        )
+
+        service.regenerate(1, ["Definition"])
+
+        assert unstamp(note["Definition"]) == "generated"
+
+    def test_not_ours_refreshes_the_hand_written_one(self, monkeypatch):
+        note = self._note("a definition I wrote myself")
+        service, _compat = _build(
+            monkeypatch, note, _settings(overwrite_scope=NOT_OURS)
+        )
+
+        service.regenerate(1, ["Definition"])
+
+        assert unstamp(note["Definition"]) == "generated"
+
+    def test_always_is_unchanged(self, monkeypatch):
+        # The default, and what this path did before the scope reached it.
+        note = self._note("a definition I wrote myself")
+        service, _compat = _build(monkeypatch, note, _settings())
+
+        service.regenerate(1, ["Definition"])
+
+        assert unstamp(note["Definition"]) == "generated"

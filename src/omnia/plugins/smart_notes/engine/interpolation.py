@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping
 
 from omnia.core.providers.llm.base import PromptParts
+from omnia.plugins.smart_notes.provenance import unstamp
 
 # {{FieldName}} placeholders, but NOT Anki cloze deletions ({{c1::...}}).
 _FIELD_RE = re.compile(r"\{\{(?!c\d+::)([^{}]+?)\}\}")
@@ -129,8 +130,18 @@ def _has_unopened_close(prompt: str) -> bool:
 
 
 def interpolate(prompt: str, fields: dict[str, str]) -> str:
-    """Substitute ``{{Field}}`` placeholders in ``prompt`` with values from ``fields``."""
-    return _FIELD_RE.sub(lambda m: str(fields.get(m.group(1).strip(), "")), prompt)
+    """Substitute ``{{Field}}`` placeholders in ``prompt`` with values from ``fields``.
+
+    Each substituted value is unstamped on the way in. A field Omnia generated carries a
+    provenance mark (``<!--omnia:9f2b1c-->``), and the callers read note fields RAW — they have
+    to, because the skip logic asks whose work a field is and needs the mark to answer. So the
+    mark is stripped here instead, at the one boundary where a stored value becomes something a
+    model reads. Stamping at the write keeps the comment out of a chained tool's prompt within a
+    single run, but says nothing about the NEXT run, which loads the stamped value from the note.
+    """
+    return _FIELD_RE.sub(
+        lambda m: unstamp(str(fields.get(m.group(1).strip(), ""))), prompt
+    )
 
 
 def split_prompt(prompt: str, fields: dict[str, str]) -> PromptParts:

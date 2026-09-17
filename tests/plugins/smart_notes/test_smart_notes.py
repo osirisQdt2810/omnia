@@ -56,6 +56,7 @@ from omnia.plugins.smart_notes.engine import (
     order_rules,
     should_skip_rule,
 )
+from omnia.plugins.smart_notes.provenance import unstamp
 
 # ---------------------------------------------------------------------------
 # Mocked / offline tests
@@ -1392,7 +1393,7 @@ class TestEditorGeneratePath:
         # Drives the synchronous QueryOp stub: op() must return a list, not the (list, list, list) tuple.
         plugin._generate_into_note(editor, note, config)
 
-        assert note["Def"] == "a feline"
+        assert unstamp(note["Def"]) == "a feline"
         assert editor.reloaded is True
         assert captured.get("note") is note
 
