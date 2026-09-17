@@ -492,7 +492,7 @@ class TestAskingWhoElseStillPlaysAFile:
     def test_nothing_to_check_asks_nothing(self):
         col = self._Col()
 
-        assert media_still_referenced([], [1], col=col) == set()
+        assert media_still_referenced([], col=col) == set()
         assert col.queries == []
 
     def test_the_common_case_costs_one_query(self):
@@ -503,22 +503,30 @@ class TestAskingWhoElseStillPlaysAFile:
         """
         col = self._Col()
 
-        assert media_still_referenced(["a.mp3", "b.mp3"], [7], col=col) == set()
+        assert media_still_referenced(["a.mp3", "b.mp3"], col=col) == set()
         assert len(col.queries) == 1
         assert "a.mp3" in col.queries[0] and "b.mp3" in col.queries[0]
 
-    def test_the_notes_just_written_are_excluded(self):
+    def test_it_excludes_no_note_at_all(self):
+        """Deliberately: the note just written is frequently the referent that matters.
+
+        Anki's ``add_data_to_folder_uniquely`` hashes before it renames, so byte-identical
+        media comes back under the SAME filename. A regeneration producing identical audio
+        therefore leaves the note pointing at the very file its old value pointed at. An
+        "ignore the notes I just wrote" argument would hide that note and trash a live file —
+        silencing exactly the notes a re-run had just regenerated.
+        """
         col = self._Col()
 
-        media_still_referenced(["a.mp3"], [7, 9], col=col)
+        media_still_referenced(["a.mp3"], col=col)
 
-        assert "-nid:7,9" in col.queries[0]
+        assert "-nid" not in col.queries[0]
 
     def test_a_hit_is_narrowed_to_the_file_that_caused_it(self):
         # Only then is it worth paying for a query per file.
         col = self._Col(hits={"b.mp3": [42]})
 
-        still = media_still_referenced(["a.mp3", "b.mp3"], [7], col=col)
+        still = media_still_referenced(["a.mp3", "b.mp3"], col=col)
 
         assert still == {"b.mp3"}
 
@@ -529,7 +537,7 @@ class TestAskingWhoElseStillPlaysAFile:
             def find_notes(self, query):
                 raise RuntimeError("invalid search")
 
-        assert media_still_referenced(["a.mp3"], [1], col=_Broken()) == {"a.mp3"}
+        assert media_still_referenced(["a.mp3"], col=_Broken()) == {"a.mp3"}
 
     def test_a_field_name_with_brackets_survives_the_query(self):
         """Media is named ``omnia-<nid>-<field>.<ext>`` and real field names look like
@@ -537,13 +545,13 @@ class TestAskingWhoElseStillPlaysAFile:
         brackets "to be safe" would turn every such check into the error path above."""
         col = self._Col()
 
-        media_still_referenced(["omnia-1-Example 1 (audio).mp3"], [], col=col)
+        media_still_referenced(["omnia-1-Example 1 (audio).mp3"], col=col)
 
         assert "(audio)" in col.queries[0]
 
     def test_wildcards_in_a_name_cannot_match_other_files(self):
         col = self._Col()
 
-        media_still_referenced(["a*b_c.mp3"], [], col=col)
+        media_still_referenced(["a*b_c.mp3"], col=col)
 
         assert "a\\*b\\_c.mp3" in col.queries[0]

@@ -127,7 +127,7 @@ class _FakeCompat:
     def trash_media_files(self, filenames, col=None):
         self.trashed.extend(filenames)
 
-    def media_still_referenced(self, filenames, exclude_nids, col=None):
+    def media_still_referenced(self, filenames, col=None):
         return {name for name in filenames if name in self.still_referenced}
 
     def add_media_file(self, filename, data, col=None):
@@ -1193,6 +1193,53 @@ class TestRegeneratingAFieldDoesNotLeaveTheOldFile:
         BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
 
         assert fake.trashed == []
+
+    def test_an_identical_regeneration_keeps_the_file_the_note_now_points_at(
+        self, monkeypatch
+    ):
+        """Regenerating does not always produce a NEW filename.
+
+        Anki's ``add_data_to_folder_uniquely`` hashes before it renames: identical bytes come
+        back under the name that already exists, and only a real collision gets a suffix.
+        ``materialize`` asks for a deterministic name (``omnia-<nid>-<field>.<ext>``), so
+        re-running a batch over unchanged text with a deterministic engine (piper offline,
+        google_translate) gets the SAME name back. That name is then both the note's new
+        reference and an entry in the superseded list, and trashing it silences exactly the
+        notes the re-run had just regenerated — silently, recoverable only via Check Media.
+        """
+        from omnia.core import anki_compat
+        from omnia.plugins.smart_notes.config import SmartNotesFieldRule
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        trashed: list = []
+        note = _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        # Anki's own behaviour: the name it was handed comes straight back.
+        monkeypatch.setattr(anki_compat, "add_media_file", lambda name, data: name)
+        monkeypatch.setattr(anki_compat, "get_note", lambda nid, col=None: note)
+        monkeypatch.setattr(anki_compat, "update_notes", lambda notes, col=None: None)
+        monkeypatch.setattr(
+            anki_compat,
+            "trash_media_files",
+            lambda names, col=None: trashed.extend(names),
+        )
+        monkeypatch.setattr(
+            anki_compat, "media_still_referenced", lambda names, col=None: set()
+        )
+
+        rule = SmartNotesFieldRule(target_field="Def", kind="tts")
+        outcome = batch_module._NoteOutcome(
+            1,
+            materialize=batch_module.note_materializer(1),
+            results=[(rule, GenerationResult("tts", data=b"same", ext="mp3"))],
+        )
+        settings = self._settings()
+        BatchGenerator(_generator(settings), settings)._apply([outcome])
+
+        assert (
+            note["Def"] == "[sound:omnia-1-Def.mp3]"
+        ), "the fixture no longer models the identical-bytes case"
+        assert trashed == [], "it trashed the file the note still points at"
 
     def test_another_addons_file_in_that_field_is_not(self, monkeypatch):
         fake = self._run(monkeypatch, "[sound:googletts-b4728f64.mp3]")

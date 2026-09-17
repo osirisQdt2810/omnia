@@ -314,10 +314,8 @@ def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str
     )
 
 
-def media_still_referenced(
-    filenames: list[str], exclude_nids: list[int], col: Optional[Any] = None
-) -> set[str]:
-    """Which of ``filenames`` some note OTHER than ``exclude_nids`` still points at.
+def media_still_referenced(filenames: list[str], col: Optional[Any] = None) -> set[str]:
+    """Which of ``filenames`` any note still points at — the ones that must NOT be trashed.
 
     A filename is not owned by the note that created it. Duplicate a note in the Browser
     (*Notes → Create Copy*) and both copies carry the same ``[sound:omnia-….mp3]``; regenerate
@@ -325,9 +323,11 @@ def media_still_referenced(
     strength of "this field used to point at it" silences the copy — recoverable from Check
     Media, but silent at the time, which is the worst kind of data loss.
 
-    ``exclude_nids`` are the notes just rewritten. They are asked about AFTER the write, so their
-    fields already hold the new names; excluding them is belt-and-braces for a write that a
-    listening add-on rolled back underneath us.
+    Asked AFTER the write, about EVERY note — including the ones just rewritten. There is
+    deliberately no "ignore these notes" argument: a note can reference its own old file from a
+    SECOND field, and Anki's ``add_data_to_folder_uniquely`` hashes before it renames, returning
+    the SAME filename when the new bytes are identical. So the note just written is frequently
+    the very referent that has to be found, and excluding it would trash a live file.
 
     One query for the whole list rather than one per file: the search scans every note, so asking
     25 times per slice would scan the collection 25 times. Only when the group matches anything —
@@ -336,24 +336,12 @@ def media_still_referenced(
     if not filenames:
         return set()
     col = main_window().col if col is None else col
-    group = " OR ".join(f'"*{_search_escape(name)}*"' for name in filenames)
-    query = f"({group})"
-    if exclude_nids:
-        query += " -nid:" + ",".join(str(nid) for nid in exclude_nids)
+    query = "(" + " OR ".join(f'"*{_search_escape(n)}*"' for n in filenames) + ")"
     try:
         if not col.find_notes(query):
             return set()
         return {
-            name
-            for name in filenames
-            if col.find_notes(
-                f'"*{_search_escape(name)}*"'
-                + (
-                    " -nid:" + ",".join(str(n) for n in exclude_nids)
-                    if exclude_nids
-                    else ""
-                )
-            )
+            name for name in filenames if col.find_notes(f'"*{_search_escape(name)}*"')
         }
     except Exception:
         # A search that will not run must not become a deletion. Treating everything as still

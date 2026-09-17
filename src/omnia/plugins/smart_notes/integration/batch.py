@@ -916,13 +916,12 @@ class BatchGenerator:
         )
         if superseded:
             try:
-                # Asked AFTER the write, so the notes we just rewrote no longer point at these
-                # names — and asked at all because a filename is not owned by the note that
-                # made it. A note duplicated in the Browser carries the same [sound:…], and
-                # regenerating the original would otherwise silence the copy.
-                keep = anki_compat.media_still_referenced(
-                    superseded, [p.note.id for p in prepared]
-                )
+                # Asked AFTER the write, and asking about EVERY note including the ones just
+                # rewritten. A filename is not owned by the note that made it: a note duplicated
+                # in the Browser carries the same [sound:…], and so can a second field of the
+                # same note. Excluding the written notes here would re-open exactly the hole
+                # `_prepare_note` closes above, from the other side.
+                keep = anki_compat.media_still_referenced(superseded)
                 anki_compat.trash_media_files([n for n in superseded if n not in keep])
             except Exception:  # disk space is not worth failing a written batch over
                 logger.exception(
@@ -959,8 +958,18 @@ class BatchGenerator:
                 # What the field pointed at BEFORE this run, so the file it is about to stop
                 # referencing can be trashed once the new value is safely stored. Collected
                 # here because this is the only moment both values are in hand.
-                superseded.extend(superseded_media(note[rule.target_field]))
+                was = superseded_media(note[rule.target_field])
                 note[rule.target_field] = outcome.materialize(rule, result)
+                # Only what the field STOPPED referencing. A regeneration does not always
+                # produce a new filename: Anki's `add_data_to_folder_uniquely` hashes first and
+                # returns the EXISTING name unchanged when the bytes are identical, renaming
+                # only on a real collision. `materialize` asks for a deterministic name
+                # (omnia-<nid>-<field>.<ext>), so re-running a batch over unchanged text with a
+                # deterministic engine gets the same name back — and that name is then both the
+                # note's new reference and a member of this list. Diffing against the new value
+                # is what keeps a re-run from silencing the notes it just regenerated.
+                now = set(superseded_media(note[rule.target_field]))
+                superseded.extend(name for name in was if name not in now)
                 wrote = True
             if not wrote:
                 return None
