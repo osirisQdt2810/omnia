@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from omnia.core.anki_compat import (
-    media_still_referenced,
     _guard,
     escape_search_term,
+    media_still_referenced,
     progress_label,
     random_note_of_type,
     subscribe_hook,
