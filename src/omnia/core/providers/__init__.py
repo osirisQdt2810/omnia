@@ -20,8 +20,6 @@ from omnia.core.providers.llm import (
     available_llm_providers_requiring_api,
     create_llm_provider,
 )
-from omnia.core.providers.tts import speed as tts_speed_module
-from omnia.core.providers.tts.speed import NORMAL as TTS_NORMAL_SPEED
 from omnia.core.providers.tts import (
     TTSProvider,
     available_keyless_tts_providers,
@@ -29,6 +27,8 @@ from omnia.core.providers.tts import (
     available_tts_providers_requiring_api,
     create_tts_provider,
 )
+from omnia.core.providers.tts import speed as tts_speed_module
+from omnia.core.providers.tts.speed import NORMAL as TTS_NORMAL_SPEED
 from omnia.core.providers.usage import (
     RecordingLLMProvider,
     RecordingTTSProvider,

@@ -12,8 +12,8 @@ from typing import Any, Optional
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider
-from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 
 _ENDPOINT = "https://translate.google.com/translate_tts"
 _MAX_CHARS = 200

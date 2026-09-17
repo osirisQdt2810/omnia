@@ -33,8 +33,8 @@ from omnia.core.logging import get_logger
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
-from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.voice_models import (
     DownloadFeedback,
     PiperVoiceStore,

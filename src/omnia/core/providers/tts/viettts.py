@@ -25,9 +25,9 @@ from typing import Any, ClassVar, Optional
 from omnia.core.network.http import HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts.base import TTSVoice
-from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.openai_compatible import OpenAICompatibleTTS
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.runtime.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,

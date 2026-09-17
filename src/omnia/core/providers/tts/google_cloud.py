@@ -16,8 +16,8 @@ from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.token_source import TokenSource, resolve_token_source
 from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
-from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 
 _ENDPOINT = "https://texttospeech.googleapis.com/v1/text:synthesize"
 # Logical language -> BCP-47 code used by Cloud TTS.

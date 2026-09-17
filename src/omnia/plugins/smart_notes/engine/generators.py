@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.plugins.smart_notes.engine.language import LanguageDetector
 from omnia.plugins.smart_notes.engine.markdown import convert_markdown_to_html
 from omnia.plugins.smart_notes.engine.rules import (
@@ -19,8 +20,6 @@ from omnia.plugins.smart_notes.engine.rules import (
     prompt_parts_for,
     tts_text,
 )
-
-from omnia.core.providers.tts.speed import NORMAL
 
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub

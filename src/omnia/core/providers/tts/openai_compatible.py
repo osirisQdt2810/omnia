@@ -9,8 +9,8 @@ from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.openai_family import openai_family_base_url
 from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
-from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 
 # Default base URL per config name — the openai family is ONE class under three names that
 # differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
