@@ -673,7 +673,6 @@ class TestThePreviewSaysWhatItActuallyRead:
 
     def _rule(self, **kw):
         from omnia.plugins.smart_notes.config import (
-            CompiledToolSpec,
             SmartNotesFieldConfig,
         )
         from omnia.plugins.smart_notes.engine import compile_field_rule
