@@ -120,10 +120,21 @@
       return spec ? spec.label : entry.tool;
     });
     // One chip per tool rather than one run-on string: the chain IS a sequence, and a row of
-    // labelled chips shows its shape — and each tool's own colour — at a glance. An empty chain
-    // still reads "AI", because that is exactly what it compiles to.
+    // labelled chips shows its shape — and each tool's own colour — at a glance.
+    //
+    // An empty chain reads "none", not "AI". It used to render an AI chip because an empty
+    // chain compiled to the AI tool — but that meant unticking every tool still spent money on
+    // a provider call, and the only warning was a chip nobody connects to an empty picker.
+    // Empty compiles to nothing now, and the column says so.
     btn.textContent = "";
-    const shown = chain.length ? chain : [{tool: "ai"}];
+    if (!chain.length) {
+      const none = document.createElement("span");
+      none.className = "sn-chip-none";
+      none.textContent = "none";
+      btn.appendChild(none);
+      return;
+    }
+    const shown = chain;
     shown.forEach(function (entry, index) {
       if (index) {
         const arrow = document.createElement("span");

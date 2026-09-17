@@ -248,6 +248,16 @@ class AuthoringController:
         rule = compile_field_rule(rows[0], base_field).copy(
             update={"note_type": note_type}
         )
+        if not rule.tools:
+            # An empty chain used to silently mean "use AI", so previewing a row with every
+            # tool unticked reached a provider and cost money. It means nothing now, and saying
+            # so is the point — a preview that quietly generated with a tool the row does not
+            # list is how the surprise was paid for in the first place.
+            self._push_preview(
+                field,
+                error="No tool is configured for this field — tick one in the Tools column.",
+            )
+            return
         fields = self._preview_fields(note_type, base_field)
         # The input fields (+ sample values) this preview reads, so the result shows WHAT it ran
         # against — not only the generated output. Computed here (main thread) and echoed on success.

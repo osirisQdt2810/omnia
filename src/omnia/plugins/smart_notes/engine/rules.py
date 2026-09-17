@@ -240,7 +240,23 @@ def _compile_tools(
     from omnia.plugins.smart_notes.config import CompiledToolSpec, default_tool_chain
 
     if not field_config.tools:
-        return default_tool_chain()
+        # Empty and MEANT it, or empty because the config predates tool chains? The two used to
+        # be indistinguishable and both answered `default_tool_chain()` — so unticking every
+        # tool still reached a provider and still cost money, with only a chip in a column to
+        # hint at it.
+        #
+        # Pydantic records which keys a payload actually carried, and that is the whole signal:
+        # a row parsed from a pre-tools blob never mentioned `tools`, while the picker writes
+        # the key on every row it renders. So an ABSENT key keeps the legacy AI default and a
+        # PRESENT empty list means no tool.
+        #
+        # Read from `__fields_set__` rather than recorded in the config on purpose. Writing a
+        # migration marker would put a new key into the synced blob, and a device on a
+        # pre-ADR-010 release validates that blob with `extra="forbid"` and no try/except —
+        # where an unknown key is not a lost setting but a crash on every note-add hook.
+        if "tools" not in field_config.__fields_set__:
+            return default_tool_chain()
+        return ()
     return tuple(
         CompiledToolSpec(name=entry.tool, params=dict(entry.params))
         for entry in field_config.tools

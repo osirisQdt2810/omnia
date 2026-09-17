@@ -129,8 +129,35 @@ class TestFiveSyncPoints:
         assert rule.tools[0].params == {"sentence_field": "Sentence"}
         assert rule.base_field == "Word"
 
-    def test_a_preview_payload_without_a_chain_still_compiles_to_ai(self):
+    def test_a_row_the_page_posted_with_no_chain_compiles_to_no_tool(self):
+        """The page renders a picker on every row, so an empty chain from it is deliberate.
+
+        This used to compile to `ai`, which meant unticking every tool still reached a provider
+        and still cost money — with only a chip in the Tools column to hint at it. The page's
+        payload always carries a `tools` key, and its presence is what says "somebody could see
+        this picker and left it empty".
+        """
         rule = compile_field_rule(field_configs_from_payload([_row("Def")])[0], "Word")
+
+        assert [spec.name for spec in rule.tools] == []
+
+    def test_a_row_from_a_pre_tools_config_still_compiles_to_ai(self):
+        """The other half, and why this is read from `__fields_set__` rather than migrated.
+
+        A config written before tool chains existed has no `tools` key at all, and its fields
+        did generate — with AI. Recording a migration marker instead would put a new key into
+        the SYNCED blob, where a device on a pre-ADR-010 release validates with `extra="forbid"`
+        and crashes on every note-add.
+        """
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+
+        legacy = SmartNotesFieldConfig(
+            **{"field": "Def", "enabled": True, "type": "text"}
+        )
+        assert "tools" not in legacy.__fields_set__
+
+        rule = compile_field_rule(legacy, "Word")
+
         assert [spec.name for spec in rule.tools] == ["ai"]
 
     def test_collect_rows_posts_the_chain(self):
@@ -406,10 +433,16 @@ class TestToolsPickerPage:
         # "Cloze audio → AI" as one run-on string could not show which step costs money. Each
         # tool now wears a chip carrying a per-tool class, so the chain reads as a sequence.
         html = self._html()
-        summary = _js(html, "function updateToolsSummary(", 1400)
+        # A wider window than the 1400 default: the function grew an early return for the empty
+        # chain, and a fixed-size slice that stops short reads as "the chip code is gone".
+        summary = _js(html, "function updateToolsSummary(", 2400)
 
         assert 'sn-chip sn-chip-" +' in summary
         assert "sn-chip-arrow" in summary
+        # An empty chain must NOT render an `ai` chip. It used to, because empty compiled to
+        # the AI tool — which is exactly how unticking every tool still cost a provider call.
+        assert "sn-chip-none" in summary
+        assert '[{tool: "ai"}]' not in summary
         # The sanitiser maps `cloze_audio` -> `cloze-audio`; the CSS must target THAT, or the
         # chip renders unstyled (it did).
         assert ".sn-chip-cloze-audio" in html

@@ -745,8 +745,14 @@ class TestPreviewRunsTheRowsToolChain:
         # The mask, not Anki cloze markup: eight letters, first one shown.
         assert "They s_______." in evals[0]
 
-    def test_a_row_with_no_chain_still_previews_through_the_llm(self, monkeypatch):
+    def test_a_row_the_page_posted_with_no_chain_previews_nothing(self, monkeypatch):
+        """Unticking every tool must not reach a provider.
+
+        It used to: an empty chain compiled to `ai`, so Preview generated — and billed — with a
+        tool the row does not list, and the only hint was a chip in a column. The preview says
+        why instead of guessing.
+        """
         evals, prompts = self._preview(monkeypatch, self._row())
 
-        assert prompts == ["Cloze survive in They survived."]
-        assert "llm:" in evals[0]
+        assert prompts == [], "it called the provider for a row with no tool"
+        assert "No tool is configured" in evals[0]
