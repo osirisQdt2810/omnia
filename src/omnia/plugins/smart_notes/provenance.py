@@ -93,8 +93,13 @@ def is_untouched(content: str) -> bool:
 ALWAYS = "always"
 OURS_ONLY = "ours_only"
 NOT_OURS = "not_ours"
-NEVER = "never"
-SCOPES = (ALWAYS, OURS_ONLY, NOT_OURS, NEVER)
+SCOPES = (ALWAYS, OURS_ONLY, NOT_OURS)
+
+# There is deliberately no "never". It would mean "replace nothing that has content", which the
+# per-field Overwrite switch and `regenerate_when_batching` already say — and say in the place a
+# reader looks for them. The only case it expressed that they cannot is a global override of a
+# field whose own Overwrite is on, which is not worth an option nobody can explain the purpose
+# of. Every scope here needs the mark to exist; that is what makes them worth having.
 
 
 #: The prefix :func:`~omnia.plugins.smart_notes.integration.batch.materialize` gives every media
@@ -158,4 +163,4 @@ def may_overwrite(content: str, scope: str) -> bool:
     if scope == NOT_OURS:
         return not is_ours(content)
     # ALWAYS, and anything unrecognised, land here.
-    return scope != NEVER
+    return True

@@ -208,7 +208,7 @@ def should_skip_rule(
         overwrite_scope: What a regeneration may replace —
             :data:`~omnia.plugins.smart_notes.provenance.ALWAYS` (the default, and what Overwrite
             has always done), ``OURS_ONLY`` (protects what you wrote by hand), ``NOT_OURS``
-            (protects what Omnia already paid to generate) or ``NEVER``.
+            (protects what Omnia already paid to generate).
 
     Returns:
         ``True`` if the rule must be skipped, ``False`` to generate it.

@@ -306,13 +306,12 @@
         <input type="checkbox" id="sn-opt-regen-batch" class="sn-check">
         <span><b>Regenerate when batching</b> — during a batch, re-generate fields that already have content.</span>
       </label>
-      <label class="sn-opt-row sn-opt-choice" title="Overwrite says filled fields should be refreshed. This says WHOSE work may be thrown away doing it — a different question.&#10;&#10;Anything: what Overwrite has always done.&#10;Only fields Omnia generated: protects sentences you typed yourself. A field Omnia wrote and you then edited counts as yours again.&#10;Only fields Omnia did NOT generate: protects audio and images you already paid a provider to make.&#10;Nothing: never replace anything that has content.&#10;&#10;Fields filled before this setting existed carry no mark, so they count as not Omnia&#39;s.">
+      <label class="sn-opt-row sn-opt-choice" title="Overwrite says filled fields should be refreshed. This says WHOSE work may be thrown away doing it — a different question.&#10;&#10;Anything: what Overwrite has always done.&#10;Only fields Omnia generated: protects sentences you typed yourself. A field Omnia wrote and you then edited counts as yours again.&#10;Only fields Omnia did NOT generate: protects audio and images you already paid a provider to make.&#10;&#10;Fields filled before this setting existed carry no mark, so they count as not Omnia&#39;s.">
         <span><b>When overwriting, replace</b> — which existing content a regeneration may destroy.</span>
         <select id="sn-opt-overwrite-scope" class="sn-select">
           <option value="always">Anything</option>
           <option value="ours_only">Only what Omnia generated (and you have not edited)</option>
           <option value="not_ours">Only what Omnia did NOT generate</option>
-          <option value="never">Nothing</option>
         </select>
       </label>
       <label class="sn-opt-row" title="ON: the clippers may re-generate a note's fields from their lookup panel, replacing whatever is there.&#10;OFF: those buttons are dimmed and say this option has to be switched on.&#10;&#10;Regeneration always overwrites, which is why it has its own switch: a clipper can rewrite a field you edited by hand.&#10;&#10;Example: a note whose Audio never got filled — open the clipper, search the word, generate just that field.">

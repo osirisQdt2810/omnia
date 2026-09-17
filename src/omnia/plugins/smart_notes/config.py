@@ -332,7 +332,7 @@ class SmartNotesSettings(PersistedModel):
     # setting is UNMARKED — and defaulting to "ours_only" would therefore treat a whole
     # collection as somebody else's work and quietly stop regenerating any of it. Changing what
     # a switch does to existing content, without being asked, is worse than an extra click.
-    overwrite_scope: Literal["always", "ours_only", "not_ours", "never"] = "always"
+    overwrite_scope: Literal["always", "ours_only", "not_ours"] = "always"
     # Pre-generate a card's empty smart fields ahead of the reviewer (best-effort).
     generate_at_review: bool = False
     # Whether a batch started from the Browser reports to Anki's progress dialog or quietly in

@@ -11,7 +11,6 @@ import pytest
 
 from omnia.plugins.smart_notes.provenance import (
     ALWAYS,
-    NEVER,
     NOT_OURS,
     OURS_ONLY,
     SCOPES,
@@ -110,10 +109,6 @@ class TestWhatAScopeAllows:
     def test_always_replaces_anything(self):
         assert may_overwrite(self.THEIRS, ALWAYS) is True
         assert may_overwrite(self.OURS, ALWAYS) is True
-
-    def test_never_replaces_nothing_that_has_content(self):
-        assert may_overwrite(self.THEIRS, NEVER) is False
-        assert may_overwrite(self.OURS, NEVER) is False
 
     def test_ours_only_protects_what_the_user_wrote(self):
         assert may_overwrite(self.OURS, OURS_ONLY) is True

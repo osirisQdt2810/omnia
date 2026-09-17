@@ -1188,18 +1188,12 @@ class TestWhoseWorkARegenerationMayDestroy:
 
         assert after == "[sound:omnia-1-Def.mp3]"
 
-    def test_never_leaves_every_filled_field_alone(self, monkeypatch):
-        from omnia.plugins.smart_notes.provenance import NEVER, stamp
-
-        assert self._run(monkeypatch, NEVER, "by hand") == "by hand"
-        assert "older" in self._run(monkeypatch, NEVER, stamp("older"))
-
     def test_an_empty_field_is_filled_whatever_the_scope(self, monkeypatch):
-        # The setting is about OVERWRITING. Even "never" must not stop a blank field from being
-        # generated in the first place — there is nothing there to protect.
-        from omnia.plugins.smart_notes.provenance import NEVER, unstamp
+        # The setting is about OVERWRITING. The most protective scope must still not stop a
+        # blank field from being generated in the first place — there is nothing to protect.
+        from omnia.plugins.smart_notes.provenance import NOT_OURS, unstamp
 
-        after = self._run(monkeypatch, NEVER, "")
+        after = self._run(monkeypatch, NOT_OURS, "")
 
         assert unstamp(after) == "generated"
 
