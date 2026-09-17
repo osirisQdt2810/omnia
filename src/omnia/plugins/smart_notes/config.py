@@ -266,7 +266,11 @@ class SmartNotesFieldConfig(PersistedModel):
             without a ``speed`` key when the field inherits the central rate.
         """
         data: dict[str, Any] = super().dict(**kwargs)
-        if not data.get("tools"):
+        if not data.get("tools") and "tools" not in self.__fields_set__:
+            # Pruned only while the chain was NEVER SET. An empty chain that somebody set is a
+            # real choice — "no tool" — and pruning it destroyed that choice on the very first
+            # save: the key came back absent, which reads as unset, which compiles to the AI
+            # default. The field the user had switched off went on generating, and billing.
             data.pop("tools", None)
         if not data.get("speed"):
             data.pop("speed", None)

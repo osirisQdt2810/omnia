@@ -74,6 +74,7 @@ from typing import TYPE_CHECKING, Any
 from omnia.core.providers.catalog import catalog_payload
 from omnia.gui.assets import read_asset, read_assets
 from omnia.plugins.smart_notes.config import (
+    DEFAULT_TOOL_NAME,
     FieldDep,
     FieldToolConfig,
     SmartNotesFieldConfig,
@@ -306,6 +307,12 @@ def field_configs_from_payload(
         if field_type not in _FIELD_TYPES:
             field_type = "text"
         previous = saved.get(name)
+        # `tools` is passed only when there is something to say. Passing it ALWAYS would put it
+        # in `__fields_set__` on every row, and `dict()` keys the ADR-010 pruning on exactly
+        # that — so merely opening the dialog and saving would write the key into the synced
+        # blob for every field of every note type. None means "leave it unset".
+        chain = _tools_for_row(row, previous)
+        extra: dict[str, object] = {} if chain is None else {"tools": chain}
         configs.append(
             SmartNotesFieldConfig(
                 field=name,
@@ -320,7 +327,7 @@ def field_configs_from_payload(
                 speed=_speed_for_row(row, previous),
                 overwrite=bool(row.get("overwrite", False)),
                 depends_on=_deps_from_payload(row.get("depends_on", [])),
-                tools=_tools_for_row(row, previous),
+                **extra,
             )
         )
     return configs
@@ -356,10 +363,34 @@ def _speed_for_row(
         return stored
 
 
+def _chain_payload(row: SmartNotesFieldConfig) -> list[dict[str, object]]:
+    """One row's chain as the page edits it, with the legacy default MADE EXPLICIT.
+
+    Three states, and the page has to be able to show and re-post all three:
+
+    * never set — generates with ``ai``, so the page is shown a real ``ai`` entry. Sending the
+      bare ``[]`` instead would make the Tools column read "none" and the preview refuse, for a
+      field that generates perfectly well: the old lie ("AI" when nothing was ticked) inverted
+      rather than corrected.
+    * set to empty — the user turned every tool off. Shown as empty, so reopening the dialog
+      does not quietly re-tick AI and the next save does not put it back.
+    * a real chain — shown as itself.
+
+    Distinguishing the first two is why this reads ``__fields_set__`` rather than truthiness.
+    It is also what makes an empty POSTED chain unambiguous: the page only ever sends one
+    because somebody emptied it.
+
+    Params are copied so the page can never alias (and mutate) the loaded config.
+    """
+    if not row.tools:
+        return [] if "tools" in row.__fields_set__ else list(_DEFAULT_CHAIN_PAYLOAD)
+    return [{"tool": entry.tool, "params": dict(entry.params)} for entry in row.tools]
+
+
 def _tools_for_row(
     row: dict[str, object], previous: SmartNotesFieldConfig | None
-) -> list[FieldToolConfig]:
-    """Resolve one row's tool chain: the POSTED one when the payload carries it, else the stored.
+) -> list[FieldToolConfig] | None:
+    """Resolve one row's tool chain, or ``None`` to leave the field unset.
 
     The distinction matters both ways round. A page that renders the picker posts ``tools`` on
     every row, so an empty list there is a real "this row has no chain" and must be persisted.
@@ -371,12 +402,47 @@ def _tools_for_row(
         previous: The row's persisted counterpart, or None when it has none.
 
     Returns:
-        The chain to persist for this row.
+        The chain to persist, or None to leave ``tools`` unset on the new config — which is
+        what keeps a legacy row's persisted blob byte-identical.
     """
     posted = row.get("tools")
     if posted is None:
-        return list(previous.tools) if previous is not None else []
-    return _tools_from_payload(posted)
+        if previous is None:
+            return None
+        return list(previous.tools) if _was_set(previous) else None
+    chain = _tools_from_payload(posted)
+    if _is_default_chain(chain) and not _was_set(previous):
+        # The page is HANDED the default explicitly (see row_to_payload), so a row nobody
+        # touched posts it straight back. Persisting that would write a `tools` key into the
+        # synced blob for every user who merely opens the dialog and saves — and a pre-ADR-010
+        # device validates with extra="forbid" and no try/except, so an unknown key there is a
+        # crash on every note-add hook rather than an ignored setting. Leaving it unset keeps
+        # the blob byte-identical while meaning exactly the same thing.
+        return None
+    return chain
+
+
+#: What ``row_to_payload`` shows for a row with no stored chain: the legacy ``ai`` default,
+#: written out so the page can display and edit it like any other chain.
+_DEFAULT_CHAIN_PAYLOAD: list[dict[str, object]] = [
+    {"tool": DEFAULT_TOOL_NAME, "params": {}}
+]
+
+
+def _is_default_chain(chain: list[FieldToolConfig]) -> bool:
+    """Whether ``chain`` is exactly the implicit legacy default — one bare ``ai``, no params."""
+    return (
+        len(chain) == 1 and chain[0].tool == DEFAULT_TOOL_NAME and not chain[0].params
+    )
+
+
+def _was_set(previous: SmartNotesFieldConfig | None) -> bool:
+    """Whether the stored row actually carries a ``tools`` key.
+
+    ``__fields_set__`` rather than truthiness, because an EMPTY stored chain is a real choice
+    ("no tool") and must not be confused with never having chosen.
+    """
+    return previous is not None and "tools" in previous.__fields_set__
 
 
 def _tools_from_payload(tools: object) -> list[FieldToolConfig]:
@@ -512,11 +578,14 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
             {"field": dep.field, "kind": dep.kind, "auto": dep.auto}
             for dep in row.depends_on
         ],
-        # The ordered tool chain the Tools picker edits. Params are copied so the page can
-        # never alias (and mutate) the loaded config.
-        "tools": [
-            {"tool": entry.tool, "params": dict(entry.params)} for entry in row.tools
-        ],
+        # The ordered tool chain the Tools picker edits, with the LEGACY DEFAULT MADE
+        # EXPLICIT: a row whose stored chain is unset generates with `ai`, so that is what the
+        # page is shown. Sending the bare [] instead makes the Tools column read "none" and the
+        # preview refuse, for a field that generates perfectly well — the old lie ("AI" when
+        # nothing was ticked) inverted rather than corrected. It is also what makes an empty
+        # chain UNAMBIGUOUS coming back: the page only ever posts [] because somebody emptied
+        # it. Params are copied so the page can never alias (and mutate) the loaded config.
+        "tools": _chain_payload(row),
     }
 
 
