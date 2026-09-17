@@ -157,7 +157,7 @@ class _InvertedLatencyLLM(FakeLLMProvider):
 
 
 class _EchoTTS(FakeTTSProvider):
-    def synthesize(self, text, *, lang=None, voice=None):
+    def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
         return f"AUDIO<{text}>".encode()
 
 
@@ -172,6 +172,10 @@ class _StubHub:
 
     def tts(self, *, provider: str = ""):
         return self._tts
+
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
 
     def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         if lang not in self._auto_voices:

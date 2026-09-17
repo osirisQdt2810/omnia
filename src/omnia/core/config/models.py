@@ -27,6 +27,7 @@ from typing import Any, ClassVar, Optional
 from pydantic import BaseModel, Field
 
 from omnia.core.config.base import PersistedModel
+from omnia.core.providers.tts.speed import NORMAL as TTS_NORMAL_SPEED
 
 
 # --- LLM provider settings ------------------------------------------------------------
@@ -204,6 +205,11 @@ class TTSSettings(PersistedModel):
     """
 
     provider: str = "google_translate"
+    #: How fast every generated voice speaks, ``1.0`` being the voice's natural pace. The
+    #: default for the whole add-on; a Smart Notes field may override it. Lives here rather
+    #: than in the collection blob because it is provider config (``providers.toml``), so
+    #: changing it costs no ADR-010 compatibility risk on devices running older releases.
+    speed: float = TTS_NORMAL_SPEED
     google_translate: GoogleTranslateTTSSettings = Field(
         default_factory=GoogleTranslateTTSSettings
     )

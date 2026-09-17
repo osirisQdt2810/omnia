@@ -453,7 +453,12 @@ class FakeTTSProvider(_TTSProvider):
         self._audio = audio
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = 1.0,
     ) -> bytes:
         return self._audio
 

@@ -503,7 +503,7 @@ class TestPiperTTSModelPath:
             def __init__(self):
                 self.model_path = ""
 
-            def run(self, text, model_path):
+            def run(self, text, model_path, **kw):
                 self.model_path = model_path
                 return b"RIFFwav"
 

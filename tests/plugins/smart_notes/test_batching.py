@@ -148,6 +148,10 @@ class _StubHub:
     def tts(self, *, provider: str = ""):
         return self._tts
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
     def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         return ("fake", "en-voice")
 

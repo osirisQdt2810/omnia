@@ -45,6 +45,10 @@ class _Hub:
     def tts(self, *, provider: str = ""):
         return self._tts
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
     def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         if lang not in self._auto_voices:
             raise ProviderError(f"No Auto-detect voice set for language {lang!r}")
@@ -58,7 +62,7 @@ class _RecordingTTS(FakeTTSProvider):
         super().__init__()
         self.calls: list = []
 
-    def synthesize(self, text, *, lang=None, voice=None):
+    def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
         self.calls.append((text, lang, voice))
         return b"AUDIO"
 
@@ -267,9 +271,87 @@ class TestAnExplicitLanguageCostsNothing:
             def tts(self, provider=None):
                 return SimpleNamespace(audio_ext="mp3")
 
-        rule = SimpleNamespace(voice="", provider="", language="vi")
+            def tts_speed(self):
+                return 1.0
+
+        rule = SimpleNamespace(voice="", provider="", language="vi", speed=0.0)
 
         ResolvedVoice.for_rule(_Hub(), _ForbiddenDetector(), rule, "bất kỳ câu nào")
 
         assert picked["lang"] == "vi"
         assert picked["reason"] == ""  # nothing failed, so there is no reason to carry
+
+
+class TestHowFastAFieldSpeaks:
+    """One pace per resolved voice, chosen once and reused for every piece of one field.
+
+    ``cloze_audio`` synthesizes a sentence in several calls and splices them; pieces spoken at
+    different speeds do not sound like one sentence, which is why the pace is resolved next to
+    the voice rather than read again per call.
+    """
+
+    def _rule(self, **kw):
+        from types import SimpleNamespace
+
+        base = {"voice": "v", "provider": "", "language": "en", "speed": 0.0}
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def _hub(self, central=1.0):
+        from types import SimpleNamespace
+
+        class _Hub:
+            def tts(self, provider=None):
+                return SimpleNamespace(audio_ext="mp3")
+
+            def tts_speed(self):
+                return central
+
+            def resolve_auto_voice(self, lang, *, reason=""):
+                return "google_translate", ""
+
+        return _Hub()
+
+    def _resolve(self, rule, hub):
+        from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
+
+        class _Detector:
+            def detect(self, providers, text):
+                raise AssertionError("not needed with an explicit language")
+
+        return ResolvedVoice.for_rule(hub, _Detector(), rule, "text")
+
+    def test_a_field_with_no_pace_inherits_the_central_one(self):
+        resolved = self._resolve(self._rule(), self._hub(central=0.9))
+
+        assert resolved.speed == 0.9
+
+    def test_a_fields_own_pace_wins(self):
+        resolved = self._resolve(self._rule(speed=1.25), self._hub(central=0.9))
+
+        assert resolved.speed == 1.25
+
+    def test_the_auto_detect_branch_resolves_it_too(self):
+        # Two branches build the value object; a pace set on only one is a pace that works
+        # until the user switches the field to Auto-detect.
+        resolved = self._resolve(
+            self._rule(voice="", speed=1.25), self._hub(central=0.9)
+        )
+
+        assert resolved.speed == 1.25
+
+    def test_it_reaches_the_provider(self):
+        recorded: dict = {}
+
+        class _Provider:
+            audio_ext = "mp3"
+
+            def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
+                recorded["speed"] = speed
+                return b"MP3"
+
+        from omnia.plugins.smart_notes.engine.generators import ResolvedVoice
+
+        ResolvedVoice(_Provider(), "en", "v", 0.8).synthesize("hi")
+
+        assert recorded["speed"] == 0.8

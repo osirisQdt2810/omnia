@@ -338,6 +338,7 @@ def compile_field_rule(
         model=field_config.model,
         voice=field_config.voice,
         language=field_config.language,
+        speed=field_config.speed,
         overwrite=field_config.overwrite,
         depends_on=list(field_config.depends_on),
         tools=_compile_tools(field_config),

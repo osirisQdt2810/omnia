@@ -20,6 +20,8 @@ from omnia.core.providers.llm import (
     available_llm_providers_requiring_api,
     create_llm_provider,
 )
+from omnia.core.providers.tts import speed as tts_speed_module
+from omnia.core.providers.tts.speed import NORMAL as TTS_NORMAL_SPEED
 from omnia.core.providers.tts import (
     TTSProvider,
     available_keyless_tts_providers,
@@ -291,6 +293,18 @@ class ProviderHub:
         """The configured active TTS provider name (empty when there are no settings)."""
         settings = self._tts_settings
         return str(settings.provider) if settings is not None else ""
+
+    def tts_speed(self) -> float:
+        """The configured pace for every generated voice, ``1.0`` being the voice's own.
+
+        The central default a Smart Notes field falls back to when it pins no rate of its own.
+        Read through the hub rather than from the settings directly so a live config change is
+        picked up the same way a provider change is — the caller holds a hub, not a snapshot.
+        """
+        settings = self._tts_settings
+        if settings is None:
+            return TTS_NORMAL_SPEED
+        return tts_speed_module.clamp(getattr(settings, "speed", TTS_NORMAL_SPEED))
 
     def resolve_auto_voice(self, lang: str, *, reason: str = "") -> tuple[str, str]:
         """Resolve the global Auto-detect ``(provider, voice)`` for a language code.

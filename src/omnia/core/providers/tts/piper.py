@@ -31,7 +31,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.providers.errors import ProviderError
+from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
 from omnia.core.providers.tts.voice_models import (
     DownloadFeedback,
@@ -134,8 +136,16 @@ class PiperRunner(ABC):
         """
 
     @abstractmethod
-    def run(self, text: str, model_path: str) -> bytes:
-        """Return WAV audio for ``text`` using the voice model at ``model_path``."""
+    def run(self, text: str, model_path: str, *, length_scale: float = 1.0) -> bytes:
+        """Return WAV audio for ``text`` using the voice model at ``model_path``.
+
+        Args:
+            text: What to speak.
+            model_path: The ``.onnx`` voice to speak it with.
+            length_scale: piper's duration multiplier — the INVERSE of a pace. ``2.0`` makes
+                every phoneme last twice as long, i.e. half speed. ``1.0`` is the model's own
+                pace and is left off the request entirely.
+        """
 
 
 class SidecarPiperRunner(PiperRunner):
@@ -155,16 +165,22 @@ class SidecarPiperRunner(PiperRunner):
         """Check the managed venv is installed — one ``is_dir``, no network, no side effects."""
         (self._manager or default_manager()).require_installed(SPEC)
 
-    def run(self, text: str, model_path: str) -> bytes:
+    def run(self, text: str, model_path: str, *, length_scale: float = 1.0) -> bytes:
         _require_model_file(model_path)
         manager = self._manager or default_manager()
+        argv = ["-m", model_path, "-f", "{out}"]
+        if length_scale != 1.0:
+            # Only when it asks for something: the flag's spelling has changed across
+            # piper-tts releases, so a run that does not need it should not be able to fail on
+            # it. `--length_scale` is what the console script this venv pins accepts.
+            argv += ["--length_scale", str(length_scale)]
         # piper writes the WAV to a file rather than stdout, so use a temp output path and read
         # the bytes back; text goes in on stdin.
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "out.wav"
             code = manager.run_in_venv(
                 SPEC,
-                ["-m", model_path, "-f", str(out_path)],
+                [str(out_path) if arg == "{out}" else arg for arg in argv],
                 input=text.encode("utf-8"),
             )
             if code != 0 or not out_path.exists():
@@ -207,7 +223,7 @@ class PiperVoiceRunner(PiperRunner):
         """Check ``piper-tts`` is importable — before a voice is resolved or downloaded."""
         self._piper_voice_class()
 
-    def run(self, text: str, model_path: str) -> bytes:
+    def run(self, text: str, model_path: str, *, length_scale: float = 1.0) -> bytes:
         import io
         import wave
 
@@ -216,6 +232,14 @@ class PiperVoiceRunner(PiperRunner):
         # Boundary: surface any piper/onnx failure as a ProviderError.
         try:
             voice = voice_class.load(model_path)
+            if length_scale != 1.0:
+                # `PiperVoice.config` carries the model's synthesis defaults. Set rather than
+                # passed, because `synthesize_wav` takes no rate argument in the releases this
+                # runner supports; guarded so a build whose config has moved cannot break a
+                # synthesis that never asked to change pace.
+                config = getattr(voice, "config", None)
+                if config is not None and hasattr(config, "length_scale"):
+                    config.length_scale = length_scale
             buf = io.BytesIO()
             with wave.open(buf, "wb") as wav:
                 voice.synthesize_wav(text, wav)
@@ -260,7 +284,12 @@ class PiperTTS(TTSProvider):
         return cls(model=config.get("model", ""))
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
         """Synthesize ``text`` to WAV, checking the runtime BEFORE resolving the voice.
 
@@ -270,7 +299,11 @@ class PiperTTS(TTSProvider):
         the synthesis could never have run.
         """
         self._runner.ensure_ready()
-        return self._runner.run(text, self._resolve_model_path(voice))
+        return self._runner.run(
+            text,
+            self._resolve_model_path(voice),
+            length_scale=tts_speed.as_length_scale(speed),
+        )
 
     def _voice_store(self) -> PiperVoiceStore:
         """The injected store, or the process-wide one (built on first use)."""

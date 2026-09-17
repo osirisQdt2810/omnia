@@ -1052,3 +1052,91 @@ class TestANewerReleasesValueSurvivesThisPane:
 
         assert f"clampInt(optConcurrency.value, 1, {MAX_WORKERS}" in html
         assert f"clampInt(optBatchNotes.value, 1, {MAX_NOTES_PER_CALL}" in html
+
+
+class TestHowFastAFieldsVoiceSpeaks:
+    """The Speed picker, and the rule that keeps an older page from clearing it.
+
+    A payload with no ``speed`` key never rendered the picker. Treating that as "the user chose
+    inherit" would let an older release — or a device on an older build — silently undo a pace
+    set elsewhere, the same trap ``tools`` already has a rule for.
+    """
+
+    def _rows(self, **kw):
+        row = {
+            "field": "Audio",
+            "enabled": True,
+            "type": "tts",
+            "prompt": "{{Word}}",
+            "voice": "v",
+        }
+        row.update(kw)
+        return [row]
+
+    def _stored(self, speed):
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+
+        return [SmartNotesFieldConfig(field="Audio", type="tts", speed=speed)]
+
+    def test_a_posted_pace_is_kept(self):
+        configs = field_configs_from_payload(self._rows(speed=0.8))
+
+        assert configs[0].speed == 0.8
+
+    def test_a_posted_zero_really_means_inherit(self):
+        # The page DID render the picker, so zero is the user choosing inherit — persist it.
+        configs = field_configs_from_payload(self._rows(speed=0), self._stored(1.25))
+
+        assert configs[0].speed == 0.0
+
+    def test_a_payload_without_the_key_keeps_the_stored_pace(self):
+        configs = field_configs_from_payload(self._rows(), self._stored(1.25))
+
+        assert (
+            configs[0].speed == 1.25
+        ), "an older page that cannot render the picker cleared a pace set on a newer one"
+
+    def test_a_malformed_pace_keeps_the_stored_one(self):
+        # A payload that will not parse is not a user asking for the default.
+        configs = field_configs_from_payload(
+            self._rows(speed="quickly"), self._stored(1.25)
+        )
+
+        assert configs[0].speed == 1.25
+
+    def test_a_negative_pace_cannot_be_stored(self):
+        configs = field_configs_from_payload(self._rows(speed=-2))
+
+        assert configs[0].speed == 0.0
+
+
+class TestTheSpeedPickerIsOnThePage:
+    """The control itself: it exists, it offers inherit, and it posts what it offers."""
+
+    def _js(self) -> str:
+        import omnia.gui.smart_notes.html as html_module
+        from omnia.gui.assets import read_asset
+
+        return read_asset(html_module.__file__, "web", "03-render.js")
+
+    def test_the_row_carries_a_pace(self):
+        assert "tr.dataset.speed" in self._js()
+
+    def test_inherit_is_offered_and_is_the_blank_one(self):
+        js = self._js()
+
+        assert 'value: "", label: "Speed: inherit"' in js
+
+    def test_the_pace_is_collected_into_the_payload(self):
+        # Without this the picker would look like it worked and change nothing on save.
+        assert "speed: sound ?" in self._js()
+
+    def test_it_is_rebuilt_with_the_voice_cell(self):
+        """``fillCellSelect`` clears the cell, so anything appended outside ``rebuildVoice``
+        disappears the next time the provider changes — silently, and only for the user who
+        changes a provider."""
+        js = self._js()
+        rebuild = js[js.index("function rebuildVoice") :]
+        rebuild = rebuild[: rebuild.index("function makeSpeedSelect")]
+
+        assert "makeSpeedSelect(tr)" in rebuild

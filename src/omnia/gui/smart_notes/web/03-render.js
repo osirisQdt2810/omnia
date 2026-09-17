@@ -13,6 +13,21 @@
    */
 
   /**
+   * What the Speed picker offers. "" posts 0, i.e. "use the central [tts] rate".
+   * @const {!Array<{value: string, label: string}>}
+   */
+  const SPEED_CHOICES = [
+    {value: "", label: "Speed: inherit"},
+    {value: "0.7", label: "0.7× slower"},
+    {value: "0.8", label: "0.8× slower"},
+    {value: "0.9", label: "0.9× slower"},
+    {value: "1.0", label: "1.0× normal"},
+    {value: "1.1", label: "1.1× faster"},
+    {value: "1.25", label: "1.25× faster"},
+    {value: "1.5", label: "1.5× faster"}
+  ];
+
+  /**
    * Build the table row element for one field config.
    * @param {!Object} row The field config (field, enabled, type, prompt, …).
    * @return {!HTMLTableRowElement}
@@ -24,6 +39,9 @@
     tr.dataset.model = row.model || "";
     tr.dataset.voice = row.voice || "";
     tr.dataset.language = row.language || "";
+    // How fast this field's voice speaks, as a multiplier. "" (and 0) mean inherit the central
+    // [tts] speed, matching how voice/language use "" — one way to say "not set".
+    tr.dataset.speed = row.speed ? String(row.speed) : "";
     // Explicit dependency edges ({field, kind}[]) edited in the Dependencies view; stored as
     // JSON on the row so collectRows reads them as the single source of truth alongside the
     // other editable state.
@@ -273,8 +291,9 @@
         return {value: v.voice, label: v.label};
       })
     );
+    const cellEl = tr.querySelector(".sn-voice-cell");
     fillCellSelect(
-      tr.querySelector(".sn-voice-cell"),
+      cellEl,
       "sn-voice",
       options,
       tr.dataset.voice || "",
@@ -282,6 +301,37 @@
         tr.dataset.voice = value;
       }
     );
+    // Appended INSIDE the voice cell rather than given a column of its own: pace applies under
+    // exactly the same condition as voice (a sound field), so a column would be blank on every
+    // row that Voice is blank on, and the table is already wide. Added here because
+    // fillCellSelect clears the cell — anything placed outside this function would be wiped the
+    // next time the provider changes.
+    cellEl.appendChild(makeSpeedSelect(tr));
+  }
+
+  /**
+   * The pace picker for one sound row: a multiplier, or inherit.
+   *
+   * Discrete options rather than a free number box. The useful range is narrow and the wrong
+   * values in it are not obvious — 3× is not a voice, 0.99× is not a change — so a list that
+   * only contains sensible paces needs no validation and no error state, in a table cell that
+   * has room for neither.
+   * @param {!HTMLTableRowElement} tr The row.
+   * @return {!HTMLSelectElement}
+   */
+  function makeSpeedSelect(tr) {
+    const sel = document.createElement("select");
+    sel.className = "sn-speed";
+    sel.title =
+      "How fast this voice speaks. Inherit uses the rate set for the TTS provider.";
+    const saved = tr.dataset.speed || "";
+    SPEED_CHOICES.forEach(function (c) {
+      sel.appendChild(opt(c.value, c.label, c.value === saved));
+    });
+    sel.addEventListener("change", function () {
+      tr.dataset.speed = sel.value;
+    });
+    return sel;
   }
 
   /**
@@ -698,6 +748,9 @@
         model: sound ? "" : tr.dataset.model || "",
         voice: sound ? tr.dataset.voice || "" : "",
         language: sound ? tr.dataset.language || "" : "",
+        // 0 is "inherit the central rate", and is also what a text/image row posts — pace is
+        // meaningless without a voice.
+        speed: sound ? Number(tr.dataset.speed || 0) || 0 : 0,
         overwrite: tr.querySelector(".sn-overwrite").checked,
         depends_on: readDependsOn(tr),
         // Always posted, even when empty: field_configs_from_payload treats a MISSING key as

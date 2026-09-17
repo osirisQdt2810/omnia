@@ -278,8 +278,8 @@ def field_configs_from_payload(
     """Build :class:`SmartNotesFieldConfig`s from the JS-posted row dicts (one per non-base field).
 
     Each dict carries the row's editable state (``field``, ``enabled``, ``type``, ``prompt``,
-    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``language``, ``overwrite``,
-    ``depends_on``, ``tools``). A row with no ``field`` name is skipped; an invalid ``type``
+    ``prompt_locked``, ``provider``, ``model``, ``voice``, ``language``, ``speed``,
+    ``overwrite``, ``depends_on``, ``tools``). A row with no ``field`` name is skipped; an invalid ``type``
     falls back to ``"text"`` so a malformed payload can't raise during validation.
 
     ``stored`` is the note type's CURRENTLY PERSISTED rows, and it stays load-bearing even now
@@ -317,12 +317,43 @@ def field_configs_from_payload(
                 model=str(row.get("model", "")),
                 voice=str(row.get("voice", "")),
                 language=str(row.get("language", "")),
+                speed=_speed_for_row(row, previous),
                 overwrite=bool(row.get("overwrite", False)),
                 depends_on=_deps_from_payload(row.get("depends_on", [])),
                 tools=_tools_for_row(row, previous),
             )
         )
     return configs
+
+
+def _speed_for_row(
+    row: dict[str, object], previous: SmartNotesFieldConfig | None
+) -> float:
+    """Resolve one row's TTS pace: the POSTED one when the payload carries it, else the stored.
+
+    The same distinction ``_tools_for_row`` draws, for the same reason. A page that renders the
+    Speed picker posts ``speed`` on every row, so a zero there is a real "inherit the central
+    rate" and must be persisted. A payload with NO ``speed`` key never rendered the picker — an
+    older page, a partial payload — and clearing the rate would silently undo a choice made on
+    a newer release or another device.
+
+    A value that will not read as a number falls back to the stored one for the same reason: a
+    malformed payload is not a user asking for the default.
+
+    Args:
+        row: The posted row dict.
+        previous: The row's persisted counterpart, or None when it has none.
+
+    Returns:
+        The pace to persist: a multiplier, or ``0.0`` for "use the central rate".
+    """
+    stored = previous.speed if previous is not None else 0.0
+    if "speed" not in row:
+        return stored
+    try:
+        return max(0.0, float(row["speed"] or 0.0))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return stored
 
 
 def _tools_for_row(

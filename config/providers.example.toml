@@ -82,6 +82,12 @@ embedding_model = ""
 # provider: google_translate | openai | openrouter | openai_compatible | google_cloud | edge_tts | piper
 provider = "google_translate"
 
+# How fast every generated voice speaks, as a multiplier of its natural pace (0.5–2.0).
+# A Smart Notes sound field can override this per field; most people set it once here.
+# google_translate is the exception: its endpoint has only a slow mode, so anything below
+# 0.9 is slow and everything else is normal.
+speed = 1.0
+
 # Free, no key (gTTS-style) — the default.
 [tts.google_translate]
 lang = "en"            # voice language (e.g. en, vi)

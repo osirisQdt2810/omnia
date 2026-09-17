@@ -555,6 +555,10 @@ class _CountingHub:
     def tts(self, **kwargs):  # pragma: no cover - no tts rule in these tests
         raise AssertionError("no tts call expected")
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
 
 def _cloze_then_ai_config() -> SmartNotesNoteTypeConfig:
     return SmartNotesNoteTypeConfig(

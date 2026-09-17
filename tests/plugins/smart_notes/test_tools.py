@@ -662,6 +662,10 @@ class _StubHub:
     def tts(self, **kwargs):  # pragma: no cover - unused by the fake tools
         raise AssertionError("no provider call expected")
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
 
 def _note_config(tools: list[FieldToolConfig]) -> SmartNotesNoteTypeConfig:
     return SmartNotesNoteTypeConfig(

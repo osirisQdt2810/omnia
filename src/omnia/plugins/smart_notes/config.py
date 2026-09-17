@@ -164,6 +164,11 @@ class SmartNotesFieldRule(StrictModel):
     voice: str = ""
     # TTS language code (e.g. "vi"); empty = auto-detect the spoken text's language.
     language: str = ""
+    # How fast this field's voice speaks, as a multiplier of the voice's natural pace.
+    # ZERO means inherit the central ``[tts] speed``, matching how ``provider``/``voice``/
+    # ``language`` use the empty string — there is then exactly one way to say "not set", and
+    # the row does not have to carry the global default around to stay in step with it.
+    speed: float = 0.0
     # Per-rule overwrite (the note-type config carries the real overwrite flag; the engine
     # threads it onto the compiled rule so skip logic can read it per field).
     overwrite: bool = False
@@ -211,6 +216,11 @@ class SmartNotesFieldConfig(PersistedModel):
     voice: str = ""
     # TTS language code (e.g. "vi"); empty = auto-detect the spoken text's language.
     language: str = ""
+    # How fast this field's voice speaks, as a multiplier of the voice's natural pace.
+    # ZERO means inherit the central ``[tts] speed``, matching how ``provider``/``voice``/
+    # ``language`` use the empty string — there is then exactly one way to say "not set", and
+    # the row does not have to carry the global default around to stay in step with it.
+    speed: float = 0.0
     overwrite: bool = False
     # Explicit dependency edges onto prerequisite fields (union with derived {{refs}}); a
     # "hard" dep both orders and blocks, a "soft" dep orders only. An explicit entry overrides
@@ -223,7 +233,7 @@ class SmartNotesFieldConfig(PersistedModel):
     tools: list[FieldToolConfig] = Field(default_factory=list)
 
     def dict(self, **kwargs: Any) -> dict[str, Any]:
-        """Serialize the row, OMITTING ``tools`` while the chain is empty.
+        """Serialize the row, OMITTING ``tools`` and ``speed`` while they are unset.
 
         An empty chain carries no information — it IS the legacy default — so writing the key
         would only announce this release's schema to the synced collection. That matters
@@ -242,15 +252,23 @@ class SmartNotesFieldConfig(PersistedModel):
         serializes a settings tree would still leak it. Pydantic v1 serializes a NESTED model
         through that model's own ``dict()``, so this one override covers the whole tree.
 
+        ``speed`` is pruned on the same reasoning and for the same reader: zero means "use the
+        central rate", which is what a row with no key has always meant, so writing it would
+        announce this release's schema to every device that syncs the collection for a setting
+        the user never touched.
+
         Args:
             **kwargs: Passed through to :meth:`pydantic.BaseModel.dict` unchanged.
 
         Returns:
-            The row's serialized form, without a ``tools`` key when the chain is empty.
+            The row's serialized form, without a ``tools`` key when the chain is empty and
+            without a ``speed`` key when the field inherits the central rate.
         """
         data: dict[str, Any] = super().dict(**kwargs)
         if not data.get("tools"):
             data.pop("tools", None)
+        if not data.get("speed"):
+            data.pop("speed", None)
         return data
 
     def supports_generation(self) -> bool:

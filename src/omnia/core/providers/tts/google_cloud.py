@@ -14,7 +14,9 @@ from typing import Any, ClassVar, Optional
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.token_source import TokenSource, resolve_token_source
+from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
 
 _ENDPOINT = "https://texttospeech.googleapis.com/v1/text:synthesize"
@@ -191,7 +193,12 @@ class GoogleCloudTTS(TTSProvider):
         )
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
         chosen = voice or self._voice
         voice_params: dict[str, object] = {
@@ -204,7 +211,13 @@ class GoogleCloudTTS(TTSProvider):
             "voice": voice_params,
             "audioConfig": {
                 "audioEncoding": "MP3",
-                "speakingRate": self._speaking_rate,
+                # The per-call rate wins over the configured one; the configured one is what
+                # a call that asks for nothing still gets.
+                "speakingRate": (
+                    self._speaking_rate
+                    if tts_speed.is_normal(speed)
+                    else tts_speed.clamp(speed)
+                ),
             },
         }
         headers = {"Authorization": f"Bearer {self._token_source.token()}"}

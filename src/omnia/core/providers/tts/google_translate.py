@@ -10,12 +10,22 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
+from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.providers.tts.registry import register_tts
 
 _ENDPOINT = "https://translate.google.com/translate_tts"
 _MAX_CHARS = 200
 # Translate returns 403 without a browser-like User-Agent.
+#: Below this, a request is sent as Translate's "slow" mode; at or above it, natural pace.
+#: Nearer normal than halfway because slow is markedly slower than 0.75 — treating a mild
+#: slowdown as "no change" would leave the user turning the dial with nothing happening.
+_SLOW_BELOW = 0.9
+
+#: What the endpoint's slow mode is passed as. A fixed value, not a rate.
+_SLOW_RATE = 0.24
+
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -78,7 +88,12 @@ class GoogleTranslateTTS(TTSProvider):
         )
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
         use_lang = lang or self._lang
         parts = split_text(text)
@@ -99,6 +114,14 @@ class GoogleTranslateTTS(TTSProvider):
                 "textlen": str(len(part)),
                 "client": "tw-ob",
             }
+            if tts_speed.clamp(speed) < _SLOW_BELOW:
+                # The `tw-ob` endpoint has no rate parameter — only the "slow" mode the
+                # Translate UI's turtle button uses, which is a fixed pace rather than a
+                # multiplier. So anything meaningfully below normal gets slow, and everything
+                # else gets the natural pace; asking this endpoint for 1.5x is not something it
+                # can do, and pretending otherwise would return normal audio while the field
+                # claimed it was faster.
+                params["ttsspeed"] = str(_SLOW_RATE)
             audio += self._http.get_bytes(
                 endpoint, params=params, headers={"User-Agent": _USER_AGENT}
             )

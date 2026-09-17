@@ -21,6 +21,48 @@ Format for each entry:
 
 ---
 
+## 2026-09-17 — A generated voice speaks at the pace you choose
+
+**What:** `TTSProvider.synthesize` takes a `speed` multiplier, and every provider converts it to
+its own engine's dialect: Edge gets a signed percentage delta in the SSML `<prosody>`, Google
+Cloud and OpenAI (and viet-tts through it) get the multiplier as `speakingRate`/`speed`, piper
+gets the INVERSE as `--length_scale`, and Google Translate — whose endpoint has no rate parameter
+— gets its slow mode below 0.9 and nothing above. The rate is set centrally under `[tts] speed`
+and overridden per Smart Notes sound field from a picker in the Voice cell.
+
+**Why:** Generated audio came out faster than it is comfortable to learn from, and there was no
+way to change it: the pace was the literal `'+0%'` hardcoded in the Edge SSML, and nothing above
+that layer could express a preference. On a collection of several thousand sound fields the only
+remedy was regenerating everything at a pace you still could not choose.
+
+**Files:** `core/providers/tts/speed.py` (new — the conversions), `core/providers/tts/base.py`
+(the widened interface) and each of the six providers, `core/providers/usage.py` (the recording
+wrapper proxies it), `core/providers/__init__.py` (`ProviderHub.tts_speed()`),
+`core/config/models.py` (`TTSSettings.speed`), `plugins/smart_notes/config.py` (per-field
+`speed` + its pruning), `engine/rules.py`, `engine/generators.py` (`ResolvedVoice.speed`),
+`gui/smart_notes/html.py` (`_speed_for_row`), `gui/smart_notes/web/03-render.js`, `page.css`,
+`config/providers.example.toml`.
+
+**How to verify:**
+```bash
+pytest tests/providers/test_tts_speed.py -q          # the conversions + what each provider sends
+scripts/run_tests.sh                                  # 3709 passed
+```
+By hand: set a sound field's Speed to 0.8× and regenerate it; the audio is a fifth slower.
+
+**Notes / rollback:** Two things are easy to get wrong here and both fail SILENTLY. piper's
+`length_scale` is a DURATION, so it runs backwards — inverted, it still synthesizes and is simply
+faster when you asked for slower; `tests/providers/test_tts_speed.py` pins it against the
+documented parameter rather than against the code. And the per-field `speed` is a new key in the
+SYNCED collection blob, so it follows the `tools` rule exactly: zero means "use the central rate",
+which is what a row with no key has always meant, and `SmartNotesFieldConfig.dict()` prunes it —
+a pre-ADR-010 device is `extra="forbid"` with no try/except and would crash on every note-add hook
+rather than ignore an unknown key. `ResolvedVoice` carries the pace next to the voice because
+`cloze_audio` splices several syntheses of one field and pieces at different speeds do not sound
+like one sentence. Rollback is the commit; nothing persists a rate until a user picks one.
+
+---
+
 ## 2026-09-15 — Background batch generation, and a progress seam any plugin can use
 
 **What:** A Smart Notes batch started from the Browser no longer opens Anki's modal progress
