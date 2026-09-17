@@ -181,10 +181,16 @@ class CustomPromptDialog(QDialog):
             self.reject()
             return
         from omnia.plugins.smart_notes.integration.batch import materialize
+        from omnia.plugins.smart_notes.provenance import to_store
 
         # nid 0 is fine: media filenames are namespaced by field, and a one-off has no note id.
         value = materialize(0, _Target(self._target_field), self._result)
-        self._on_save(value)
+        # Marked HERE rather than in the `on_save` callback, because the kind is only in hand on
+        # this side and because every caller of this dialog then inherits it. Without it the
+        # custom-prompt action wrote Omnia's text unmarked: under `ours_only` the field could
+        # never be refreshed again, under `not_ours` it was regenerated and paid for on every
+        # batch. Both silent — the same two outcomes the other four paths had.
+        self._on_save(to_store(value, getattr(self._result, "kind", "text")))
         self.accept()
 
     def _build_hub(self, show_warning: Callable[[str], None]) -> Any:

@@ -27,7 +27,6 @@ that to the threading + progress + media-write seams in ``core/anki_compat``.
 from __future__ import annotations
 
 import logging
-import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -49,7 +48,11 @@ from omnia.plugins.smart_notes.integration.progress import (
     ProgressSurface,
     Silent,
 )
-from omnia.plugins.smart_notes.provenance import ALWAYS, stamp
+from omnia.plugins.smart_notes.provenance import (
+    ALWAYS,
+    superseded_media,
+    to_store,
+)
 
 if TYPE_CHECKING:
     from omnia.core.concurrency.dispatch import Dispatch
@@ -978,14 +981,12 @@ class BatchGenerator:
                 # referencing can be trashed once the new value is safely stored. Collected
                 # here because this is the only moment both values are in hand.
                 was = superseded_media(note[rule.target_field])
-                # Stamped HERE, at the write, rather than in `materialize`. The generation
-                # chain reads the fields it is chained from, and a mark in that input would end
-                # up quoted into the next tool's prompt.
-                value = outcome.materialize(rule, result)
-                # Text only. A media field is one `[sound:omnia-…]` tag whose NAME already says
-                # who wrote it, and a comment beside it would be clutter for no new information.
-                if getattr(result, "kind", "text") == "text":
-                    value = stamp(value)
+                # `to_store`, not `stamp` directly, and not inside `materialize`: every path
+                # that writes generated content goes through that one function, so the editor
+                # button, review pre-generation and the clipper cannot drift out of marking.
+                value = to_store(
+                    outcome.materialize(rule, result), getattr(result, "kind", "text")
+                )
                 note[rule.target_field] = value
                 # Only what the field STOPPED referencing. A regeneration does not always
                 # produce a new filename: Anki's `add_data_to_folder_uniquely` hashes first and
@@ -1034,41 +1035,6 @@ class _PreparedNote:
     counted_as_processed: bool
     #: Files this note's fields STOP referencing, to trash once its write has landed.
     superseded: tuple[str, ...] = ()
-
-
-#: The prefix :func:`materialize` gives every file it writes.
-#:
-#: Load-bearing, because it is the ONLY thing that decides whether a file may be trashed when a
-#: field is regenerated. A real collection holds media from several sources — AwesomeTTS and
-#: HyperTTS write ``googletts-…``, pasted images land as ``paste-…``, other add-ons have their
-#: own families — and none of them are ours to delete. A name we did not write is left alone,
-#: whatever it looks like.
-OUR_MEDIA_PREFIX = "omnia-"
-
-#: A media reference inside a field: ``[sound:x.mp3]`` or ``<img src="x.png">``. Both quote
-#: styles, because Anki's editor writes double and hand-edited fields carry single.
-_MEDIA_REF_RE = re.compile(
-    r"\[sound:([^\]]+)\]|<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE
-)
-
-
-def superseded_media(previous: str) -> list[str]:
-    """The files ``previous`` referenced that Omnia wrote, and may therefore replace.
-
-    Regenerating a field does NOT overwrite the old file: ``MediaManager.write_data`` renames on
-    collision ("renaming if not unique"), so every regeneration leaves the previous audio behind
-    referenced by nobody. Five regenerations of one field is five files and one useful one. On a
-    real collection that ran to hundreds of megabytes of audio nothing could play.
-
-    Only files carrying :data:`OUR_MEDIA_PREFIX` are returned. Everything else in the field —
-    another add-on's TTS, a pasted image — is somebody else's and is not ours to remove.
-    """
-    out: list[str] = []
-    for sound, image in _MEDIA_REF_RE.findall(previous or ""):
-        name = (sound or image).strip()
-        if name.startswith(OUR_MEDIA_PREFIX) and name not in out:
-            out.append(name)
-    return out
 
 
 def materialize(nid: int, rule: Any, result: GenerationResult) -> str:

@@ -27,6 +27,7 @@ from omnia.plugins.smart_notes.engine import (
 from omnia.plugins.smart_notes.integration.batch import (
     note_materializer,
 )
+from omnia.plugins.smart_notes.provenance import to_store
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule, SmartNotesSettings
@@ -133,7 +134,9 @@ class ReviewTimeEvaluator:
             for rule, result in results:
                 if rule.target_field not in note:
                     continue
-                note[rule.target_field] = materialize_once(rule, result)
+                note[rule.target_field] = to_store(
+                    materialize_once(rule, result), getattr(result, "kind", "text")
+                )
                 wrote = True
             if wrote:
                 anki_compat.update_note(note)

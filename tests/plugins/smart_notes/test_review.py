@@ -18,6 +18,7 @@ from omnia.plugins.smart_notes.config import (
 )
 from omnia.plugins.smart_notes.engine import GenerationResult, GenerationService
 from omnia.plugins.smart_notes.integration.review import ReviewTimeEvaluator
+from omnia.plugins.smart_notes.provenance import unstamp
 
 
 class _FakeNote:
@@ -164,7 +165,7 @@ class TestReviewTimeEvaluator:
         )
         ReviewTimeEvaluator(_service(), lambda: settings).on_card_shown(card)
         assert fake.updated == [1]
-        assert note["Def"] == "generated"
+        assert unstamp(note["Def"]) == "generated"
         assert fake.redraws == 1
 
     def test_skips_when_target_already_filled(self, monkeypatch):

@@ -233,18 +233,22 @@ def remap_note_type_config(
             if ref in known and ref not in renames.values():
                 report.unresolved_prompt_refs.append(f"{rule.field}: {{{{{ref}}}}}")
 
-        tools = [_remap_tool(spec, renames, rule.field, report) for spec in rule.tools]
+        update: dict[str, Any] = {
+            "field": new_name,
+            "depends_on": deps,
+            "prompt": prompt,
+        }
+        # `tools` is remapped only when the row actually has it. `copy(update=…)` marks every
+        # key it is given as SET, and an unset `tools` is what "generate with the AI default"
+        # means — so including it unconditionally would turn every never-configured field of an
+        # imported or renamed note type into "no tool at all", silently switching generation
+        # off across the whole note type.
+        if "tools" in rule.__fields_set__:
+            update["tools"] = [
+                _remap_tool(spec, renames, rule.field, report) for spec in rule.tools
+            ]
 
-        kept.append(
-            rule.copy(
-                update={
-                    "field": new_name,
-                    "depends_on": deps,
-                    "prompt": prompt,
-                    "tools": tools,
-                }
-            )
-        )
+        kept.append(rule.copy(update=update))
 
     base = config.base_field
     if base:

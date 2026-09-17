@@ -20,6 +20,7 @@ from omnia.plugins.smart_notes.provenance import (
     may_overwrite,
     our_media_refs,
     stamp,
+    to_store,
     unstamp,
 )
 
@@ -136,3 +137,222 @@ class TestWhatAScopeAllows:
         reading of "I do not know this" is the behaviour that shipped before the key existed.
         """
         assert may_overwrite(self.THEIRS, scope) is True
+
+
+class TestAnUnknownScopeLoadsRatherThanRaising:
+    """`overwrite_scope` is a plain `str` on purpose, and ADR-010 is the whole reason.
+
+    `SmartNotesStore.load` calls `parse_obj` with no try/except, from inside the note-add and
+    review hooks. A `Literal` turns a value this build does not know into a hard
+    ValidationError on every load: the settings dialog will not open and smart-notes dies
+    mid-review. Not hypothetical — an intermediate commit on this branch shipped a fourth
+    scope, `never`, so a profile that ran it has `never` in its synced blob.
+    """
+
+    def _settings(self, value):
+        from omnia.plugins.smart_notes.config import SmartNotesSettings
+
+        return SmartNotesSettings.parse_obj({"overwrite_scope": value})
+
+    def test_a_scope_this_build_removed_still_loads(self):
+        assert self._settings("never").overwrite_scope == "never"
+
+    def test_a_scope_a_future_release_adds_still_loads(self):
+        assert (
+            self._settings("whatever_comes_next").overwrite_scope
+            == "whatever_comes_next"
+        )
+
+    def test_the_value_round_trips_verbatim(self):
+        """Kept, not normalised: the blob syncs, so rewriting it here would send the damage
+        back to the newer device that wrote it."""
+        assert self._settings("never").dict()["overwrite_scope"] == "never"
+
+    def test_an_unknown_scope_behaves_as_always(self):
+        # `may_overwrite`'s documented fallback, which a Literal made unreachable.
+        assert may_overwrite("hand-written", "never") is True
+        assert may_overwrite("hand-written", "whatever_comes_next") is True
+
+
+class TestMarkupAroundOurMediaIsStillOurs:
+    """The question is whether any TEXT is left, not whether any characters are.
+
+    `.strip()` removes literal whitespace only, so a trailing `<br>`, an `&nbsp;` or a block
+    wrapper read as the user's work. Those are not exotic values: a field that has been through
+    Anki's contenteditable routinely comes back with exactly them, and pasted content arrives
+    wrapped. `materialize` writes a bare tag; the field does not stay bare.
+
+    Getting this wrong costs money in one direction and silence in the other. Under `not_ours`
+    the audio Omnia already paid for is regenerated and the old file trashed — the one thing
+    that scope exists to prevent. Under `ours_only` the field is never refreshed again, and the
+    clipper explains that it "already holds content that the Overwrite scope protects", about
+    audio Omnia itself generated.
+    """
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[sound:omnia-1-A.mp3]",
+            "[sound:omnia-1-A.mp3]<br>",
+            "[sound:omnia-1-A.mp3]&nbsp;",
+            "<div>[sound:omnia-1-A.mp3]</div>",
+            "[sound:omnia-1-A.mp3]\n",
+            '<img src="omnia-1-Pic.png"><br>',
+        ],
+    )
+    def test_our_media_wrapped_in_empty_markup_is_ours(self, content):
+        assert is_ours(content) is True, content
+
+    def test_not_ours_leaves_it_alone(self):
+        assert may_overwrite("[sound:omnia-1-A.mp3]<br>", NOT_OURS) is False
+
+    def test_ours_only_still_refreshes_it(self):
+        assert may_overwrite("[sound:omnia-1-A.mp3]<br>", OURS_ONLY) is True
+
+
+class TestUserTextBesideOurAudioIsNotOurs:
+    """ "Nothing to edit inside a sound reference" is true of the reference, not of the field."""
+
+    def test_our_tag_alone_is_ours(self):
+        assert is_ours("[sound:omnia-1-A.mp3]") is True
+
+    def test_our_tag_with_whitespace_is_still_ours(self):
+        assert is_ours("  [sound:omnia-1-A.mp3]\n") is True
+
+    def test_a_note_typed_beside_our_tag_is_not(self):
+        """Under `ours_only` this field would be overwritten and the user's note destroyed —
+        by the one setting they chose to prevent exactly that."""
+        assert is_ours("[sound:omnia-1-A.mp3] (stress on the second syllable)") is False
+
+    def test_our_image_with_a_caption_is_not(self):
+        assert is_ours('<img src="omnia-1-Pic.png"> a rusted bridge') is False
+
+    def test_two_of_our_tags_are_still_ours(self):
+        assert is_ours("[sound:omnia-1-A.mp3][sound:omnia-1-B.mp3]") is True
+
+
+class TestTheMarkDoesNotReachTheNextRunsPrompt:
+    """Stamping at the write keeps the comment out of a CHAINED tool's prompt within one run.
+
+    It says nothing about the next run, which loads the stamped value back off the note — and
+    the callers read note fields raw because the skip logic needs the mark to answer whose work
+    a field is. So the strip happens at interpolation, the one boundary where a stored value
+    becomes something a model reads.
+    """
+
+    def test_a_stamped_source_field_is_substituted_clean(self):
+        from omnia.plugins.smart_notes.engine.interpolation import interpolate
+
+        out = interpolate("define {{Word}}", {"Word": stamp("cat")})
+
+        assert out == "define cat"
+        assert "omnia:" not in out
+
+    def test_an_unstamped_field_is_untouched(self):
+        from omnia.plugins.smart_notes.engine.interpolation import interpolate
+
+        assert interpolate("define {{Word}}", {"Word": "cat"}) == "define cat"
+
+    def test_the_split_prompt_stays_lossless(self):
+        # `split_prompt` promises prefix + suffix is byte-for-byte `interpolate`'s answer.
+        from omnia.plugins.smart_notes.engine.interpolation import (
+            interpolate,
+            split_prompt,
+        )
+
+        fields = {"Word": stamp("cat")}
+        parts = split_prompt("define {{Word}} well", fields)
+
+        assert parts.prefix + parts.suffix == interpolate(
+            "define {{Word}} well", fields
+        )
+
+
+class TestEveryPathThatWritesGeneratedTextMarksIt:
+    """Four paths write generated content into a note, and the mark is worth nothing unless
+    all four apply it.
+
+    Stamping lived in the batch runner alone, so the editor's Generate button, review-time
+    pre-generation and the clipper's regeneration wrote Omnia's text unmarked. Under
+    ``ours_only`` those fields then read as somebody else's work and were never refreshed;
+    under ``not_ours`` they were regenerated on every batch and paid for again. Both silent.
+
+    Audio and images escape via the ``omnia-`` filename prefix — text is the case the mark
+    exists for, and text is what these four write.
+
+    A source-reading test, because the alternative is four integration harnesses to pin one
+    property, and the property is "this call goes through `to_store`". A path that stops doing
+    so fails here with the name of the file that dropped it.
+    """
+
+    #: Every module that turns a generation result into a value stored on a note.
+    WRITE_PATHS = (
+        ("the batch runner", "src/omnia/plugins/smart_notes/integration/batch.py"),
+        ("the editor Generate button", "src/omnia/plugins/smart_notes/__init__.py"),
+        (
+            "review-time pre-generation",
+            "src/omnia/plugins/smart_notes/integration/review.py",
+        ),
+        (
+            "the clipper regeneration",
+            "src/omnia/plugins/smart_notes/integration/regen.py",
+        ),
+        # The custom-prompt dialog, not the `on_save` callback that stores what it hands over:
+        # the kind is only in hand on this side, and marking here covers every caller of the
+        # dialog rather than just the one that exists today.
+        (
+            "the editor custom-prompt action",
+            "src/omnia/gui/smart_notes/dialogs/prompt.py",
+        ),
+    )
+
+    def _source(self, path: str) -> str:
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[3]
+        return (root / path).read_text(encoding="utf-8")
+
+    @pytest.mark.parametrize("label,path", WRITE_PATHS)
+    def test_it_goes_through_to_store(self, label, path):
+        assert "to_store(" in self._source(
+            path
+        ), f"{label} writes generated content without marking it as Omnia's"
+
+    def test_to_store_marks_text(self):
+        assert is_untouched(to_store("a definition", "text"))
+
+    @pytest.mark.parametrize("kind", ["tts", "image"])
+    def test_to_store_leaves_media_alone(self, kind):
+        # The filename already says who wrote it; a comment beside one tag is clutter.
+        assert to_store("[sound:omnia-1-A.mp3]", kind) == "[sound:omnia-1-A.mp3]"
+
+    def test_a_marked_value_reads_back_as_ours(self):
+        # The round trip the whole feature rests on.
+        assert is_ours(to_store("a definition", "text")) is True
+
+    def test_materialize_does_not_stamp(self):
+        """Stamping belongs on the WRITE, not in `materialize`: its value is what a chained
+        tool reads next, and a mark there would be quoted into the following prompt."""
+        source = self._source("src/omnia/plugins/smart_notes/integration/batch.py")
+        body = source[source.index("def materialize(nid: int") :]
+        body = body[: body.index("\ndef ", 1)] if "\ndef " in body[1:] else body
+
+        assert "stamp(" not in body
+
+
+class TestAnEmptyResultIsNotMarked:
+    """A bare mark is not an empty field to anything that asks.
+
+    ``to_store("", "text")`` would produce ``<!--omnia:da39a3-->``: ``should_skip_rule`` reads
+    that as filled and skips the field, so a field that generated nothing would never be tried
+    again — and ``is_untouched`` says it is ours, so ``not_ours`` would not retry it either.
+    """
+
+    def test_an_empty_value_stays_empty(self):
+        assert to_store("", "text") == ""
+
+    def test_whitespace_only_stays_as_it_was(self):
+        assert to_store("   ", "text") == "   "
+
+    def test_a_real_value_is_still_marked(self):
+        assert is_untouched(to_store("a definition", "text"))
