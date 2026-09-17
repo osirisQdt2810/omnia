@@ -314,6 +314,74 @@ def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str
     )
 
 
+def media_still_referenced(
+    filenames: list[str], exclude_nids: list[int], col: Optional[Any] = None
+) -> set[str]:
+    """Which of ``filenames`` some note OTHER than ``exclude_nids`` still points at.
+
+    A filename is not owned by the note that created it. Duplicate a note in the Browser
+    (*Notes → Create Copy*) and both copies carry the same ``[sound:omnia-….mp3]``; regenerate
+    the original and the file it stops referencing is one the copy still plays. Trashing on the
+    strength of "this field used to point at it" silences the copy — recoverable from Check
+    Media, but silent at the time, which is the worst kind of data loss.
+
+    ``exclude_nids`` are the notes just rewritten. They are asked about AFTER the write, so their
+    fields already hold the new names; excluding them is belt-and-braces for a write that a
+    listening add-on rolled back underneath us.
+
+    One query for the whole list rather than one per file: the search scans every note, so asking
+    25 times per slice would scan the collection 25 times. Only when the group matches anything —
+    rare, since most media has exactly one referent — is it narrowed file by file.
+    """
+    if not filenames:
+        return set()
+    col = main_window().col if col is None else col
+    group = " OR ".join(f'"*{_search_escape(name)}*"' for name in filenames)
+    query = f"({group})"
+    if exclude_nids:
+        query += " -nid:" + ",".join(str(nid) for nid in exclude_nids)
+    try:
+        if not col.find_notes(query):
+            return set()
+        return {
+            name
+            for name in filenames
+            if col.find_notes(
+                f'"*{_search_escape(name)}*"'
+                + (
+                    " -nid:" + ",".join(str(n) for n in exclude_nids)
+                    if exclude_nids
+                    else ""
+                )
+            )
+        }
+    except Exception:
+        # A search that will not run must not become a deletion. Treating everything as still
+        # referenced skips the cleanup, which costs disk; the other default costs audio.
+        from omnia.core.logging import get_logger
+
+        get_logger().exception(
+            "omnia: could not check media references; trashing nothing"
+        )
+        return set(filenames)
+
+
+def _search_escape(text: str) -> str:
+    """Escape ``text`` for use inside a quoted Anki search term.
+
+    Field names reach here (media is named ``omnia-<nid>-<field>.<ext>``) and real ones contain
+    spaces, brackets and parentheses — ``Example 1 (audio)``. Only the five characters Anki's
+    parser actually gives meaning to are escaped: unescaped, a name holding ``*`` or ``_`` would
+    match files it does not name, and one holding ``"`` would end the term early and turn the
+    rest of the filename into search syntax. Nothing else is touched, because Anki rejects an
+    UNRECOGNISED escape outright — ``\\(`` is a search error, not a literal bracket, so
+    escaping "to be safe" is what breaks the query.
+    """
+    for char in ("\\", '"', "*", "_", ":"):
+        text = text.replace(char, "\\" + char)
+    return text
+
+
 def trash_media_files(filenames: list[str], col: Optional[Any] = None) -> None:
     """Move ``filenames`` to Anki's media trash (recoverable), never to oblivion.
 

@@ -58,6 +58,19 @@ class ProgressSurface:
         """Whether the user has asked to stop. Read between cohorts, never mid-note."""
         return False
 
+    def blocks_input(self) -> bool:
+        """Whether this surface is holding Anki's input hostage while it is up.
+
+        The write-back waits for the user to leave the reviewer before touching notes, because a
+        note write redraws the card on screen and throws away a half-typed answer. That courtesy
+        is only coherent for a surface the user can act around. A MODAL one deadlocks on it: the
+        wait ends when the reviewer is left, and the dialog is the reason it cannot be left.
+
+        Answering True says "there is no typed-in answer to protect here" — the window on top of
+        the reviewer means nothing is reaching it anyway.
+        """
+        return False
+
 
 class Silent(ProgressSurface):
     """Say nothing. What background auto-generation used before it had anywhere to say it."""
@@ -103,6 +116,9 @@ class ModalDialog(ProgressSurface):
 
     def cancelled(self) -> bool:
         return bool(anki_compat.progress_was_cancelled())
+
+    def blocks_input(self) -> bool:
+        return True
 
 
 class BackgroundBar(ProgressSurface):

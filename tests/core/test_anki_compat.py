@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from omnia.core.anki_compat import (
+    media_still_referenced,
     _guard,
     escape_search_term,
     progress_label,
@@ -466,3 +467,83 @@ class TestWritingMediaFromAWorker:
         col = type("C", (), {"media": _Media()})()
 
         assert anki_compat.add_media_file("b.mp3", b"y", col) == "direct-b.mp3"
+
+
+class TestAskingWhoElseStillPlaysAFile:
+    """Before a regenerated field's old audio is trashed, who else points at it.
+
+    A filename is not owned by the note that created it: *Notes → Create Copy* leaves two notes
+    carrying the same ``[sound:omnia-….mp3]``. Regenerating the original stops IT referencing
+    the file, and trashing on that basis alone silences the copy.
+    """
+
+    class _Col:
+        def __init__(self, hits=None):
+            self.queries: list = []
+            self._hits = hits or {}
+
+        def find_notes(self, query):
+            self.queries.append(query)
+            for needle, result in self._hits.items():
+                if needle in query:
+                    return result
+            return []
+
+    def test_nothing_to_check_asks_nothing(self):
+        col = self._Col()
+
+        assert media_still_referenced([], [1], col=col) == set()
+        assert col.queries == []
+
+    def test_the_common_case_costs_one_query(self):
+        """The search scans every note, so one query per file scans the collection per file.
+
+        A slice of 25 notes would scan it 25 times, on every slice, for a check that almost
+        always comes back empty.
+        """
+        col = self._Col()
+
+        assert media_still_referenced(["a.mp3", "b.mp3"], [7], col=col) == set()
+        assert len(col.queries) == 1
+        assert "a.mp3" in col.queries[0] and "b.mp3" in col.queries[0]
+
+    def test_the_notes_just_written_are_excluded(self):
+        col = self._Col()
+
+        media_still_referenced(["a.mp3"], [7, 9], col=col)
+
+        assert "-nid:7,9" in col.queries[0]
+
+    def test_a_hit_is_narrowed_to_the_file_that_caused_it(self):
+        # Only then is it worth paying for a query per file.
+        col = self._Col(hits={"b.mp3": [42]})
+
+        still = media_still_referenced(["a.mp3", "b.mp3"], [7], col=col)
+
+        assert still == {"b.mp3"}
+
+    def test_a_search_that_will_not_run_trashes_nothing(self):
+        """The safe default is keeping the file: one costs disk, the other costs audio."""
+
+        class _Broken:
+            def find_notes(self, query):
+                raise RuntimeError("invalid search")
+
+        assert media_still_referenced(["a.mp3"], [1], col=_Broken()) == {"a.mp3"}
+
+    def test_a_field_name_with_brackets_survives_the_query(self):
+        """Media is named ``omnia-<nid>-<field>.<ext>`` and real field names look like
+        ``Example 1 (audio)``. Anki rejects an UNRECOGNISED escape outright, so escaping the
+        brackets "to be safe" would turn every such check into the error path above."""
+        col = self._Col()
+
+        media_still_referenced(["omnia-1-Example 1 (audio).mp3"], [], col=col)
+
+        assert "(audio)" in col.queries[0]
+
+    def test_wildcards_in_a_name_cannot_match_other_files(self):
+        col = self._Col()
+
+        media_still_referenced(["a*b_c.mp3"], [], col=col)
+
+        assert "a\\*b\\_c.mp3" in col.queries[0]

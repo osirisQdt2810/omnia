@@ -20,7 +20,11 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.engine import GenerationService
-from omnia.plugins.smart_notes.integration.batch import BatchGenerator, BatchSummary
+from omnia.plugins.smart_notes.integration.batch import (
+    BatchGenerator,
+    BatchSummary,
+    _PreparedNote,
+)
 
 
 def _note_type_config(note_type="Basic", *, enabled=True, decks=None):
@@ -97,6 +101,9 @@ class _FakeCompat:
         self.in_review = False
         self.pending_timers: list = []
         self.trashed: list = []
+        #: Filenames some OTHER note still points at — a note duplicated in the Browser keeps
+        #: the same ``[sound:…]``, so these must survive a regeneration of the original.
+        self.still_referenced: set = set()
 
     # collection
     def get_note(self, nid, col=None):
@@ -119,6 +126,9 @@ class _FakeCompat:
 
     def trash_media_files(self, filenames, col=None):
         self.trashed.extend(filenames)
+
+    def media_still_referenced(self, filenames, exclude_nids, col=None):
+        return {name for name in filenames if name in self.still_referenced}
 
     def add_media_file(self, filename, data, col=None):
         self.media.append(filename)
@@ -213,6 +223,7 @@ def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
         "update_notes",
         "add_media_file",
         "trash_media_files",
+        "media_still_referenced",
         "progress_start",
         "progress_update",
         "progress_finish",
@@ -696,12 +707,20 @@ class TestWritingWaitsForTheReviewer:
     away any answer they were part-way through typing.
 
     The media is on disk either way; only the field updates wait.
+
+    Every test here runs on a NON-blocking surface, because that is the only surface the wait
+    makes sense on — see ``TestAModalRunNeverWaitsForTheReviewer``.
     """
 
     def _settings(self, **kw) -> SmartNotesSettings:
         base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
         base.update(kw)
         return SmartNotesSettings(**base)
+
+    def _surface(self):
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        return Silent()
 
     def _running(self, monkeypatch, count=4, reviewing=True):
         notes = {
@@ -717,7 +736,9 @@ class TestWritingWaitsForTheReviewer:
         fake, nids = self._running(monkeypatch)
         settings = self._settings()
 
-        BatchGenerator(_generator(settings), settings).run(nids, lambda _s: None)
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=self._surface()
+        )
 
         assert fake.updated == [], "it rewrote notes under someone who was studying"
         assert fake.pending_timers, "it gave up instead of waiting"
@@ -726,7 +747,9 @@ class TestWritingWaitsForTheReviewer:
         fake, nids = self._running(monkeypatch)
         settings = self._settings()
         summaries: list = []
-        BatchGenerator(_generator(settings), settings).run(nids, summaries.append)
+        BatchGenerator(_generator(settings), settings).run(
+            nids, summaries.append, surface=self._surface()
+        )
         assert fake.updated == []
 
         fake.in_review = False
@@ -739,7 +762,9 @@ class TestWritingWaitsForTheReviewer:
         # Re-arms rather than giving up after one look: a review session is many minutes.
         fake, nids = self._running(monkeypatch)
         settings = self._settings()
-        BatchGenerator(_generator(settings), settings).run(nids, lambda _s: None)
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=self._surface()
+        )
 
         for _ in range(5):
             fake.fire_timers()
@@ -752,7 +777,9 @@ class TestWritingWaitsForTheReviewer:
         fake, nids = self._running(monkeypatch, reviewing=False)
         settings = self._settings()
 
-        BatchGenerator(_generator(settings), settings).run(nids, lambda _s: None)
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=self._surface()
+        )
 
         assert fake.updated == nids
         assert fake.pending_timers == []
@@ -778,10 +805,194 @@ class TestWritingWaitsForTheReviewer:
 
         monkeypatch.setattr(gen, "_apply", start_reviewing)
 
-        gen.run(nids, lambda _s: None)
+        gen.run(nids, lambda _s: None, surface=self._surface())
 
         assert fake.updated == nids[:2], fake.updated
         assert fake.pending_timers, "the rest of the batch wrote over an open reviewer"
+
+
+class TestAFailedWriteRollsBackOnlyWhatItCounted:
+    """A slice's notes were not all counted the same way, so it cannot roll back as a block.
+
+    A note whose generation FAILED is still written — it keeps whatever the run managed before
+    it broke — but it is counted under ``failed``, never ``processed``. Subtracting the whole
+    slice from ``processed`` therefore removes notes that were never added there, and a mixed
+    slice that fails to write reports a NEGATIVE processed count straight into the summary the
+    user reads, plus one failure per note more than there were notes.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _apply(self, outcomes, *, write_fails: bool):
+        """Count these outcomes, with the batched write either landing or raising."""
+        gen = BatchGenerator.__new__(BatchGenerator)
+        gen._prepare_note = (  # type: ignore[method-assign]
+            lambda outcome, *, counted_as_processed: _PreparedNote(
+                _FakeNote(outcome.nid, "Basic", {}), counted_as_processed
+            )
+        )
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        calls: list = []
+
+        def update_notes(notes, col=None):
+            calls.append(notes)
+            if write_fails:
+                raise RuntimeError("collection is locked")
+
+        original = batch_module.anki_compat.update_notes
+        batch_module.anki_compat.update_notes = update_notes
+        try:
+            return gen._apply(outcomes)
+        finally:
+            batch_module.anki_compat.update_notes = original
+
+    def _outcomes(self):
+        from omnia.plugins.smart_notes.integration.batch import _NoteOutcome
+
+        return [
+            # Broke mid-note, but produced something on the way — written, counted `failed`.
+            _NoteOutcome(1, failed=True, results=[("rule", "result")]),
+            _NoteOutcome(2, results=[("rule", "result")]),  # counted `processed`
+        ]
+
+    def test_a_successful_write_counts_each_note_once(self):
+        summary = self._apply(self._outcomes(), write_fails=False)
+
+        assert (summary.processed, summary.failed) == (1, 1)
+
+    def test_a_failed_write_does_not_invent_counts(self):
+        summary = self._apply(self._outcomes(), write_fails=True)
+
+        assert (
+            summary.processed == 0
+        ), f"rolled back more than it added (processed={summary.processed})"
+        assert summary.failed == 2, f"counted {summary.failed} failures for 2 notes"
+
+    def test_the_count_never_goes_negative(self):
+        summary = self._apply(self._outcomes(), write_fails=True)
+
+        assert summary.processed >= 0
+        assert "-" not in summary.message(), summary.message()
+
+
+class TestAModalRunNeverWaitsForTheReviewer:
+    """The wait is only coherent on a surface the user can act around.
+
+    `ModalDialog` is `ApplicationModal`. Waiting for the user to leave the reviewer while that
+    window is up waits forever: leaving the reviewer is exactly what the dialog prevents, and
+    `finish()` is only reached once the write completes. The pair deadlocks Anki until it is
+    killed, and the generated content only survives because quitting flushes it.
+
+    `mw.state` stays "review" while the Browser is open on top of it, so the ordinary route in
+    is not exotic: study, press `b`, select notes, generate with background mode off.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _run(self, monkeypatch, surface, count=4):
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        fake.in_review = True
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run(
+            list(notes), summaries.append, surface=surface
+        )
+        return fake, list(notes), summaries
+
+    def test_the_modal_run_writes_straight_through(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.progress import ModalDialog
+
+        fake, nids, summaries = self._run(monkeypatch, ModalDialog())
+
+        assert fake.updated == nids, "it waited behind its own modal dialog"
+        assert len(summaries) == 1, "the run never reported, so the dialog never closed"
+
+    def test_the_dialog_is_closed_rather_than_left_over_the_reviewer(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.progress import ModalDialog
+
+        fake, _nids, _summaries = self._run(monkeypatch, ModalDialog())
+
+        assert (
+            "finish" in fake.progress
+        ), "Anki was left behind a dialog nothing would ever close"
+
+    def test_a_non_modal_run_still_waits(self, monkeypatch):
+        # The courtesy is not being dropped — it is being confined to where it can be honoured.
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        fake, _nids, _summaries = self._run(monkeypatch, Silent())
+
+        assert fake.updated == []
+        assert fake.pending_timers
+
+
+class TestStopEscapesTheWaitForTheReviewer:
+    """Pressing Stop during the wait has to end it, or the only way out is quitting Anki.
+
+    The hold re-arms every two seconds for as long as the reviewer is open, and it is the one
+    state where the user is watching a job that says it is waiting and doing nothing about it.
+    The content is already generated and already paid for, so Stop writes it rather than
+    discarding it — cancelling the WAIT, not the work.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _waiting(self, monkeypatch, count=4):
+        from omnia.core.progress import JobTracker
+        from omnia.plugins.smart_notes.integration.progress import BackgroundBar
+
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        fake.in_review = True
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        tracker = JobTracker()
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run(
+            list(notes), summaries.append, surface=BackgroundBar(tracker)
+        )
+        assert fake.updated == [], "the fixture did not actually wait"
+        return fake, tracker, list(notes), summaries
+
+    def test_stopping_writes_what_was_waiting(self, monkeypatch):
+        fake, tracker, nids, _summaries = self._waiting(monkeypatch)
+
+        tracker.cancel()
+        fake.fire_timers()
+
+        assert (
+            fake.updated == nids
+        ), "Stop threw away content that had already been paid for"
+
+    def test_stopping_ends_the_wait(self, monkeypatch):
+        fake, tracker, _nids, summaries = self._waiting(monkeypatch)
+
+        tracker.cancel()
+        fake.fire_timers()
+        fake.fire_timers()
+
+        assert len(summaries) == 1, "the run reported once, or not at all"
+        assert (
+            fake.pending_timers == []
+        ), "it went on re-arming after being told to stop"
 
 
 class TestQuittingWhileAWriteIsWaiting:
@@ -812,8 +1023,12 @@ class TestQuittingWhileAWriteIsWaiting:
         _patch_compat(monkeypatch, fake)
         settings = self._settings()
         summaries: list = []
+        # Non-blocking, because a modal run does not defer at all — its dialog is the reason
+        # the reviewer cannot be left, so waiting for that would never end.
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
         BatchGenerator(_generator(settings), settings).run(
-            list(notes), summaries.append
+            list(notes), summaries.append, surface=Silent()
         )
         assert fake.updated == [], "the fixture did not actually defer"
         return fake, list(notes), summaries
@@ -959,6 +1174,25 @@ class TestRegeneratingAFieldDoesNotLeaveTheOldFile:
         fake = self._run(monkeypatch, "[sound:omnia-1-Def.mp3]")
 
         assert fake.trashed == ["omnia-1-Def.mp3"]
+
+    def test_a_file_a_duplicate_note_still_plays_is_kept(self, monkeypatch):
+        """*Notes → Create Copy* leaves two notes pointing at one file.
+
+        Regenerating the original stops IT referencing the audio, but the copy still plays it.
+        Trashing on the strength of "this field used to point at it" silences the copy, with
+        nothing on screen to say so — the user finds out the next time that card comes up.
+        """
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        }
+        fake = _FakeCompat(notes)
+        fake.still_referenced = {"omnia-1-Def.mp3"}
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+
+        assert fake.trashed == []
 
     def test_another_addons_file_in_that_field_is_not(self, monkeypatch):
         fake = self._run(monkeypatch, "[sound:googletts-b4728f64.mp3]")
@@ -1312,7 +1546,7 @@ class TestEmptyNoteTracking:
         of what is being counted.
         """
         gen = BatchGenerator.__new__(BatchGenerator)
-        gen._persist = lambda notes, summary, superseded=None: None  # type: ignore[method-assign]
+        gen._persist = lambda prepared, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_a_note_with_no_results_is_recorded(self):
@@ -1323,7 +1557,7 @@ class TestEmptyNoteTracking:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
         )
         summary = self._apply([self._outcome(12, results=[("rule", "result")])])
         assert summary.empty_note_ids == []
@@ -1363,7 +1597,7 @@ class TestErroredNotesAreKeptForRetry:
         of what is being counted.
         """
         gen = BatchGenerator.__new__(BatchGenerator)
-        gen._persist = lambda notes, summary, superseded=None: None  # type: ignore[method-assign]
+        gen._persist = lambda prepared, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_an_all_errored_note_is_kept_not_discarded(self):
@@ -1396,7 +1630,7 @@ class TestErroredNotesAreKeptForRetry:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
         )
         summary = self._apply([self._outcome(25, results=[("rule", "result")])])
 
@@ -1421,7 +1655,7 @@ class TestToolChainCounters:
         of what is being counted.
         """
         gen = BatchGenerator.__new__(BatchGenerator)
-        gen._persist = lambda notes, summary, superseded=None: None  # type: ignore[method-assign]
+        gen._persist = lambda prepared, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def _outcome(self, nid, **kw):
@@ -1561,7 +1795,7 @@ class TestToolChainCounters:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
         )
 
         outcome = self._generate_one(
@@ -1577,7 +1811,7 @@ class TestToolChainCounters:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
         )
 
         outcome = self._generate_one(
@@ -1592,7 +1826,7 @@ class TestToolChainCounters:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
         )
 
         outcome = self._generate_one([(self._rule("ai"), self._result(""))], [])
@@ -1715,7 +1949,9 @@ class TestNoteMaterializer:
             7, materialize=materialize_once, results=[(rule, result)]
         )
         settings = SmartNotesSettings(note_types=[])
-        BatchGenerator(object(), settings)._prepare_note(outcome)
+        BatchGenerator(object(), settings)._prepare_note(
+            outcome, counted_as_processed=True
+        )
 
         assert (
             len(writes) == 1

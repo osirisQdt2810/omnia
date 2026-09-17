@@ -113,11 +113,12 @@ class _NotePlan:
     """One note's generation inputs, read on the main thread.
 
     The background op DOES touch the collection: media results are materialized as they are
-    produced, so add_media_file runs inside the QueryOp. That is safe because Anki runs every
-    QueryOp body on ONE thread (``TaskManager._collection_executor`` has a single worker) and
-    because materialize is only ever called from that thread — never from a dispatch worker
-    (see ``_run_cohort``). It is what lets a later tool read the reference the note will hold.
-    These inputs are still read on the main thread."""
+    produced, so add_media_file runs inside the QueryOp. That is safe because
+    ``anki_compat.add_media_file`` marshals the write onto the MAIN thread and waits — it no
+    longer relies on the op body having the collection thread to itself, which stopped being
+    true when the op moved to ``without_collection()``. Materializing inside the op is what lets
+    a later tool read the reference the note will hold. These inputs are still read on the main
+    thread."""
 
     nid: int
     config: SmartNotesNoteTypeConfig
@@ -786,13 +787,25 @@ class BatchGenerator:
         def step() -> None:
             if finished["yes"]:
                 return  # a close flushed it while this tick was in the queue
-            if anki_compat.reviewing():
+            if anki_compat.reviewing() and not progress.blocks_input():
                 # HOLD. Any note write makes the reviewer redraw the card on screen — it keys
                 # on "some note changed", not on which one — and the redraw rebuilds the
                 # webview, throwing away a half-typed answer. Someone who started a long batch
                 # so they could carry on studying would be interrupted by the very thing they
                 # started. The media is already on disk; only the field updates wait, and they
                 # go in the moment the reviewer is left.
+                #
+                # NOT when the surface is modal, or the wait deadlocks on its own dialog: it
+                # ends when the reviewer is left, and an ApplicationModal window is precisely
+                # why the reviewer cannot be left. `mw.state` stays "review" while the Browser
+                # is open on top of it, so a foreground generate started from the Browser
+                # mid-review hit this every time and stranded Anki until it was quit.
+                #
+                # Stop still gets out. Otherwise the escape hatch from a hold is a hold away
+                # from a user who is watching nothing happen and being told to wait.
+                if progress.cancelled():
+                    flush()
+                    return
                 progress.hold("waiting until you finish reviewing")
                 anki_compat.single_shot(_REVIEW_RECHECK_MS, step)
                 return
@@ -835,17 +848,13 @@ class BatchGenerator:
         # `operation_did_execute` per note. At 1500 notes that is 1500 of each — the Browser,
         # the sidebar and every other add-on listening re-run 1500 times, and the user's undo
         # history becomes 1500 steps deep. `update_notes` is the same write as one batch.
-        pending: list[Any] = []
-        # Files the fields being rewritten will stop referencing. Trashed only after the write
-        # lands, never before — a write that failed would otherwise have deleted the audio the
-        # note still points at.
-        superseded: list[str] = []
+        pending: list[_PreparedNote] = []
         for outcome in outcomes:
             if outcome.failed:
                 # Write whatever it managed before it broke (usually nothing), then count it as
                 # failed. It must NOT reach ``empty_note_ids``: we do not know there was nothing
                 # to make here, and that list's consumer DELETES the note.
-                prepared = self._prepare_note(outcome, superseded)
+                prepared = self._prepare_note(outcome, counted_as_processed=False)
                 if prepared is not None:
                     pending.append(prepared)
                 summary.failed += 1
@@ -873,42 +882,48 @@ class BatchGenerator:
                 else:
                     summary.empty_note_ids.append(outcome.nid)
                 continue
-            prepared = self._prepare_note(outcome, superseded)
+            prepared = self._prepare_note(outcome, counted_as_processed=True)
             if prepared is not None:
                 pending.append(prepared)
                 summary.processed += 1
             else:
                 summary.failed += 1
-        self._persist(pending, summary, superseded)
+        self._persist(pending, summary)
         return summary
 
-    def _persist(
-        self,
-        notes: list[Any],
-        summary: BatchSummary,
-        superseded: Optional[list[str]] = None,
-    ) -> None:
+    def _persist(self, prepared: list[_PreparedNote], summary: BatchSummary) -> None:
         """Write the prepared notes as ONE batch, and count them as failed if that will not.
 
         The counts were already moved to ``processed`` while preparing, because that is where
         "did this note get content" is known; a batch that then cannot be written moves them
-        back rather than reporting a save that did not happen.
+        back rather than reporting a save that did not happen. Only the ones actually counted
+        there — see :class:`_PreparedNote`.
 
-        ``superseded`` is trashed only once the write has SUCCEEDED, for the same reason: media
-        the note still references must survive a failed write.
+        Superseded media is trashed only once the write has SUCCEEDED, for the same reason:
+        media the note still references must survive a failed write.
         """
-        if not notes:
+        if not prepared:
             return
         try:
-            anki_compat.update_notes(notes)
+            anki_compat.update_notes([p.note for p in prepared])
         except Exception:
-            logger.exception("smart_notes: writing %d notes failed", len(notes))
-            summary.processed -= len(notes)
-            summary.failed += len(notes)
+            logger.exception("smart_notes: writing %d notes failed", len(prepared))
+            summary.processed -= sum(1 for p in prepared if p.counted_as_processed)
+            summary.failed += sum(1 for p in prepared if p.counted_as_processed)
             return
+        superseded = list(
+            dict.fromkeys(name for p in prepared for name in p.superseded)
+        )
         if superseded:
             try:
-                anki_compat.trash_media_files(superseded)
+                # Asked AFTER the write, so the notes we just rewrote no longer point at these
+                # names — and asked at all because a filename is not owned by the note that
+                # made it. A note duplicated in the Browser carries the same [sound:…], and
+                # regenerating the original would otherwise silence the copy.
+                keep = anki_compat.media_still_referenced(
+                    superseded, [p.note.id for p in prepared]
+                )
+                anki_compat.trash_media_files([n for n in superseded if n not in keep])
             except Exception:  # disk space is not worth failing a written batch over
                 logger.exception(
                     "smart_notes: could not trash %d superseded media file(s)",
@@ -916,22 +931,27 @@ class BatchGenerator:
                 )
 
     def _prepare_note(
-        self, outcome: _NoteOutcome, superseded: Optional[list[str]] = None
-    ) -> Optional[Any]:
+        self, outcome: _NoteOutcome, *, counted_as_processed: bool
+    ) -> Optional[_PreparedNote]:
         """The note with this outcome's content in it, unsaved, or ``None``.
 
         Separate from writing so a slice can be persisted as one batch. ``None`` means there is
         nothing to save — either the note could not be read, or no rule targeted a field it has.
 
+        The superseded filenames ride along ON the prepared note rather than being appended to a
+        list the slice shares. They used to be shared, and a note dropped by a later rule raising
+        left its filenames behind in that list: the note kept its old audio, the rest of the
+        slice wrote, and the file the surviving note still pointed at was trashed anyway. Media a
+        note still references must not depend on which of its sibling notes succeeded.
+
         Args:
             outcome: What was generated for this note.
-            superseded: Appended with the media files the fields STOP referencing, for the
-                caller to trash once the write has landed. Not trashed here: a write that then
-                fails would have deleted the audio the note still points at.
+            counted_as_processed: Whether the caller has counted this note under
+                ``summary.processed`` — recorded so a failed write rolls back exactly that.
         """
-        superseded = [] if superseded is None else superseded
         try:
             note = anki_compat.get_note(outcome.nid)
+            superseded: list[str] = []
             wrote = False
             for rule, result in outcome.results:
                 if rule.target_field not in note:
@@ -942,7 +962,9 @@ class BatchGenerator:
                 superseded.extend(superseded_media(note[rule.target_field]))
                 note[rule.target_field] = outcome.materialize(rule, result)
                 wrote = True
-            return note if wrote else None
+            if not wrote:
+                return None
+            return _PreparedNote(note, counted_as_processed, tuple(superseded))
         except Exception:
             logger.exception("smart_notes: failed to fill note %s", outcome.nid)
             return None
@@ -957,6 +979,25 @@ def _fell_back(rule: SmartNotesFieldRule, result: GenerationResult) -> bool:
     """
     first = rule.tools[0].name if rule.tools else ""
     return bool(result.tool) and result.tool != first
+
+
+@dataclass(frozen=True)
+class _PreparedNote:
+    """A note with this run's content in it, unsaved, and how the summary already counted it.
+
+    The count matters because a slice that cannot be written has to put its counts BACK, and the
+    notes in a slice were not all counted the same way: a note from a failed outcome is written
+    (to keep whatever it managed) but counted under ``failed``, never ``processed``. Rolling the
+    whole slice back out of ``processed`` therefore subtracted notes that were never added —
+    one mixed slice reported ``processed=-1, failed=3`` for two notes, and the negative went
+    straight into the summary the user reads.
+    """
+
+    note: Any
+    #: Whether preparing this note incremented ``summary.processed``.
+    counted_as_processed: bool
+    #: Files this note's fields STOP referencing, to trash once its write has landed.
+    superseded: tuple[str, ...] = ()
 
 
 #: The prefix :func:`materialize` gives every file it writes.
