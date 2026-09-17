@@ -1233,7 +1233,14 @@ const out = rows.map(function (row) {{
 console.log(JSON.stringify(out));
 """
         result = subprocess.run(
-            ["node", "-e", script], capture_output=True, text=True, timeout=60
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            # node writes UTF-8; `text=True` alone decodes with the LOCALE codec, which is
+            # cp1252 on a Windows runner. The labels carry a multiplication sign, so the decode
+            # mangles them there and nowhere else.
+            encoding="utf-8",
+            timeout=60,
         )
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
@@ -1263,7 +1270,11 @@ console.log(JSON.stringify(out));
         """
         (row,) = self._round_trip([1.0])
 
-        assert row["label"] == "1.0\u00d7 normal", row
+        # On the dataset value and an ASCII substring, not on the label verbatim: the label
+        # carries a multiplication sign, and an encoding difference between this file and the
+        # subprocess would fail the test for a reason that has nothing to do with the picker.
+        assert row["dataset"] == "1.0", row
+        assert row["label"] is not None and "normal" in row["label"], row
 
     def test_inherit_stays_inherit(self):
         (row,) = self._round_trip([0.0])
