@@ -397,3 +397,72 @@ class TestAToolParamWrittenLooselyIsStillTheSameField:
         )
 
         assert report.dropped_tool_params == []
+
+
+class TestRemappingDoesNotSwitchGenerationOff:
+    """An unset ``tools`` means "generate with the AI default"; remapping must not set it.
+
+    ``copy(update=…)`` marks every key it is handed as SET, and the persisted form keys the
+    never-configured / emptied distinction on exactly that. Including ``tools`` unconditionally
+    therefore turned every never-configured field of an imported or renamed note type into
+    "no tool at all" — generation silently off across the whole note type, with the Tools
+    column reading "none" as if the user had asked for it.
+    """
+
+    def _config(self, **field_kw):
+        from omnia.plugins.smart_notes.config import (
+            SmartNotesFieldConfig,
+            SmartNotesNoteTypeConfig,
+        )
+
+        return SmartNotesNoteTypeConfig(
+            note_type="Vocab",
+            base_field="Word",
+            fields=[SmartNotesFieldConfig(field="Def", enabled=True, **field_kw)],
+        )
+
+    def test_an_untouched_row_stays_untouched(self):
+        config = self._config()
+
+        out, _report = remap_note_type_config(config, {"Word": "Word", "Def": "Def"})
+
+        assert (
+            "tools" not in out.fields[0].dict()
+        ), "the remap wrote a chain the user never configured, disabling the field"
+
+    def test_a_renamed_field_keeps_generating(self):
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        config = self._config()
+
+        out, _report = remap_note_type_config(
+            config, {"Word": "Word", "Def": "Meaning"}
+        )
+        reloaded = type(out.fields[0])(**out.fields[0].dict())
+
+        assert [spec.name for spec in compile_field_rule(reloaded, "Word").tools] == [
+            "ai"
+        ]
+
+    def test_an_emptied_chain_is_still_carried_across(self):
+        # The other direction: a deliberate "no tool" must survive a rename too.
+        config = self._config(tools=[])
+
+        out, _report = remap_note_type_config(
+            config, {"Word": "Word", "Def": "Meaning"}
+        )
+
+        assert out.fields[0].dict()["tools"] == []
+
+    def test_a_real_chain_is_still_remapped(self):
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        config = self._config(
+            tools=[FieldToolConfig(tool="cloze", params={"sentence_field": "Def"})]
+        )
+
+        out, _report = remap_note_type_config(
+            config, {"Word": "Word", "Def": "Meaning"}
+        )
+
+        assert out.fields[0].tools[0].params["sentence_field"] == "Meaning"

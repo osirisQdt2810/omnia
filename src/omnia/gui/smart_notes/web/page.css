@@ -898,7 +898,7 @@ select:disabled { opacity: 0.7; }
   border-color: var(--accent-2, #8b7cf6); color: var(--accent-2, #8b7cf6);
   background: color-mix(in srgb, var(--accent-2, #8b7cf6) 12%, transparent);
 }
-.sn-tools-btn.sn-tools-default .sn-chip { opacity: 0.75; }
+.sn-tools-btn.sn-tools-none .sn-chip { opacity: 0.75; }
 .sn-tools-card { max-width: 620px; }
 .sn-tools-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .sn-tools-empty { color: var(--muted); font-size: 12px; }

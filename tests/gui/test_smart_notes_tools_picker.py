@@ -219,7 +219,16 @@ class TestChainPayloadParsing:
                         {"tool": "ai", "params": "nope"},  # params not a dict
                     ],
                 )
-            ]
+            ],
+            # A row that ALREADY has a chain, so what survives sanitizing is read as the
+            # deliberate choice it is. Without a stored chain, a payload reducing to a bare
+            # `ai` is the implicit default and is left unset — same generation, no persisted
+            # key (see TestTheThreeChainStatesSurviveTheWholeLoOP).
+            [
+                SmartNotesFieldConfig(
+                    field="Cloze", tools=[FieldToolConfig(tool="cloze")]
+                )
+            ],
         )
         assert [entry.tool for entry in rebuilt[0].tools] == ["ai"]
         assert rebuilt[0].tools[0].params == {}
@@ -655,3 +664,103 @@ class TestTheNotGeneratingFade:
         page = self._page()
 
         assert page.count('dispatchEvent(new Event("change", { bubbles: true }))') >= 2
+
+
+class TestTheThreeChainStatesSurviveTheWholeLoOP:
+    """stored → page → posted → stored → **generated**, for all three states of a chain.
+
+    The compiler distinguishes "never configured" (generate with AI) from "emptied" (generate
+    nothing) by `__fields_set__`, and that distinction has to cross the persistence boundary or
+    the whole feature is inert: `SmartNotesStore.save` writes `settings.dict()` and `load`
+    re-parses it, so a pruned key comes back UNSET and an emptied chain silently becomes AI
+    again — the field the user switched off goes on generating and goes on billing.
+
+    The earlier tests here built `SmartNotesFieldConfig(**{...})` directly and never crossed
+    that boundary in either direction, so they pass in exactly that state.
+    """
+
+    def _compiled(self, row) -> list[str]:
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        return [spec.name for spec in compile_field_rule(row, "Word").tools]
+
+    def _reload(self, row):
+        """What the store gives back: `dict()` out, `parse_obj` in."""
+        return SmartNotesFieldConfig(**row.dict())
+
+    def _save(self, page_rows, stored):
+        return field_configs_from_payload(page_rows, stored)[0]
+
+    # --- never configured ---------------------------------------------------------------
+    def test_an_untouched_row_is_shown_the_ai_default(self):
+        """Not the bare `[]`. The Tools column would read "none" and the preview would refuse,
+        for a field that generates perfectly well — the old lie inverted, not corrected.
+        """
+        stored = SmartNotesFieldConfig(field="Def")
+
+        assert row_to_payload(stored)["tools"] == [{"tool": "ai", "params": {}}]
+
+    def test_saving_without_touching_the_picker_writes_no_key(self):
+        # The page is HANDED the default, so an untouched row posts it back. Persisting that
+        # would add a `tools` key to the synced blob for everyone who merely opens the dialog.
+        stored = SmartNotesFieldConfig(field="Def")
+
+        saved = self._save([row_to_payload(stored)], [stored])
+
+        assert "tools" not in saved.dict()
+        assert self._compiled(self._reload(saved)) == ["ai"]
+
+    # --- emptied ------------------------------------------------------------------------
+    def test_an_emptied_chain_survives_save_and_load(self):
+        stored = SmartNotesFieldConfig(field="Def")
+        page = dict(row_to_payload(stored), tools=[])
+
+        saved = self._save([page], [stored])
+
+        assert (
+            saved.dict()["tools"] == []
+        ), "the key was pruned, so 'no tool' was destroyed"
+        assert (
+            self._compiled(self._reload(saved)) == []
+        ), "the field the user switched off still generates with AI, and still bills"
+
+    def test_reopening_does_not_quietly_re_tick_ai(self):
+        stored = SmartNotesFieldConfig(field="Def")
+        emptied = self._reload(
+            self._save([dict(row_to_payload(stored), tools=[])], [stored])
+        )
+
+        assert row_to_payload(emptied)["tools"] == []
+
+    def test_it_stays_empty_across_a_second_save(self):
+        # The state has to be a FIXED POINT, not merely survive one trip.
+        stored = SmartNotesFieldConfig(field="Def")
+        emptied = self._reload(
+            self._save([dict(row_to_payload(stored), tools=[])], [stored])
+        )
+
+        again = self._reload(self._save([row_to_payload(emptied)], [emptied]))
+
+        assert self._compiled(again) == []
+
+    # --- a real chain -------------------------------------------------------------------
+    def test_a_configured_chain_survives_the_loop(self):
+        stored = SmartNotesFieldConfig(field="Def")
+        page = dict(row_to_payload(stored), tools=_CLOZE_AI)
+
+        saved = self._reload(self._save([page], [stored]))
+
+        assert self._compiled(saved) == ["cloze", "ai"]
+        assert row_to_payload(saved)["tools"] == _CLOZE_AI
+
+    def test_clearing_a_configured_chain_really_clears_it(self):
+        stored = SmartNotesFieldConfig(field="Def")
+        configured = self._reload(
+            self._save([dict(row_to_payload(stored), tools=_CLOZE_AI)], [stored])
+        )
+
+        cleared = self._reload(
+            self._save([dict(row_to_payload(configured), tools=[])], [configured])
+        )
+
+        assert self._compiled(cleared) == []
