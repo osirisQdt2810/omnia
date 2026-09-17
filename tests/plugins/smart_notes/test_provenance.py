@@ -174,6 +174,42 @@ class TestAnUnknownScopeLoadsRatherThanRaising:
         assert may_overwrite("hand-written", "whatever_comes_next") is True
 
 
+class TestMarkupAroundOurMediaIsStillOurs:
+    """The question is whether any TEXT is left, not whether any characters are.
+
+    `.strip()` removes literal whitespace only, so a trailing `<br>`, an `&nbsp;` or a block
+    wrapper read as the user's work. Those are not exotic values: a field that has been through
+    Anki's contenteditable routinely comes back with exactly them, and pasted content arrives
+    wrapped. `materialize` writes a bare tag; the field does not stay bare.
+
+    Getting this wrong costs money in one direction and silence in the other. Under `not_ours`
+    the audio Omnia already paid for is regenerated and the old file trashed — the one thing
+    that scope exists to prevent. Under `ours_only` the field is never refreshed again, and the
+    clipper explains that it "already holds content that the Overwrite scope protects", about
+    audio Omnia itself generated.
+    """
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "[sound:omnia-1-A.mp3]",
+            "[sound:omnia-1-A.mp3]<br>",
+            "[sound:omnia-1-A.mp3]&nbsp;",
+            "<div>[sound:omnia-1-A.mp3]</div>",
+            "[sound:omnia-1-A.mp3]\n",
+            '<img src="omnia-1-Pic.png"><br>',
+        ],
+    )
+    def test_our_media_wrapped_in_empty_markup_is_ours(self, content):
+        assert is_ours(content) is True, content
+
+    def test_not_ours_leaves_it_alone(self):
+        assert may_overwrite("[sound:omnia-1-A.mp3]<br>", NOT_OURS) is False
+
+    def test_ours_only_still_refreshes_it(self):
+        assert may_overwrite("[sound:omnia-1-A.mp3]<br>", OURS_ONLY) is True
+
+
 class TestUserTextBesideOurAudioIsNotOurs:
     """ "Nothing to edit inside a sound reference" is true of the reference, not of the field."""
 

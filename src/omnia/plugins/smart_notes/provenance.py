@@ -33,6 +33,8 @@ from __future__ import annotations
 import hashlib
 import re
 
+from omnia.core.lang.text import strip_markup
+
 #: How much of the digest to keep. Six hex characters is 16.7M buckets — far past what is needed
 #: to notice a human edit, and short enough that the mark stays unobtrusive in the HTML editor.
 #: A collision would mean an edit went unnoticed and the field was overwritten, which is the same
@@ -187,7 +189,13 @@ def is_ours(content: str) -> bool:
     refs = media_refs(content)
     if not refs or not all(r.startswith(OUR_MEDIA_PREFIX) for r in refs):
         return False
-    return not _MEDIA_REF_RE.sub("", content).strip()
+    # "Is there any TEXT left", not "is there anything left". `.strip()` only removes literal
+    # whitespace, so a trailing `<br>`, an `&nbsp;` or a `<div>` wrapper counted as the user's
+    # work — and a field that has been through Anki's contenteditable routinely comes back with
+    # exactly those. `materialize` writes a bare tag; the field does not stay bare. Under
+    # `not_ours` that meant re-paying for audio Omnia had already generated, and under
+    # `ours_only` it meant refusing to refresh it while telling the user the content was theirs.
+    return not strip_markup(content).strip()
 
 
 def superseded_media(previous: str) -> list[str]:
