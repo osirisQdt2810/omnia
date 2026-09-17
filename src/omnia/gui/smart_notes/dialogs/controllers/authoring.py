@@ -282,22 +282,27 @@ class AuthoringController:
     def _preview_inputs(
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> list[dict[str, str]]:
-        """The input fields a preview reads (the prompt's ``{{refs}}``, or the source/base field
-        when there is no prompt), paired with their sample values from :meth:`_preview_fields`.
+        """The input fields a preview reads, paired with their sample values.
 
-        Reuses :func:`rule_source_fields` (the same "what does this field read" util the graph and
-        ordering use) so the shown inputs exactly match the real dependency set. A promptless
-        field is the one case where the two differ: its base-field source is deliberately NOT a
-        dependency (the base is always present), but generation does read it — so it is added back
-        here, or the preview would claim to have run on nothing. Values are looked up
-        case-insensitively (Anki field names are) and truncated.
+        Uses :func:`rule_prerequisites` — the SINGLE source of truth for what a field depends on
+        — rather than ``rule_source_fields`` alone. The two are not the same, and the gap was
+        visible: ``rule_source_fields`` answers only the prompt's ``{{refs}}`` and the rule's
+        ``source_field``, while ordering, blocking and the graph all use ``rule_prerequisites``,
+        which UNIONs those with the fields a TOOL's params name. So a row whose chain is a tool
+        reading ``Example 1 (audio) (backup)`` showed ``{{WORD}}`` as its input — the prompt,
+        which that chain never reads — and the preview described a run that did not happen.
+
+        A promptless field is the one case where the dependency set is deliberately smaller than
+        what generation reads: its base-field source is not an edge (the base is always present),
+        but the run does read it, so it is added back or the preview would claim to have run on
+        nothing. Values are looked up case-insensitively (Anki field names are) and truncated.
         """
-        from omnia.plugins.smart_notes.engine.rules import rule_source_fields
+        from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
 
         lower = {name.strip().lower(): value for name, value in fields.items()}
         out: list[dict[str, str]] = []
         seen: set[str] = set()
-        sources = rule_source_fields(rule) or (
+        sources = [name for name, _kind in rule_prerequisites(rule)] or (
             [rule.source_field] if rule.source_field else []
         )
         for name in sources:

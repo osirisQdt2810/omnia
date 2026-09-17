@@ -653,6 +653,85 @@ class TestClassifyDepsThreadRouting:
         assert any("__snDepsResult" in js for js in evals)
 
 
+class TestThePreviewSaysWhatItActuallyRead:
+    """The inputs a preview reports must be the inputs it used.
+
+    `rule_source_fields` answers only the prompt's `{{refs}}` and the rule's `source_field`;
+    ordering, blocking and the graph all use `rule_prerequisites`, which UNIONs those with the
+    fields a TOOL's params name. The preview used the narrow one — so a row whose chain reads
+    `Example 1 (audio) (backup)` reported `{{WORD}}`, the prompt that chain never touches, and
+    described a run that did not happen.
+    """
+
+    def _inputs(self, rule, fields):
+        from omnia.gui.smart_notes.dialogs.controllers.authoring import (
+            AuthoringController,
+        )
+
+        controller = AuthoringController.__new__(AuthoringController)
+        return controller._preview_inputs(rule, fields)
+
+    def _rule(self, **kw):
+        from omnia.plugins.smart_notes.config import (
+            CompiledToolSpec,
+            SmartNotesFieldConfig,
+        )
+        from omnia.plugins.smart_notes.engine import compile_field_rule
+
+        row = SmartNotesFieldConfig(
+            field="Audio", enabled=True, type="text", tools=[], **kw
+        )
+        return compile_field_rule(row, "Word")
+
+    def test_a_field_a_tool_param_names_is_shown(self, monkeypatch):
+        """The case that was wrong: the tool's input, not the prompt's."""
+        from omnia.plugins.smart_notes.config import CompiledToolSpec
+
+        rule = self._rule(prompt="say {{Word}}").copy(
+            update={
+                "tools": (
+                    CompiledToolSpec(
+                        name="cloze", params={"sentence_field": "Sentence"}
+                    ),
+                )
+            }
+        )
+
+        shown = [row["field"] for row in self._inputs(rule, {"Sentence": "a sentence"})]
+
+        assert "Sentence" in shown
+
+    def test_its_sample_value_comes_along(self):
+        from omnia.plugins.smart_notes.config import CompiledToolSpec
+
+        rule = self._rule(prompt="say {{Word}}").copy(
+            update={
+                "tools": (
+                    CompiledToolSpec(
+                        name="cloze", params={"sentence_field": "Sentence"}
+                    ),
+                )
+            }
+        )
+
+        shown = {
+            row["field"]: row["value"]
+            for row in self._inputs(rule, {"Sentence": "a sentence"})
+        }
+
+        assert shown["Sentence"] == "a sentence"
+
+    def test_a_promptless_field_still_reports_its_source(self):
+        # The one case where what generation READS is wider than what it DEPENDS on: the base
+        # field is always present, so it is not an edge — but the run does read it, and a
+        # preview claiming to have run on nothing is worse than a redundant row.
+        rule = self._rule()
+
+        shown = [row["field"] for row in self._inputs(rule, {"Word": "survive"})]
+
+        assert shown == ["Word"]
+
+
 class TestPreviewRunsTheRowsToolChain:
     """Sync point 5: ▶ Preview must run the row's OWN chain, not always the AI path.
 
