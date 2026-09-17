@@ -41,7 +41,7 @@
     tr.dataset.language = row.language || "";
     // How fast this field's voice speaks, as a multiplier. "" (and 0) mean inherit the central
     // [tts] speed, matching how voice/language use "" — one way to say "not set".
-    tr.dataset.speed = row.speed ? String(row.speed) : "";
+    tr.dataset.speed = speedChoiceValue(row.speed);
     // Explicit dependency edges ({field, kind}[]) edited in the Dependencies view; stored as
     // JSON on the row so collectRows reads them as the single source of truth alongside the
     // other editable state.
@@ -310,6 +310,36 @@
   }
 
   /**
+   * A stored pace as the EXACT string one of SPEED_CHOICES carries.
+   *
+   * The dataset value is matched against the option values with `===`, and a number that has
+   * been through JSON does not spell itself the way the option does: `row_to_payload` emits
+   * `1.0`, JS parses it to the number `1`, and `String(1)` is `"1"` — which never equals the
+   * option's `"1.0"`. No option was marked selected, so the browser fell back to displaying the
+   * first one, "Speed: inherit". `1.0x` is exactly the choice where the difference from inherit
+   * is load-bearing, because the whole point of the central rate is that it is not 1.0.
+   *
+   * Comparing numerically HERE rather than at every use means the dataset always holds a value
+   * the picker can match, and the two cannot drift apart again.
+   * @param {(number|string|undefined)} raw The stored pace.
+   * @return {string} The matching choice's value, "" for inherit, or the number's own spelling
+   *     when no choice matches (a pace set on a build that offered a different list).
+   */
+  function speedChoiceValue(raw) {
+    const n = Number(raw || 0);
+    if (!n) {
+      return "";
+    }
+    for (let i = 0; i < SPEED_CHOICES.length; i++) {
+      const c = SPEED_CHOICES[i];
+      if (c.value && Number(c.value) === n) {
+        return c.value;
+      }
+    }
+    return String(n);
+  }
+
+  /**
    * The pace picker for one sound row: a multiplier, or inherit.
    *
    * Discrete options rather than a free number box. The useful range is narrow and the wrong
@@ -325,9 +355,18 @@
     sel.title =
       "How fast this voice speaks. Inherit uses the rate set for the TTS provider.";
     const saved = tr.dataset.speed || "";
+    let matched = false;
     SPEED_CHOICES.forEach(function (c) {
-      sel.appendChild(opt(c.value, c.label, c.value === saved));
+      const hit = c.value === saved;
+      matched = matched || hit;
+      sel.appendChild(opt(c.value, c.label, hit));
     });
+    if (!matched && saved) {
+      // A pace this build's list does not offer — set on another release, or on a device whose
+      // choices differ. Shown rather than silently replaced by "inherit", which would then be
+      // posted back and erase it. Same rule the Voice picker uses for an unknown voice.
+      sel.appendChild(opt(saved, saved + "\u00d7 (saved)", true));
+    }
     sel.addEventListener("change", function () {
       tr.dataset.speed = sel.value;
     });

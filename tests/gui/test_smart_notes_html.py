@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+
+import pytest
 
 from omnia.gui.smart_notes.html import (
     build_smart_notes_html,
@@ -1160,6 +1163,113 @@ class TestAPaceSurvivesTheRoundTrip:
         payload["speed"] = 0.8
 
         assert field_configs_from_payload([payload], [stored])[0].speed == 0.8
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestEveryOfferedPaceComesBackSelected:
+    """The picker's values are matched with `===` against a number that has been through JSON.
+
+    `row_to_payload` emits `1.0`, `json.dumps` writes `1.0`, JS parses that to the number `1`,
+    and `String(1)` is `"1"` — which never equals the option's `"1.0"`. No option was marked
+    selected, so the browser displayed the first one: "Speed: inherit". `1.0x` is exactly the
+    choice where the difference from inherit is load-bearing, because the whole point of the
+    central rate is that it is not 1.0.
+
+    Run in a real JS engine rather than asserted against the source. The bug was a string/number
+    identity that reads correctly and is invisible to any substring check — the tests already in
+    this file assert `"speed: sound ?" in js` and pass throughout it.
+    """
+
+    @staticmethod
+    def _render_js() -> str:
+        import omnia.gui.smart_notes.html as html_module
+        from omnia.gui.assets import read_asset
+
+        return read_asset(html_module.__file__, "web", "03-render.js")
+
+    def _round_trip(self, stored_speeds: list[float]) -> list[dict]:
+        """Ask node what the picker would SELECT for each stored pace.
+
+        Evaluates the page's own `SPEED_CHOICES` and `speedChoiceValue`, lifted out of the IIFE,
+        against the payload `row_to_payload` really produces.
+        """
+        import json
+        import re
+        import subprocess
+
+        source = self._render_js()
+        choices = re.search(r"const SPEED_CHOICES = \[.*?\];", source, re.S)
+        fn = re.search(r"  function speedChoiceValue\(raw\) \{.*?\n  \}", source, re.S)
+        # The ASSIGNMENT `renderRow` really makes, not a re-spelling of it. Evaluating the helper
+        # directly would pass even if `renderRow` stopped calling it — which is exactly the
+        # regression this guards, so the line itself is what runs.
+        assignment = re.search(r"tr\.dataset\.speed = (.+?);", source)
+        assert (
+            choices and fn and assignment
+        ), "the picker's choices or its assignment moved"
+
+        payload = json.dumps(
+            [
+                row_to_payload(
+                    SmartNotesFieldConfig(field="Audio", type="tts", speed=speed)
+                )
+                for speed in stored_speeds
+            ]
+        )
+        script = f"""
+{choices.group(0)}
+{fn.group(0)}
+const rows = {payload};
+const out = rows.map(function (row) {{
+  const tr = {{dataset: {{}}}};
+  tr.dataset.speed = {assignment.group(1)};
+  const dataset = tr.dataset.speed;
+  const hit = SPEED_CHOICES.filter(function (c) {{ return c.value === dataset; }})[0];
+  return {{stored: row.speed, dataset: dataset, label: hit ? hit.label : null}};
+}});
+console.log(JSON.stringify(out));
+"""
+        result = subprocess.run(
+            ["node", "-e", script], capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def _offered(self) -> list[float]:
+        import re
+
+        block = re.search(r"const SPEED_CHOICES = \[(.*?)\];", self._render_js(), re.S)
+        assert block
+        return [float(v) for v in re.findall(r'value: "([0-9.]+)"', block.group(1))]
+
+    def test_every_offered_pace_selects_its_own_option(self):
+        offered = self._offered()
+        assert 1.0 in offered, "the list stopped offering the normal pace"
+
+        for row in self._round_trip(offered):
+            assert row["label"] is not None, (
+                f"a field saved at {row['stored']}x came back with no option selected — "
+                f'the picker shows "Speed: inherit" and the next save erases the choice'
+            )
+
+    def test_the_normal_pace_is_not_shown_as_inherit(self):
+        """The two mean different things: inherit follows `[tts] speed`, 1.0x pins full speed.
+
+        With a central rate of 0.8, a field pinned to 1.0x that displays "inherit" is telling
+        the user it will be slowed when it will not — and posting that back sets it to 0.
+        """
+        (row,) = self._round_trip([1.0])
+
+        assert row["label"] == "1.0\u00d7 normal", row
+
+    def test_inherit_stays_inherit(self):
+        (row,) = self._round_trip([0.0])
+
+        assert row["dataset"] == ""
+        assert row["label"] == "Speed: inherit"
 
 
 class TestTheSpeedPickerIsOnThePage:
