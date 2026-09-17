@@ -877,6 +877,12 @@ select:disabled { opacity: 0.7; }
   border: 1px solid var(--card-border); background: var(--row-alt); color: var(--fg);
 }
 .sn-chip-arrow { font-size: 9px; color: var(--muted); }
+/* A row with no tool. Deliberately plain and dim: it is not a tool, it is the absence of one,
+   and it should read as "nothing will happen here" rather than as another option. */
+.sn-chip-none {
+  font-size: 10px; color: var(--muted); font-style: italic;
+  border: 1px dashed var(--input-border); border-radius: 6px; padding: 1px 6px;
+}
 /* `ai` costs tokens — the accent marks the one step in a chain that is not free. */
 .sn-chip-ai {
   border-color: var(--accent); color: var(--accent);

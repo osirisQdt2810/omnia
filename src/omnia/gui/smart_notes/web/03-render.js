@@ -30,7 +30,9 @@
     tr.dataset.dependsOn = JSON.stringify(row.depends_on || []);
     // The ordered tool chain ([{tool, params}]) edited in the Tools picker; stored as JSON on
     // the row for the same reason as depends_on — collectRows reads one source of truth. An
-    // empty chain IS the legacy "generate with AI" default (see 09-tools.js).
+    // An empty chain means NO tool (see 09-tools.js). The old implicit "empty means AI" is
+    // written down explicitly when a note type is first loaded, so a row that arrives empty
+    // here is empty because somebody emptied it.
     tr.dataset.tools = JSON.stringify(row.tools || []);
 
     const tdName = cell("sn-fieldname");
