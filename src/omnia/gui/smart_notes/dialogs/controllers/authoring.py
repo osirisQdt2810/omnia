@@ -284,25 +284,31 @@ class AuthoringController:
     ) -> list[dict[str, str]]:
         """The input fields a preview reads, paired with their sample values.
 
-        Uses :func:`rule_prerequisites` — the SINGLE source of truth for what a field depends on
-        — rather than ``rule_source_fields`` alone. The two are not the same, and the gap was
-        visible: ``rule_source_fields`` answers only the prompt's ``{{refs}}`` and the rule's
-        ``source_field``, while ordering, blocking and the graph all use ``rule_prerequisites``,
-        which UNIONs those with the fields a TOOL's params name. So a row whose chain is a tool
-        reading ``Example 1 (audio) (backup)`` showed ``{{WORD}}`` as its input — the prompt,
-        which that chain never reads — and the preview described a run that did not happen.
+        :func:`rule_inputs`, which is read-vs-depend and NEITHER of the two obvious neighbours.
 
-        A promptless field is the one case where the dependency set is deliberately smaller than
-        what generation reads: its base-field source is not an edge (the base is always present),
-        but the run does read it, so it is added back or the preview would claim to have run on
-        nothing. Values are looked up case-insensitively (Anki field names are) and truncated.
+        ``rule_source_fields`` alone is too narrow: it answers only the prompt's ``{{refs}}``
+        and the rule's ``source_field``, so a row whose chain is a tool reading
+        ``Example 1 (audio) (backup)`` showed ``{{WORD}}`` — the prompt, which that chain never
+        reads — and the panel described a run that did not happen.
+
+        ``rule_prerequisites`` is too wide, and wide in a way that looks right: it unions the
+        inputs with the rule's explicit ``depends_on``, which are ordering edges. A leftover
+        ``{{WORD}}`` prompt leaves an ``auto`` classifier edge behind even once the chain stops
+        reading prompts, and a hand-drawn SOFT edge only orders by definition. Listing those
+        puts the wrong field back in the panel — now beside the right one, with a sample value
+        attached, which reads as "this is what I ran against".
+
+        A promptless field is the one case where what the run reads is deliberately not an edge:
+        its base-field source is always present, so it is no dependency, but the run does read
+        it — added back here or the preview would claim to have run on nothing. Values are
+        looked up case-insensitively (Anki field names are) and truncated.
         """
-        from omnia.plugins.smart_notes.engine.rules import rule_prerequisites
+        from omnia.plugins.smart_notes.engine.rules import rule_inputs
 
         lower = {name.strip().lower(): value for name, value in fields.items()}
         out: list[dict[str, str]] = []
         seen: set[str] = set()
-        sources = [name for name, _kind in rule_prerequisites(rule)] or (
+        sources = rule_inputs(rule) or (
             [rule.source_field] if rule.source_field else []
         )
         for name in sources:

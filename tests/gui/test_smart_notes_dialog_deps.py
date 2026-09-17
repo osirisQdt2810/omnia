@@ -653,6 +653,86 @@ class TestClassifyDepsThreadRouting:
         assert any("__snDepsResult" in js for js in evals)
 
 
+class TestThePreviewNamesOnlyWhatWasRead:
+    """The panel lists INPUTS, and a dependency is not an input.
+
+    ``rule_prerequisites`` unions what a rule reads with its explicit ``depends_on`` — ordering
+    edges: an ``auto`` classifier edge left behind by a prompt the chain stopped reading, a
+    hand-drawn SOFT edge that by definition only orders. Listing those names a field the run
+    never opened, with a sample value attached, which reads as "this is what I ran against".
+    Wide in a way that looks right, which is why it needs a test that says no.
+    """
+
+    def _rule(self, **kw):
+        from omnia.plugins.smart_notes.config import (
+            CompiledToolSpec,
+            SmartNotesFieldRule,
+        )
+
+        base = {
+            "note_type": "Vocab",
+            "base_field": "Word",
+            "target_field": "Audio",
+            "kind": "tts",
+            "tools": (
+                CompiledToolSpec(name="cloze", params={"sentence_field": "Backup"}),
+            ),
+        }
+        base.update(kw)
+        return SmartNotesFieldRule(**base)
+
+    def _shown(self, rule, fields=None):
+        from omnia.gui.smart_notes.dialogs.controllers.authoring import (
+            AuthoringController,
+        )
+
+        controller = AuthoringController.__new__(AuthoringController)
+        return [
+            entry["field"]
+            for entry in controller._preview_inputs(rule, fields or {"WORD": "cat"})
+        ]
+
+    def test_a_leftover_prompt_ref_is_not_listed(self):
+        """The motivating case, all the way through.
+
+        A field with a stale ``{{WORD}}`` prompt and a Clone Field tool: the prompt text is
+        still there, so the classifier keeps a ``FieldDep(WORD, auto=True)`` on the rule. The
+        chain never reads the prompt, so WORD is not an input — it is only an edge.
+        """
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        rule = self._rule(
+            prompt="say {{WORD}}",
+            depends_on=[FieldDep(field="WORD", kind="hard", auto=True)],
+        )
+
+        assert self._shown(rule) == [
+            "Backup"
+        ], "the preview named the prompt the chain never read, beside the field it did"
+
+    def test_a_hand_drawn_soft_edge_is_not_listed(self):
+        # Soft means "order me after this", never "read this". The general form of the above.
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        rule = self._rule(
+            depends_on=[FieldDep(field="Meaning", kind="soft", auto=False)]
+        )
+
+        assert self._shown(rule) == ["Backup"]
+
+    def test_a_prompt_the_chain_DOES_read_is_listed(self):
+        # The negative must not overshoot: an `ai` tool's inputs ARE its prompt refs.
+        from omnia.plugins.smart_notes.config import CompiledToolSpec, FieldDep
+
+        rule = self._rule(
+            prompt="define {{WORD}}",
+            tools=(CompiledToolSpec(name="ai"),),
+            depends_on=[FieldDep(field="WORD", kind="hard", auto=True)],
+        )
+
+        assert self._shown(rule) == ["WORD"]
+
+
 class TestThePreviewSaysWhatItActuallyRead:
     """The inputs a preview reports must be the inputs it used.
 
