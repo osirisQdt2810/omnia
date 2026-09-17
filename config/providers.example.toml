@@ -86,6 +86,11 @@ provider = "google_translate"
 # A Smart Notes sound field can override this per field; most people set it once here.
 # google_translate is the exception: its endpoint has only a slow mode, so anything below
 # 0.9 is slow and everything else is normal.
+#
+# [tts.google_cloud] speaking_rate predates this and still applies: a request that asks for
+# no rate of its own (this setting left at 1.0, and no per-field pace) keeps using it. Set the
+# rate in ONE of the two places — a speaking_rate of 1.4 cannot be cancelled by choosing 1.0x
+# here, because "1.0x" and "no preference" are the same request.
 speed = 1.0
 
 # Free, no key (gTTS-style) — the default.

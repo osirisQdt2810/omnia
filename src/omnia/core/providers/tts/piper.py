@@ -168,19 +168,19 @@ class SidecarPiperRunner(PiperRunner):
     def run(self, text: str, model_path: str, *, length_scale: float = 1.0) -> bytes:
         _require_model_file(model_path)
         manager = self._manager or default_manager()
-        argv = ["-m", model_path, "-f", "{out}"]
+        flags = []
         if length_scale != 1.0:
             # Only when it asks for something: the flag's spelling has changed across
             # piper-tts releases, so a run that does not need it should not be able to fail on
             # it. `--length_scale` is what the console script this venv pins accepts.
-            argv += ["--length_scale", str(length_scale)]
+            flags = ["--length_scale", str(length_scale)]
         # piper writes the WAV to a file rather than stdout, so use a temp output path and read
         # the bytes back; text goes in on stdin.
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "out.wav"
             code = manager.run_in_venv(
                 SPEC,
-                [str(out_path) if arg == "{out}" else arg for arg in argv],
+                ["-m", model_path, "-f", str(out_path), *flags],
                 input=text.encode("utf-8"),
             )
             if code != 0 or not out_path.exists():

@@ -45,6 +45,9 @@ def _row(field: str, **kw) -> dict:
         "model": "",
         "voice": "",
         "language": "",
+        # Posted on every row for the same reason as `tools`: 0 is the page saying "inherit the
+        # central rate", and a row that omitted it would model an OLDER page instead.
+        "speed": 0.0,
         "overwrite": False,
         "depends_on": [],
         # The page posts the row's tool chain on every row (empty = the legacy AI default), so
@@ -1108,6 +1111,55 @@ class TestHowFastAFieldsVoiceSpeaks:
         configs = field_configs_from_payload(self._rows(speed=-2))
 
         assert configs[0].speed == 0.0
+
+
+class TestAPaceSurvivesTheRoundTrip:
+    """Stored → page → posted → stored. The half that was missing loses data on the NEXT save.
+
+    ``row_to_payload`` is the only way a stored row reaches the page. Omit ``speed`` there and
+    the picker shows "inherit" for a field that has a pace — which is not merely cosmetic,
+    because ``collectRows`` posts what the picker SHOWS. Saving any unrelated field on the same
+    note type then writes that zero back, `dict()` prunes it, and nothing records that the
+    choice ever existed. The feature would appear to work on the save that set it and undo
+    itself on the next one.
+
+    The picker tests below assert on the JS source, and they pass in exactly that state. This
+    is the assertion that does not.
+    """
+
+    def _stored(self, speed):
+        return SmartNotesFieldConfig(
+            field="Audio", type="tts", voice="v", speed=speed, enabled=True
+        )
+
+    def test_a_saved_pace_reaches_the_page(self):
+        assert row_to_payload(self._stored(1.25))["speed"] == 1.25
+
+    def test_it_survives_a_resave_that_touched_nothing(self):
+        stored = self._stored(1.25)
+
+        again = field_configs_from_payload([row_to_payload(stored)], [stored])
+
+        assert (
+            again[0].speed == 1.25
+        ), "reopening the dialog and saving erased a pace the user had set"
+
+    def test_inherit_still_round_trips_as_inherit(self):
+        stored = self._stored(0.0)
+
+        payload = row_to_payload(stored)
+        again = field_configs_from_payload([payload], [stored])
+
+        assert payload["speed"] == 0.0
+        assert again[0].speed == 0.0
+
+    def test_changing_the_pace_on_the_page_wins(self):
+        # The stored value must not outrank what the user just chose.
+        stored = self._stored(1.25)
+        payload = row_to_payload(stored)
+        payload["speed"] = 0.8
+
+        assert field_configs_from_payload([payload], [stored])[0].speed == 0.8
 
 
 class TestTheSpeedPickerIsOnThePage:

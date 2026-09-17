@@ -502,6 +502,11 @@ def row_to_payload(row: SmartNotesFieldConfig) -> dict[str, object]:
         "model": row.model,
         "voice": row.voice,
         "language": row.language,
+        # Carried to the page or the picker cannot show it — and a picker showing "inherit" for
+        # a field that has a pace is not merely cosmetic: `collectRows` posts what the picker
+        # shows, so the next save of ANY field on this note type would write that 0 back and
+        # erase the choice. `_speed_for_row` guards the other half of this round trip.
+        "speed": row.speed,
         "overwrite": row.overwrite,
         "depends_on": [
             {"field": dep.field, "kind": dep.kind, "auto": dep.auto}
