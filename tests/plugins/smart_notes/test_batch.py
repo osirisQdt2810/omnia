@@ -2134,3 +2134,85 @@ class TestNoteMaterializer:
 
         with _pytest.raises(RuntimeError, match="no materializer"):
             _unmaterialized(self._rule(), GenerationResult("tts", data=b"x", ext="mp3"))
+
+
+class TestTheBlockedMessageNamesTheRealReason:
+    """Two different reasons wear the same shape, and calling both "needs" was wrong about one.
+
+    A prerequisite the chain READS is genuinely needed — fill it or the tool has nothing to work
+    from. A prerequisite that only appears in the row's `depends_on` is an ordering edge the
+    tool never opens, so "needs" sends the user to fix a tool that is working.
+
+    Reported from a real collection: a Clone Field row reading one field, carrying a stale edge
+    onto another, said `Example 1 (audio) needs Example 1 (audio) (backup), Example 1` — and
+    there was nothing in the message to say the second one was removable, or that the tool had
+    never asked for it.
+    """
+
+    def _block(self, missing, unread=()):
+        from omnia.plugins.smart_notes.engine import BlockedField
+
+        return BlockedField("Audio", list(missing), list(unread))
+
+    def _render(self, block):
+        from omnia.plugins.smart_notes.integration.batch import _blocked_example
+
+        return _blocked_example(block)
+
+    def test_a_field_the_chain_reads_is_still_NEEDED(self):
+        assert self._render(self._block(["Backup"])) == "Audio needs Backup"
+
+    def test_an_edge_no_tool_reads_is_not_a_need(self):
+        message = self._render(self._block(["Example 1"], ["Example 1"]))
+
+        assert "needs" not in message, message
+        assert "waiting on Example 1" in message
+        assert "no tool reads" in message
+
+    def test_a_mix_says_which_is_which(self):
+        message = self._render(self._block(["Backup", "Example 1"], ["Example 1"]))
+
+        assert "needs Backup" in message, message
+        assert "also waiting on Example 1" in message, message
+        # The needed one must not be swept into the "no tool reads" clause.
+        assert "waiting on Backup" not in message
+
+    def test_several_unread_edges_read_as_plural(self):
+        message = self._render(self._block(["A", "B"], ["A", "B"]))
+
+        assert "dependencies no tool reads" in message, message
+
+    def test_needed_is_the_complement_of_unread(self):
+        # Case-insensitively, because Anki field names are.
+        block = self._block(["Backup", "Example 1"], ["example 1"])
+
+        assert block.needed == ["Backup"]
+
+
+class TestTheBlockSplitComesFromTheChain:
+    """`unread` is derived where the rule is in hand, not guessed by the renderer."""
+
+    def test_a_clone_chain_marks_a_stale_prompt_edge_as_unread(self):
+        from omnia.plugins.smart_notes.config import (
+            FieldDep,
+            SmartNotesFieldConfig,
+        )
+        from omnia.plugins.smart_notes.engine.rules import (
+            compile_field_rule,
+            rule_inputs,
+        )
+
+        config = SmartNotesFieldConfig(
+            field="Audio",
+            enabled=True,
+            prompt="{{Example 1}}",  # dead text: no tool in this chain reads the prompt
+            depends_on=[FieldDep(field="Example 1", kind="hard", auto=False)],
+            tools=[{"tool": "cloze", "params": {"sentence_field": "Backup"}}],
+        )
+        rule = compile_field_rule(config, "Word")
+        reads = {name.strip().lower() for name in rule_inputs(rule)}
+
+        assert "backup" in reads, "the chain's own input is missing"
+        assert (
+            "example 1" not in reads
+        ), "a prompt no tool reads was counted as an input again"
