@@ -145,7 +145,7 @@ class TestVoiceOptionsForLanguage:
         options = voice_options_for_language("xx")
         assert any(opt["value"] == "google_translate:" for opt in options)
 
-    def test_fetched_voices_replace_the_seed_for_their_provider(self):
+    def test_fetched_voices_are_added_alongside_the_seed(self):
         fetched = {
             "edge_tts": [
                 TTSVoice(
@@ -162,8 +162,11 @@ class TestVoiceOptionsForLanguage:
         options = voice_options_for_language("vi", fetched)
         values = {opt["value"] for opt in options}
         assert "edge_tts:vi-VN-FetchedNeural" in values
-        # The seed edge_tts voice is replaced (not merged) by the fetched list.
-        assert "edge_tts:vi-VN-HoaiMyNeural" not in values
+        # UNIONed, not replaced. This pinned the opposite until 2026-09-17: replacing meant a
+        # cache that had only ever recorded a provider's own seed then shadowed that seed
+        # forever, and the cache lives in the synced collection so it outlives any release.
+        # See TestAStaleCacheCannotHideACuratedVoice.
+        assert "edge_tts:vi-VN-HoaiMyNeural" in values
 
 
 class TestAutoVoiceOptionsPayload:
@@ -207,3 +210,95 @@ class TestAutoVoiceOptionsPayload:
         assert "azure_tts" in payload["voices"]
         options = payload["auto_voice_options"]["en"]
         assert any(o["value"] == "azure_tts:en-US-Foo" for o in options)
+
+
+class TestAStaleCacheCannotHideACuratedVoice:
+    """The Refresh cache is a UNION with the curated seed, not a replacement for it.
+
+    It replaced per provider until 2026-09-17, on the assumption that a provider present in the
+    cache had been fully enumerated. True of edge_tts (322 voices); false of the rest, because
+    `refresh_voices` caches whatever a provider answered and a provider that cannot enumerate
+    offline answers with its own curated seed. So the cache held a SNAPSHOT of the seed — and
+    it lives in the SYNCED COLLECTION, so it outlives any release and shadowed the seed forever.
+
+    That is not hypothetical. Seven en-US voices were added to `GoogleCloudTTS.CURATED_VOICES`;
+    on a profile that had ever pressed Refresh they did not appear in the picker, and no amount
+    of reinstalling or restarting helped — the code had them, the dropdown did not.
+    """
+
+    def _voice(self, provider, voice, **kw):
+        from omnia.core.providers.tts import TTSVoice
+
+        return TTSVoice(
+            provider=provider,
+            voice=voice,
+            language=kw.get("language", "English (US)"),
+            name=kw.get("name", voice),
+            gender=kw.get("gender", "Male"),
+            lang_code=kw.get("lang_code", "en"),
+        )
+
+    def _merged(self, fetched):
+        from omnia.core.providers.catalog import _merged_voices
+
+        return _merged_voices(fetched)
+
+    def _curated(self, provider):
+        from omnia.core.providers.catalog import aggregated_voices
+
+        return {v.voice for v in aggregated_voices().get(provider, [])}
+
+    def test_a_curated_voice_absent_from_the_cache_survives(self):
+        curated = self._curated("google_cloud")
+        assert curated, "google_cloud has no curated voices to test with"
+        stale = [self._voice("google_cloud", sorted(curated)[0])]
+
+        shown = {v.voice for v in self._merged({"google_cloud": stale})["google_cloud"]}
+
+        assert (
+            curated <= shown
+        ), f"a stale cache hid {sorted(curated - shown)} — voices this build ships"
+
+    def test_a_fetched_only_voice_is_added(self):
+        # The reason the cache exists: edge_tts enumerates far more than its seed.
+        shown = {
+            v.voice
+            for v in self._merged(
+                {"google_cloud": [self._voice("google_cloud", "en-US-Fetched-Only")]}
+            )["google_cloud"]
+        }
+
+        assert "en-US-Fetched-Only" in shown
+
+    def test_a_fetched_entry_wins_on_its_own_id(self):
+        # It carries the service's own metadata, which is better than the seed's guess.
+        voice = sorted(self._curated("google_cloud"))[0]
+        fetched = self._voice("google_cloud", voice, name="From The Service")
+
+        merged = self._merged({"google_cloud": [fetched]})["google_cloud"]
+        entry = next(v for v in merged if v.voice == voice)
+
+        assert entry.name == "From The Service"
+
+    def test_a_provider_absent_from_the_cache_keeps_its_seed(self):
+        before = self._curated("edge_tts")
+
+        shown = {v.voice for v in self._merged({"google_cloud": []})["edge_tts"]}
+
+        assert shown == before
+
+    def test_no_cache_at_all_is_the_bare_seed(self):
+        assert self._merged(None)["google_cloud"]
+        assert self._merged({})["google_cloud"]
+
+    def test_the_payload_the_page_reads_shows_them_too(self):
+        """End to end: `_merged_voices` being right is worth nothing if the payload re-derives."""
+        from omnia.core.providers.catalog import catalog_payload
+
+        curated = self._curated("google_cloud")
+        stale = [self._voice("google_cloud", sorted(curated)[0])]
+
+        payload = catalog_payload({"google_cloud": stale})
+        shown = {v["voice"] for v in payload["voices"]["google_cloud"]}
+
+        assert curated <= shown
