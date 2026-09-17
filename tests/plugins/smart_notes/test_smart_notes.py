@@ -774,9 +774,23 @@ class TestGenerateNoteBlocking:
         assert targets == ["Pic", "Caption"]
         assert blocked == []
 
-    def test_explicit_hard_dep_on_non_ref_field_blocks_when_empty(self):
-        # Def's prompt does not reference Note, but an explicit HARD depends_on makes Note a
-        # blocking prerequisite. Note is blank → Def is blocked at the generate_note gate.
+    def test_an_explicit_hard_dep_the_chain_does_not_read_does_NOT_block(self):
+        """Blocking follows what the chain READS, not the edge list.
+
+        This pinned the opposite until 2026-09-17, and the reversal is deliberate. Blocking
+        exists so a tool is never run against an empty input and made to invent content from
+        nothing; a field no tool opens has no route into the output, so waiting for it could
+        not change the result either way.
+
+        It cost a real user ~2,000 notes of confusion: a Clone Field row reading one field,
+        carrying an edge onto another left over from a prompt the chain no longer reads, was
+        held on that other field and reported as NEEDING it — so the message said the tool
+        required a field it never asked for.
+
+        What this gives up, knowingly: an explicit hard edge can no longer be used as a pure
+        gate ("do not generate Def until I have written Note by hand"). The edge still ORDERS,
+        so sequencing is unaffected; it simply no longer withholds generation.
+        """
         llm = _RecordingLLM()
         service = GenerationService(_stub_hub(llm=llm))
         config = _config(
@@ -797,9 +811,10 @@ class TestGenerateNoteBlocking:
         results, blocked, _failed = service.generate_note(
             config, {"Word": "cat", "Note": "", "Def": ""}
         )
-        assert results == []
-        assert [b.target_field for b in blocked] == ["Def"]
-        assert blocked[0].missing == ["Note"]
+        assert [r.target_field for r, _ in results] == ["Def"]
+        assert (
+            blocked == []
+        ), "a field nothing reads still withheld generation, and the message said 'needs'"
 
     def test_self_referential_explicit_dep_raises(self):
         # An explicit depends_on naming the field itself is a self-loop the engine must reject
@@ -822,9 +837,9 @@ class TestGenerateNoteBlocking:
         with pytest.raises(SmartNotesCycleError):
             service.generate_note(config, {"Word": "cat", "Def": ""})
 
-    def test_explicit_dep_on_base_field_blocks_when_base_empty(self):
-        # An explicit hard dep on the base field is honoured at the blocking gate: base blank
-        # → the dependent is blocked.
+    def test_an_explicit_dep_on_an_unread_base_field_does_not_block_either(self):
+        # Same rule, with the base field as the edge: the prompt is "static", so the chain
+        # reads nothing at all and there is nothing whose emptiness could spoil the output.
         llm = _RecordingLLM()
         service = GenerationService(_stub_hub(llm=llm))
         config = _config(
@@ -844,9 +859,50 @@ class TestGenerateNoteBlocking:
         results, blocked, _failed = service.generate_note(
             config, {"Word": "", "Def": ""}
         )
-        assert results == []
-        assert [b.target_field for b in blocked] == ["Def"]
-        assert blocked[0].missing == ["Word"]
+        assert [r.target_field for r, _ in results] == ["Def"]
+        assert blocked == []
+
+    def test_the_blocking_set_follows_the_TOOL(self):
+        """Swap the chain and the blocking set swaps with it.
+
+        The user's own description of what they expected: with Clone Field the row waits on the
+        field the tool copies from; switch it to AI and it waits on the prompt's refs instead,
+        because that is what the row then reads. A leftover prompt and a leftover edge both stop
+        mattering the moment no tool in the chain opens them.
+        """
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+        from omnia.plugins.smart_notes.engine.note_run import _hard_prerequisites
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        shared = dict(
+            field="Audio",
+            enabled=True,
+            prompt="{{Sentence}}",  # read by `ai`, dead text under `cloze`
+            depends_on=[FieldDep(field="Sentence", kind="hard")],
+        )
+        cloned = SmartNotesFieldConfig(
+            **shared, tools=[{"tool": "cloze", "params": {"sentence_field": "Backup"}}]
+        )
+        by_ai = SmartNotesFieldConfig(**shared, tools=[{"tool": "ai", "params": {}}])
+
+        assert _hard_prerequisites(compile_field_rule(cloned, "Word")) == ["Backup"]
+        assert _hard_prerequisites(compile_field_rule(by_ai, "Word")) == ["Sentence"]
+
+    def test_a_soft_override_on_a_read_field_still_wins(self):
+        # The kind override must survive the new filter: a source the chain DOES read, marked
+        # soft in the graph, orders without blocking exactly as before.
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+        from omnia.plugins.smart_notes.engine.note_run import _hard_prerequisites
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        config = SmartNotesFieldConfig(
+            field="Def",
+            enabled=True,
+            prompt="define {{Word}}",
+            depends_on=[FieldDep(field="Word", kind="soft")],
+        )
+
+        assert _hard_prerequisites(compile_field_rule(config, "Word")) == []
 
     def test_already_filled_prereq_counts_present(self):
         # Def is already filled and not overwritten → it is "present" (non-empty) for Usage's
