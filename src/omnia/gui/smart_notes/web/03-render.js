@@ -306,7 +306,16 @@
     // row that Voice is blank on, and the table is already wide. Added here because
     // fillCellSelect clears the cell — anything placed outside this function would be wiped the
     // next time the provider changes.
-    cellEl.appendChild(makeSpeedSelect(tr));
+    //
+    // ONLY for a sound row. Text and image have no pace, and `.sn-na` is not enough: it blurs
+    // and blocks clicks but the control is still drawn, so every text row carried a visible
+    // Speed dropdown it can never use — and paid its height. Voice keeps the faded treatment
+    // because a row can be switched to sound and the saved voice still means something; a pace
+    // on a text row means nothing at all.
+    const typeSel = tr.querySelector(".sn-type");
+    if (typeSel && isTts(typeSel.value)) {
+      cellEl.appendChild(makeSpeedSelect(tr));
+    }
   }
 
   /**

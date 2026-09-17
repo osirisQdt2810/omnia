@@ -1283,6 +1283,54 @@ console.log(JSON.stringify(out));
         assert row["label"] == "Speed: inherit"
 
 
+class TestThePacePickerIsOnlyOnSoundRows:
+    """Text and image have no pace, so the control should not be drawn on their rows.
+
+    `.sn-na` is not enough. It blurs the cell and blocks clicks, which is the right treatment
+    for Voice — a row can be switched to sound and the saved voice still means something — but
+    the control is still DRAWN, so every text row carried a visible Speed dropdown it can never
+    use and paid its height in the table. A pace on a text row means nothing at all.
+    """
+
+    def _render_source(self) -> str:
+        import omnia.gui.smart_notes.html as html_module
+        from omnia.gui.assets import read_asset
+
+        return read_asset(html_module.__file__, "web", "03-render.js")
+
+    def test_the_append_is_guarded_by_the_rows_kind(self):
+        """Read off the source rather than the DOM: the guard sits inside `rebuildVoice`,
+        which needs the whole page IIFE to run. What matters is that the append is conditional
+        on the row's type at all — an unguarded `appendChild` is the regression."""
+        source = self._render_source()
+        start = source.index("function rebuildVoice")
+        body = source[start : source.index("function makeSpeedSelect")]
+
+        assert (
+            "makeSpeedSelect(tr)" in body
+        ), "the picker stopped being built with the cell"
+        append = body[body.index("makeSpeedSelect(tr)") - 400 :]
+        assert (
+            "isTts(" in append
+        ), "the pace picker is appended unconditionally — text and image rows draw one too"
+
+    def test_the_kind_change_path_rebuilds_the_cell(self):
+        """Switching text → sound has to make the picker appear, and sound → text remove it.
+
+        Both go through `rebuildProvider`, which ends by calling `rebuildVoice`; if that chain
+        is broken the guard above is correct and the UI still stale.
+        """
+        source = self._render_source()
+        start = source.index("function onKindChange")
+        body = source[start : source.index("\n  }", start)]
+
+        assert "rebuildProvider(tr, kind" in body, body
+
+        provider = source[source.index("function rebuildProvider") :]
+        provider = provider[: provider.index("\n  }")]
+        assert "rebuildVoice(tr, current)" in provider, provider
+
+
 class TestTheSpeedPickerIsOnThePage:
     """The control itself: it exists, it offers inherit, and it posts what it offers."""
 
