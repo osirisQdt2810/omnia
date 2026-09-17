@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.plugins.smart_notes.engine.language import LanguageDetector
 from omnia.plugins.smart_notes.engine.markdown import convert_markdown_to_html
 from omnia.plugins.smart_notes.engine.rules import (
@@ -103,6 +104,10 @@ class ResolvedVoice:
     provider: TTSProvider
     lang: Optional[str]
     voice: Optional[str]
+    #: Pace multiplier, ``1.0`` being the voice's natural one. Resolved ONCE with the voice and
+    #: for the same reason: ``cloze_audio`` splices several syntheses of one field together, and
+    #: pieces spoken at different speeds do not sound like one sentence.
+    speed: float = NORMAL
 
     @classmethod
     def for_rule(
@@ -117,7 +122,8 @@ class ResolvedVoice:
         Args:
             providers: The hub that builds the configured providers.
             detector: The best-effort language detector (used only on the Auto-detect branch).
-            rule: The rule being generated (its ``voice``/``provider``/``language`` overrides).
+            rule: The rule being generated (its ``voice``/``provider``/``language``/``speed``
+                overrides).
             text: The text whose language is detected when the rule pins no voice. Nothing is
                 synthesized here, so a caller that must not leak part of its text (audio cloze)
                 may pass a redacted sample.
@@ -129,9 +135,12 @@ class ResolvedVoice:
             ProviderError: When Auto-detect has no voice mapped for the detected language — with
                 the detector's own reason attached when detection is what failed.
         """
+        # The field's own rate, or the central one when it pins none. Zero is how a field says
+        # "not set" (see SmartNotesFieldConfig.speed), so `or` is the whole resolution.
+        speed = rule.speed or providers.tts_speed()
         if rule.voice:
             # A pinned voice fixes the language; synthesize on the rule's provider directly.
-            return cls(providers.tts(provider=rule.provider), None, rule.voice)
+            return cls(providers.tts(provider=rule.provider), None, rule.voice, speed)
         # Auto-detect: find the language, then the global map's (provider, voice) for it.
         # An explicit Language IS the answer, so detecting one would be a paid LLM round trip
         # per note per tts field whose result the next line throws away. Only ask when the rule
@@ -147,7 +156,7 @@ class ResolvedVoice:
         picked_provider, voice = providers.resolve_auto_voice(lang or "", reason=reason)
         # An empty voice (a language-only provider, e.g. google_translate) → None so the
         # provider uses the language directly rather than an empty voice id.
-        return cls(providers.tts(provider=picked_provider), lang, voice or None)
+        return cls(providers.tts(provider=picked_provider), lang, voice or None, speed)
 
     @property
     def audio_ext(self) -> str:
@@ -155,8 +164,10 @@ class ResolvedVoice:
         return self.provider.audio_ext
 
     def synthesize(self, text: str) -> bytes:
-        """Speak ``text`` with this resolved provider/voice/language."""
-        return self.provider.synthesize(text, lang=self.lang, voice=self.voice)
+        """Speak ``text`` with this resolved provider/voice/language/pace."""
+        return self.provider.synthesize(
+            text, lang=self.lang, voice=self.voice, speed=self.speed
+        )
 
 
 class TTSGenerator(Generator):

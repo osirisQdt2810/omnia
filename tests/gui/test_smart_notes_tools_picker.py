@@ -48,6 +48,7 @@ def _row(field: str, **kw) -> dict:
         "model": "",
         "voice": "",
         "language": "",
+        "speed": 0.0,
         "overwrite": False,
         "depends_on": [],
         "tools": [],

@@ -451,9 +451,13 @@ select:disabled { opacity: 0.7; }
 /* width:100% inside a fixed-layout column: the SELECT follows its column rather than the
    column following the longest option. "English (US) · Neural2-C" used to widen the table on
    its own; the full name is still readable in the open dropdown. */
-.sn-provider, .sn-model, .sn-voice {
+.sn-provider, .sn-model, .sn-voice, .sn-speed {
   width: 100%; min-width: 0; max-width: 100%; text-overflow: ellipsis;
 }
+/* The pace picker sits UNDER the voice select in the same cell — see makeSpeedSelect. Smaller
+   and dimmer because it is the secondary of the two: the voice is the choice, the pace is an
+   adjustment to it, and two equal-weight selects in one cell read as two columns crammed in. */
+.sn-speed { margin-top: 3px; font-size: 11px; opacity: 0.85; }
 /* The Voice column only appears once at least one row is a sound field. */
 .sn-table:not(.sn-has-sound) .sn-col-voice { display: none; }
 .sn-check { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; }

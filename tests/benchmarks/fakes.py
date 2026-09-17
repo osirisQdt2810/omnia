@@ -367,7 +367,12 @@ class LatencyTTSProvider:
         self.stats = self.transport.stats
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = 1.0,
     ) -> bytes:
         self._http.post_json_for_bytes("https://bench.invalid/tts", {})
         return b"MP3DATA"
@@ -388,6 +393,10 @@ class BenchHub:
 
     def tts(self, *, provider: str = ""):
         return self.tts_provider
+
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
 
     def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         return ("bench_tts", "bench-voice")

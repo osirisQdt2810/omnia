@@ -128,6 +128,10 @@ class _StubHub:
             raise AssertionError("no TTS in this test")
         return self._tts
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
 
 class _RecordingLLM(FakeLLMProvider):
     """Records the main-thread hop depth each call was made at (must always be 0)."""

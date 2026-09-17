@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 from omnia.core.providers.llm.base import LLMProvider, PromptParts
 from omnia.core.providers.tts.base import TTSProvider
+from omnia.core.providers.tts.speed import NORMAL
 
 
 def _fold_call(
@@ -588,9 +589,14 @@ class RecordingTTSProvider(TTSProvider):
         return self._wrapped.requires_api
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
-        audio = self._wrapped.synthesize(text, lang=lang, voice=voice)
+        audio = self._wrapped.synthesize(text, lang=lang, voice=voice, speed=speed)
         # Best-effort: recording must never break synthesis (see RecordingLLMProvider).
         with contextlib.suppress(Exception):
             self._recorder.record(

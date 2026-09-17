@@ -383,6 +383,10 @@ class TTSProviderContract:
     def tts(self) -> TTSProvider:
         raise NotImplementedError
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
     def test_is_a_tts_provider(self, tts):
         assert isinstance(tts, TTSProvider)
         assert isinstance(tts.name, str) and tts.name
@@ -398,6 +402,10 @@ class TestFakeTTSContract(TTSProviderContract):
     @pytest.fixture
     def tts(self) -> TTSProvider:
         return FakeTTSProvider()
+
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
 
 
 # --- 4. ONE real suite PER TTS provider ------------------------------------------------
@@ -417,6 +425,10 @@ class _RealTTSProviderSuite(TTSProviderContract):
     @pytest.fixture
     def tts(self) -> TTSProvider:
         return real_tts_provider_for_or_skip(self.PROVIDER)
+
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
 
     def test_synthesizes_valid_audio(self, tts):
         audio = call_or_xfail(

@@ -332,7 +332,7 @@ class TestOneLimiterForEveryPath:
         before = PROVIDER_LIMITER.stats.acquired
         held: list[int] = []
 
-        def _one_session(text, voice):
+        def _one_session(text, voice, rate="+0%"):
             held.append(PROVIDER_LIMITER.stats.acquired)
             return b"MP3"
 

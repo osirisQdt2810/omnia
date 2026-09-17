@@ -447,3 +447,51 @@ class TestSyncedBlobForwardCompat:
         # strictness stays: an unknown key there is a typo, not a future version's data.
         with pytest.raises(ValidationError):
             SmartNotesFieldRule(target_field="Def", not_a_real_key=1)
+
+
+class TestAFieldsOwnSpeedNeverEntersTheBlobUnasked:
+    """A new key in the synced collection blob is not a new setting — it is a crash risk.
+
+    The blob syncs to devices on OTHER releases, and one on a build from before
+    :class:`~omnia.core.config.base.PersistedModel` (ADR-010) validates with ``extra="forbid"``
+    and has no ``try`` around the store's load. A single unknown key there is not a lost
+    setting: it raises on every note-add hook. ``speed`` follows ``tools``: zero means "use the
+    central rate", which is exactly what a row with no key has always meant, so a field nobody
+    has set a pace on writes nothing.
+    """
+
+    def _row(self, **kw):
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+
+        return SmartNotesFieldConfig(field="Def", **kw)
+
+    def test_an_untouched_field_writes_no_speed_key(self):
+        assert "speed" not in self._row().dict()
+
+    def test_a_field_that_inherits_explicitly_writes_nothing_either(self):
+        # Zero IS inherit, so setting it back to inherit must UNDO the key, not pin a zero.
+        assert "speed" not in self._row(speed=0.0).dict()
+
+    def test_a_field_with_a_chosen_pace_does_write_it(self):
+        assert self._row(speed=0.8).dict()["speed"] == 0.8
+
+    def test_a_legacy_row_round_trips_byte_identically(self):
+        """The whole point: a collection full of pre-speed rows must serialize as it did.
+
+        ``store.save`` persists the WHOLE settings tree, so one field on one note type is
+        enough to rewrite the blob for every device that syncs it.
+        """
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+
+        before = self._row(type="tts", voice="v", language="vi").dict()
+        after = SmartNotesFieldConfig(**before).dict()
+
+        assert before == after
+        assert "speed" not in after
+
+    def test_a_pace_survives_the_round_trip(self):
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+
+        stored = self._row(type="tts", speed=1.25).dict()
+
+        assert SmartNotesFieldConfig(**stored).speed == 1.25

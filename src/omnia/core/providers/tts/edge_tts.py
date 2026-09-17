@@ -34,8 +34,10 @@ from omnia.core.network.websocket import (
     WebSocketError,
 )
 from omnia.core.providers.errors import ProviderError
+from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient
@@ -132,8 +134,13 @@ class EdgeSynthesizer(ABC):
     """Transport that turns (text, voice) into MP3 bytes via Edge TTS."""
 
     @abstractmethod
-    def synthesize(self, text: str, voice: str) -> bytes:
-        """Return MP3 audio for ``text`` spoken by ``voice``."""
+    def synthesize(self, text: str, voice: str, rate: str = "+0%") -> bytes:
+        """Return MP3 audio for ``text`` spoken by ``voice`` at ``rate``.
+
+        ``rate`` is Edge's own dialect: a signed percentage delta from the voice's natural
+        pace, as it appears in the SSML ``<prosody>``. ``"+0%"`` — what this was hardcoded to
+        before a pace could be chosen — means the voice's own.
+        """
 
 
 class EdgeProtocolSynthesizer(EdgeSynthesizer):
@@ -162,14 +169,14 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
         self._timeout = timeout
 
     # --- public transport ---------------------------------------------------------------
-    def synthesize(self, text: str, voice: str) -> bytes:
+    def synthesize(self, text: str, voice: str, rate: str = "+0%") -> bytes:
         cleaned = (text or "").strip()
         if not cleaned:
             return b""
         audio = bytearray()
         try:
             for chunk in self._split_on_whitespace(cleaned):
-                audio += self._synthesize_chunk(chunk, voice)
+                audio += self._synthesize_chunk(chunk, voice, rate)
         except WebSocketError as exc:
             raise ProviderError(
                 f"edge_tts synthesis failed (voice={voice}): {exc}"
@@ -183,7 +190,7 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
         return bytes(audio)
 
     # --- protocol details ---------------------------------------------------------------
-    def _synthesize_chunk(self, text: str, voice: str) -> bytes:
+    def _synthesize_chunk(self, text: str, voice: str, rate: str = "+0%") -> bytes:
         """One Edge session: open the socket, send the two messages, collect the MP3 frames.
 
         Holds a :data:`~omnia.core.network.limiter.PROVIDER_LIMITER` permit for the whole
@@ -197,9 +204,11 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
         service, so each is what the bound is counting.
         """
         with PROVIDER_LIMITER.permit():
-            return self._synthesize_one_session(text, voice)
+            return self._synthesize_one_session(text, voice, rate)
 
-    def _synthesize_one_session(self, text: str, voice: str) -> bytes:
+    def _synthesize_one_session(
+        self, text: str, voice: str, rate: str = "+0%"
+    ) -> bytes:
         connection_id = uuid.uuid4().hex
         url = (
             f"wss://{self._BASE_HOST}{self._BASE_PATH}"
@@ -221,7 +230,9 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
             "Accept-Language": "en-US,en;q=0.9",
             "Cookie": f"muid={uuid.uuid4().hex.upper()};",
         }
-        ssml = self._mkssml(escape(self._remove_incompatible_characters(text)), voice)
+        ssml = self._mkssml(
+            escape(self._remove_incompatible_characters(text)), voice, rate
+        )
 
         ws = WebSocketClient(url, headers, self._timeout)
         audio = bytearray()
@@ -273,12 +284,12 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
         )
 
     @staticmethod
-    def _mkssml(escaped_text: str, voice: str) -> str:
+    def _mkssml(escaped_text: str, voice: str, rate: str = "+0%") -> str:
         return (
             "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' "
             "xml:lang='en-US'>"
             f"<voice name='{voice}'>"
-            "<prosody pitch='+0Hz' rate='+0%' volume='+0%'>"
+            f"<prosody pitch='+0Hz' rate='{rate}' volume='+0%'>"
             f"{escaped_text}"
             "</prosody></voice></speak>"
         )
@@ -361,10 +372,17 @@ class EdgeTTS(TTSProvider):
         return cls(lang=config.get("lang", "en"), voice=config.get("voice", ""))
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
         chosen = voice or self._voice or self._default_voice(lang)
-        return self._synthesizer.synthesize(text, chosen)
+        return self._synthesizer.synthesize(
+            text, chosen, tts_speed.as_percent_delta(speed)
+        )
 
     def _default_voice(self, lang: Optional[str]) -> str:
         key = (lang or self._lang or "en").strip().lower()

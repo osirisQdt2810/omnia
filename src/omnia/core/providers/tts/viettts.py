@@ -27,6 +27,7 @@ from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts.base import TTSVoice
 from omnia.core.providers.tts.openai_compatible import OpenAICompatibleTTS
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 from omnia.core.runtime.native_runtime import (
     NativeRuntimeManager,
     NativeRuntimeSpec,
@@ -121,7 +122,12 @@ class VietTTS(OpenAICompatibleTTS):
         )
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
         if self._autostart:
             # Start (and reuse) the managed-venv viet-tts server on demand and point this call
@@ -130,7 +136,7 @@ class VietTTS(OpenAICompatibleTTS):
             host, port = manager.ensure_running(SPEC)
             self._base_url = f"http://{host}:{port}/v1"
         try:
-            return super().synthesize(text, lang=lang, voice=voice)
+            return super().synthesize(text, lang=lang, voice=voice, speed=speed)
         except ProviderError as exc:
             raise ProviderError(
                 f"{exc}. Is the viet-tts server reachable at {self._base_url}?"

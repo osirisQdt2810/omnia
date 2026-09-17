@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Optional
 
 from omnia.core.providers.base import ProviderBase
+from omnia.core.providers.tts.speed import NORMAL
 
 if TYPE_CHECKING:
     from omnia.core.network.http import HttpClient
@@ -59,7 +60,12 @@ class TTSProvider(ProviderBase):
 
     @abstractmethod
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
         """Return audio bytes (in :attr:`audio_ext` format) speaking ``text``.
 
@@ -67,6 +73,11 @@ class TTSProvider(ProviderBase):
             text: The text to speak.
             lang: BCP-47-ish language code (e.g. ``"en"``, ``"vi"``); provider-specific.
             voice: Provider-specific voice id (ignored by single-voice providers).
+            speed: Pace multiplier, ``1.0`` being the voice's own. Each provider converts it
+                to its engine's dialect via :mod:`omnia.core.providers.tts.speed`; one that
+                cannot vary its pace ignores it rather than refusing, because failing a whole
+                batch over a cosmetic preference is the worse trade. Defaults to ``1.0``, so
+                every existing caller keeps sending exactly the request it sent before.
 
         Raises:
             ProviderError: On bad config or an HTTP/network failure.

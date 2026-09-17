@@ -122,7 +122,7 @@ class TestTTSSweep:
 
     def test_edge_tts_synthesizes_with_injected_transport(self):
         class _FakeSynth:
-            def synthesize(self, text, voice):
+            def synthesize(self, text, voice, rate="+0%"):
                 return b"EDGE-MP3"
 
         audio = EdgeTTS(synthesizer=_FakeSynth()).synthesize("hi", lang="vi")
@@ -134,7 +134,7 @@ class TestTTSSweep:
         class _FakeRunner(PiperRunner):
             # Subclasses the seam so it inherits the no-op ``ensure_ready`` the provider now
             # calls before resolving a voice; a duck-typed stand-in would miss that contract.
-            def run(self, text, model_path):
+            def run(self, text, model_path, **kw):
                 # A bare ".onnx" name is looked up in the voice dirs, never downloaded.
                 assert model_path.endswith("voice.onnx")
                 return b"RIFFwav"

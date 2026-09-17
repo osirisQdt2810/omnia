@@ -62,6 +62,10 @@ class _StubHub:
     def tts(self):
         raise AssertionError("no TTS here")
 
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
+
 
 class _FakeCompat:
     def __init__(self, notes, current=None):

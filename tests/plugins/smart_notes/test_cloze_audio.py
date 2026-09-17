@@ -87,7 +87,7 @@ class _FakeWavTTS:
         self.channels = channels
         self.spoken: list[str] = []
 
-    def synthesize(self, text, *, lang=None, voice=None):
+    def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
         self.spoken.append(text)
         samples: list[int] = []
         for char in text:
@@ -104,7 +104,7 @@ class _FakeMp3TTS(_FakeWavTTS):
 class _ExplodingTTS(_FakeWavTTS):
     """A voice whose provider is down."""
 
-    def synthesize(self, text, *, lang=None, voice=None):
+    def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
         raise ProviderError("HTTP 401")
 
 
@@ -158,6 +158,10 @@ class _Hub:
 
     def tts(self, *, provider: str = ""):
         return self._tts
+
+    def tts_speed(self):
+        """The central pace every field falls back to; 1.0 is the voice's own."""
+        return 1.0
 
     def resolve_auto_voice(self, lang: str, *, reason: str = ""):
         return "fake", "fake-voice"
@@ -819,7 +823,7 @@ class TestSplice:
 
     def test_a_frame_rate_mismatch_between_segments_is_refused(self):
         class _Drifting(_FakeWavTTS):
-            def synthesize(self, text, *, lang=None, voice=None):
+            def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
                 # A provider that changes rate mid-sentence would splice chipmunk speech in.
                 self.rate = 24000 if self.spoken else _RATE
                 return super().synthesize(text, lang=lang, voice=voice)
@@ -833,7 +837,7 @@ class TestSplice:
 
     def test_non_pcm_audio_from_a_wav_provider_is_refused(self):
         class _Lying(_FakeWavTTS):
-            def synthesize(self, text, *, lang=None, voice=None):
+            def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
                 return b"not a wav at all"
 
         with pytest.raises(ToolError, match="cannot cut"):
@@ -845,7 +849,7 @@ class TestSplice:
 
     def test_eight_bit_audio_is_refused(self):
         class _EightBit(_FakeWavTTS):
-            def synthesize(self, text, *, lang=None, voice=None):
+            def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
                 import io
 
                 buffer = io.BytesIO()

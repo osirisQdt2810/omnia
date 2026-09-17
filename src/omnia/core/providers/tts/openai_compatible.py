@@ -7,8 +7,10 @@ from typing import Any, ClassVar, Optional
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.openai_family import openai_family_base_url
+from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
 from omnia.core.providers.tts.registry import register_tts
+from omnia.core.providers.tts.speed import NORMAL
 
 # Default base URL per config name — the openai family is ONE class under three names that
 # differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
@@ -74,14 +76,24 @@ class OpenAICompatibleTTS(TTSProvider):
         )
 
     def synthesize(
-        self, text: str, *, lang: Optional[str] = None, voice: Optional[str] = None
+        self,
+        text: str,
+        *,
+        lang: Optional[str] = None,
+        voice: Optional[str] = None,
+        speed: float = NORMAL,
     ) -> bytes:
-        payload = {
+        payload: dict[str, object] = {
             "model": self._model,
             "input": text,
             "voice": voice or self._voice,
             "response_format": self._response_format,
         }
+        if not tts_speed.is_normal(speed):
+            # Sent only when it asks for something. A local OpenAI-compatible server is not
+            # obliged to implement every field of the spec, and one that rejects an unknown key
+            # would start failing every synthesis for a preference nobody set.
+            payload["speed"] = tts_speed.clamp(speed)
         return self._http.post_json_for_bytes(
             f"{self._base_url}/audio/speech",
             payload,
