@@ -61,6 +61,41 @@ def rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
     return []
 
 
+def rule_inputs(rule: SmartNotesFieldRule) -> list[str]:
+    """Return the fields a run of ``rule`` actually READS, in the order it would read them.
+
+    The DERIVED half of :func:`rule_prerequisites`, and the distinction between the two is
+    read-vs-depend. Prerequisites are wider on purpose: they union these with the rule's
+    explicit ``depends_on`` entries, which are ordering edges — an ``auto`` classifier edge, a
+    hand-drawn one, a SOFT one that by definition only orders and never blocks. None of those
+    is an input, and anything reporting them AS inputs (the preview's input panel) names a
+    field the run never opened, with a sample value attached that reads as "this is what I ran
+    against".
+
+    Two sources, both already honest about the chain: :func:`rule_source_fields` yields the
+    prompt's ``{{refs}}`` only when some tool in the chain reads the prompt, and
+    :func:`~omnia.plugins.smart_notes.engine.tools.registry.tool_referenced_fields` yields
+    whatever each tool's own params name.
+
+    Args:
+        rule: The compiled generation rule.
+
+    Returns:
+        Field names, de-duplicated case-insensitively with the first spelling kept.
+    """
+    from omnia.plugins.smart_notes.engine.tools.registry import tool_referenced_fields
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in [*rule_source_fields(rule), *tool_referenced_fields(rule.tools)]:
+        lower = name.strip().lower()
+        if not lower or lower in seen:
+            continue
+        seen.add(lower)
+        out.append(name.strip())
+    return out
+
+
 def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
     """Return ``(prerequisite_field, effective_kind)`` pairs for ``rule``.
 
@@ -83,19 +118,13 @@ def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
         refs, then tool-param refs), then any explicit-only prerequisites, each with its
         effective kind.
     """
-    # Imported lazily: the tools package imports the generators, which import this module.
-    # (:func:`rule_source_fields` does the same, for the same reason.)
-    from omnia.plugins.smart_notes.engine.tools.registry import tool_referenced_fields
-
     override = {dep.field.strip().lower(): dep.kind for dep in rule.depends_on}
     prerequisites: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for name in [*rule_source_fields(rule), *tool_referenced_fields(rule.tools)]:
-        lower = name.strip().lower()
-        if not lower or lower in seen:
-            continue
+    for name in rule_inputs(rule):
+        lower = name.lower()
         seen.add(lower)
-        prerequisites.append((name.strip(), override.get(lower, "hard")))
+        prerequisites.append((name, override.get(lower, "hard")))
     for dep in rule.depends_on:
         lower = dep.field.strip().lower()
         if not lower or lower in seen:

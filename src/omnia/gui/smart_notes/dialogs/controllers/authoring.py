@@ -282,22 +282,33 @@ class AuthoringController:
     def _preview_inputs(
         self, rule: SmartNotesFieldRule, fields: dict[str, str]
     ) -> list[dict[str, str]]:
-        """The input fields a preview reads (the prompt's ``{{refs}}``, or the source/base field
-        when there is no prompt), paired with their sample values from :meth:`_preview_fields`.
+        """The input fields a preview reads, paired with their sample values.
 
-        Reuses :func:`rule_source_fields` (the same "what does this field read" util the graph and
-        ordering use) so the shown inputs exactly match the real dependency set. A promptless
-        field is the one case where the two differ: its base-field source is deliberately NOT a
-        dependency (the base is always present), but generation does read it — so it is added back
-        here, or the preview would claim to have run on nothing. Values are looked up
-        case-insensitively (Anki field names are) and truncated.
+        :func:`rule_inputs`, which is read-vs-depend and NEITHER of the two obvious neighbours.
+
+        ``rule_source_fields`` alone is too narrow: it answers only the prompt's ``{{refs}}``
+        and the rule's ``source_field``, so a row whose chain is a tool reading
+        ``Example 1 (audio) (backup)`` showed ``{{WORD}}`` — the prompt, which that chain never
+        reads — and the panel described a run that did not happen.
+
+        ``rule_prerequisites`` is too wide, and wide in a way that looks right: it unions the
+        inputs with the rule's explicit ``depends_on``, which are ordering edges. A leftover
+        ``{{WORD}}`` prompt leaves an ``auto`` classifier edge behind even once the chain stops
+        reading prompts, and a hand-drawn SOFT edge only orders by definition. Listing those
+        puts the wrong field back in the panel — now beside the right one, with a sample value
+        attached, which reads as "this is what I ran against".
+
+        A promptless field is the one case where what the run reads is deliberately not an edge:
+        its base-field source is always present, so it is no dependency, but the run does read
+        it — added back here or the preview would claim to have run on nothing. Values are
+        looked up case-insensitively (Anki field names are) and truncated.
         """
-        from omnia.plugins.smart_notes.engine.rules import rule_source_fields
+        from omnia.plugins.smart_notes.engine.rules import rule_inputs
 
         lower = {name.strip().lower(): value for name, value in fields.items()}
         out: list[dict[str, str]] = []
         seen: set[str] = set()
-        sources = rule_source_fields(rule) or (
+        sources = rule_inputs(rule) or (
             [rule.source_field] if rule.source_field else []
         )
         for name in sources:

@@ -694,3 +694,25 @@ class TestTheAuthorIsToldWhatSilentlyGoesWrong:
         example = text[text.index("class ExtractExtTool") :]
 
         assert "def reads_prompt" in example
+
+    def test_the_rule_and_the_example_do_not_contradict_each_other(self):
+        """Rule 11 used to ask for the example's body "'s inverse", and the example's body was
+        already correct.
+
+        A model following the prose rather than the example — which this very prompt calls the
+        safer of the two — would then answer False exactly when the param is BLANK, i.e. exactly
+        when the tool falls through to the prompt's first ref. The ref loses its edge, the field
+        is neither ordered after it nor blocked on it, and on a note where it is still
+        ungenerated the tool reads empty and writes nothing. The other branch inverts straight
+        back into the 2,700-note block.
+        """
+        text = self._prompt()
+        body = "not str(params.get("
+        example = text[text.index("class ExtractExtTool") :]
+
+        assert body in example, "the example no longer shows the body the rule cites"
+        rule = text[: text.index("class ExtractExtTool")]
+        assert body in rule, "rule 11 stopped stating the body it wants"
+        assert (
+            "inverse" not in rule
+        ), "rule 11 asks for the inverse of a body that is already correct"
