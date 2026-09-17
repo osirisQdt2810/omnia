@@ -50,6 +50,7 @@ from omnia.plugins.smart_notes.engine.tools import (
     ToolContext,
     resolve_media_dir,
 )
+from omnia.plugins.smart_notes.provenance import ALWAYS
 
 if TYPE_CHECKING:
     from omnia.core.providers import ProviderHub
@@ -133,6 +134,7 @@ class GenerationService:
         *,
         allow_empty_fields: bool = False,
         force_overwrite: bool = False,
+        overwrite_scope: str = ALWAYS,
         materialize: Optional[
             Callable[[SmartNotesFieldRule, GenerationResult], str]
         ] = None,
@@ -153,6 +155,7 @@ class GenerationService:
             note_id=note_id,
             allow_empty_fields=allow_empty_fields,
             force_overwrite=force_overwrite,
+            overwrite_scope=overwrite_scope,
             materialize=materialize,
         )
 
@@ -199,6 +202,7 @@ class GenerationService:
         *,
         allow_empty_fields: bool = False,
         force_overwrite: bool = False,
+        overwrite_scope: str = ALWAYS,
         materialize: Optional[
             Callable[[SmartNotesFieldRule, GenerationResult], str]
         ] = None,
@@ -268,6 +272,7 @@ class GenerationService:
             fields,
             allow_empty_fields=allow_empty_fields,
             force_overwrite=force_overwrite,
+            overwrite_scope=overwrite_scope,
             materialize=materialize,
             note_id=note_id,
         )

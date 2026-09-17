@@ -10,10 +10,13 @@
 #   scripts/run_tests.sh --cov=src/omnia ...  # with coverage
 set -euo pipefail
 
-# These three hit live third-party endpoints (Google Translate TTS / Edge TTS) that answer
-# datacenter IPs with 403s. On CI they are a flake source, not a signal.
-exec pytest tests/ -q \
-  --deselect tests/providers/test_tts.py::TestGoogleTranslateRealTTS \
-  --deselect tests/providers/test_tts.py::TestEdgeRealTTS \
-  --deselect tests/providers/test_anki_runtime.py::test_edge_tts_synthesizes_hermetically \
-  "$@"
+# Tests that reach a live third-party endpoint (Google Translate TTS / Edge TTS) are skipped:
+# they answer datacenter IPs with 403s and DNS failures, so on CI they are a flake source
+# rather than a signal.
+#
+# By MARKER, not by node id. The node-id list this replaces named
+# `test_anki_runtime.py::test_edge_tts_synthesizes_hermetically`, and that test had since moved
+# inside a class — so the deselect matched nothing, said nothing about matching nothing, and the
+# live test had been running in CI ever since. A marker travels with the test through renames
+# and reorganisation; a path does not.
+exec pytest tests/ -q -m "not live_endpoint" "$@"

@@ -44,11 +44,31 @@ class ProgressSurface:
     def publish(self, done: int, total: int) -> None:
         """``done`` of ``total`` notes have been committed."""
 
+    def hold(self, reason: str) -> None:
+        """Say why the job is deliberately not progressing; ``""`` means it is running again.
+
+        A job that is WAITING looks identical to a stuck one from outside, and the difference
+        decides whether somebody presses Stop on work that was going to finish by itself.
+        """
+
     def finish(self) -> None:
         """The run is over — successfully, by failure, or by cancellation."""
 
     def cancelled(self) -> bool:
         """Whether the user has asked to stop. Read between cohorts, never mid-note."""
+        return False
+
+    def blocks_input(self) -> bool:
+        """Whether this surface is holding Anki's input hostage while it is up.
+
+        The write-back waits for the user to leave the reviewer before touching notes, because a
+        note write redraws the card on screen and throws away a half-typed answer. That courtesy
+        is only coherent for a surface the user can act around. A MODAL one deadlocks on it: the
+        wait ends when the reviewer is left, and the dialog is the reason it cannot be left.
+
+        Answering True says "there is no typed-in answer to protect here" — the window on top of
+        the reviewer means nothing is reaching it anyway.
+        """
         return False
 
 
@@ -72,6 +92,11 @@ class ModalDialog(ProgressSurface):
     def start(self, total: int) -> None:
         anki_compat.progress_start(f"Omnia: generating… (0/{total})", total)
 
+    def hold(self, reason: str) -> None:
+        if not reason:
+            return
+        anki_compat.progress_label(f"Omnia: {reason}")
+
     def publish(self, done: int, total: int) -> None:
         def show() -> None:
             try:
@@ -91,6 +116,9 @@ class ModalDialog(ProgressSurface):
 
     def cancelled(self) -> bool:
         return bool(anki_compat.progress_was_cancelled())
+
+    def blocks_input(self) -> bool:
+        return True
 
 
 class BackgroundBar(ProgressSurface):
@@ -112,6 +140,9 @@ class BackgroundBar(ProgressSurface):
 
     def publish(self, done: int, total: int) -> None:
         self._tracker.record(done)
+
+    def hold(self, reason: str) -> None:
+        self._tracker.hold(reason)
 
     def finish(self) -> None:
         self._tracker.finish()

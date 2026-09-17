@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Optional, Union
 
 from omnia.plugins.smart_notes.engine.ordering import order_rule_levels, order_rules
 from omnia.plugins.smart_notes.engine.rules import rule_prerequisites, should_skip_rule
+from omnia.plugins.smart_notes.provenance import ALWAYS
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import SmartNotesFieldRule
@@ -120,6 +121,7 @@ class NoteRun:
         note_id: int = 0,
         allow_empty_fields: bool = False,
         force_overwrite: bool = False,
+        overwrite_scope: str = ALWAYS,
         materialize: Optional[_Materializer] = None,
     ) -> None:
         if force_overwrite:
@@ -127,6 +129,9 @@ class NoteRun:
         self.note_id = note_id
         self.working: dict[str, str] = dict(fields)
         self._allow_empty_fields = allow_empty_fields
+        # Deciding to refresh filled fields (force_overwrite / the per-field flag) is a separate
+        # question from whose work may be destroyed doing it.
+        self._overwrite_scope = overwrite_scope
         self._materialize = materialize
         self._levels = order_rule_levels(rules)
         # Each rule's position in ``order_rules``' one-at-a-time order. Levels are a DIFFERENT
@@ -190,7 +195,10 @@ class NoteRun:
                 )
                 continue  # writes no value → hard dependents block transitively
             if should_skip_rule(
-                rule, self.working, allow_empty_fields=self._allow_empty_fields
+                rule,
+                self.working,
+                allow_empty_fields=self._allow_empty_fields,
+                overwrite_scope=self._overwrite_scope,
             ):
                 continue
             dispatch.append(rule)

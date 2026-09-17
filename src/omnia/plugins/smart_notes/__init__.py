@@ -39,6 +39,7 @@ from omnia.plugins.smart_notes.integration import (
     note_materializer,
     set_button_enabled,
 )
+from omnia.plugins.smart_notes.integration.batch import flush_pending_writes
 from omnia.plugins.smart_notes.integration.progress import surface_for
 from omnia.plugins.smart_notes.integration.regen import (
     REGENERATION_SERVICE,
@@ -46,6 +47,57 @@ from omnia.plugins.smart_notes.integration.regen import (
 )
 
 logger = get_logger("smart_notes")
+
+
+def _release_browser_editor(browser: Any, then: Callable[[], None]) -> None:
+    """Save and let go of the note the Browser's editor is holding, then run ``then``.
+
+    Without this, a batch started from the Browser makes Anki open a modal "Processing…" window
+    over and over — one per write — and each one blocks every other window. The loop is entirely
+    Anki's, and entirely reasonable at each step; it is only a problem because we write in the
+    background while the Browser has a note open:
+
+    1. the batch writes notes, so ``operation_did_execute`` fires with no handler;
+    2. ``Browser.on_operation_did_execute`` sees ``handler is not self.editor`` and RELOADS the
+       editor's note (``aqt/browser/browser.py``);
+    3. loading it runs the editor's JS, which posts a ``blur``/``key`` bridge command;
+    4. ``Editor.onBridgeCmd`` answers it with ``_save_current_note()``, which is a
+       ``CollectionOp`` — and every ``CollectionOp`` goes through
+       ``taskman.with_progress(op, on_done)`` with **no label**, which
+       ``ProgressManager.start`` renders as "Processing…", ApplicationModal.
+
+    With no note in the editor, step 2 has nothing to reload and the whole chain never starts.
+    This is what Anki's own bulk operations do (``Browser.begin_reset`` clears the editor the
+    same way), and the save-first ordering is the reason its comment says the caller must have
+    saved the editor beforehand — dropping the note without saving would discard edits the user
+    had typed and not yet committed.
+
+    Anything missing or unexpected here is not a reason to refuse the batch: ``then`` runs
+    either way. The cost of being wrong is the old behaviour, not a lost generation.
+    """
+    editor = getattr(browser, "editor", None) if browser is not None else None
+    if editor is None or getattr(editor, "note", None) is None:
+        then()
+        return
+
+    def cleared(*_args: Any) -> None:
+        try:
+            # hide=False keeps the splitter where it is, so the pane does not jump; Anki
+            # restores the note itself the next time a row is selected.
+            editor.set_note(None, hide=False)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("smart_notes: could not release the browser editor")
+        then()
+
+    try:
+        # Saves whatever is typed and not yet committed, THEN calls back. Asynchronous (it
+        # round-trips through the editor's webview), which is why the batch is started from
+        # the callback rather than after this returns.
+        editor.call_after_note_saved(cleared)
+    except Exception:  # pragma: no cover - older Anki without this API
+        logger.exception("smart_notes: could not save the browser editor")
+        cleared()
+
 
 #: How far a background batch has got, for anyone drawing it.
 #:
@@ -132,6 +184,12 @@ class SmartNotesPlugin(FeaturePlugin):
         )
 
     def on_disable(self, ctx: PluginContext) -> None:
+        # FIRST, before anything is torn down. A batch whose write-back is waiting for the
+        # reviewer to close is holding generated fields that cost real provider money, and this
+        # runs on profile close — which Anki fires BEFORE it closes the collection
+        # (`AnkiQt.unloadProfile`), so there is still somewhere to put them. Waiting for a
+        # reviewer is a courtesy; throwing the work away because the user quit is not.
+        flush_pending_writes()
         services.revoke(REGENERATION_SERVICE)
         services.revoke(progress_service(self.id))
         anki_compat.unsubscribe_hook(_BROWSER_HOOK, self._on_browser_menu)
@@ -209,7 +267,9 @@ class SmartNotesPlugin(FeaturePlugin):
                 "Omnia: configure smart_notes for a note type first (Tools → Omnia)."
             )
             return
-        self._run_batch(list(browser.selectedNotes()))
+        _release_browser_editor(
+            browser, lambda: self._run_batch(list(browser.selectedNotes()))
+        )
 
     # --- deck / note-type sidebar batch ----------------------------------------------
     def _on_sidebar_menu(
@@ -221,7 +281,10 @@ class SmartNotesPlugin(FeaturePlugin):
         if note_ids is None:
             return  # not a deck/note-type node
         action = _branded_gen_action(menu)
-        action.triggered.connect(lambda: self._run_batch(note_ids))
+        browser = getattr(_tree_view, "browser", None)
+        action.triggered.connect(
+            lambda: _release_browser_editor(browser, lambda: self._run_batch(note_ids))
+        )
         menu.addSeparator()
         menu.addAction(action)
 

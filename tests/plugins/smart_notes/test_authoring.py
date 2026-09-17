@@ -652,3 +652,67 @@ class TestAutoSmartReconcileReclassifies:
             by_field["Reading"].kind == "hard"
         )  # re-coloured to the fresh classification
         assert by_field["Kanji"].kind == "hard" and by_field["Kanji"].auto is True
+
+
+class TestTheAuthorIsToldWhatSilentlyGoesWrong:
+    """Two lessons the prompt did not carry, each paid for by a real failure.
+
+    An authored tool inherits whatever the prompt neglects to mention, and both of these fail
+    invisibly: the tool simply is not offered, or the field simply never generates.
+    """
+
+    def _prompt(self) -> str:
+        from omnia.plugins.smart_notes.authoring.tool_author import (
+            user_tool_system_prompt,
+        )
+
+        return user_tool_system_prompt()
+
+    def test_it_explains_reads_prompt(self):
+        """`Tool.reads_prompt` defaults to True, and the prompt never mentioned it.
+
+        So every authored tool kept the prompt's `{{refs}}` as HARD dependency edges even when
+        its inputs came entirely from its own params — and a prompt left over from an earlier
+        configuration then blocked the field on every note where that other field was empty.
+        """
+        text = self._prompt()
+
+        assert "reads_prompt" in text
+        assert "HARD" in text
+
+    def test_it_explains_that_a_pass_through_tool_declares_every_kind(self):
+        # `kinds` gates which fields offer the tool. A clone-a-field tool that declared only
+        # 'text' was not offered on the sound field it was written for, with no reason given.
+        text = self._prompt()
+
+        assert "PASS-THROUGH" in text
+
+    def test_the_worked_example_demonstrates_reads_prompt(self):
+        """The prompt warns that pattern-matching the example is the commonest failure, so the
+        example has to model the thing rather than only the rule describing it."""
+        text = self._prompt()
+        example = text[text.index("class ExtractExtTool") :]
+
+        assert "def reads_prompt" in example
+
+    def test_the_rule_and_the_example_do_not_contradict_each_other(self):
+        """Rule 11 used to ask for the example's body "'s inverse", and the example's body was
+        already correct.
+
+        A model following the prose rather than the example — which this very prompt calls the
+        safer of the two — would then answer False exactly when the param is BLANK, i.e. exactly
+        when the tool falls through to the prompt's first ref. The ref loses its edge, the field
+        is neither ordered after it nor blocked on it, and on a note where it is still
+        ungenerated the tool reads empty and writes nothing. The other branch inverts straight
+        back into the 2,700-note block.
+        """
+        text = self._prompt()
+        body = "not str(params.get("
+        example = text[text.index("class ExtractExtTool") :]
+
+        assert body in example, "the example no longer shows the body the rule cites"
+        rule = text[: text.index("class ExtractExtTool")]
+        assert body in rule, "rule 11 stopped stating the body it wants"
+        assert (
+            "inverse" not in rule
+        ), "rule 11 asks for the inverse of a body that is already correct"

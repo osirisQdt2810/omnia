@@ -93,6 +93,7 @@ body {
 .omnia-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .omnia-cards { display: flex; flex-direction: column; gap: 10px; }
 .omnia-card {
+  position: relative;
   display: flex; align-items: center; gap: 14px;
   padding: 12px 14px; border-radius: 14px;
   border: 1px solid var(--card-border);
@@ -100,47 +101,62 @@ body {
   box-shadow: 0 1px 2px var(--shadow);
   transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
-/* A background job on this card: a bar that fills, the count, and a way to stop it. Hidden
-   entirely until something is running, so a card whose plugin publishes no progress — which is
-   most of them — looks exactly as it did. `data-progress` is set from JS:
-     none    -> not running (display: none)
+/* A background job on this card. The CARD is the bar: the share of it that is tinted is the
+   share of the work that is done, so a batch reads at a glance from across the dialog without
+   anything having to be aimed at. `data-progress` is set from JS on the card itself:
+     none    -> nothing running (no fill, no readout)
      known   -> --progress carries a percentage
-     unknown -> running, size not yet known: a sweep rather than a lying bar at 0% */
-.omnia-card-job {
-  position: relative; flex: 0 0 auto;
-  display: none; align-items: center; gap: 8px;
-  min-width: 148px; padding: 5px 8px;
-  border-radius: 9px; overflow: hidden;
-  border: 1px solid var(--card-border);
-  background: var(--card-top);
+     unknown -> running, size not yet known: a sweep rather than a bar pinned at 0%, which
+                reads as stuck */
+.omnia-card-fill {
+  position: absolute; inset: 0; z-index: 0;
+  border-radius: inherit; overflow: hidden; pointer-events: none;
 }
-.omnia-card-job[data-progress="known"],
-.omnia-card-job[data-progress="unknown"] { display: flex; }
-.omnia-card-job-fill {
-  position: absolute; inset: 0; width: var(--progress, 0%);
+/* It clips ITSELF. `overflow: hidden` on the card would cut off the (i) popover, which is
+   exactly the bug the config panel's field rows had before the wash moved to its own layer. */
+.omnia-card-fill i {
+  display: block; height: 100%; width: var(--progress, 0%);
   background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  /* Strong enough to read at a glance from across the dialog — at 0.22 a bar a fifth of the
-     way along was invisible against the card, which is the moment it most needs to be seen. */
-  opacity: 0.42; transition: width 0.4s ease;
+  opacity: 0.16;
+  /* The whole point of the fill: it should visibly MOVE when the count changes, rather than
+     jumping between polls. Half a second is long enough to read as motion and short enough to
+     have settled before the next update half a second later. */
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.omnia-card-job[data-progress="unknown"] .omnia-card-job-fill {
-  width: 40%; animation: omnia-sweep 1.3s ease-in-out infinite;
+.omnia-card[data-progress="none"] .omnia-card-fill { display: none; }
+.omnia-card[data-progress="unknown"] .omnia-card-fill i {
+  width: 34%; animation: omnia-sweep 1.4s ease-in-out infinite;
 }
 @keyframes omnia-sweep {
   0% { transform: translateX(-100%); }
-  100% { transform: translateX(250%); }
+  100% { transform: translateX(300%); }
 }
+/* Everything else sits above the fill. Without this the tint paints over the text. */
+.omnia-card > .omnia-card-text,
+.omnia-card > .omnia-card-actions { position: relative; z-index: 1; }
+
+/* The right-hand column: the readout sits directly above Configure, so the numbers and the
+   control they belong to read as one group. */
+.omnia-card-actions {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+}
+.omnia-card-controls { display: flex; align-items: center; gap: 10px; }
+.omnia-card-job { display: none; align-items: center; gap: 8px; }
+.omnia-card[data-progress="known"] .omnia-card-job,
+.omnia-card[data-progress="unknown"] .omnia-card-job { display: flex; }
 .omnia-card-job-text {
-  position: relative; font-size: 11px; font-variant-numeric: tabular-nums;
-  color: var(--fg); white-space: nowrap;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--muted); white-space: nowrap;
 }
+/* A text button rather than another box: the card is already the bar, and a second bordered
+   control beside Configure would compete with it. */
 .omnia-card-job-stop {
-  position: relative; margin-left: auto;
-  font-size: 10px; padding: 2px 7px; border-radius: 6px; cursor: pointer;
-  border: 1px solid var(--card-border); background: transparent; color: var(--muted);
+  font: inherit; font-size: 11px; cursor: pointer;
+  background: transparent; border: 0; padding: 0;
+  color: var(--muted); text-decoration: underline; text-underline-offset: 2px;
 }
-.omnia-card-job-stop:hover { color: var(--accent); border-color: var(--accent); }
-.omnia-card-job-stop[disabled] { opacity: 0.55; cursor: default; }
+.omnia-card-job-stop:hover:not([disabled]) { color: var(--accent); }
+.omnia-card-job-stop[disabled] { opacity: 0.5; cursor: default; text-decoration: none; }
 
 .omnia-card:hover {
   transform: translateY(-2px);

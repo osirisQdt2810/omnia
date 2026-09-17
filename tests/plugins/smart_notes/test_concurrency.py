@@ -36,6 +36,18 @@ from omnia.plugins.smart_notes.engine import GenerationService
 from omnia.plugins.smart_notes.integration.batch import BatchGenerator
 
 
+def _text(note, field):
+    """A field as a READER sees it — without Omnia's provenance mark.
+
+    Omnia stamps the text it writes with `<!--omnia:hash-->` so a later regeneration can tell
+    its own output from something the user typed. The mark is invisible while reviewing, so a
+    test asserting what the note now says should not see it either.
+    """
+    from omnia.plugins.smart_notes.provenance import unstamp
+
+    return unstamp(note[field])
+
+
 class _CountingTransport(HttpClient):
     """Counts overlapping requests, holding each until ``expect`` of them are in flight.
 
@@ -436,6 +448,15 @@ class _RecordingCompat:
     def note_deck_ids(self, note, col=None):
         return [int(c.did) for c in note.cards()]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what a batch slice actually uses.
+
+        Recorded through the singular form so `updated` stays the list of notes persisted,
+        which is what these tests assert on; how many transactions it took is not.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self.updated.append(note.id)
 
@@ -458,7 +479,13 @@ class _RecordingCompat:
     def run_on_main(self, callback):
         callback()
 
-    def run_in_background(self, op, *, on_success, on_failure=None, label=None):
+    def run_in_background(
+        self, op, *, on_success, on_failure=None, label=None, uses_collection=True
+    ):
+        # `uses_collection` is recorded rather than ignored: a batch that stopped asking
+        # for the collection thread is the difference between Anki staying usable and
+        # Anki putting a modal window over itself for the length of the run.
+        self.uses_collection = uses_collection
         try:
             on_success(op())
         except Exception as exc:
@@ -473,6 +500,7 @@ def _patch_compat(monkeypatch, fake):
         "get_note",
         "note_deck_ids",
         "update_note",
+        "update_notes",
         "add_media_file",
         "progress_start",
         "progress_update",
@@ -530,7 +558,7 @@ class TestCrossNoteOverlap:
 
         assert summary.processed == 6
         assert fake.updated == [1, 2, 3, 4, 5, 6]
-        assert notes[4]["A"] == "gen:aaa w4"
+        assert _text(notes[4], "A") == "gen:aaa w4"
 
     def test_concurrency_does_not_change_the_outcome(self, monkeypatch):
         _fake_one, sequential, notes_one = self._run(monkeypatch, workers=1)

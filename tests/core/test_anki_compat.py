@@ -5,6 +5,7 @@ from __future__ import annotations
 from omnia.core.anki_compat import (
     _guard,
     escape_search_term,
+    media_still_referenced,
     progress_label,
     random_note_of_type,
     subscribe_hook,
@@ -330,3 +331,227 @@ class TestShortcutAlreadyTaken:
 
         monkeypatch.setattr(aqt, "mw", None, raising=False)
         assert shortcut_already_taken("]") == []
+
+
+class TestBorrowingTheMainThreadForTheCollection:
+    """For an op that runs OFF Anki's collection thread but still has one call to make.
+
+    Anki serialises collection access through a single thread, and an op that holds it for
+    minutes makes everything else queue behind it — which is what put a modal "Processing…"
+    over the app for the length of a Smart Notes batch. Releasing that thread is only safe if
+    the collection access inside the op goes somewhere Anki considers entitled to it.
+    """
+
+    def _window(self, in_main: bool, run):
+        class _Taskman:
+            def __init__(self):
+                self.posted = []
+
+            def run_on_main(self, closure):
+                self.posted.append(closure)
+                run(closure)
+
+        class _Window:
+            def __init__(self):
+                self.taskman = _Taskman()
+
+            def inMainThread(self):  # Anki's own method name
+                return in_main
+
+        return _Window()
+
+    def test_a_worker_hands_the_work_over_and_gets_the_answer_back(self, monkeypatch):
+        import threading
+
+        from omnia.core import anki_compat
+
+        ran_on: list = []
+
+        def elsewhere(closure):
+            # A real second thread, like Anki's. Running it inline would make "on the main
+            # thread" and "on this one" indistinguishable and the test unable to fail.
+            thread = threading.Thread(target=closure, name="pretend-main")
+            thread.start()
+            thread.join(5)
+
+        window = self._window(in_main=False, run=elsewhere)
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        answer = anki_compat.call_on_main_and_wait(
+            lambda: ran_on.append(threading.current_thread().name) or "written"
+        )
+
+        assert answer == "written"
+        assert ran_on == ["pretend-main"]
+
+    def test_on_the_main_thread_it_just_runs(self, monkeypatch):
+        # Posting and then waiting would deadlock: the thread that has to run the closure is
+        # the one doing the waiting.
+        from omnia.core import anki_compat
+
+        window = self._window(in_main=True, run=lambda closure: closure())
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        assert anki_compat.call_on_main_and_wait(lambda: "done") == "done"
+        assert window.taskman.posted == [], "it queued work behind itself"
+
+    def test_an_exception_comes_back_to_the_caller(self, monkeypatch):
+        import pytest
+
+        from omnia.core import anki_compat
+
+        def boom():
+            raise ValueError("no disk")
+
+        window = self._window(in_main=False, run=lambda closure: closure())
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        with pytest.raises(ValueError, match="no disk"):
+            anki_compat.call_on_main_and_wait(boom)
+
+    def test_a_main_thread_that_never_answers_gives_up(self, monkeypatch):
+        # Not unbounded: a worker blocked forever on a main thread that will never answer keeps
+        # the whole batch alive with nothing to show for it.
+        import pytest
+
+        from omnia.core import anki_compat
+
+        monkeypatch.setattr(anki_compat, "_MAIN_THREAD_WAIT_SECONDS", 0.2)
+        window = self._window(in_main=False, run=lambda closure: None)
+        monkeypatch.setattr(anki_compat, "main_window", lambda: window)
+
+        with pytest.raises(TimeoutError):
+            anki_compat.call_on_main_and_wait(lambda: "never")
+
+
+class TestWritingMediaFromAWorker:
+    def test_it_goes_through_the_main_thread(self, monkeypatch):
+        # The one piece of collection access inside the generation op. If it stopped hopping,
+        # the op would be touching the collection from a thread Anki does not expect.
+        from omnia.core import anki_compat
+
+        hopped: list = []
+        monkeypatch.setattr(
+            anki_compat,
+            "call_on_main_and_wait",
+            lambda work: hopped.append(True) or work(),
+        )
+
+        class _Media:
+            def write_data(self, filename, data):
+                return "stored-" + filename
+
+        class _Window:
+            col = type("C", (), {"media": _Media()})()
+
+        monkeypatch.setattr(anki_compat, "main_window", lambda: _Window())
+
+        assert anki_compat.add_media_file("a.mp3", b"x") == "stored-a.mp3"
+        assert hopped == [True], "the media write never left the worker thread"
+
+    def test_an_explicit_collection_is_used_as_given(self, monkeypatch):
+        # The caller named the collection and, by doing so, said it is already on a thread
+        # entitled to touch it — hopping again would be a pointless round trip.
+        from omnia.core import anki_compat
+
+        monkeypatch.setattr(
+            anki_compat,
+            "call_on_main_and_wait",
+            lambda work: (_ for _ in ()).throw(AssertionError("hopped needlessly")),
+        )
+
+        class _Media:
+            def write_data(self, filename, data):
+                return "direct-" + filename
+
+        col = type("C", (), {"media": _Media()})()
+
+        assert anki_compat.add_media_file("b.mp3", b"y", col) == "direct-b.mp3"
+
+
+class TestAskingWhoElseStillPlaysAFile:
+    """Before a regenerated field's old audio is trashed, who else points at it.
+
+    A filename is not owned by the note that created it: *Notes → Create Copy* leaves two notes
+    carrying the same ``[sound:omnia-….mp3]``. Regenerating the original stops IT referencing
+    the file, and trashing on that basis alone silences the copy.
+    """
+
+    class _Col:
+        def __init__(self, hits=None):
+            self.queries: list = []
+            self._hits = hits or {}
+
+        def find_notes(self, query):
+            self.queries.append(query)
+            for needle, result in self._hits.items():
+                if needle in query:
+                    return result
+            return []
+
+    def test_nothing_to_check_asks_nothing(self):
+        col = self._Col()
+
+        assert media_still_referenced([], col=col) == set()
+        assert col.queries == []
+
+    def test_the_common_case_costs_one_query(self):
+        """The search scans every note, so one query per file scans the collection per file.
+
+        A slice of 25 notes would scan it 25 times, on every slice, for a check that almost
+        always comes back empty.
+        """
+        col = self._Col()
+
+        assert media_still_referenced(["a.mp3", "b.mp3"], col=col) == set()
+        assert len(col.queries) == 1
+        assert "a.mp3" in col.queries[0] and "b.mp3" in col.queries[0]
+
+    def test_it_excludes_no_note_at_all(self):
+        """Deliberately: the note just written is frequently the referent that matters.
+
+        Anki's ``add_data_to_folder_uniquely`` hashes before it renames, so byte-identical
+        media comes back under the SAME filename. A regeneration producing identical audio
+        therefore leaves the note pointing at the very file its old value pointed at. An
+        "ignore the notes I just wrote" argument would hide that note and trash a live file —
+        silencing exactly the notes a re-run had just regenerated.
+        """
+        col = self._Col()
+
+        media_still_referenced(["a.mp3"], col=col)
+
+        assert "-nid" not in col.queries[0]
+
+    def test_a_hit_is_narrowed_to_the_file_that_caused_it(self):
+        # Only then is it worth paying for a query per file.
+        col = self._Col(hits={"b.mp3": [42]})
+
+        still = media_still_referenced(["a.mp3", "b.mp3"], col=col)
+
+        assert still == {"b.mp3"}
+
+    def test_a_search_that_will_not_run_trashes_nothing(self):
+        """The safe default is keeping the file: one costs disk, the other costs audio."""
+
+        class _Broken:
+            def find_notes(self, query):
+                raise RuntimeError("invalid search")
+
+        assert media_still_referenced(["a.mp3"], col=_Broken()) == {"a.mp3"}
+
+    def test_a_field_name_with_brackets_survives_the_query(self):
+        """Media is named ``omnia-<nid>-<field>.<ext>`` and real field names look like
+        ``Example 1 (audio)``. Anki rejects an UNRECOGNISED escape outright, so escaping the
+        brackets "to be safe" would turn every such check into the error path above."""
+        col = self._Col()
+
+        media_still_referenced(["omnia-1-Example 1 (audio).mp3"], col=col)
+
+        assert "(audio)" in col.queries[0]
+
+    def test_wildcards_in_a_name_cannot_match_other_files(self):
+        col = self._Col()
+
+        media_still_referenced(["a*b_c.mp3"], col=col)
+
+        assert "a\\*b\\_c.mp3" in col.queries[0]

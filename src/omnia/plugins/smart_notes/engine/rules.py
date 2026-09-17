@@ -21,6 +21,7 @@ from omnia.plugins.smart_notes.engine.interpolation import (
     interpolate,
     split_prompt,
 )
+from omnia.plugins.smart_notes.provenance import ALWAYS, may_overwrite
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
@@ -60,6 +61,41 @@ def rule_source_fields(rule: SmartNotesFieldRule) -> list[str]:
     return []
 
 
+def rule_inputs(rule: SmartNotesFieldRule) -> list[str]:
+    """Return the fields a run of ``rule`` actually READS, in the order it would read them.
+
+    The DERIVED half of :func:`rule_prerequisites`, and the distinction between the two is
+    read-vs-depend. Prerequisites are wider on purpose: they union these with the rule's
+    explicit ``depends_on`` entries, which are ordering edges — an ``auto`` classifier edge, a
+    hand-drawn one, a SOFT one that by definition only orders and never blocks. None of those
+    is an input, and anything reporting them AS inputs (the preview's input panel) names a
+    field the run never opened, with a sample value attached that reads as "this is what I ran
+    against".
+
+    Two sources, both already honest about the chain: :func:`rule_source_fields` yields the
+    prompt's ``{{refs}}`` only when some tool in the chain reads the prompt, and
+    :func:`~omnia.plugins.smart_notes.engine.tools.registry.tool_referenced_fields` yields
+    whatever each tool's own params name.
+
+    Args:
+        rule: The compiled generation rule.
+
+    Returns:
+        Field names, de-duplicated case-insensitively with the first spelling kept.
+    """
+    from omnia.plugins.smart_notes.engine.tools.registry import tool_referenced_fields
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in [*rule_source_fields(rule), *tool_referenced_fields(rule.tools)]:
+        lower = name.strip().lower()
+        if not lower or lower in seen:
+            continue
+        seen.add(lower)
+        out.append(name.strip())
+    return out
+
+
 def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
     """Return ``(prerequisite_field, effective_kind)`` pairs for ``rule``.
 
@@ -82,19 +118,13 @@ def rule_prerequisites(rule: SmartNotesFieldRule) -> list[tuple[str, str]]:
         refs, then tool-param refs), then any explicit-only prerequisites, each with its
         effective kind.
     """
-    # Imported lazily: the tools package imports the generators, which import this module.
-    # (:func:`rule_source_fields` does the same, for the same reason.)
-    from omnia.plugins.smart_notes.engine.tools.registry import tool_referenced_fields
-
     override = {dep.field.strip().lower(): dep.kind for dep in rule.depends_on}
     prerequisites: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for name in [*rule_source_fields(rule), *tool_referenced_fields(rule.tools)]:
-        lower = name.strip().lower()
-        if not lower or lower in seen:
-            continue
+    for name in rule_inputs(rule):
+        lower = name.lower()
         seen.add(lower)
-        prerequisites.append((name.strip(), override.get(lower, "hard")))
+        prerequisites.append((name, override.get(lower, "hard")))
     for dep in rule.depends_on:
         lower = dep.field.strip().lower()
         if not lower or lower in seen:
@@ -186,27 +216,41 @@ def should_skip_rule(
     fields: dict[str, str],
     *,
     allow_empty_fields: bool,
+    overwrite_scope: str = ALWAYS,
 ) -> bool:
     """Return whether ``rule`` should be skipped for a note with ``fields``.
 
-    Two skip conditions:
+    Three skip conditions:
 
     * **empty sources** — skip when the rule references fields but they are ALL blank,
       unless ``allow_empty_fields``. (A rule that references no field is never skipped on
       this account.)
     * **already filled** — skip when ``target_field`` already holds a value, unless the
       rule's own ``overwrite`` flag is set.
+    * **not ours to replace** — skip when the rule WOULD overwrite, but the content sitting
+      there is not something ``overwrite_scope`` permits destroying.
 
     Args:
         rule: The compiled generation rule under consideration.
         fields: The note's current field values (including any freshly chained values).
         allow_empty_fields: Generate even when all referenced source fields are blank.
+        overwrite_scope: What a regeneration may replace —
+            :data:`~omnia.plugins.smart_notes.provenance.ALWAYS` (the default, and what Overwrite
+            has always done), ``OURS_ONLY`` (protects what you wrote by hand), ``NOT_OURS``
+            (protects what Omnia already paid to generate).
 
     Returns:
         ``True`` if the rule must be skipped, ``False`` to generate it.
     """
-    if not rule.overwrite and str(fields.get(rule.target_field, "")).strip():
-        return True
+    current = str(fields.get(rule.target_field, ""))
+    if current.strip():
+        if not rule.overwrite:
+            return True
+        # Deciding to regenerate is not the same as being allowed to destroy what is there. A
+        # sentence the user wrote by hand and one Omnia generated are indistinguishable to a
+        # rule that only knows the field is non-empty, so the scope asks whose work it is.
+        if not may_overwrite(current, overwrite_scope):
+            return True
     sources = rule_source_fields(rule)
     if sources and not allow_empty_fields:
         return not any(str(fields.get(name, "")).strip() for name in sources)
@@ -225,7 +269,23 @@ def _compile_tools(
     from omnia.plugins.smart_notes.config import CompiledToolSpec, default_tool_chain
 
     if not field_config.tools:
-        return default_tool_chain()
+        # Empty and MEANT it, or empty because the config predates tool chains? The two used to
+        # be indistinguishable and both answered `default_tool_chain()` — so unticking every
+        # tool still reached a provider and still cost money, with only a chip in a column to
+        # hint at it.
+        #
+        # Pydantic records which keys a payload actually carried, and that is the whole signal:
+        # a row parsed from a pre-tools blob never mentioned `tools`, while the picker writes
+        # the key on every row it renders. So an ABSENT key keeps the legacy AI default and a
+        # PRESENT empty list means no tool.
+        #
+        # Read from `__fields_set__` rather than recorded in the config on purpose. Writing a
+        # migration marker would put a new key into the synced blob, and a device on a
+        # pre-ADR-010 release validates that blob with `extra="forbid"` and no try/except —
+        # where an unknown key is not a lost setting but a crash on every note-add hook.
+        if "tools" not in field_config.__fields_set__:
+            return default_tool_chain()
+        return ()
     return tuple(
         CompiledToolSpec(name=entry.tool, params=dict(entry.params))
         for entry in field_config.tools

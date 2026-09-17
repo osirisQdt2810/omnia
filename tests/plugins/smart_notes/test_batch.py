@@ -9,6 +9,9 @@ flow runs inline.
 
 from __future__ import annotations
 
+import contextlib
+
+import pytest
 from conftest import FakeLLMProvider
 
 from omnia.plugins.smart_notes.config import (
@@ -17,7 +20,23 @@ from omnia.plugins.smart_notes.config import (
     SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.engine import GenerationService
-from omnia.plugins.smart_notes.integration.batch import BatchGenerator, BatchSummary
+from omnia.plugins.smart_notes.integration.batch import (
+    BatchGenerator,
+    BatchSummary,
+    _PreparedNote,
+)
+
+
+def _text(note, field):
+    """A field as a READER sees it — without Omnia's provenance mark.
+
+    Omnia stamps the text it writes with `<!--omnia:hash-->` so a later regeneration can tell
+    its own output from something the user typed. The mark is invisible while reviewing, so a
+    test asserting what the note now says should not see it either.
+    """
+    from omnia.plugins.smart_notes.provenance import unstamp
+
+    return unstamp(note[field])
 
 
 def _note_type_config(note_type="Basic", *, enabled=True, decks=None):
@@ -91,6 +110,12 @@ class _FakeCompat:
         self._cancel_after = cancel_after
         self._cancel_polls = 0
         self.run_on_main_calls = 0
+        self.in_review = False
+        self.pending_timers: list = []
+        self.trashed: list = []
+        #: Filenames some OTHER note still points at — a note duplicated in the Browser keeps
+        #: the same ``[sound:…]``, so these must survive a regeneration of the original.
+        self.still_referenced: set = set()
 
     # collection
     def get_note(self, nid, col=None):
@@ -99,8 +124,23 @@ class _FakeCompat:
     def note_deck_ids(self, note, col=None):
         return [int(c.did) for c in note.cards()]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what the batch actually uses.
+
+        Recorded into the same `updated` list as the singular form, because what every test
+        here cares about is WHICH notes were persisted, not how many transactions it took.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self.updated.append(note.id)
+
+    def trash_media_files(self, filenames, col=None):
+        self.trashed.extend(filenames)
+
+    def media_still_referenced(self, filenames, col=None):
+        return {name for name in filenames if name in self.still_referenced}
 
     def add_media_file(self, filename, data, col=None):
         self.media.append(filename)
@@ -122,17 +162,67 @@ class _FakeCompat:
             self._cancel_after is not None and self._cancel_polls > self._cancel_after
         )
 
+    # reviewer / timers
+    def reviewing(self):
+        return getattr(self, "in_review", False)
+
+    def single_shot(self, milliseconds, callback):
+        """Hold the callback instead of firing it, so a test drives the clock itself."""
+        self.pending_timers.append(callback)
+
+    def fire_timers(self):
+        """Run whatever is waiting, once — the tick Anki's timer would have delivered."""
+        waiting, self.pending_timers = self.pending_timers, []
+        for callback in waiting:
+            callback()
+
+    def drain_timers(self, limit=5000):
+        """Keep delivering ticks until nothing is waiting.
+
+        Counts them, because the COUNT is the evidence a slice was deferred rather than called
+        inline: a write-back that recurses finishes with zero ticks and an exhausted stack.
+        """
+        ticks = 0
+        while self.pending_timers and ticks < limit:
+            self.fire_timers()
+            ticks += 1
+        return ticks
+
     # threading
     def run_on_main(self, callback):
         self.run_on_main_calls += 1
         callback()
 
-    def run_in_background(self, op, *, on_success, on_failure=None, label=None):
+    def run_in_background(
+        self, op, *, on_success, on_failure=None, label=None, uses_collection=True
+    ):
+        # `uses_collection` is recorded rather than ignored: a batch that stopped asking
+        # for the collection thread is the difference between Anki staying usable and
+        # Anki putting a modal window over itself for the length of the run.
+        self.uses_collection = uses_collection
         try:
             on_success(op())
         except Exception as exc:  # mirror QueryOp routing
             if on_failure:
                 on_failure(exc)
+
+
+@pytest.fixture(autouse=True)
+def _no_write_backs_leak_between_tests():
+    """Clear the module-level set of unfinished write-backs around every test.
+
+    It is global on purpose — what has to find a waiting write-back is the profile closing,
+    which knows nothing about which batch is running. The cost is that a test leaving one
+    deferred (an open reviewer that never closes) hands it to the next test, where
+    `flush_pending_writes()` runs it against whatever fake is patched in by then and writes its
+    notes a second time. That is a test artefact, not a product one, but it fails loudly and
+    confusingly, so it is cut here.
+    """
+    from omnia.plugins.smart_notes.integration.batch import _PENDING_WRITES
+
+    _PENDING_WRITES.clear()
+    yield
+    _PENDING_WRITES.clear()
 
 
 def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
@@ -142,13 +232,18 @@ def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
         "get_note",
         "note_deck_ids",
         "update_note",
+        "update_notes",
         "add_media_file",
+        "trash_media_files",
+        "media_still_referenced",
         "progress_start",
         "progress_update",
         "progress_finish",
         "progress_was_cancelled",
         "run_on_main",
         "run_in_background",
+        "reviewing",
+        "single_shot",
     ):
         monkeypatch.setattr(batch.anki_compat, name, getattr(fake, name))
 
@@ -212,7 +307,7 @@ class TestBatchGenerator:
         BatchGenerator(_generator(settings), settings).run([1, 2], summaries.append)
         assert fake.updated == [1, 2]
         assert summaries[0].processed == 2
-        assert notes[1]["Def"] == "generated"
+        assert _text(notes[1], "Def") == "generated"
 
     def test_dedupes_note_ids(self, monkeypatch):
         notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
@@ -242,7 +337,7 @@ class TestBatchGenerator:
         summaries: list = []
         BatchGenerator(_generator(settings), settings).run([1], summaries.append)
         assert summaries[0].processed == 1
-        assert notes[1]["Def"] == "generated"
+        assert _text(notes[1], "Def") == "generated"
 
     def test_notes_without_matching_rules_are_dropped(self, monkeypatch):
         notes = {1: _FakeNote(1, "Cloze", {"Text": "x"})}
@@ -327,10 +422,977 @@ class TestBatchGenerator:
         assert touched == [1, 2, 3]
         # Complete, not half-walked: BOTH levels are filled on every note that was written.
         for nid in touched:
-            assert notes[nid]["Def"], f"note {nid} lost its first level"
-            assert notes[nid]["Extra"], f"note {nid} lost its second level"
+            assert _text(notes[nid], "Def"), f"note {nid} lost its first level"
+            assert _text(notes[nid], "Extra"), f"note {nid} lost its second level"
         # And every touched note is accounted for — none silently in no bucket.
         assert summaries[0].processed == len(touched)
+
+
+class TestWritingBackDoesNotHogTheMainThread:
+    """Writing is main-thread work, and it used to be done in ONE pass over every outcome.
+
+    At the sizes this feature exists for that is not a pause, it is a freeze: 1500 notes is 1500
+    backend transactions plus their media, and for the whole of it Anki paints nothing and
+    answers no input. A batch that ran in the background so the user could keep studying then
+    took the screen away at the very end — the one moment they had stopped watching for it.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _many(self, monkeypatch, count: int, slice_size: int):
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module, "_WRITE_SLICE", slice_size)
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        return fake, list(notes)
+
+    def test_each_slice_waits_for_the_event_loop(self, monkeypatch):
+        """The slices must be POSTED, not called — and the difference is not academic.
+
+        `TaskManager.run_on_main` appends to a list and emits a pyqtSignal, and a signal emitted
+        on the thread it is connected to is delivered DIRECTLY. Called from the main thread it
+        therefore ran the next slice inside the current one: the event loop was never reached,
+        so Anki stayed frozen for the whole write-back, and the slices nested until Python ran
+        out of stack. 8444 notes is 338 slices and a RecursionError.
+
+        Counting calls could not tell those apart — a recursive hand-off calls just as often.
+        What distinguishes them is that the work is still WAITING when `run` returns.
+        """
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        fake, nids = self._many(monkeypatch, 60, 10)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=Silent()
+        )
+
+        assert len(fake.updated) == 10, "it wrote past the first slice without yielding"
+        assert fake.pending_timers, "the next slice was never posted"
+
+        ticks = fake.drain_timers()
+
+        assert fake.updated == nids
+        assert (
+            ticks == 5
+        ), f"60 notes in tens is five ticks after the first slice, got {ticks}"
+
+    def test_every_note_is_still_written(self, monkeypatch):
+        # Slicing must not drop the tail, which is the obvious way to get this wrong.
+        fake, nids = self._many(monkeypatch, 57, 10)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(nids, lambda _s: None)
+        fake.drain_timers()
+
+        assert fake.updated == nids
+
+    def test_the_counts_span_every_slice(self, monkeypatch):
+        # One summary for the run, not one per slice.
+        _fake, nids = self._many(monkeypatch, 57, 10)
+        settings = self._settings()
+        summaries: list = []
+
+        BatchGenerator(_generator(settings), settings).run(nids, summaries.append)
+        _fake.drain_timers()
+
+        assert (
+            len(summaries) == 1
+        ), "the caller was told the batch finished more than once"
+        assert summaries[0].processed == 57
+
+    def test_a_slice_is_one_write_not_one_per_note(self, monkeypatch):
+        """One `col.update_note` per note is one backend transaction, one undo entry and one
+        `operation_did_execute` PER NOTE.
+
+        At 1500 notes that is 1500 of each: the Browser, the sidebar and every other add-on
+        listening re-run 1500 times, and the user's undo history becomes 1500 steps deep. The
+        same content written as a batch is one of each per slice.
+        """
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        _fake, nids = self._many(monkeypatch, 40, 10)
+        settings = self._settings()
+        batches: list[int] = []
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        monkeypatch.setattr(
+            batch_module.anki_compat,
+            "update_notes",
+            lambda notes, col=None: batches.append(len(notes)),
+        )
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=Silent()
+        )
+        _fake.drain_timers()
+
+        assert batches == [10, 10, 10, 10], batches
+
+    def test_a_batch_that_cannot_be_written_is_counted_as_failed(self, monkeypatch):
+        # Not as processed. Reporting a save that did not happen is how a user goes looking for
+        # cards that are not there.
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        _fake, nids = self._many(monkeypatch, 20, 10)
+        settings = self._settings()
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        def refuse(notes, col=None):
+            raise RuntimeError("collection is locked")
+
+        monkeypatch.setattr(batch_module.anki_compat, "update_notes", refuse)
+        summaries: list = []
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, summaries.append, surface=Silent()
+        )
+        _fake.drain_timers()
+
+        assert summaries[0].processed == 0
+        assert summaries[0].failed == 20
+
+    def test_the_progress_surface_is_finished_exactly_once(self, monkeypatch):
+        # It is a refcount on Anki's GLOBAL progress manager: finishing twice, or never,
+        # breaks every add-on's dialogs for the rest of the session.
+        from omnia.plugins.smart_notes.integration.progress import ProgressSurface
+
+        class Counter(ProgressSurface):
+            finishes = 0
+
+            def finish(self):
+                Counter.finishes += 1
+
+        _fake, nids = self._many(monkeypatch, 40, 10)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=Counter()
+        )
+        _fake.drain_timers()
+
+        assert Counter.finishes == 1
+
+    def test_a_slice_that_explodes_still_ends_the_run(self, monkeypatch):
+        # Abandoning mid-chain would strand the caller AND leak the progress refcount.
+        _fake, nids = self._many(monkeypatch, 40, 10)
+        settings = self._settings()
+        gen = BatchGenerator(_generator(settings), settings)
+        calls = {"n": 0}
+        real = gen._apply
+
+        def boom(outcomes, summary=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("disk on fire")
+            return real(outcomes, summary)
+
+        monkeypatch.setattr(gen, "_apply", boom)
+        summaries: list = []
+
+        gen.run(nids, summaries.append)
+        _fake.drain_timers()
+
+        assert len(summaries) == 1, "the run never reported back"
+
+
+class TestTheBatchDoesNotHoldAnkisCollectionThread:
+    """Why a long batch used to put a modal "Processing…" window over the whole app.
+
+    `TaskManager` owns exactly one collection thread (`ThreadPoolExecutor(max_workers=1)`), so
+    every collection operation in Anki is serialised through it. A batch that held it for the
+    minutes a real run takes made everything else queue behind the WHOLE batch — and
+    `ProgressManager._maybeShow` puts up its unlabelled "Processing…" for anything pending more
+    than half a second. So the window was not a symptom of Anki being busy; it was the editor's
+    own save waiting its turn behind us, and it stayed until the batch ended.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def test_the_op_body_touches_the_collection_only_through_media(self, monkeypatch):
+        """The invariant that makes releasing the thread safe, pinned.
+
+        Anki's rule is one thread on the collection at a time, and the single collection thread
+        is how it enforces that. Letting go of it is only sound while the op's own collection
+        access is marshalled — today that is exactly one call, the media write. A `get_note` or
+        an `update_note` added to the generation path later would break the rule silently, so
+        this runs the op on a REAL second thread and fails if anything but media is reached
+        from it.
+        """
+        import threading
+
+        main = threading.current_thread().name
+        offences: list = []
+
+        class _Strict(_FakeCompat):
+            def _check(self, what):
+                if threading.current_thread().name != main:
+                    offences.append(what)
+
+            def get_note(self, nid, col=None):
+                self._check("get_note")
+                return super().get_note(nid, col)
+
+            def update_notes(self, notes, col=None):
+                self._check("update_notes")
+                return super().update_notes(notes, col)
+
+            def note_deck_ids(self, note, col=None):
+                self._check("note_deck_ids")
+                return super().note_deck_ids(note, col)
+
+            def run_in_background(
+                self,
+                op,
+                *,
+                on_success,
+                on_failure=None,
+                label=None,
+                uses_collection=True,
+            ):
+                # A real second thread, like Anki's. Running the op inline would put it on the
+                # main thread and this test could never fail.
+                self.uses_collection = uses_collection
+                box: dict = {}
+
+                def runner():
+                    try:
+                        box["value"] = op()
+                    except Exception as exc:
+                        box["error"] = exc
+
+                thread = threading.Thread(target=runner, name="op-thread")
+                thread.start()
+                thread.join(10)
+                if "error" in box:
+                    if on_failure:
+                        on_failure(box["error"])
+                    return
+                on_success(box["value"])
+
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, 4)
+        }
+        _patch_compat(monkeypatch, _Strict(notes))
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1, 2, 3], lambda _s: None)
+
+        assert offences == [], (
+            "the generation op reached the collection off the main thread: "
+            + ", ".join(sorted(set(offences)))
+        )
+
+    def test_the_generation_op_releases_it(self, monkeypatch):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": ""})}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+
+        assert fake.uses_collection is False, (
+            "the batch asked for Anki's single collection thread and will hold it for the "
+            "whole run, so every other collection operation queues behind it"
+        )
+
+
+class TestWritingWaitsForTheReviewer:
+    """Generating in the background is pointless if it interrupts the studying it was for.
+
+    Any note write at all makes the reviewer redraw the card on screen: `Reviewer.op_executed`
+    keys on `changes.note_text` with no check of WHICH note changed, and `_redraw_current_card`
+    re-runs `_showQuestion`, which rebuilds the webview — including the type-in box. So a batch
+    writing 1500 notes while someone studies flickers their card about sixty times and throws
+    away any answer they were part-way through typing.
+
+    The media is on disk either way; only the field updates wait.
+
+    Every test here runs on a NON-blocking surface, because that is the only surface the wait
+    makes sense on — see ``TestAModalRunNeverWaitsForTheReviewer``.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _surface(self):
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        return Silent()
+
+    def _running(self, monkeypatch, count=4, reviewing=True):
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        fake.in_review = reviewing
+        _patch_compat(monkeypatch, fake)
+        return fake, list(notes)
+
+    def test_nothing_is_written_while_a_card_is_on_screen(self, monkeypatch):
+        fake, nids = self._running(monkeypatch)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=self._surface()
+        )
+
+        assert fake.updated == [], "it rewrote notes under someone who was studying"
+        assert fake.pending_timers, "it gave up instead of waiting"
+
+    def test_it_writes_as_soon_as_the_reviewer_is_left(self, monkeypatch):
+        fake, nids = self._running(monkeypatch)
+        settings = self._settings()
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run(
+            nids, summaries.append, surface=self._surface()
+        )
+        assert fake.updated == []
+
+        fake.in_review = False
+        fake.fire_timers()
+
+        assert fake.updated == nids
+        assert len(summaries) == 1, "the run never reported back"
+
+    def test_it_keeps_waiting_for_as_long_as_the_reviewer_is_open(self, monkeypatch):
+        # Re-arms rather than giving up after one look: a review session is many minutes.
+        fake, nids = self._running(monkeypatch)
+        settings = self._settings()
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=self._surface()
+        )
+
+        for _ in range(5):
+            fake.fire_timers()
+
+        assert fake.updated == []
+        assert fake.pending_timers, "it stopped watching and the batch would never land"
+
+    def test_a_batch_started_outside_review_writes_straight_away(self, monkeypatch):
+        # The ordinary case must not pay a two-second wait for a reviewer that is not there.
+        fake, nids = self._running(monkeypatch, reviewing=False)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run(
+            nids, lambda _s: None, surface=self._surface()
+        )
+
+        assert fake.updated == nids
+        assert fake.pending_timers == []
+
+    def test_review_started_mid_write_stops_the_remaining_slices(self, monkeypatch):
+        """The check is per slice, not once at the start.
+
+        Someone can open the reviewer while a batch is already writing, and the slices still to
+        come must notice — otherwise the first card they see is redrawn under them.
+        """
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module, "_WRITE_SLICE", 2)
+        fake, nids = self._running(monkeypatch, count=6, reviewing=False)
+        settings = self._settings()
+        gen = BatchGenerator(_generator(settings), settings)
+        real = gen._apply
+
+        def start_reviewing(outcomes, summary=None):
+            result = real(outcomes, summary)
+            fake.in_review = True  # they open the reviewer after the first slice lands
+            return result
+
+        monkeypatch.setattr(gen, "_apply", start_reviewing)
+
+        gen.run(nids, lambda _s: None, surface=self._surface())
+
+        assert fake.updated == nids[:2], fake.updated
+        assert fake.pending_timers, "the rest of the batch wrote over an open reviewer"
+
+
+class TestAFailedWriteRollsBackOnlyWhatItCounted:
+    """A slice's notes were not all counted the same way, so it cannot roll back as a block.
+
+    A note whose generation FAILED is still written — it keeps whatever the run managed before
+    it broke — but it is counted under ``failed``, never ``processed``. Subtracting the whole
+    slice from ``processed`` therefore removes notes that were never added there, and a mixed
+    slice that fails to write reports a NEGATIVE processed count straight into the summary the
+    user reads, plus one failure per note more than there were notes.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _apply(self, outcomes, *, write_fails: bool):
+        """Count these outcomes, with the batched write either landing or raising."""
+        gen = BatchGenerator.__new__(BatchGenerator)
+        gen._prepare_note = (  # type: ignore[method-assign]
+            lambda outcome, *, counted_as_processed: _PreparedNote(
+                _FakeNote(outcome.nid, "Basic", {}), counted_as_processed
+            )
+        )
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        calls: list = []
+
+        def update_notes(notes, col=None):
+            calls.append(notes)
+            if write_fails:
+                raise RuntimeError("collection is locked")
+
+        original = batch_module.anki_compat.update_notes
+        batch_module.anki_compat.update_notes = update_notes
+        try:
+            return gen._apply(outcomes)
+        finally:
+            batch_module.anki_compat.update_notes = original
+
+    def _outcomes(self):
+        from omnia.plugins.smart_notes.integration.batch import _NoteOutcome
+
+        return [
+            # Broke mid-note, but produced something on the way — written, counted `failed`.
+            _NoteOutcome(1, failed=True, results=[("rule", "result")]),
+            _NoteOutcome(2, results=[("rule", "result")]),  # counted `processed`
+        ]
+
+    def test_a_successful_write_counts_each_note_once(self):
+        summary = self._apply(self._outcomes(), write_fails=False)
+
+        assert (summary.processed, summary.failed) == (1, 1)
+
+    def test_a_failed_write_does_not_invent_counts(self):
+        summary = self._apply(self._outcomes(), write_fails=True)
+
+        assert (
+            summary.processed == 0
+        ), f"rolled back more than it added (processed={summary.processed})"
+        assert summary.failed == 2, f"counted {summary.failed} failures for 2 notes"
+
+    def test_the_count_never_goes_negative(self):
+        summary = self._apply(self._outcomes(), write_fails=True)
+
+        assert summary.processed >= 0
+        assert "-" not in summary.message(), summary.message()
+
+
+class TestAModalRunNeverWaitsForTheReviewer:
+    """The wait is only coherent on a surface the user can act around.
+
+    `ModalDialog` is `ApplicationModal`. Waiting for the user to leave the reviewer while that
+    window is up waits forever: leaving the reviewer is exactly what the dialog prevents, and
+    `finish()` is only reached once the write completes. The pair deadlocks Anki until it is
+    killed, and the generated content only survives because quitting flushes it.
+
+    `mw.state` stays "review" while the Browser is open on top of it, so the ordinary route in
+    is not exotic: study, press `b`, select notes, generate with background mode off.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _run(self, monkeypatch, surface, count=4):
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        fake.in_review = True
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run(
+            list(notes), summaries.append, surface=surface
+        )
+        return fake, list(notes), summaries
+
+    def test_the_modal_run_writes_straight_through(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.progress import ModalDialog
+
+        fake, nids, summaries = self._run(monkeypatch, ModalDialog())
+
+        assert fake.updated == nids, "it waited behind its own modal dialog"
+        assert len(summaries) == 1, "the run never reported, so the dialog never closed"
+
+    def test_the_dialog_is_closed_rather_than_left_over_the_reviewer(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.progress import ModalDialog
+
+        fake, _nids, _summaries = self._run(monkeypatch, ModalDialog())
+
+        assert (
+            "finish" in fake.progress
+        ), "Anki was left behind a dialog nothing would ever close"
+
+    def test_a_non_modal_run_still_waits(self, monkeypatch):
+        # The courtesy is not being dropped — it is being confined to where it can be honoured.
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        fake, _nids, _summaries = self._run(monkeypatch, Silent())
+
+        assert fake.updated == []
+        assert fake.pending_timers
+
+
+class TestStopEscapesTheWaitForTheReviewer:
+    """Pressing Stop during the wait has to end it, or the only way out is quitting Anki.
+
+    The hold re-arms every two seconds for as long as the reviewer is open, and it is the one
+    state where the user is watching a job that says it is waiting and doing nothing about it.
+    The content is already generated and already paid for, so Stop writes it rather than
+    discarding it — cancelling the WAIT, not the work.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _waiting(self, monkeypatch, count=4):
+        from omnia.core.progress import JobTracker
+        from omnia.plugins.smart_notes.integration.progress import BackgroundBar
+
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        fake.in_review = True
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        tracker = JobTracker()
+        summaries: list = []
+        BatchGenerator(_generator(settings), settings).run(
+            list(notes), summaries.append, surface=BackgroundBar(tracker)
+        )
+        assert fake.updated == [], "the fixture did not actually wait"
+        return fake, tracker, list(notes), summaries
+
+    def test_stopping_writes_what_was_waiting(self, monkeypatch):
+        fake, tracker, nids, _summaries = self._waiting(monkeypatch)
+
+        tracker.cancel()
+        fake.fire_timers()
+
+        assert (
+            fake.updated == nids
+        ), "Stop threw away content that had already been paid for"
+
+    def test_stopping_ends_the_wait(self, monkeypatch):
+        fake, tracker, _nids, summaries = self._waiting(monkeypatch)
+
+        tracker.cancel()
+        fake.fire_timers()
+        fake.fire_timers()
+
+        assert len(summaries) == 1, "the run reported once, or not at all"
+        assert (
+            fake.pending_timers == []
+        ), "it went on re-arming after being told to stop"
+
+
+class TestQuittingWhileAWriteIsWaiting:
+    """Deferring the write is a courtesy; losing the work is not a trade anyone would choose.
+
+    Generated fields cost real provider money. A write-back holding off for the reviewer has
+    them in hand and nowhere yet to put them, so quitting Anki — or switching the feature off —
+    has to flush them first. Anki fires `profile_will_close` BEFORE it closes the collection
+    (`AnkiQt.unloadProfile`), so there is still somewhere to write.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": False}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _waiting(self, monkeypatch, count=6):
+        """A batch whose write-back is held off by an open reviewer."""
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        monkeypatch.setattr(batch_module, "_WRITE_SLICE", 2)
+        notes = {
+            nid: _FakeNote(nid, "Basic", {"Word": f"w{nid}", "Def": ""})
+            for nid in range(1, count + 1)
+        }
+        fake = _FakeCompat(notes)
+        fake.in_review = True
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        summaries: list = []
+        # Non-blocking, because a modal run does not defer at all — its dialog is the reason
+        # the reviewer cannot be left, so waiting for that would never end.
+        from omnia.plugins.smart_notes.integration.progress import Silent
+
+        BatchGenerator(_generator(settings), settings).run(
+            list(notes), summaries.append, surface=Silent()
+        )
+        assert fake.updated == [], "the fixture did not actually defer"
+        return fake, list(notes), summaries
+
+    def test_closing_writes_everything_that_was_waiting(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.batch import flush_pending_writes
+
+        fake, nids, _ = self._waiting(monkeypatch)
+
+        flush_pending_writes()
+
+        assert fake.updated == nids, "generated content was thrown away on close"
+
+    def test_it_writes_even_though_the_reviewer_is_still_open(self, monkeypatch):
+        # By the time this runs the user is quitting, so there is no review left to protect.
+        from omnia.plugins.smart_notes.integration.batch import flush_pending_writes
+
+        fake, nids, _ = self._waiting(monkeypatch)
+        assert fake.in_review is True
+
+        flush_pending_writes()
+
+        assert fake.updated == nids
+
+    def test_the_run_still_reports_back_exactly_once(self, monkeypatch):
+        from omnia.plugins.smart_notes.integration.batch import flush_pending_writes
+
+        _fake, _nids, summaries = self._waiting(monkeypatch)
+
+        flush_pending_writes()
+
+        assert len(summaries) == 1
+        assert summaries[0].processed == 6
+
+    def test_a_timer_that_fires_after_the_flush_does_nothing(self, monkeypatch):
+        # The held callback is still on Anki's queue when the profile closes; running the
+        # write twice would duplicate every note in the batch.
+        from omnia.plugins.smart_notes.integration.batch import flush_pending_writes
+
+        fake, nids, summaries = self._waiting(monkeypatch)
+        flush_pending_writes()
+
+        fake.in_review = False
+        fake.fire_timers()
+
+        assert fake.updated == nids, fake.updated
+        assert len(summaries) == 1
+
+    def test_a_finished_batch_leaves_nothing_registered(self, monkeypatch):
+        # Otherwise every completed batch of the session is re-run at close.
+        from omnia.plugins.smart_notes.integration.batch import (
+            _PENDING_WRITES,
+            flush_pending_writes,
+        )
+
+        fake, nids, _ = self._waiting(monkeypatch)
+        fake.in_review = False
+        fake.drain_timers()  # one tick per slice, plus the one that noticed the reviewer left
+        assert fake.updated == nids
+
+        flush_pending_writes()
+
+        assert fake.updated == nids, "a finished batch wrote itself again on close"
+        assert not _PENDING_WRITES
+
+    def test_switching_the_feature_off_flushes_too(self, monkeypatch):
+        # Same reasoning, different trigger: the work is done and paid for either way.
+        fake, nids, _ = self._waiting(monkeypatch)
+        from omnia.plugins.smart_notes import SmartNotesPlugin
+
+        plugin = SmartNotesPlugin()
+        with contextlib.suppress(Exception):
+            # The rest of teardown needs Anki; the flush is the first thing on_disable does,
+            # which is the point — it has to happen before anything can fail.
+            plugin.on_disable(None)
+
+        assert fake.updated == nids
+
+
+class TestWhoseWorkARegenerationMayDestroy:
+    """`Overwrite` says filled fields should be refreshed. It does not say whose work may go.
+
+    A sentence the user typed and one Omnia generated are indistinguishable to a rule that only
+    knows the field is non-empty, so `overwrite_scope` asks the second question separately.
+    """
+
+    def _settings(self, scope, **kw):
+        base = {
+            "note_types": [_note_type_config()],
+            "regenerate_when_batching": True,
+            "overwrite_scope": scope,
+        }
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _run(self, monkeypatch, scope, existing):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": existing})}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings(scope)
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+        fake.drain_timers()
+        return notes[1]["Def"]
+
+    def test_by_default_a_regeneration_replaces_anything(self, monkeypatch):
+        # What Overwrite already did. Changing that silently would be worse than a setting.
+        from omnia.plugins.smart_notes.provenance import ALWAYS
+
+        after = self._run(monkeypatch, ALWAYS, "<b>written by hand</b>")
+
+        assert "written by hand" not in after
+
+    def test_ours_only_leaves_a_hand_written_field_alone(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import OURS_ONLY
+
+        after = self._run(monkeypatch, OURS_ONLY, "<b>written by hand</b>")
+
+        assert after == "<b>written by hand</b>"
+
+    def test_ours_only_still_refreshes_what_omnia_wrote(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import OURS_ONLY, stamp
+
+        after = self._run(monkeypatch, OURS_ONLY, stamp("an older definition"))
+
+        assert "an older definition" not in after
+
+    def test_ours_only_stops_once_the_user_has_edited_it(self, monkeypatch):
+        """The reason the mark carries a fingerprint rather than just saying "mine".
+
+        The comment survives typing — it is a DOM node — so a bare mark would still authorise
+        destroying the edit.
+        """
+        from omnia.plugins.smart_notes.provenance import OURS_ONLY, stamp
+
+        edited = stamp("an older definition").replace("older", "older, improved by me")
+
+        after = self._run(monkeypatch, OURS_ONLY, edited)
+
+        assert "improved by me" in after
+
+    def test_not_ours_protects_audio_already_paid_for(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import NOT_OURS
+
+        after = self._run(monkeypatch, NOT_OURS, "[sound:omnia-1-Def.mp3]")
+
+        assert after == "[sound:omnia-1-Def.mp3]"
+
+    def test_an_empty_field_is_filled_whatever_the_scope(self, monkeypatch):
+        # The setting is about OVERWRITING. The most protective scope must still not stop a
+        # blank field from being generated in the first place — there is nothing to protect.
+        from omnia.plugins.smart_notes.provenance import NOT_OURS, unstamp
+
+        after = self._run(monkeypatch, NOT_OURS, "")
+
+        assert unstamp(after) == "generated"
+
+    def test_what_omnia_writes_carries_its_mark(self, monkeypatch):
+        from omnia.plugins.smart_notes.provenance import ALWAYS, is_untouched, unstamp
+
+        after = self._run(monkeypatch, ALWAYS, "")
+
+        assert is_untouched(after), "an unmarked write can never be recognised later"
+        assert unstamp(after) == "generated", "the reader must see only the content"
+
+
+class TestReadingWhichMediaAFieldIsGivingUp:
+    """Pure: given a field's old HTML, which files may be trashed."""
+
+    def _read(self, previous):
+        from omnia.plugins.smart_notes.integration.batch import superseded_media
+
+        return superseded_media(previous)
+
+    def test_a_sound_tag(self):
+        assert self._read("[sound:omnia-1-Audio.mp3]") == ["omnia-1-Audio.mp3"]
+
+    def test_an_image_tag_in_either_quote_style(self):
+        assert self._read('<img src="omnia-1-Pic.png">') == ["omnia-1-Pic.png"]
+        assert self._read("<img src='omnia-1-Pic.png'>") == ["omnia-1-Pic.png"]
+
+    def test_another_addons_media_is_left_alone(self):
+        """The reason the prefix exists.
+
+        A real collection carries media from several sources — AwesomeTTS and HyperTTS write
+        `googletts-…`, pasted images land as `paste-…`. Trashing those because a field happened
+        to hold one would delete somebody's audio on the strength of a filename.
+        """
+        assert self._read("[sound:googletts-b4728f64-ee872c9f.mp3]") == []
+        assert self._read('<img src="paste-abc123.jpg">') == []
+
+    def test_ours_is_taken_and_theirs_is_kept_from_the_same_field(self):
+        both = '[sound:googletts-aaa.mp3] <img src="omnia-9-Pic.png">'
+
+        assert self._read(both) == ["omnia-9-Pic.png"]
+
+    def test_an_empty_or_text_only_field_gives_up_nothing(self):
+        assert self._read("") == []
+        assert self._read(None) == []
+        assert self._read("<b>just words</b>") == []
+
+    def test_the_same_file_twice_is_listed_once(self):
+        twice = "[sound:omnia-1-A.mp3] [sound:omnia-1-A.mp3]"
+
+        assert self._read(twice) == ["omnia-1-A.mp3"]
+
+
+class TestRegeneratingAFieldDoesNotLeaveTheOldFile:
+    """`MediaManager.write_data` renames on collision rather than overwriting.
+
+    So regenerating a field writes a NEW file and leaves the previous audio on disk referenced
+    by nobody. Five regenerations of one field is five files and one useful one — which on a
+    real collection came to hundreds of megabytes of audio nothing could play.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": True}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _run(self, monkeypatch, previous):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": previous})}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+        return fake
+
+    def test_the_file_the_field_stops_referencing_is_trashed(self, monkeypatch):
+        fake = self._run(monkeypatch, "[sound:omnia-1-Def.mp3]")
+
+        assert fake.trashed == ["omnia-1-Def.mp3"]
+
+    def test_a_file_a_duplicate_note_still_plays_is_kept(self, monkeypatch):
+        """*Notes → Create Copy* leaves two notes pointing at one file.
+
+        Regenerating the original stops IT referencing the audio, but the copy still plays it.
+        Trashing on the strength of "this field used to point at it" silences the copy, with
+        nothing on screen to say so — the user finds out the next time that card comes up.
+        """
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        }
+        fake = _FakeCompat(notes)
+        fake.still_referenced = {"omnia-1-Def.mp3"}
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+
+        assert fake.trashed == []
+
+    def test_an_identical_regeneration_keeps_the_file_the_note_now_points_at(
+        self, monkeypatch
+    ):
+        """Regenerating does not always produce a NEW filename.
+
+        Anki's ``add_data_to_folder_uniquely`` hashes before it renames: identical bytes come
+        back under the name that already exists, and only a real collision gets a suffix.
+        ``materialize`` asks for a deterministic name (``omnia-<nid>-<field>.<ext>``), so
+        re-running a batch over unchanged text with a deterministic engine (piper offline,
+        google_translate) gets the SAME name back. That name is then both the note's new
+        reference and an entry in the superseded list, and trashing it silences exactly the
+        notes the re-run had just regenerated — silently, recoverable only via Check Media.
+        """
+        from omnia.core import anki_compat
+        from omnia.plugins.smart_notes.config import SmartNotesFieldRule
+        from omnia.plugins.smart_notes.engine.generators import GenerationResult
+        from omnia.plugins.smart_notes.integration import batch as batch_module
+
+        trashed: list = []
+        note = _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        # Anki's own behaviour: the name it was handed comes straight back.
+        monkeypatch.setattr(anki_compat, "add_media_file", lambda name, data: name)
+        monkeypatch.setattr(anki_compat, "get_note", lambda nid, col=None: note)
+        monkeypatch.setattr(anki_compat, "update_notes", lambda notes, col=None: None)
+        monkeypatch.setattr(
+            anki_compat,
+            "trash_media_files",
+            lambda names, col=None: trashed.extend(names),
+        )
+        monkeypatch.setattr(
+            anki_compat, "media_still_referenced", lambda names, col=None: set()
+        )
+
+        rule = SmartNotesFieldRule(target_field="Def", kind="tts")
+        outcome = batch_module._NoteOutcome(
+            1,
+            materialize=batch_module.note_materializer(1),
+            results=[(rule, GenerationResult("tts", data=b"same", ext="mp3"))],
+        )
+        settings = self._settings()
+        BatchGenerator(_generator(settings), settings)._apply([outcome])
+
+        assert (
+            note["Def"] == "[sound:omnia-1-Def.mp3]"
+        ), "the fixture no longer models the identical-bytes case"
+        assert trashed == [], "it trashed the file the note still points at"
+
+    def test_another_addons_file_in_that_field_is_not(self, monkeypatch):
+        fake = self._run(monkeypatch, "[sound:googletts-b4728f64.mp3]")
+
+        assert fake.trashed == []
+
+    def test_a_field_that_held_no_media_trashes_nothing(self, monkeypatch):
+        fake = self._run(monkeypatch, "")
+
+        assert fake.trashed == []
+
+    def test_nothing_is_trashed_when_the_write_fails(self, monkeypatch):
+        """Media the note still references must survive a failed write.
+
+        Trashing at preparation time would delete the audio a note is still pointing at, the
+        moment the write behind it does not land.
+        """
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        def refuse(notes, col=None):
+            raise RuntimeError("collection is locked")
+
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        monkeypatch.setattr(batch_module.anki_compat, "update_notes", refuse)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+
+        assert fake.trashed == []
+
+    def test_a_trash_that_fails_does_not_fail_the_batch(self, monkeypatch):
+        # Disk space is not worth losing a written batch over.
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        monkeypatch.setattr(
+            batch_module.anki_compat,
+            "trash_media_files",
+            lambda names, col=None: (_ for _ in ()).throw(OSError("read-only")),
+        )
+        settings = self._settings()
+        summaries: list = []
+
+        BatchGenerator(_generator(settings), settings).run([1], summaries.append)
+
+        assert summaries[0].processed == 1
+        assert fake.updated == [1]
 
 
 class TestTheProgressThrottle:
@@ -621,7 +1683,15 @@ class TestEmptyNoteTracking:
         return _NoteOutcome(nid, **kw)
 
     def _apply(self, outcomes):
+        """Count these outcomes without writing anything.
+
+        These tests are about the SUMMARY, not the collection, and they build a generator with
+        no Anki behind it — so the persist step is stubbed out rather than being given a fake to
+        talk to. Preparation is left alone: whether a note came out with content in it is part
+        of what is being counted.
+        """
         gen = BatchGenerator.__new__(BatchGenerator)
+        gen._persist = lambda prepared, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_a_note_with_no_results_is_recorded(self):
@@ -629,7 +1699,11 @@ class TestEmptyNoteTracking:
         assert summary.empty_note_ids == [11]
 
     def test_a_note_that_generated_something_is_not_recorded(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
+        )
         summary = self._apply([self._outcome(12, results=[("rule", "result")])])
         assert summary.empty_note_ids == []
 
@@ -660,7 +1734,15 @@ class TestErroredNotesAreKeptForRetry:
         return _NoteOutcome(nid, **kw)
 
     def _apply(self, outcomes):
+        """Count these outcomes without writing anything.
+
+        These tests are about the SUMMARY, not the collection, and they build a generator with
+        no Anki behind it — so the persist step is stubbed out rather than being given a fake to
+        talk to. Preparation is left alone: whether a note came out with content in it is part
+        of what is being counted.
+        """
         gen = BatchGenerator.__new__(BatchGenerator)
+        gen._persist = lambda prepared, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_an_all_errored_note_is_kept_not_discarded(self):
@@ -690,7 +1772,11 @@ class TestErroredNotesAreKeptForRetry:
         )
 
     def test_a_clean_run_says_nothing_about_retries(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
+        )
         summary = self._apply([self._outcome(25, results=[("rule", "result")])])
 
         assert summary.errored_note_ids == []
@@ -706,7 +1792,15 @@ class TestToolChainCounters:
     """
 
     def _apply(self, outcomes):
+        """Count these outcomes without writing anything.
+
+        These tests are about the SUMMARY, not the collection, and they build a generator with
+        no Anki behind it — so the persist step is stubbed out rather than being given a fake to
+        talk to. Preparation is left alone: whether a note came out with content in it is part
+        of what is being counted.
+        """
         gen = BatchGenerator.__new__(BatchGenerator)
+        gen._persist = lambda prepared, summary: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def _outcome(self, nid, **kw):
@@ -843,7 +1937,11 @@ class TestToolChainCounters:
         assert summary.empty_note_ids == [1]
 
     def test_a_later_tool_producing_counts_as_a_fallback(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
+        )
 
         outcome = self._generate_one(
             [(self._rule("cloze", "ai"), self._result("ai"))], []
@@ -855,7 +1953,11 @@ class TestToolChainCounters:
         )
 
     def test_the_first_tool_producing_is_not_a_fallback(self, monkeypatch):
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
+        )
 
         outcome = self._generate_one(
             [(self._rule("cloze", "ai"), self._result("cloze"))], []
@@ -866,7 +1968,11 @@ class TestToolChainCounters:
 
     def test_an_unstamped_result_never_counts(self, monkeypatch):
         # Nothing in the legacy path stamps a tool; the counter must stay silent, not guess.
-        monkeypatch.setattr(BatchGenerator, "_write_note", lambda self, o: True)
+        monkeypatch.setattr(
+            BatchGenerator,
+            "_prepare_note",
+            lambda self, o, **kw: _PreparedNote(_FakeNote(o.nid, "Basic", {}), True),
+        )
 
         outcome = self._generate_one([(self._rule("ai"), self._result(""))], [])
 
@@ -988,7 +2094,9 @@ class TestNoteMaterializer:
             7, materialize=materialize_once, results=[(rule, result)]
         )
         settings = SmartNotesSettings(note_types=[])
-        BatchGenerator(object(), settings)._write_note(outcome)
+        BatchGenerator(object(), settings)._prepare_note(
+            outcome, counted_as_processed=True
+        )
 
         assert (
             len(writes) == 1

@@ -67,6 +67,11 @@ class JobProgress:
     label: str = ""
     active: bool = False
     cancelled: bool = False
+    #: Why the job is not making progress right now, in words, or "" when it is running. A job
+    #: that deliberately waits — for the reviewer to be closed, say — looks identical to a
+    #: stuck one from outside, and the difference matters to whoever is deciding whether to
+    #: press Stop.
+    held: str = ""
 
     @property
     def percent(self) -> Optional[float]:
@@ -80,14 +85,23 @@ class JobProgress:
         return min(100.0, max(0.0, 100.0 * self.done / self.total))
 
     def summary(self) -> str:
-        """One line for a tooltip: what it is doing and how far it has got."""
-        if not self.active and not self.done:
+        """What to show about this job, or ``""`` when there is nothing to show.
+
+        A FINISHED run says nothing. It used to report its final count on the grounds that the
+        last frame drawn should be the complete one — which was the wrong shape for the
+        question: there is no "last frame" when a reader polls, so "4 of 4" and a Stop button
+        sat on the card for the rest of the session over a batch that had long since ended. The
+        outcome is already reported where a finished job belongs, in Anki's own summary tooltip.
+
+        The counts stay on the tracker either way; only the presentation goes quiet.
+        """
+        if not self.active:
             return ""
         counted = f"{self.done} of {self.total}" if self.total > 0 else str(self.done)
-        if self.cancelled and self.active:
+        if self.cancelled:
             return f"Stopping… ({counted})"
-        if not self.active:
-            return f"{self.label} — {counted}" if self.label else counted
+        if self.held:
+            return f"{counted} — {self.held}"
         return f"{self.label} {counted}" if self.label else counted
 
 
@@ -109,6 +123,7 @@ class JobTracker:
         self._total = 0
         self._active = False
         self._cancelled = False
+        self._held = ""
 
     def start(self, total: int) -> None:
         """Begin a run of ``total`` units, discarding any previous one's counts."""
@@ -117,6 +132,12 @@ class JobTracker:
             self._total = max(0, int(total))
             self._active = True
             self._cancelled = False
+            self._held = ""
+
+    def hold(self, reason: str) -> None:
+        """Say why the job is deliberately not progressing. ``""`` means it is running again."""
+        with self._lock:
+            self._held = reason
 
     def advance(self, count: int = 1) -> None:
         """Record ``count`` more finished units."""
@@ -138,7 +159,13 @@ class JobTracker:
             self._done = max(self._done, int(done))
 
     def finish(self) -> None:
-        """Mark the run over. The counts are KEPT, so the last frame drawn is the full one."""
+        """Mark the run over.
+
+        The counts are kept — they are still true, and anything querying the tracker should get
+        the real numbers. What stops is the REPORTING: :meth:`JobProgress.summary` answers ``""``
+        once a run is over, so a reader that polls draws nothing rather than leaving a finished
+        batch's count on screen for the rest of the session.
+        """
         with self._lock:
             self._active = False
 
@@ -168,4 +195,5 @@ class JobTracker:
                 label=self._label,
                 active=self._active,
                 cancelled=self._cancelled,
+                held=self._held,
             )

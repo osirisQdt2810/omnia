@@ -84,6 +84,7 @@ class TestAnkiLikeRuntime:
         not _can_reach("speech.platform.bing.com", 443),
         reason="no network for Edge TTS",
     )
+    @pytest.mark.live_endpoint
     def test_edge_tts_synthesizes_hermetically(self):
         # The real proof: Edge TTS produces valid MP3 in an Anki-like env (no edge-tts/aiohttp).
         result = _run_hermetic("""

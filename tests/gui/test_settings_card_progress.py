@@ -115,9 +115,14 @@ class TestWhatReachesThePage:
 
         assert len(dialog.evaluated) == before
 
-    def test_a_finished_job_keeps_its_last_frame_but_cannot_be_stopped(
-        self, dialog, tracker
-    ):
+    def test_a_finished_job_leaves_nothing_on_the_card(self, dialog, tracker):
+        """Because there is no "last frame" when the reader polls.
+
+        This used to keep the final count on the grounds of showing the completed state — and
+        since nothing ever cleared it, "4 of 4" and a Stop button sat on the card for the rest
+        of the session over a batch that had finished minutes ago. Anki's own summary tooltip is
+        where a finished batch reports.
+        """
         tracker.start(6)
         tracker.record(6)
         tracker.finish()
@@ -125,8 +130,22 @@ class TestWhatReachesThePage:
         dialog._jobs_tick()
 
         pushed = _for(dialog, "smart_notes")
-        assert pushed[2], "the completed count vanished the moment it completed"
-        assert pushed[3] is False
+        assert pushed[2] == "", "a finished batch still had its count on the card"
+        assert pushed[3] is False, "a finished batch still offered a Stop button"
+
+    def test_a_card_is_cleared_when_the_job_it_was_drawing_ends(self, dialog, tracker):
+        # The transition itself: something WAS drawn, then the run ended, so the next poll has
+        # to un-draw it rather than simply stop updating it.
+        tracker.start(6)
+        tracker.record(3)
+        dialog._jobs_tick()
+        assert _for(dialog, "smart_notes")[2], "nothing was drawn to begin with"
+
+        tracker.finish()
+        dialog.evaluated.clear()
+        dialog._jobs_tick()
+
+        assert _for(dialog, "smart_notes")[2] == ""
 
     def test_a_job_told_to_stop_is_not_stoppable_again(self, dialog, tracker):
         tracker.start(6)

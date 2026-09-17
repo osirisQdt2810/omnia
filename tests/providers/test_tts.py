@@ -426,10 +426,12 @@ class _RealTTSProviderSuite(TTSProviderContract):
 
 
 # Keyless / free — run by default (no API, no key); these are the "không có llm" path.
+@pytest.mark.live_endpoint
 class TestGoogleTranslateRealTTS(_RealTTSProviderSuite):
     PROVIDER = "google_translate"
 
 
+@pytest.mark.live_endpoint
 class TestEdgeRealTTS(_RealTTSProviderSuite):
     PROVIDER = "edge_tts"
 

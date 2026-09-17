@@ -231,6 +231,15 @@ class _BenchCompat:
     def note_deck_ids(self, note, col=None):
         return [1]
 
+    def update_notes(self, notes, col=None):
+        """One write for many notes — what a batch slice actually uses.
+
+        Recorded through the singular form so `updated` stays the list of notes persisted,
+        which is what these tests assert on; how many transactions it took is not.
+        """
+        for note in notes:
+            self.update_note(note)
+
     def update_note(self, note, col=None):
         self.updated.append(note.id)
 
@@ -253,7 +262,13 @@ class _BenchCompat:
     def run_on_main(self, callback):
         callback()
 
-    def run_in_background(self, op, *, on_success, on_failure=None, label=None):
+    def run_in_background(
+        self, op, *, on_success, on_failure=None, label=None, uses_collection=True
+    ):
+        # `uses_collection` is recorded rather than ignored: a batch that stopped asking
+        # for the collection thread is the difference between Anki staying usable and
+        # Anki putting a modal window over itself for the length of the run.
+        self.uses_collection = uses_collection
         try:
             on_success(op())
         except Exception as exc:  # pragma: no cover - a bench failure must be visible

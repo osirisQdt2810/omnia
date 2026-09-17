@@ -74,6 +74,7 @@ def run_in_background(
     on_failure: Optional[Callable[[Exception], None]] = None,
     parent: Optional[Any] = None,
     label: Optional[str] = None,
+    uses_collection: bool = True,
 ) -> None:
     """Run ``op`` off the Qt main thread, then call ``on_success`` back on the main thread.
 
@@ -87,11 +88,29 @@ def run_in_background(
         on_failure: Optional main-thread callback receiving an exception.
         parent: Qt parent for the operation (defaults to ``mw``).
         label: Optional progress-dialog label.
+        uses_collection: Whether ``op`` touches the collection. **False takes Anki's word for
+            it**: ``TaskManager`` owns exactly one collection thread
+            (``ThreadPoolExecutor(max_workers=1)``), so every collection operation in the whole
+            app is serialised through it, and an op that holds it for minutes makes everything
+            else queue behind it. Anki shows a modal "Processing…" for anything pending more
+            than half a second (``ProgressManager._maybeShow``), so a long op does not merely
+            delay the next collection operation — it puts a window over the app that stays
+            until the op finishes.
+
+            Pass False ONLY for an op that is genuinely network or compute, and marshal any
+            collection access inside it to the main thread (see :func:`call_on_main_and_wait`).
+            The flag is not a performance hint; getting it wrong means two threads in the
+            backend at once.
     """
     from aqt.operations import QueryOp
 
     mw = main_window()
     query = QueryOp(parent=parent or mw, op=lambda _col: op(), success=on_success)
+    if not uses_collection and hasattr(query, "without_collection"):
+        # hasattr: `without_collection` arrived after some versions this add-on supports, and
+        # its absence costs latency rather than correctness — the op simply keeps the old
+        # behaviour of running on the collection thread.
+        query = query.without_collection()
     if label:
         query = query.with_progress(label)
     if on_failure is not None and hasattr(query, "failure"):
@@ -274,10 +293,96 @@ def main_web_eval(js: str) -> None:
 # at commit. The rest of the calls below still belong on the main thread.
 # ----------------
 def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str:
-    """Write ``data`` as ``filename`` into the collection media folder; return the real name."""
-    if col is None:
-        col = main_window().col
-    return str(col.media.write_data(filename, data))
+    """Write ``data`` as ``filename`` into the collection media folder; return the real name.
+
+    Marshalled to the Qt main thread when called from a worker, because this is the ONE piece of
+    collection access inside smart_notes' generation op — and that op now runs off the
+    collection thread so it cannot make the rest of Anki queue behind it. Borrowing the main
+    thread for the length of one file write is what keeps that trade honest: Anki's rule is one
+    thread on the collection at a time, and this obeys it without holding the collection thread
+    for the minutes a batch takes.
+
+    An explicit ``col`` is used as given — the caller has said which collection and, by passing
+    one, that it is already on a thread entitled to touch it.
+    """
+    if col is not None:
+        return str(col.media.write_data(filename, data))
+    return str(
+        call_on_main_and_wait(
+            lambda: main_window().col.media.write_data(filename, data)
+        )
+    )
+
+
+def media_still_referenced(filenames: list[str], col: Optional[Any] = None) -> set[str]:
+    """Which of ``filenames`` any note still points at — the ones that must NOT be trashed.
+
+    A filename is not owned by the note that created it. Duplicate a note in the Browser
+    (*Notes → Create Copy*) and both copies carry the same ``[sound:omnia-….mp3]``; regenerate
+    the original and the file it stops referencing is one the copy still plays. Trashing on the
+    strength of "this field used to point at it" silences the copy — recoverable from Check
+    Media, but silent at the time, which is the worst kind of data loss.
+
+    Asked AFTER the write, about EVERY note — including the ones just rewritten. There is
+    deliberately no "ignore these notes" argument: a note can reference its own old file from a
+    SECOND field, and Anki's ``add_data_to_folder_uniquely`` hashes before it renames, returning
+    the SAME filename when the new bytes are identical. So the note just written is frequently
+    the very referent that has to be found, and excluding it would trash a live file.
+
+    One query for the whole list rather than one per file: the search scans every note, so asking
+    25 times per slice would scan the collection 25 times. Only when the group matches anything —
+    rare, since most media has exactly one referent — is it narrowed file by file.
+    """
+    if not filenames:
+        return set()
+    col = main_window().col if col is None else col
+    query = "(" + " OR ".join(f'"*{_search_escape(n)}*"' for n in filenames) + ")"
+    try:
+        if not col.find_notes(query):
+            return set()
+        return {
+            name for name in filenames if col.find_notes(f'"*{_search_escape(name)}*"')
+        }
+    except Exception:
+        # A search that will not run must not become a deletion. Treating everything as still
+        # referenced skips the cleanup, which costs disk; the other default costs audio.
+        from omnia.core.logging import get_logger
+
+        get_logger().exception(
+            "omnia: could not check media references; trashing nothing"
+        )
+        return set(filenames)
+
+
+def _search_escape(text: str) -> str:
+    """Escape ``text`` for use inside a quoted Anki search term.
+
+    Field names reach here (media is named ``omnia-<nid>-<field>.<ext>``) and real ones contain
+    spaces, brackets and parentheses — ``Example 1 (audio)``. Only the five characters Anki's
+    parser actually gives meaning to are escaped: unescaped, a name holding ``*`` or ``_`` would
+    match files it does not name, and one holding ``"`` would end the term early and turn the
+    rest of the filename into search syntax. Nothing else is touched, because Anki rejects an
+    UNRECOGNISED escape outright — ``\\(`` is a search error, not a literal bracket, so
+    escaping "to be safe" is what breaks the query.
+    """
+    for char in ("\\", '"', "*", "_", ":"):
+        text = text.replace(char, "\\" + char)
+    return text
+
+
+def trash_media_files(filenames: list[str], col: Optional[Any] = None) -> None:
+    """Move ``filenames`` to Anki's media trash (recoverable), never to oblivion.
+
+    Anki's own trash rather than ``os.remove`` on purpose: it is undoable from Check Media, it
+    is what the user already knows, and deleting somebody's audio outright on the strength of a
+    filename pattern is not a risk worth taking for disk space.
+    """
+    if not filenames:
+        return
+    if col is not None:
+        col.media.trash_files(list(filenames))
+        return
+    call_on_main_and_wait(lambda: main_window().col.media.trash_files(list(filenames)))
 
 
 def media_dir(col: Optional[Any] = None) -> str:
@@ -584,6 +689,82 @@ def progress_label(label: str) -> None:
         window.progress.update(label=label)
 
     run_on_main(_apply)
+
+
+#: How long a worker waits for the Qt main thread before giving up on a collection call.
+#:
+#: Generous on purpose. The hop only fails when the main thread is wedged for longer than this,
+#: and the cost of being impatient is a dropped media file — where the cost of waiting is a
+#: background job that is slow for a moment. Not unbounded, because a worker blocked forever on
+#: a main thread that will never answer (a modal the user left open, a profile being closed)
+#: would keep the whole batch alive with nothing to show for it.
+_MAIN_THREAD_WAIT_SECONDS = 30.0
+
+
+def call_on_main_and_wait(work: Callable[[], T]) -> T:
+    """Run ``work`` on the Qt main thread from a worker, and return what it produced.
+
+    For the one kind of caller that has no alternative: an op running OFF the collection thread
+    (``run_in_background(..., uses_collection=False)``) that nevertheless has to touch the
+    collection for a moment. Anki's rule is that the collection belongs to one thread at a time;
+    this borrows the main thread for the length of one call rather than holding the collection
+    thread for the length of a whole job.
+
+    Called ON the main thread it simply runs the work — posting to the queue and then waiting
+    for it would deadlock, since the thread that must run the closure is the one waiting.
+
+    Raises:
+        TimeoutError: The main thread did not get to it within
+            :data:`_MAIN_THREAD_WAIT_SECONDS`.
+    """
+    window = main_window()
+    if window is None or window.inMainThread():
+        return work()
+
+    import threading
+
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            box["value"] = work()
+        except BaseException as exc:  # carried back to the calling thread
+            box["error"] = exc
+        finally:
+            done.set()
+
+    window.taskman.run_on_main(runner)
+    if not done.wait(_MAIN_THREAD_WAIT_SECONDS):
+        raise TimeoutError("Anki's main thread did not answer in time")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]  # type: ignore[no-any-return]
+
+
+def reviewing() -> bool:
+    """Whether Anki is currently showing a card in the reviewer.
+
+    Asked before writing to notes from a background job. Any note write at all makes the
+    reviewer redraw the card on screen — ``Reviewer.op_executed`` keys on ``changes.note_text``
+    with no check of WHICH note changed, and ``_redraw_current_card`` re-runs ``_showQuestion``,
+    which rebuilds the webview including the type-in box. So a batch writing while someone is
+    reviewing flickers their card and throws away whatever answer they were typing.
+    """
+    window = main_window()
+    return bool(window is not None and getattr(window, "state", "") == "review")
+
+
+def single_shot(milliseconds: int, callback: Callable[[], None]) -> None:
+    """Run ``callback`` on the Qt main thread once, after ``milliseconds``.
+
+    Anki's own timer rather than a thread: it is cancelled with the profile, so a pending
+    callback cannot fire into a collection that has closed underneath it.
+    """
+    window = main_window()
+    if window is None:
+        return
+    window.progress.single_shot(milliseconds, callback)
 
 
 def run_on_main(callback: Callable[[], None]) -> None:

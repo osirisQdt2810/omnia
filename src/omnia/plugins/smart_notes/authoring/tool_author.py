@@ -97,6 +97,14 @@ class ExtractExtTool(Tool):
     input_kinds: ClassVar[dict[str, str]] = {"Sample": "text"}
 
     @classmethod
+    def reads_prompt(cls, params):
+        # Only when `source_field` is blank, because THEN it falls back to the rule's first
+        # prompt reference and those refs are real edges. Named a field? Then the prompt is not
+        # read, and saying so stops a leftover prompt blocking this field on notes where the
+        # field it happens to mention is empty.
+        return not str(params.get("source_field", "") or "").strip()
+
+    @classmethod
     def referenced_fields(cls, params):
         name = str(params.get("source_field", "") or "").strip()
         return [name] if name else []
@@ -236,7 +244,29 @@ def user_tool_system_prompt() -> str:
         "   Getting this wrong fails SILENTLY in the worst way: returning bytes under 'text' "
         "makes the test run look successful and then writes an EMPTY field on real notes, and "
         "declaring kinds={'text'} on a tool that produces audio makes the pipeline skip it as "
-        "wrong_kind for every sound field it was written for.\n\n"
+        "wrong_kind for every sound field it was written for.\n"
+        "10b. A PASS-THROUGH tool — one that copies, moves or reshapes whatever a field already "
+        "holds without deciding what KIND that is — produces whatever it was given, so it must "
+        "declare EVERY kind it can be asked for, not just 'text'. A field's stored value is a "
+        "string either way: a sound field holds '[sound:x.mp3]' and an image field holds "
+        "'<img src=\"y.png\">', so copying one is the same operation as copying a sentence. "
+        f"Write `kinds: ClassVar[frozenset[str]] = frozenset({{{kind_tokens}}})` for these. A "
+        "clone-a-field tool that declared kinds={'text'} was simply NOT OFFERED on the sound "
+        "field it was written for, and the picker gave no reason — the tool looked broken.\n"
+        "11. READS_PROMPT. If EVERY field your tool reads comes from its own params, add:\n"
+        "       @classmethod\n"
+        "       def reads_prompt(cls, params): return False\n"
+        "   The base answers True, which is safe for a tool that does read the prompt and wrong "
+        "for one that does not — and the cost is not cosmetic. The prompt's `{{refs}}` become "
+        "HARD dependency edges, so a prompt left over from an earlier configuration BLOCKS the "
+        "field on every note where that other field happens to be empty, permanently, with "
+        "nothing on screen saying why. One tool that forgot this blocked 2,700 notes of 8,000 "
+        "on a field it never read. Answer False only when it is true of every params value: if "
+        "a `<something>_field` param falls back to the rule's first prompt reference when left "
+        "BLANK, then it reads the prompt in that case — return exactly "
+        "`not str(params.get('<something>_field', '') or '').strip()`, which is True when the "
+        "param is blank (the prompt IS read) and False when it names a field (it is not). "
+        "That is the body the worked example below uses; copy it, do not invert it.\n\n"
         "Requests vary widely — reshaping text, deriving one field from another, cleaning "
         "up markup, renaming, counting, reformatting a list, converting a file. There is no "
         "typical tool. The example below is ONE arbitrary instance, included to show the "
