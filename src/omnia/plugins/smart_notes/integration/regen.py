@@ -49,6 +49,7 @@ from omnia.plugins.smart_notes.engine.rules import (
     rule_source_fields,
 )
 from omnia.plugins.smart_notes.integration.batch import note_materializer
+from omnia.plugins.smart_notes.provenance import to_store
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
@@ -398,6 +399,14 @@ class RegenerationService:
                     dict(snapshot.fields),
                     allow_empty_fields=bool(settings.allow_empty_fields),
                     force_overwrite=True,
+                    # Honoured HERE above all, because this is the one entry point that forces
+                    # overwrite: the editor button and review pre-generation only fill empty
+                    # fields, which every scope permits. A user who chose `ours_only` to protect
+                    # what they typed by hand, then used the clipper's "generate this field",
+                    # had it destroyed anyway — and the setting sits three rows above the
+                    # "a clipper can rewrite a field you edited by hand" warning it appears to
+                    # answer.
+                    overwrite_scope=settings.overwrite_scope,
                     materialize=lambda rule, result: self._on_main(
                         lambda: materialize_once(rule, result)
                     ),
@@ -523,7 +532,9 @@ class RegenerationService:
                         note_id,
                     )
                     continue
-                note[name] = text
+                note[name] = to_store(text, getattr(result, "kind", "text"))
+                # The REPORTED value stays unmarked: it is what the clipper shows a human, and
+                # the mark is bookkeeping for the next regeneration, not content.
                 written[name] = text
             if written:
                 anki_compat.update_note(note)

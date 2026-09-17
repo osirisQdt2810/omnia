@@ -107,8 +107,15 @@ SCOPES = (ALWAYS, OURS_ONLY, NOT_OURS)
 #: write ``googletts-…``, pasted images land as ``paste-…`` — and none of them are ours.
 OUR_MEDIA_PREFIX = "omnia-"
 
+#: A media reference inside a field: ``[sound:x.mp3]`` or ``<img src="x.png">``. Both quote
+#: styles, because Anki's editor writes double and hand-edited fields carry single.
+#:
+#: The ``<img>`` branch consumes the WHOLE tag, closing ``>`` included. It used to stop at the
+#: quote, which is invisible to :func:`media_refs` (the capture group is the same) but not to
+#: :func:`is_ours`, which asks whether anything remains once the refs are removed: a lone ``>``
+#: is left over, so an image field of ours read as somebody else's.
 _MEDIA_REF_RE = re.compile(
-    r"\[sound:([^\]]+)\]|<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE
+    r"\[sound:([^\]]+)\]|<img[^>]+src=[\"']([^\"']+)[\"'][^>]*>", re.IGNORECASE
 )
 
 
@@ -126,6 +133,31 @@ def our_media_refs(content: str) -> list[str]:
     return out
 
 
+def to_store(value: str, kind: str) -> str:
+    """``value`` as it should be WRITTEN into a note field — Omnia's mark applied where it helps.
+
+    Every path that writes generated content goes through here, and that is the point. Stamping
+    lived in the batch runner alone, so the editor's Generate button, review-time pre-generation
+    and the clipper's regeneration all wrote Omnia's text unmarked. Under ``ours_only`` those
+    fields were then treated as somebody else's work and never refreshed; under ``not_ours``
+    they were regenerated on every batch and paid for again. Both are silent.
+
+    NOT folded into ``materialize``, which runs during generation: its value is what a chained
+    tool reads next, and a mark there would be quoted into the following prompt.
+
+    Text only. A media field is one ``[sound:omnia-…]`` tag whose NAME already says who wrote
+    it, and a comment beside it would be clutter for no new information.
+
+    Args:
+        value: What generation produced for the field.
+        kind: The result's kind — ``"text"``, ``"tts"`` or ``"image"``.
+
+    Returns:
+        The string to store.
+    """
+    return stamp(value) if kind == "text" else value
+
+
 def is_ours(content: str) -> bool:
     """Whether this field's current contents are Omnia's, and unchanged since.
 
@@ -136,13 +168,38 @@ def is_ours(content: str) -> bool:
       replacing or removing it, and then it no longer points at our file. No mark needed, which
       is worth avoiding — a comment beside an audio tag is clutter in a field that is one tag.
     * **Text** — needs the mark, because text is exactly the thing a user edits in place.
+
+    The media branch requires the field to be our refs and NOTHING else. "There is nothing to
+    edit inside a sound reference" is true of the reference, not of the field: a user who typed
+    ``[sound:omnia-1-A.mp3] (stress on the second syllable)`` has put their work beside our tag,
+    and counting that as ours throws the note away under ``ours_only`` — the one setting chosen
+    to prevent exactly that.
     """
     if not (content or "").strip():
         return False
     if is_untouched(content):
         return True
     refs = media_refs(content)
-    return bool(refs) and all(r.startswith(OUR_MEDIA_PREFIX) for r in refs)
+    if not refs or not all(r.startswith(OUR_MEDIA_PREFIX) for r in refs):
+        return False
+    return not _MEDIA_REF_RE.sub("", content).strip()
+
+
+def superseded_media(previous: str) -> list[str]:
+    """The files ``previous`` referenced that Omnia wrote, and may therefore replace.
+
+    Regenerating a field does NOT overwrite the old file: Anki renames on a real collision, so
+    every regeneration that produces different bytes leaves the previous audio behind referenced
+    by nobody. Five regenerations of one field is five files and one useful one; on a real
+    collection that ran to hundreds of megabytes of audio nothing could play.
+
+    Only files carrying :data:`OUR_MEDIA_PREFIX` are returned — another add-on's TTS, a pasted
+    image, are somebody else's and are not ours to remove. This is the single function deciding
+    whether a file may be trashed, and it lives here beside the prefix that decides it: the
+    batch runner used to carry its own copy of this, the prefix and the regex, with both
+    docstrings claiming to be the load-bearing one.
+    """
+    return our_media_refs(previous)
 
 
 def may_overwrite(content: str, scope: str) -> bool:
