@@ -96,6 +96,7 @@ class _FakeCompat:
         self.run_on_main_calls = 0
         self.in_review = False
         self.pending_timers: list = []
+        self.trashed: list = []
 
     # collection
     def get_note(self, nid, col=None):
@@ -115,6 +116,9 @@ class _FakeCompat:
 
     def update_note(self, note, col=None):
         self.updated.append(note.id)
+
+    def trash_media_files(self, filenames, col=None):
+        self.trashed.extend(filenames)
 
     def add_media_file(self, filename, data, col=None):
         self.media.append(filename)
@@ -149,6 +153,18 @@ class _FakeCompat:
         waiting, self.pending_timers = self.pending_timers, []
         for callback in waiting:
             callback()
+
+    def drain_timers(self, limit=5000):
+        """Keep delivering ticks until nothing is waiting.
+
+        Counts them, because the COUNT is the evidence a slice was deferred rather than called
+        inline: a write-back that recurses finishes with zero ticks and an exhausted stack.
+        """
+        ticks = 0
+        while self.pending_timers and ticks < limit:
+            self.fire_timers()
+            ticks += 1
+        return ticks
 
     # threading
     def run_on_main(self, callback):
@@ -196,6 +212,7 @@ def _patch_compat(monkeypatch, fake: _FakeCompat) -> None:
         "update_note",
         "update_notes",
         "add_media_file",
+        "trash_media_files",
         "progress_start",
         "progress_update",
         "progress_finish",
@@ -414,22 +431,36 @@ class TestWritingBackDoesNotHogTheMainThread:
         _patch_compat(monkeypatch, fake)
         return fake, list(notes)
 
-    def test_it_hands_the_main_thread_back_between_slices(self, monkeypatch):
+    def test_each_slice_waits_for_the_event_loop(self, monkeypatch):
+        """The slices must be POSTED, not called — and the difference is not academic.
+
+        `TaskManager.run_on_main` appends to a list and emits a pyqtSignal, and a signal emitted
+        on the thread it is connected to is delivered DIRECTLY. Called from the main thread it
+        therefore ran the next slice inside the current one: the event loop was never reached,
+        so Anki stayed frozen for the whole write-back, and the slices nested until Python ran
+        out of stack. 8444 notes is 338 slices and a RecursionError.
+
+        Counting calls could not tell those apart — a recursive hand-off calls just as often.
+        What distinguishes them is that the work is still WAITING when `run` returns.
+        """
         from omnia.plugins.smart_notes.integration.progress import Silent
 
         fake, nids = self._many(monkeypatch, 60, 10)
         settings = self._settings()
 
-        # Silent, so every hand-back counted here is the WRITE yielding. The modal surface
-        # marshals its own publishes, and counting those too would make this pass whatever the
-        # write did.
         BatchGenerator(_generator(settings), settings).run(
             nids, lambda _s: None, surface=Silent()
         )
 
-        # 60 notes in slices of 10 is five hand-backs — after every slice but the last. Zero
-        # would mean it wrote the lot without ever returning to Qt's event loop.
-        assert fake.run_on_main_calls == 5, fake.run_on_main_calls
+        assert len(fake.updated) == 10, "it wrote past the first slice without yielding"
+        assert fake.pending_timers, "the next slice was never posted"
+
+        ticks = fake.drain_timers()
+
+        assert fake.updated == nids
+        assert (
+            ticks == 5
+        ), f"60 notes in tens is five ticks after the first slice, got {ticks}"
 
     def test_every_note_is_still_written(self, monkeypatch):
         # Slicing must not drop the tail, which is the obvious way to get this wrong.
@@ -437,6 +468,7 @@ class TestWritingBackDoesNotHogTheMainThread:
         settings = self._settings()
 
         BatchGenerator(_generator(settings), settings).run(nids, lambda _s: None)
+        fake.drain_timers()
 
         assert fake.updated == nids
 
@@ -447,6 +479,7 @@ class TestWritingBackDoesNotHogTheMainThread:
         summaries: list = []
 
         BatchGenerator(_generator(settings), settings).run(nids, summaries.append)
+        _fake.drain_timers()
 
         assert (
             len(summaries) == 1
@@ -477,6 +510,7 @@ class TestWritingBackDoesNotHogTheMainThread:
         BatchGenerator(_generator(settings), settings).run(
             nids, lambda _s: None, surface=Silent()
         )
+        _fake.drain_timers()
 
         assert batches == [10, 10, 10, 10], batches
 
@@ -498,6 +532,7 @@ class TestWritingBackDoesNotHogTheMainThread:
         BatchGenerator(_generator(settings), settings).run(
             nids, summaries.append, surface=Silent()
         )
+        _fake.drain_timers()
 
         assert summaries[0].processed == 0
         assert summaries[0].failed == 20
@@ -519,6 +554,7 @@ class TestWritingBackDoesNotHogTheMainThread:
         BatchGenerator(_generator(settings), settings).run(
             nids, lambda _s: None, surface=Counter()
         )
+        _fake.drain_timers()
 
         assert Counter.finishes == 1
 
@@ -540,6 +576,7 @@ class TestWritingBackDoesNotHogTheMainThread:
         summaries: list = []
 
         gen.run(nids, summaries.append)
+        _fake.drain_timers()
 
         assert len(summaries) == 1, "the run never reported back"
 
@@ -834,7 +871,7 @@ class TestQuittingWhileAWriteIsWaiting:
 
         fake, nids, _ = self._waiting(monkeypatch)
         fake.in_review = False
-        fake.fire_timers()
+        fake.drain_timers()  # one tick per slice, plus the one that noticed the reviewer left
         assert fake.updated == nids
 
         flush_pending_writes()
@@ -854,6 +891,129 @@ class TestQuittingWhileAWriteIsWaiting:
             plugin.on_disable(None)
 
         assert fake.updated == nids
+
+
+class TestReadingWhichMediaAFieldIsGivingUp:
+    """Pure: given a field's old HTML, which files may be trashed."""
+
+    def _read(self, previous):
+        from omnia.plugins.smart_notes.integration.batch import superseded_media
+
+        return superseded_media(previous)
+
+    def test_a_sound_tag(self):
+        assert self._read("[sound:omnia-1-Audio.mp3]") == ["omnia-1-Audio.mp3"]
+
+    def test_an_image_tag_in_either_quote_style(self):
+        assert self._read('<img src="omnia-1-Pic.png">') == ["omnia-1-Pic.png"]
+        assert self._read("<img src='omnia-1-Pic.png'>") == ["omnia-1-Pic.png"]
+
+    def test_another_addons_media_is_left_alone(self):
+        """The reason the prefix exists.
+
+        A real collection carries media from several sources — AwesomeTTS and HyperTTS write
+        `googletts-…`, pasted images land as `paste-…`. Trashing those because a field happened
+        to hold one would delete somebody's audio on the strength of a filename.
+        """
+        assert self._read("[sound:googletts-b4728f64-ee872c9f.mp3]") == []
+        assert self._read('<img src="paste-abc123.jpg">') == []
+
+    def test_ours_is_taken_and_theirs_is_kept_from_the_same_field(self):
+        both = '[sound:googletts-aaa.mp3] <img src="omnia-9-Pic.png">'
+
+        assert self._read(both) == ["omnia-9-Pic.png"]
+
+    def test_an_empty_or_text_only_field_gives_up_nothing(self):
+        assert self._read("") == []
+        assert self._read(None) == []
+        assert self._read("<b>just words</b>") == []
+
+    def test_the_same_file_twice_is_listed_once(self):
+        twice = "[sound:omnia-1-A.mp3] [sound:omnia-1-A.mp3]"
+
+        assert self._read(twice) == ["omnia-1-A.mp3"]
+
+
+class TestRegeneratingAFieldDoesNotLeaveTheOldFile:
+    """`MediaManager.write_data` renames on collision rather than overwriting.
+
+    So regenerating a field writes a NEW file and leaves the previous audio on disk referenced
+    by nobody. Five regenerations of one field is five files and one useful one — which on a
+    real collection came to hundreds of megabytes of audio nothing could play.
+    """
+
+    def _settings(self, **kw) -> SmartNotesSettings:
+        base = {"note_types": [_note_type_config()], "regenerate_when_batching": True}
+        base.update(kw)
+        return SmartNotesSettings(**base)
+
+    def _run(self, monkeypatch, previous):
+        notes = {1: _FakeNote(1, "Basic", {"Word": "cat", "Def": previous})}
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        settings = self._settings()
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+        return fake
+
+    def test_the_file_the_field_stops_referencing_is_trashed(self, monkeypatch):
+        fake = self._run(monkeypatch, "[sound:omnia-1-Def.mp3]")
+
+        assert fake.trashed == ["omnia-1-Def.mp3"]
+
+    def test_another_addons_file_in_that_field_is_not(self, monkeypatch):
+        fake = self._run(monkeypatch, "[sound:googletts-b4728f64.mp3]")
+
+        assert fake.trashed == []
+
+    def test_a_field_that_held_no_media_trashes_nothing(self, monkeypatch):
+        fake = self._run(monkeypatch, "")
+
+        assert fake.trashed == []
+
+    def test_nothing_is_trashed_when_the_write_fails(self, monkeypatch):
+        """Media the note still references must survive a failed write.
+
+        Trashing at preparation time would delete the audio a note is still pointing at, the
+        moment the write behind it does not land.
+        """
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        def refuse(notes, col=None):
+            raise RuntimeError("collection is locked")
+
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        monkeypatch.setattr(batch_module.anki_compat, "update_notes", refuse)
+        settings = self._settings()
+
+        BatchGenerator(_generator(settings), settings).run([1], lambda _s: None)
+
+        assert fake.trashed == []
+
+    def test_a_trash_that_fails_does_not_fail_the_batch(self, monkeypatch):
+        # Disk space is not worth losing a written batch over.
+        import omnia.plugins.smart_notes.integration.batch as batch_module
+
+        notes = {
+            1: _FakeNote(1, "Basic", {"Word": "cat", "Def": "[sound:omnia-1-Def.mp3]"})
+        }
+        fake = _FakeCompat(notes)
+        _patch_compat(monkeypatch, fake)
+        monkeypatch.setattr(
+            batch_module.anki_compat,
+            "trash_media_files",
+            lambda names, col=None: (_ for _ in ()).throw(OSError("read-only")),
+        )
+        settings = self._settings()
+        summaries: list = []
+
+        BatchGenerator(_generator(settings), settings).run([1], summaries.append)
+
+        assert summaries[0].processed == 1
+        assert fake.updated == [1]
 
 
 class TestTheProgressThrottle:
@@ -1152,7 +1312,7 @@ class TestEmptyNoteTracking:
         of what is being counted.
         """
         gen = BatchGenerator.__new__(BatchGenerator)
-        gen._persist = lambda notes, summary: None  # type: ignore[method-assign]
+        gen._persist = lambda notes, summary, superseded=None: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_a_note_with_no_results_is_recorded(self):
@@ -1163,7 +1323,7 @@ class TestEmptyNoteTracking:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
         )
         summary = self._apply([self._outcome(12, results=[("rule", "result")])])
         assert summary.empty_note_ids == []
@@ -1203,7 +1363,7 @@ class TestErroredNotesAreKeptForRetry:
         of what is being counted.
         """
         gen = BatchGenerator.__new__(BatchGenerator)
-        gen._persist = lambda notes, summary: None  # type: ignore[method-assign]
+        gen._persist = lambda notes, summary, superseded=None: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def test_an_all_errored_note_is_kept_not_discarded(self):
@@ -1236,7 +1396,7 @@ class TestErroredNotesAreKeptForRetry:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
         )
         summary = self._apply([self._outcome(25, results=[("rule", "result")])])
 
@@ -1261,7 +1421,7 @@ class TestToolChainCounters:
         of what is being counted.
         """
         gen = BatchGenerator.__new__(BatchGenerator)
-        gen._persist = lambda notes, summary: None  # type: ignore[method-assign]
+        gen._persist = lambda notes, summary, superseded=None: None  # type: ignore[method-assign]
         return gen._apply(outcomes)
 
     def _outcome(self, nid, **kw):
@@ -1401,7 +1561,7 @@ class TestToolChainCounters:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
         )
 
         outcome = self._generate_one(
@@ -1417,7 +1577,7 @@ class TestToolChainCounters:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
         )
 
         outcome = self._generate_one(
@@ -1432,7 +1592,7 @@ class TestToolChainCounters:
         monkeypatch.setattr(
             BatchGenerator,
             "_prepare_note",
-            lambda self, o: _FakeNote(o.nid, "Basic", {}),
+            lambda self, o, superseded=None: _FakeNote(o.nid, "Basic", {}),
         )
 
         outcome = self._generate_one([(self._rule("ai"), self._result(""))], [])

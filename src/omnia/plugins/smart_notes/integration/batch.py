@@ -27,6 +27,7 @@ that to the threading + progress + media-write seams in ``core/anki_compat``.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -740,9 +741,9 @@ class BatchGenerator:
         then took the screen away at the very end, which is the one moment they had stopped
         watching for it.
 
-        So the work is cut into slices and each is POSTED rather than called: ``run_on_main``
-        appends to Anki's closure queue and emits, so Qt returns to its event loop between one
-        slice and the next. Cards also appear as they are written instead of all at once.
+        So the work is cut into slices and each is POSTED rather than called, through a QTimer.
+        Qt returns to its event loop between one slice and the next, so Anki repaints and answers
+        input throughout, and cards appear as they are written instead of all at once.
 
         ``done`` is called exactly once, on the main thread, whatever happens — the progress
         surface's refcount depends on it.
@@ -805,7 +806,14 @@ class BatchGenerator:
                 report(summary)
                 return
             if more:
-                anki_compat.run_on_main(step)
+                # single_shot, NOT run_on_main. `TaskManager.run_on_main` appends to a list and
+                # emits a pyqtSignal — and a signal emitted from the thread it is connected on
+                # is delivered DIRECTLY, i.e. synchronously. Called from the main thread it
+                # therefore runs the next slice inside this one, so the event loop is never
+                # reached (Anki stays frozen for the whole write-back, which this was written
+                # to prevent) and the slices nest: 8444 notes is 338 of them, and Python ran
+                # out of stack before it ran out of notes. A QTimer genuinely posts.
+                anki_compat.single_shot(0, step)
                 return
             report(summary)
 
@@ -828,12 +836,16 @@ class BatchGenerator:
         # the sidebar and every other add-on listening re-run 1500 times, and the user's undo
         # history becomes 1500 steps deep. `update_notes` is the same write as one batch.
         pending: list[Any] = []
+        # Files the fields being rewritten will stop referencing. Trashed only after the write
+        # lands, never before — a write that failed would otherwise have deleted the audio the
+        # note still points at.
+        superseded: list[str] = []
         for outcome in outcomes:
             if outcome.failed:
                 # Write whatever it managed before it broke (usually nothing), then count it as
                 # failed. It must NOT reach ``empty_note_ids``: we do not know there was nothing
                 # to make here, and that list's consumer DELETES the note.
-                prepared = self._prepare_note(outcome)
+                prepared = self._prepare_note(outcome, superseded)
                 if prepared is not None:
                     pending.append(prepared)
                 summary.failed += 1
@@ -861,21 +873,29 @@ class BatchGenerator:
                 else:
                     summary.empty_note_ids.append(outcome.nid)
                 continue
-            prepared = self._prepare_note(outcome)
+            prepared = self._prepare_note(outcome, superseded)
             if prepared is not None:
                 pending.append(prepared)
                 summary.processed += 1
             else:
                 summary.failed += 1
-        self._persist(pending, summary)
+        self._persist(pending, summary, superseded)
         return summary
 
-    def _persist(self, notes: list[Any], summary: BatchSummary) -> None:
+    def _persist(
+        self,
+        notes: list[Any],
+        summary: BatchSummary,
+        superseded: Optional[list[str]] = None,
+    ) -> None:
         """Write the prepared notes as ONE batch, and count them as failed if that will not.
 
         The counts were already moved to ``processed`` while preparing, because that is where
         "did this note get content" is known; a batch that then cannot be written moves them
         back rather than reporting a save that did not happen.
+
+        ``superseded`` is trashed only once the write has SUCCEEDED, for the same reason: media
+        the note still references must survive a failed write.
         """
         if not notes:
             return
@@ -885,19 +905,41 @@ class BatchGenerator:
             logger.exception("smart_notes: writing %d notes failed", len(notes))
             summary.processed -= len(notes)
             summary.failed += len(notes)
+            return
+        if superseded:
+            try:
+                anki_compat.trash_media_files(superseded)
+            except Exception:  # disk space is not worth failing a written batch over
+                logger.exception(
+                    "smart_notes: could not trash %d superseded media file(s)",
+                    len(superseded),
+                )
 
-    def _prepare_note(self, outcome: _NoteOutcome) -> Optional[Any]:
+    def _prepare_note(
+        self, outcome: _NoteOutcome, superseded: Optional[list[str]] = None
+    ) -> Optional[Any]:
         """The note with this outcome's content in it, unsaved, or ``None``.
 
         Separate from writing so a slice can be persisted as one batch. ``None`` means there is
         nothing to save — either the note could not be read, or no rule targeted a field it has.
+
+        Args:
+            outcome: What was generated for this note.
+            superseded: Appended with the media files the fields STOP referencing, for the
+                caller to trash once the write has landed. Not trashed here: a write that then
+                fails would have deleted the audio the note still points at.
         """
+        superseded = [] if superseded is None else superseded
         try:
             note = anki_compat.get_note(outcome.nid)
             wrote = False
             for rule, result in outcome.results:
                 if rule.target_field not in note:
                     continue
+                # What the field pointed at BEFORE this run, so the file it is about to stop
+                # referencing can be trashed once the new value is safely stored. Collected
+                # here because this is the only moment both values are in hand.
+                superseded.extend(superseded_media(note[rule.target_field]))
                 note[rule.target_field] = outcome.materialize(rule, result)
                 wrote = True
             return note if wrote else None
@@ -915,6 +957,41 @@ def _fell_back(rule: SmartNotesFieldRule, result: GenerationResult) -> bool:
     """
     first = rule.tools[0].name if rule.tools else ""
     return bool(result.tool) and result.tool != first
+
+
+#: The prefix :func:`materialize` gives every file it writes.
+#:
+#: Load-bearing, because it is the ONLY thing that decides whether a file may be trashed when a
+#: field is regenerated. A real collection holds media from several sources — AwesomeTTS and
+#: HyperTTS write ``googletts-…``, pasted images land as ``paste-…``, other add-ons have their
+#: own families — and none of them are ours to delete. A name we did not write is left alone,
+#: whatever it looks like.
+OUR_MEDIA_PREFIX = "omnia-"
+
+#: A media reference inside a field: ``[sound:x.mp3]`` or ``<img src="x.png">``. Both quote
+#: styles, because Anki's editor writes double and hand-edited fields carry single.
+_MEDIA_REF_RE = re.compile(
+    r"\[sound:([^\]]+)\]|<img[^>]+src=[\"']([^\"']+)[\"']", re.IGNORECASE
+)
+
+
+def superseded_media(previous: str) -> list[str]:
+    """The files ``previous`` referenced that Omnia wrote, and may therefore replace.
+
+    Regenerating a field does NOT overwrite the old file: ``MediaManager.write_data`` renames on
+    collision ("renaming if not unique"), so every regeneration leaves the previous audio behind
+    referenced by nobody. Five regenerations of one field is five files and one useful one. On a
+    real collection that ran to hundreds of megabytes of audio nothing could play.
+
+    Only files carrying :data:`OUR_MEDIA_PREFIX` are returned. Everything else in the field —
+    another add-on's TTS, a pasted image — is somebody else's and is not ours to remove.
+    """
+    out: list[str] = []
+    for sound, image in _MEDIA_REF_RE.findall(previous or ""):
+        name = (sound or image).strip()
+        if name.startswith(OUR_MEDIA_PREFIX) and name not in out:
+            out.append(name)
+    return out
 
 
 def materialize(nid: int, rule: Any, result: GenerationResult) -> str:

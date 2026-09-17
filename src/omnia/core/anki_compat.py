@@ -314,6 +314,21 @@ def add_media_file(filename: str, data: bytes, col: Optional[Any] = None) -> str
     )
 
 
+def trash_media_files(filenames: list[str], col: Optional[Any] = None) -> None:
+    """Move ``filenames`` to Anki's media trash (recoverable), never to oblivion.
+
+    Anki's own trash rather than ``os.remove`` on purpose: it is undoable from Check Media, it
+    is what the user already knows, and deleting somebody's audio outright on the strength of a
+    filename pattern is not a risk worth taking for disk space.
+    """
+    if not filenames:
+        return
+    if col is not None:
+        col.media.trash_files(list(filenames))
+        return
+    call_on_main_and_wait(lambda: main_window().col.media.trash_files(list(filenames)))
+
+
 def media_dir(col: Optional[Any] = None) -> str:
     """Return the collection's media folder — where ``[sound:x.mp3]`` and ``<img>`` resolve.
 
