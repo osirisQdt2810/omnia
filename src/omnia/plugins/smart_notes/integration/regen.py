@@ -49,7 +49,7 @@ from omnia.plugins.smart_notes.engine.rules import (
     rule_source_fields,
 )
 from omnia.plugins.smart_notes.integration.batch import note_materializer
-from omnia.plugins.smart_notes.provenance import to_store
+from omnia.plugins.smart_notes.provenance import ALWAYS, may_overwrite, to_store
 
 if TYPE_CHECKING:
     from omnia.plugins.smart_notes.config import (
@@ -386,6 +386,10 @@ class RegenerationService:
         # (main-thread only) and wrapped for the generation phase below; the write-back already
         # runs on the main thread, so it calls this directly.
         materialize_once = note_materializer(snapshot.note_id)
+        # Read once and used twice — to decide, and to explain. A field the scope protects is
+        # dropped silently by `should_skip_rule`, so the reason has to be reconstructed after
+        # the fact from the same value that caused it.
+        scope = str(settings.overwrite_scope)
         try:
             # Pooled, like every other generation path. "Generate all" on a note with ten
             # fields is ten provider round trips, and a person is watching a spinner while they
@@ -406,7 +410,7 @@ class RegenerationService:
                     # had it destroyed anyway — and the setting sits three rows above the
                     # "a clipper can rewrite a field you edited by hand" warning it appears to
                     # answer.
-                    overwrite_scope=settings.overwrite_scope,
+                    overwrite_scope=scope,
                     materialize=lambda rule, result: self._on_main(
                         lambda: materialize_once(rule, result)
                     ),
@@ -454,7 +458,7 @@ class RegenerationService:
                 STATUS_ERROR,
                 failure.error or "The generation chain produced nothing.",
             )
-        self._account_for_skips(sub_config, snapshot, candidates, outcomes)
+        self._account_for_skips(sub_config, snapshot, candidates, outcomes, scope)
         return [outcomes[name] for name in order]
 
     def _account_for_skips(
@@ -463,14 +467,20 @@ class RegenerationService:
         snapshot: _NoteSnapshot,
         candidates: list[str],
         outcomes: dict[str, FieldOutcome],
+        overwrite_scope: str,
     ) -> None:
         """Give a status to every candidate the engine never reported on.
 
         This is a DERIVATION, not a signal the engine emits. ``should_skip_rule`` drops a field
         silently, and ``generate_note`` offers no way to tell "skipped" from "never scheduled" —
-        so a field appearing in none of ``results``/``blocked``/``failed`` was skipped, and
-        (because this path forces overwrite, which rules out the already-filled branch) the only
-        reason left is that every source it reads is blank.
+        so a field appearing in none of ``results``/``blocked``/``failed`` was skipped, and the
+        reason has to be worked out from the state that reached it.
+
+        Forcing overwrite rules out the already-filled branch, but NOT the scope branch: a
+        field whose current content the scope protects is dropped here too. Without
+        ``overwrite_scope`` this derivation reported those as "found nothing to generate" — to a
+        user who had just asked for a regeneration, about a field that is not empty, with no
+        mention of the one setting that caused it.
         """
         missing = [name for name in candidates if name not in outcomes]
         if not missing:
@@ -482,7 +492,12 @@ class RegenerationService:
             outcomes[name] = FieldOutcome(
                 name,
                 STATUS_SKIPPED,
-                _skip_message(rules.get(name), snapshot.fields, outcomes),
+                _skip_message(
+                    rules.get(name),
+                    snapshot.fields,
+                    outcomes,
+                    overwrite_scope=overwrite_scope,
+                ),
             )
 
     # --- Anki glue: everything below touches the collection ------------------------------------
@@ -608,6 +623,8 @@ def _skip_message(
     rule: Optional[SmartNotesFieldRule],
     fields: dict[str, str],
     outcomes: Optional[dict[str, FieldOutcome]] = None,
+    *,
+    overwrite_scope: str = ALWAYS,
 ) -> str:
     """Say why the engine skipped ``rule``, naming a cause the user can act on.
 
@@ -616,10 +633,17 @@ def _skip_message(
     it — or to turn on "generate even when sources are empty", which would change nothing —
     points away from the actual failure. So a source that already has a verdict wins.
 
+    The overwrite scope is checked FIRST of the two content reasons, because it is the one that
+    explains a non-empty field. A field the scope protects has sources that are perfectly fine,
+    so every later branch falls through to the catch-all and tells a user who just asked for a
+    regeneration that there was nothing to generate — false, and pointing away from the single
+    setting they can change.
+
     Args:
         rule: The compiled rule, or None when there is none.
         fields: The note's fields as they stood.
         outcomes: What the same run concluded about the other fields, if anything.
+        overwrite_scope: Which existing content a regeneration may replace.
     """
     sources = rule_source_fields(rule) if rule is not None else []
     reported = outcomes or {}
@@ -631,6 +655,13 @@ def _skip_message(
     ]
     if upstream:
         return f"Waiting on {_join(upstream)}, which did not generate — fix that field first."
+    if rule is not None and not may_overwrite(
+        str(fields.get(rule.target_field, "")), overwrite_scope
+    ):
+        return (
+            f"“{rule.target_field}” already holds content that “When overwriting, replace” is "
+            "set to protect. Change that under Smart Notes → Options, or clear the field."
+        )
     blank = [name for name in sources if not str(fields.get(name, "")).strip()]
     if not blank:
         return "Smart Notes found nothing to generate for this field."

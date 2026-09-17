@@ -155,7 +155,12 @@ def to_store(value: str, kind: str) -> str:
     Returns:
         The string to store.
     """
-    return stamp(value) if kind == "text" else value
+    if kind != "text" or not value.strip():
+        # An empty value is left empty. Marking it produces a bare `<!--omnia:da39a3-->`, which
+        # is not empty to anything that asks: `should_skip_rule` reads the field as filled and
+        # skips it, so a field that generated nothing would never be tried again.
+        return value
+    return stamp(value)
 
 
 def is_ours(content: str) -> bool:

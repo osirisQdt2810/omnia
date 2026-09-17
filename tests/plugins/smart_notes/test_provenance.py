@@ -249,7 +249,7 @@ class TestEveryPathThatWritesGeneratedTextMarksIt:
     so fails here with the name of the file that dropped it.
     """
 
-    #: Every module that assigns generated content into a note field.
+    #: Every module that turns a generation result into a value stored on a note.
     WRITE_PATHS = (
         ("the batch runner", "src/omnia/plugins/smart_notes/integration/batch.py"),
         ("the editor Generate button", "src/omnia/plugins/smart_notes/__init__.py"),
@@ -260,6 +260,13 @@ class TestEveryPathThatWritesGeneratedTextMarksIt:
         (
             "the clipper regeneration",
             "src/omnia/plugins/smart_notes/integration/regen.py",
+        ),
+        # The custom-prompt dialog, not the `on_save` callback that stores what it hands over:
+        # the kind is only in hand on this side, and marking here covers every caller of the
+        # dialog rather than just the one that exists today.
+        (
+            "the editor custom-prompt action",
+            "src/omnia/gui/smart_notes/dialogs/prompt.py",
         ),
     )
 
@@ -295,3 +302,21 @@ class TestEveryPathThatWritesGeneratedTextMarksIt:
         body = body[: body.index("\ndef ", 1)] if "\ndef " in body[1:] else body
 
         assert "stamp(" not in body
+
+
+class TestAnEmptyResultIsNotMarked:
+    """A bare mark is not an empty field to anything that asks.
+
+    ``to_store("", "text")`` would produce ``<!--omnia:da39a3-->``: ``should_skip_rule`` reads
+    that as filled and skips the field, so a field that generated nothing would never be tried
+    again — and ``is_untouched`` says it is ours, so ``not_ours`` would not retry it either.
+    """
+
+    def test_an_empty_value_stays_empty(self):
+        assert to_store("", "text") == ""
+
+    def test_whitespace_only_stays_as_it_was(self):
+        assert to_store("   ", "text") == "   "
+
+    def test_a_real_value_is_still_marked(self):
+        assert is_untouched(to_store("a definition", "text"))

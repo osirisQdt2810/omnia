@@ -985,6 +985,65 @@ class TestTheClipperHonoursTheOverwriteScope:
             note["Definition"] == "a definition I wrote myself"
         ), "the clipper destroyed hand-written content under the scope chosen to protect it"
 
+    def test_it_says_WHY_rather_than_inventing_a_reason(self, monkeypatch):
+        """A protected field is dropped silently by `should_skip_rule`, so the reason has to be
+        reconstructed afterwards.
+
+        `_account_for_skips` derived it from absence, on the premise that forcing overwrite
+        rules out every branch but "all sources blank". The scope is a second way to be dropped
+        and it leaves the sources perfectly fine, so the derivation fell through to its
+        catch-all: a user who had just asked for a regeneration, of a field that is not empty,
+        was told Smart Notes found nothing to generate — false, and pointing away from the one
+        setting that caused it.
+        """
+        note = self._note("a definition I wrote myself")
+        service, _compat = _build(
+            monkeypatch, note, _settings(overwrite_scope=OURS_ONLY)
+        )
+
+        (outcome,) = service.regenerate(1, ["Definition"])
+
+        assert outcome.status == "skipped"
+        assert "nothing to generate" not in outcome.message, outcome.message
+        assert "When overwriting, replace" in outcome.message, outcome.message
+        assert "Definition" in outcome.message
+
+    def test_a_genuinely_blank_source_still_says_so(self):
+        """The new branch sits in FRONT of the blank-source one and must not swallow it.
+
+        Asked of `_skip_message` directly: the whole-service route reports a blank source as
+        `blocked` before the skip derivation ever runs, so it cannot reach this branch.
+        """
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+        from omnia.plugins.smart_notes.integration.regen import _skip_message
+
+        rule = compile_field_rule(
+            SmartNotesFieldConfig(
+                field="Definition", enabled=True, prompt="define {{Word}}"
+            ),
+            "Word",
+        )
+
+        message = _skip_message(rule, {"Word": "", "Definition": ""})
+
+        assert "empty" in message, message
+
+    def test_an_unprotected_field_gets_no_scope_excuse(self):
+        # `always` is the default; the new branch must be silent under it.
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+        from omnia.plugins.smart_notes.integration.regen import _skip_message
+
+        rule = compile_field_rule(
+            SmartNotesFieldConfig(
+                field="Definition", enabled=True, prompt="define {{Word}}"
+            ),
+            "Word",
+        )
+
+        message = _skip_message(rule, {"Word": "cat", "Definition": "mine"})
+
+        assert "When overwriting, replace" not in message, message
+
     def test_ours_only_still_refreshes_what_omnia_wrote(self, monkeypatch):
         # The scope must not become "never regenerate anything".
         note = self._note(to_store("an older definition", "text"))
