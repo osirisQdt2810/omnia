@@ -96,16 +96,30 @@ def models_for(provider: str, kind: str) -> list[str]:
 def _merged_voices(
     fetched: dict[str, list[TTSVoice]] | None = None,
 ) -> dict[str, list[TTSVoice]]:
-    """The aggregated curated voices with ``fetched`` (the Refresh result) merged over them.
+    """The curated voices UNIONed with ``fetched`` (the Refresh result), per provider.
 
-    A provider present in ``fetched`` (e.g. edge_tts) has its curated list REPLACED so the
-    dropdowns show the full enumerated set; every other provider keeps its seed, and a
-    fetched-only provider (no seed entry) is added. This is the single merge rule both the
-    per-language options and the ``voices`` payload share.
+    A fetched entry wins on its voice id — it carries the service's own metadata — and every
+    curated voice survives whether or not the fetch returned it. Fetched-only providers are
+    added. This is the single merge rule both the per-language options and the ``voices``
+    payload share, and it is the same rule ``EdgeTTS.list_voices`` already applies internally.
+
+    It REPLACED the curated list per provider until 2026-09-17, on the assumption that a
+    provider present in ``fetched`` had been fully enumerated. That is true of edge_tts (322
+    voices) and false of the rest: ``refresh_voices`` caches whatever a provider answered, and a
+    provider that cannot enumerate offline answers with its own curated seed. So the cache held
+    a SNAPSHOT of the seed — and because the cache lives in the synced collection and outlives
+    any release, that snapshot then shadowed the seed forever. Seven en-US voices added to
+    ``GoogleCloudTTS.CURATED_VOICES`` did not appear in the picker on a profile that had ever
+    pressed Refresh, and no amount of reinstalling or restarting helped: the code had them, the
+    dropdown did not. A union cannot hide a voice this build knows about.
     """
-    merged = dict(aggregated_voices())
-    if fetched:
-        merged.update(fetched)
+    merged = {
+        provider: list(voices) for provider, voices in aggregated_voices().items()
+    }
+    for provider, voices in (fetched or {}).items():
+        by_id = {voice.voice: voice for voice in merged.get(provider, [])}
+        by_id.update({voice.voice: voice for voice in voices})
+        merged[provider] = list(by_id.values())
     return merged
 
 
