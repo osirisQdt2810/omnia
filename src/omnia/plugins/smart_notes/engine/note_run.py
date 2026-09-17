@@ -28,7 +28,7 @@ Pure logic — no ``aqt``/``anki``, no threading.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -56,23 +56,14 @@ class BlockedField:
     themselves been blocked/failed. Blocking is transitive: a blocked field puts no value in
     the working map, so its own hard dependents block in turn.
 
-    ``unread`` is the subset of those that NO tool in the chain reads — fields that block only
-    because an explicit ``depends_on`` edge says to wait for them. The two are worth telling
-    apart when explaining the block: reporting both as "needs" tells the user their tool
-    requires a field it never opens, which sends them to fix the tool instead of the edge. A
-    Clone Field row reading one field, with a stale edge onto another, reported "needs A, B"
-    and there was no way to tell from the message that B was removable.
+    Every name here is one the chain READS — see :func:`_hard_prerequisites`. A field that
+    only appears in the row's ``depends_on`` cannot reach this list, because its contents have
+    no route into the output and waiting for them could not change the result. That is what
+    makes "needs" an honest word for everything in ``missing``.
     """
 
     target_field: str
     missing: list[str]
-    unread: list[str] = field(default_factory=list)
-
-    @property
-    def needed(self) -> list[str]:
-        """The blocked prerequisites the chain actually reads, in ``missing`` order."""
-        unread = {name.strip().lower() for name in self.unread}
-        return [name for name in self.missing if name.strip().lower() not in unread]
 
 
 @dataclass(frozen=True)
@@ -104,16 +95,35 @@ class FailedField:
 
 
 def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
-    """Return the field names ``rule`` HARD-depends on (the gate's blocking prerequisites).
+    """Return the field names that may BLOCK ``rule``: hard prerequisites the chain reads.
 
-    Reads the rule's prerequisites through the single source of truth
-    (:func:`~omnia.plugins.smart_notes.engine.rules.rule_prerequisites`) and keeps only the
-    ``"hard"`` ones — soft prerequisites order generation but never block. The explicit
-    kind-override (e.g. a derived source recoloured ``"soft"``) is already applied there, so a
-    softened source is correctly excluded here. Names keep their original case (for the
-    ``missing`` report); matching is the caller's job.
+    Two filters, and the second one is the point.
+
+    ``"hard"`` — soft prerequisites order generation but never block, and the explicit
+    kind-override (a derived source recoloured ``"soft"``) is already applied by
+    :func:`~omnia.plugins.smart_notes.engine.rules.rule_prerequisites`, so a softened source is
+    correctly excluded.
+
+    READ BY THE CHAIN — blocking exists so a tool is never run against an empty input and made
+    to invent content from nothing. A field no tool opens cannot do that: its contents have no
+    route into the output, so waiting for them is waiting for something that could not change
+    the result either way. A Clone Field row reading one field, carrying an explicit edge onto
+    another, was held on that other field forever and reported as needing it — the user was
+    told their tool required a field it never asked for.
+
+    The edge still ORDERS (``rule_prerequisites`` is what ordering reads, and it is untouched),
+    so "generate this after that" is unaffected. What it no longer does is gate. Dependencies
+    therefore follow the tool: swap the chain to ``ai`` and the prompt's refs become the
+    blocking set instead, which is what the row then actually reads.
+
+    Names keep their original case (for the ``missing`` report); matching is the caller's job.
     """
-    return [field for field, kind in rule_prerequisites(rule) if kind == "hard"]
+    reads = {name.strip().lower() for name in rule_inputs(rule)}
+    return [
+        field
+        for field, kind in rule_prerequisites(rule)
+        if kind == "hard" and field.strip().lower() in reads
+    ]
 
 
 class NoteRun:
@@ -205,17 +215,10 @@ class NoteRun:
         for rule in level:
             missing = self._missing_hard_prerequisites(rule)
             if missing:
-                # Split here, where the rule is in hand: `rule_inputs` is what the chain reads,
-                # and anything blocking outside it is an explicit edge the user can remove.
-                reads = {name.strip().lower() for name in rule_inputs(rule)}
                 self._blocked.append(
                     (
                         self._position[id(rule)],
-                        BlockedField(
-                            rule.target_field,
-                            missing,
-                            [n for n in missing if n.strip().lower() not in reads],
-                        ),
+                        BlockedField(rule.target_field, missing),
                     )
                 )
                 continue  # writes no value → hard dependents block transitively
