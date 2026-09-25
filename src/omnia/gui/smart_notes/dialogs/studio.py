@@ -175,8 +175,13 @@ def _configured_models(ctx: Any) -> tuple[dict[str, str], dict[str, str]]:
     text: dict[str, str] = {}
     image: dict[str, str] = {}
     try:
-        llm = ctx.llm_settings()
-    except Exception:  # boundary: the dialog must still open
+        llm = ctx.repo.llm_settings()
+    except Exception:
+        # LOGGED, not swallowed. The bare version of this handler is why the first draft of
+        # this function shipped inert: it called a method the context does not have, the
+        # AttributeError was absorbed, and the picker went on offering nothing with no sign
+        # that anything had failed. A boundary that hides a typo is not a boundary.
+        logger.exception("smart_notes: could not read the configured models")
         return text, image
     for provider in LLM_PROVIDERS:
         sub = getattr(llm, provider, None)
