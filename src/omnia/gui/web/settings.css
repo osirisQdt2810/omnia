@@ -636,3 +636,38 @@ body {
     transition: none;
   }
 }
+
+/* ── Two-handled range: two marks that cut one axis ────────────────────────────────────────
+   Drawn as one track so the RELATIONSHIP between the marks is the thing you see — three bands
+   and where each starts. Two separate sliders can hold the same numbers and show none of it.
+
+   The bands are tinted differently rather than being one fill: the segment below the lower
+   handle is what FAILS, between the handles is the ordinary pass, above the upper is the best
+   one. Same order, and same reading direction, as the sentence that describes them. */
+.omnia-range2 { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.omnia-range2-track {
+  position: relative; height: 26px; cursor: pointer;
+  /* The failing band: the track's own ground, so no element is needed for it. */
+  background: var(--switch-off);
+  border-radius: 999px; border: 1px solid var(--card-border);
+}
+.omnia-range2-fill, .omnia-range2-top {
+  position: absolute; top: 0; bottom: 0; pointer-events: none;
+}
+.omnia-range2-fill { background: var(--accent); opacity: 0.45; }
+.omnia-range2-top { background: var(--accent-2); opacity: 0.75; border-radius: 0 999px 999px 0; }
+.omnia-range2-handle {
+  position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  border-radius: 50%; background: var(--fg); border: 2px solid var(--card-top);
+  box-shadow: 0 1px 4px var(--shadow); cursor: grab; outline: none;
+}
+.omnia-range2-handle:focus-visible { box-shadow: 0 0 0 3px var(--accent); }
+.omnia-range2-handle:active { cursor: grabbing; }
+/* Handles meeting IS the off state — the top band has no width, so say so rather than
+   leaving a sliver of colour that reads as "nearly off". */
+.omnia-range2-collapsed .omnia-range2-top { opacity: 0.18; }
+.omnia-range2-legend {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12px; color: var(--muted);
+}
+.omnia-range2-out { white-space: nowrap; }

@@ -39,6 +39,11 @@ class ConfigField:
         help: Optional one-line explanation shown under the control.
         choices: Allowed values when ``kind == "choice"``.
         minimum / maximum: Bounds for numeric kinds.
+        upper_key: The key of a SECOND numeric field this one is the lower end of. Two settings
+            that cut the same axis — a pass mark and a "nearly perfect" mark on one accuracy
+            ratio — are one decision, and two separate sliders make the reader reconstruct the
+            relationship every time they look. Declared on the lower field; the upper one is
+            then drawn as the other handle of the same track rather than a control of its own.
     """
 
     key: str
@@ -49,6 +54,7 @@ class ConfigField:
     choices: tuple[str, ...] = ()
     minimum: Optional[float] = None
     maximum: Optional[float] = None
+    upper_key: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in FIELD_KINDS:
