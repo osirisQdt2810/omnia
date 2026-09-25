@@ -70,6 +70,10 @@ def _field_to_config(name: str, model_field: ModelField) -> ConfigField | None:
         choices=choices,
         minimum=field_info.ge,
         maximum=field_info.le,
+        # ``Field(..., upper_key="other")`` on the LOWER of two bounds that cut the same axis.
+        # Pydantic v1 parks unknown Field kwargs in ``extra``, which is what lets a settings
+        # model say this without the schema module knowing any plugin's field names.
+        upper_key=str(field_info.extra.get("upper_key", "") or ""),
     )
 
 

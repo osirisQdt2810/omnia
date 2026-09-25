@@ -25,6 +25,9 @@ class TypedAccuracySettings(PersistedModel):
         0.7,
         ge=0.0,
         le=1.0,
+        # The two marks cut the SAME axis, so the settings page draws them as one track with
+        # two handles rather than two sliders whose relationship the reader has to reconstruct.
+        upper_key="high_threshold",
         description=(
             "Fraction of the typed answer that must be correct to count as a pass.\n"
             "• 0.7 = 70% of characters right.\n"

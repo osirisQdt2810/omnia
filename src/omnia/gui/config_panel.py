@@ -28,6 +28,7 @@ only the drawing differs, because the hosts do.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -57,6 +58,7 @@ CONTROLS = (
     "dropdown",
     "slider",
     "number",
+    "range",
     "text",
     "secret",
     "color",
@@ -78,7 +80,12 @@ def control_for(field: ConfigField) -> str:
     if kind == "choice":
         return "segmented" if len(field.choices) <= SEGMENTED_MAX else "dropdown"
     if kind in ("int", "float"):
-        return "slider" if _is_draggable(field) else "number"
+        if not _is_draggable(field):
+            return "number"
+        # Two marks on one axis are one decision. Drawn as one track with two handles, the
+        # relationship between them — which is the whole content of the setting — is visible
+        # without reading either number.
+        return "range" if field.upper_key else "slider"
     if kind == "color":
         return "color"
     if kind == "secret":
@@ -101,13 +108,24 @@ def _is_draggable(field: ConfigField) -> bool:
     return span / _step(field) <= MAX_SLIDER_STEPS
 
 
+#: A float bounded to 0..1 is a FRACTION — an accuracy ratio, a share of a card — and reads as
+#: a percentage. Tenths are too coarse for one: "95% correct" is a setting people actually want
+#: and 0.1 cannot express it. Twenty steps is still a comfortable drag.
+_FRACTION_STEP = 0.05
+
+
 def _step(field: ConfigField) -> float:
     """How far one nudge of a slider moves.
 
-    A float field is a rate or a delay — tenths are what people actually set — and an int field
-    steps by one, because half a card is not a thing.
+    An int steps by one, because half a card is not a thing. A float is a rate or a delay, where
+    tenths are what people set — unless it is bounded to 0..1, which makes it a fraction and
+    tenths too blunt to place a threshold with.
     """
-    return 1 if field.kind == "int" else 0.1
+    if field.kind == "int":
+        return 1
+    if field.minimum == 0.0 and field.maximum == 1.0:
+        return _FRACTION_STEP
+    return 0.1
 
 
 def field_payload(field: ConfigField, value: Any) -> dict[str, Any]:
@@ -130,10 +148,41 @@ def field_payload(field: ConfigField, value: Any) -> dict[str, Any]:
     }
     if control in ("segmented", "dropdown"):
         payload["choices"] = _choices_with(field, current)
-    if control in ("slider", "number"):
+    if control in ("slider", "number", "range"):
         payload["min"] = field.minimum
         payload["max"] = field.maximum
         payload["step"] = _step(field)
+    if control == "range":
+        payload["upperKey"] = field.upper_key
+    return payload
+
+
+def pair_payload(
+    lower: ConfigField, upper: ConfigField, lower_value: Any, upper_value: Any
+) -> dict[str, Any]:
+    """The two-handled track for ``lower`` and its declared ``upper`` partner.
+
+    Built from BOTH descriptors rather than from the lower one alone, because the page has to
+    label each handle and write back two keys. The bounds come from the lower field: one track
+    can only have one scale, and two fields cutting the same axis that disagreed about its ends
+    would be a bug in the settings model rather than something to render.
+
+    Args:
+        lower: The field declaring ``upper_key``.
+        upper: The field it names.
+        lower_value: Current value of the lower mark.
+        upper_value: Current value of the upper mark.
+
+    Returns:
+        The lower field's payload, plus an ``upper`` block for the second handle.
+    """
+    payload = field_payload(lower, lower_value)
+    payload["upper"] = {
+        "key": upper.key,
+        "label": upper.label,
+        "help": upper.help,
+        "value": _as_json(getattr(upper_value, "value", upper_value), upper),
+    }
     return payload
 
 
@@ -227,8 +276,76 @@ def panel_payload(
         "name": name,
         "category": category,
         "accent": list(accent) if accent else [],
-        "fields": [
-            field_payload(field, values.get(field.key, field.default))
-            for field in fields
-        ],
+        "fields": _field_payloads(fields, values),
     }
+
+
+def _pair_partner(
+    field: ConfigField, by_key: dict[str, ConfigField]
+) -> Optional[ConfigField]:
+    """The second handle for ``field``, or ``None`` when the two cannot share one track.
+
+    Two reasons a declared pairing does not resolve, and both end the same way — each setting
+    keeps its own row:
+
+    * the named field is not there (renamed, removed, or spelt wrong);
+    * the two disagree about the scale. One track has one set of ends, and the payload carries
+      the LOWER field's, so an upper mark declaring a wider range would be silently clamped on
+      save — a setting rewritten to a value its own declaration allows, by a control that never
+      offered the rest of it.
+
+    Unpairing rather than raising keeps the failure in the settings model from reaching the
+    user as a dialog that will not open: every option is still on screen and still settable.
+    """
+    if not field.upper_key:
+        return None
+    upper = by_key.get(field.upper_key)
+    if upper is None:
+        return None
+    if (upper.minimum, upper.maximum) != (field.minimum, field.maximum):
+        return None
+    return upper
+
+
+def _field_payloads(
+    fields: list[ConfigField], values: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Every field as the page needs it, with declared pairs folded into one control.
+
+    A field named by another's ``upper_key`` is NOT emitted on its own: it is the second handle
+    of that track, and drawing it twice would give the user two ways to set one number that
+    could disagree on screen.
+
+    An ``upper_key`` naming a field that is not there — renamed, removed, or spelt wrong — falls
+    back to two ordinary sliders rather than dropping a setting. A settings page that silently
+    stops showing an option is a worse failure than one that shows it plainly.
+    """
+    by_key = {field.key: field for field in fields}
+    # Resolved ONCE and reused, so "this field is the second handle of another" and "this field
+    # has a second handle" can never disagree. Asking the question twice is how a rejected
+    # partner gets skipped as paired-away and then never drawn at all.
+    partners = {field.key: _pair_partner(field, by_key) for field in fields}
+    paired_away = {upper.key for upper in partners.values() if upper is not None}
+    payloads: list[dict[str, Any]] = []
+    for field in fields:
+        if field.key in paired_away:
+            continue
+        upper = partners[field.key]
+        if upper is None:
+            # Strip the dangling pairing before building: `control_for` reads `upper_key` and
+            # would say "range" for a payload with no second handle in it, which the page
+            # cannot draw. A descriptor whose partner does not resolve is simply not paired.
+            solo = (
+                dataclasses.replace(field, upper_key="") if field.upper_key else field
+            )
+            payloads.append(field_payload(solo, values.get(solo.key, solo.default)))
+            continue
+        payloads.append(
+            pair_payload(
+                field,
+                upper,
+                values.get(field.key, field.default),
+                values.get(upper.key, upper.default),
+            )
+        )
+    return payloads

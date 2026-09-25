@@ -243,9 +243,31 @@ class TestAgainstTheRealPlugins:
             payload = panel_payload(
                 plugin_id=plugin.id, name=plugin.name, fields=fields, values={}
             )
-            assert len(payload["fields"]) == len(fields), plugin.id
             for field in payload["fields"]:
                 assert field["control"] in CONTROLS, (plugin.id, field)
+
+    def test_every_declared_option_is_reachable_on_the_page(self, plugins):
+        """Not "one payload per field" — a control may own two settings.
+
+        Two marks that cut the same axis share one track, so the count stopped matching. What
+        still must hold, and is the thing worth pinning, is that NOTHING a plugin declares is
+        left without a way to set it: a settings page that silently drops an option is the
+        failure a count was standing in for.
+        """
+        for plugin in plugins:
+            fields = plugin.config_schema()
+            if not fields:
+                continue
+            payload = panel_payload(
+                plugin_id=plugin.id, name=plugin.name, fields=fields, values={}
+            )
+            reachable = set()
+            for rendered in payload["fields"]:
+                reachable.add(rendered["key"])
+                if "upper" in rendered:
+                    reachable.add(rendered["upper"]["key"])
+
+            assert {f.key for f in fields} == reachable, plugin.id
 
     def test_each_one_serialises(self, plugins):
         for plugin in plugins:

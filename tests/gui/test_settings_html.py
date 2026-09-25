@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+
+import pytest
 
 from omnia.gui.settings_categories import CATEGORY_STYLES, DEFAULT_CATEGORY_STYLE
 from omnia.gui.settings_html import (
@@ -615,3 +619,662 @@ class TestTheCategoryHandleMatchesTheMarkup:
     def test_an_unrendered_group_does_not_raise(self):
         # Nothing can open its panel anyway — it has no card to press.
         assert category_key("Nowhere", ["Reviewing"]) == "nowhere-1"
+
+
+class TestTwoMarksOnOneAxisAreOneControl:
+    """A pass mark and a "nearly perfect" mark cut the same ratio, so they are one decision.
+
+    Two separate sliders can hold the same two numbers. What they cannot show is the
+    RELATIONSHIP — three bands and where each starts — which is the whole content of the
+    setting. Read as two numbers it has to be reconstructed every time the page is opened.
+    """
+
+    def _pair(self, **kw):
+        from omnia.core.plugin import ConfigField
+
+        lower = ConfigField(
+            key="threshold",
+            label="Pass mark",
+            kind="float",
+            default=0.7,
+            minimum=0.0,
+            maximum=1.0,
+            upper_key="high_threshold",
+        )
+        upper = ConfigField(
+            key="high_threshold",
+            label="High mark",
+            kind="float",
+            default=0.0,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        return [lower, upper]
+
+    def _payloads(self, values):
+        from omnia.gui.config_panel import _field_payloads
+
+        return _field_payloads(self._pair(), values)
+
+    def test_the_pair_becomes_one_range_control(self):
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert payload["control"] == "range"
+        assert payload["value"] == 0.8
+        assert payload["upper"]["value"] == 0.95
+
+    def test_the_upper_field_is_not_drawn_twice(self):
+        """Two controls for one number could disagree on screen, and the user would be right
+        to wonder which one Save believes."""
+        payloads = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert [p["key"] for p in payloads] == ["threshold"]
+
+    def test_the_page_is_told_which_second_key_to_write(self):
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert payload["upperKey"] == "high_threshold"
+        assert payload["upper"]["key"] == "high_threshold"
+
+    def test_the_off_value_still_renders(self):
+        # 0 means "no top band". The handles meet; nothing is missing from the payload.
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.0})
+
+        assert payload["upper"]["value"] == 0.0
+
+    def test_a_dangling_partner_falls_back_to_two_sliders(self):
+        """An `upper_key` naming a field that is not there — renamed, removed, mistyped.
+
+        Falls back rather than dropping a setting: a settings page that silently stops showing
+        an option is a worse failure than one that shows it plainly.
+        """
+        from omnia.core.plugin import ConfigField
+        from omnia.gui.config_panel import _field_payloads
+
+        lonely = ConfigField(
+            key="threshold",
+            label="Pass mark",
+            kind="float",
+            default=0.7,
+            minimum=0.0,
+            maximum=1.0,
+            upper_key="typo_that_does_not_exist",
+        )
+
+        (payload,) = _field_payloads([lonely], {"threshold": 0.8})
+
+        assert payload["control"] == "slider"
+
+    def test_a_fraction_gets_a_step_fine_enough_to_place_a_threshold(self):
+        """Tenths cannot express "95% correct", which is a setting people actually want."""
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert payload["step"] == 0.05
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestLookingAtTheControlDoesNotChangeWhatIsStored:
+    """A form must not change a setting because it was looked at.
+
+    `sliderControl` documents this bug and its fix twenty lines above `rangeControl`: it used to
+    snap stored values to the step grid on load, so a stored 1.0 landed on 1.05 and pressing
+    Save to change something ELSE shifted every rate by 0.05, silently. The paired control
+    reintroduced it, which is why the invariant now has a test rather than only a comment.
+
+    Two failures it pins, neither needing the control to be touched:
+
+    * a stored 0.72 pass mark snaps to 0.70 — the grading cutoff moves on any Save;
+    * a stored (0.70, 0.72) collapses to (0.70, 0.70), which reads as OFF, so saving anything
+      on that panel disables a band the user had configured.
+
+    Off-grid values are reachable today: the sibling slider's editable readout writes typed
+    values unsnapped, and these two settings are designed to arrive from sync or a different
+    release.
+    """
+
+    def _read_back(self, lower: float, upper: float) -> dict:
+        """What the control would hand to Save for a stored pair, having only been opened."""
+        import json
+        import re
+        import subprocess
+
+        import omnia.gui.settings_html as settings_html
+        from omnia.gui.assets import read_asset
+
+        source = read_asset(settings_html.__file__, "web", "settings.js")
+        control = re.search(
+            r"  function rangeControl\(field\) \{.*?\n  \}", source, re.S
+        )
+        choices = re.search(r"const SPEED_CHOICES = \[.*?\];", source, re.S)
+        assert control, "rangeControl moved"
+
+        # A DOM thin enough to run the control's constructor: it only builds elements, reads
+        # their geometry on drag, and computes the two values. Nothing is dragged here.
+        script = f"""
+{choices.group(0) if choices else ""}
+const make = () => ({{
+  className: "", tabIndex: 0, style: {{setProperty(){{}}}}, textContent: "", classList: {{toggle(){{}}}},
+  appendChild(){{}}, addEventListener(){{}}, setAttribute(){{}},
+  getBoundingClientRect: () => ({{left: 0, width: 100}}),
+}});
+const el = () => make();
+const document = {{createElement: make}};
+const window = {{addEventListener(){{}}, removeEventListener(){{}}}};
+{control.group(0).replace("  function rangeControl", "function rangeControl")}
+const built = rangeControl({{
+  label: "Pass", min: 0, max: 1, step: 0.05, value: {lower},
+  upper: {{key: "high", label: "High", value: {upper}}},
+}});
+console.log(JSON.stringify({{lower: built.read(), upper: built.extra.high()}}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_an_off_grid_pass_mark_is_handed_back_unchanged(self):
+        assert self._read_back(0.72, 0.0)["lower"] == 0.72
+
+    def test_an_active_band_is_not_collapsed_into_off(self):
+        """(0.70, 0.72) is an ACTIVE band — the grader gates on `high > threshold`."""
+        read = self._read_back(0.70, 0.72)
+
+        assert (
+            read["upper"] == 0.72
+        ), "saving anything on this panel would switch the band off"
+
+    def test_an_on_grid_pair_still_reads_back_as_itself(self):
+        read = self._read_back(0.80, 0.95)
+
+        assert (read["lower"], read["upper"]) == (0.80, 0.95)
+
+    def test_off_still_reads_as_off(self):
+        # The upper mark at or below the lower one means no top band, and stores 0.
+        assert self._read_back(0.80, 0.0)["upper"] == 0
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestOffStaysOffUntilTheUpperHandleIsMoved:
+    """ "Off" must be something the user chose, not something that happened to them.
+
+    It was inferred from `hi > lo`, and with the band off the upper handle parks on the lower
+    one — so moving the LOWER mark down left the parked handle behind, `hi > lo` became true,
+    and Save wrote a live cutoff. Nudging the pass mark by one step enabled a grading band
+    nobody asked for and changed the interval every passing card gets. A round trip was worse:
+    drag right and back, and the band switches on wherever you turned around.
+
+    `high_threshold = 0` is the shipped default, so this was every user who had never touched
+    the feature.
+    """
+
+    def _drive(self, lower: float, upper: float, moves: list) -> dict:
+        """Open the control with a stored pair, apply `moves`, and read back what Save gets.
+
+        Each move is ``("lo"|"hi", value)`` — the control's own `set`, which is what a drag and
+        a keypress both go through.
+        """
+        import json
+        import re
+        import subprocess
+
+        import omnia.gui.settings_html as settings_html
+        from omnia.gui.assets import read_asset
+
+        source = read_asset(settings_html.__file__, "web", "settings.js")
+        control = re.search(
+            r"  function rangeControl\(field\) \{.*?\n  \}", source, re.S
+        )
+        assert control, "rangeControl moved"
+
+        script = f"""
+const make = () => ({{
+  className: "", tabIndex: 0, style: {{setProperty(){{}}}}, textContent: "", classList: {{toggle(){{}}}},
+  appendChild(){{}}, addEventListener(fn, cb){{ this._on = this._on || {{}}; this._on[fn] = cb; }},
+  setAttribute(){{}}, getBoundingClientRect: () => ({{left: 0, width: 100}}),
+}});
+const el = () => make();
+const document = {{createElement: make}};
+const window = {{addEventListener(){{}}, removeEventListener(){{}}}};
+{control.group(0).replace("  function rangeControl", "function rangeControl")}
+const built = rangeControl({{
+  label: "Pass", min: 0, max: 1, step: 0.05, value: {lower},
+  upper: {{key: "high", label: "High", value: {upper}}},
+}});
+// Reach `set` through the keyboard handler the control installed on each handle: that is the
+// same function a drag calls, so this drives the real path rather than a copy of it.
+const moves = {json.dumps(moves)};
+for (const [which, value] of moves) {{
+  built._set(which, value);
+}}
+console.log(JSON.stringify({{lower: built.read(), upper: built.extra.high()}}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_moving_only_the_lower_mark_does_not_switch_the_band_on(self):
+        read = self._drive(0.70, 0.0, [["lo", 0.65]])
+
+        assert (
+            read["upper"] == 0
+        ), "adjusting the pass mark enabled a grading band the user never asked for"
+
+    def test_a_round_trip_on_the_lower_mark_leaves_it_off(self):
+        read = self._drive(0.70, 0.0, [["lo", 0.90], ["lo", 0.70]])
+
+        assert read["upper"] == 0
+
+    def test_moving_the_upper_handle_is_what_turns_it_on(self):
+        read = self._drive(0.70, 0.0, [["hi", 0.95]])
+
+        assert read["upper"] == 0.95
+
+    def test_dragging_the_upper_handle_back_down_turns_it_off_again(self):
+        read = self._drive(0.70, 0.95, [["hi", 0.70]])
+
+        assert read["upper"] == 0
+
+    def test_an_active_band_still_follows_the_lower_mark_up(self):
+        # The lower mark overtaking the upper collapses the band — deliberately, and it is the
+        # one case where moving "lo" may change "hi".
+        read = self._drive(0.70, 0.80, [["lo", 0.90]])
+
+        assert read["lower"] == 0.90
+        assert read["upper"] == 0
+
+
+class TestTypedAccuracyDrawsItsTwoMarksTogether:
+    """End to end from the real settings model, because the declaration is the load-bearing
+    half: a control that renders perfectly for a hand-built pair and is never reached from the
+    plugin is a feature nobody sees."""
+
+    def _payloads(self, **values):
+        from omnia.core.config.schema import schema_from_model
+        from omnia.gui.config_panel import _field_payloads
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        settings = TypedAccuracySettings(**values)
+        return _field_payloads(
+            schema_from_model(TypedAccuracySettings), settings.dict()
+        )
+
+    def test_the_two_thresholds_share_a_track(self):
+        payloads = self._payloads(threshold=0.8, high_threshold=0.95)
+        by_key = {p["key"]: p for p in payloads}
+
+        assert by_key["threshold"]["control"] == "range"
+        assert by_key["threshold"]["upper"]["key"] == "high_threshold"
+        assert (
+            "high_threshold" not in by_key
+        ), "the upper mark got a second control of its own"
+
+    def test_the_other_options_are_untouched(self):
+        keys = {p["key"] for p in self._payloads()}
+
+        assert {"pass_ease", "fail_ease", "high_ease", "show_stats"} <= keys
+
+
+class TestTheRangeControlWritesBothMarks:
+    """The JS half. A control that owns two settings must register two readers, or Save keeps
+    half of what the user set — and the half it drops is the one with no control of its own.
+    """
+
+    def _js(self) -> str:
+        import omnia.gui.settings_html as settings_html
+        from omnia.gui.assets import read_asset
+
+        return read_asset(settings_html.__file__, "web", "settings.js")
+
+    def test_the_control_is_registered_under_its_payload_name(self):
+        assert "range: rangeControl," in self._js()
+
+    def test_extra_readers_are_collected_on_open(self):
+        js = self._js()
+
+        assert (
+            "built.extra" in js
+        ), "a control owning a second setting has nowhere to register it"
+
+    def test_the_row_forwards_extra_rather_than_swallowing_it(self):
+        js = self._js()
+        row = js[js.index("function fieldRow") :]
+        row = row[: row.index("\n  }")]
+
+        assert "extra: control.extra" in row
+
+    def test_collapsing_the_handles_stores_the_off_value(self):
+        """The handles meeting IS the off switch — one gesture, not a separate checkbox that
+        could disagree with where the handles are."""
+        js = self._js()
+        control = js[js.index("function rangeControl") :]
+        control = control[: control.index("\n  function ")]
+
+        assert "hi > lo ? hi : 0" in control
+
+
+_DOM_STUB = """
+// A DOM thin enough to build the control and press it. Elements are real objects so `style`,
+// `title` and attributes can be read back, `appendChild` records the tree, and listeners are
+// kept so a press can be dispatched at one.
+const NODES = [];
+function make(tag, cls, text) {
+  const node = {
+    tag: tag || "", className: cls || "", textContent: text == null ? "" : String(text),
+    style: {setProperty() {}}, attrs: {}, children: [], _on: {}, hidden: false,
+    classList: {toggle() {}},
+    appendChild(child) { this.children.push(child); return child; },
+    addEventListener(name, cb) { this._on[name] = cb; },
+    setAttribute(name, value) { this.attrs[name] = value; },
+    // 100px over the field's 0..1 scale, so a clientX IS the value in percent.
+    getBoundingClientRect: () => ({left: 0, width: 100}),
+  };
+  NODES.push(node);
+  return node;
+}
+const el = (tag, cls, text) => make(tag, cls, text);
+const document = {createElement: (tag) => make(tag), createTextNode: (t) => make("#text", "", t)};
+const WINDOW_ON = {};
+const window = {
+  addEventListener(name, cb) { WINDOW_ON[name] = cb; },
+  removeEventListener(name) { delete WINDOW_ON[name]; },
+};
+/** Every bit of text under `node`, in order. */
+function textOf(node) {
+  return (node.textContent || "") + node.children.map(textOf).join("");
+}
+"""
+
+
+def _extract(*names: str) -> str:
+    """Pull whole functions out of `settings.js` by name, as source.
+
+    Running the shipped source is the point: a harness that reimplemented the control would
+    have passed while the control itself was broken, which is what happened the first time.
+    """
+    import re
+
+    import omnia.gui.settings_html as settings_html
+    from omnia.gui.assets import read_asset
+
+    source = read_asset(settings_html.__file__, "web", "settings.js")
+    out = []
+    for name in names:
+        found = re.search(r"  function " + name + r"\(.*?\n  \}", source, re.S)
+        assert found, f"{name} moved"
+        out.append(found.group(0).replace("  function ", "function ", 1))
+    return "\n".join(out)
+
+
+def _run_js(script: str) -> dict:
+    import json
+    import subprocess
+
+    result = subprocess.run(
+        ["node", "-e", script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestTheVisibleHandleIsThePassMark:
+    """With the shipped default the two handles coincide, and a press must reach the right one.
+
+    `high_threshold = 0` means "no top band", and the upper handle parks on the lower one — so
+    every user who has never touched the feature sees ONE handle. Both are absolute siblings
+    with no z-index, so the later-appended upper one painted on top and took the press.
+
+    That made the default panel actively wrong rather than merely awkward: dragging the only
+    visible handle moved the mark the user could not see. The pass mark stayed where it was,
+    and the drag switched on a grading band that stages Easy for every answer above wherever
+    they let go — the exact class of unasked-for grading change the two-cutoff work exists to
+    put under the user's control.
+
+    These drive `startDrag` through a press on an element, not `set` directly, because the bug
+    was entirely in which element the press landed on: the suite that drove `_set` passed with
+    it in place.
+    """
+
+    def _press(self, lower, upper, presses):
+        """Open the control with a stored pair, press/drag at each clientX, read back Save.
+
+        Each press is ``[down_x, ...move_x]`` in track pixels; the track is 100px wide over a
+        0..1 scale, so x is the value in percent. Hit-testing mirrors the browser: the handles
+        are 14px wide, a press within one takes it, later-painted wins a tie, and a handle with
+        `pointer-events: none` is not a target at all.
+        """
+        script = _DOM_STUB + _extract("rangeControl") + f"""
+const built = rangeControl({{
+  label: "Pass", min: 0, max: 1, step: 0.05, value: {lower},
+  upper: {{key: "high", label: "High", value: {upper}}},
+}});
+const handles = NODES.filter((n) => n.attrs.role === "slider");
+const track = NODES.find((n) => n.children.includes(handles[0]));
+const ev = (x) => ({{clientX: x, preventDefault() {{}}, stopPropagation() {{}}}});
+function press(xs) {{
+  const [down, ...moves] = xs;
+  const hit = handles.filter(
+    (h) => h.style.pointerEvents !== "none" && Math.abs(down - parseFloat(h.style.left)) <= 7
+  );
+  const target = hit.length ? hit[hit.length - 1] : track;
+  target._on.mousedown(ev(down));
+  moves.forEach((x) => WINDOW_ON.mousemove && WINDOW_ON.mousemove(ev(x)));
+  WINDOW_ON.mouseup && WINDOW_ON.mouseup();
+}}
+{json.dumps(presses)}.forEach(press);
+console.log(JSON.stringify({{lower: built.read(), upper: built.extra.high()}}));
+"""
+        return _run_js(script)
+
+    def test_dragging_the_only_visible_handle_moves_the_pass_mark(self):
+        """The default panel: one handle on screen, and it is the one the label names."""
+        read = self._press(0.7, 0.0, [[70, 80]])
+
+        assert (
+            read["lower"] == 0.8
+        ), "the pass mark did not move — the press hit the other mark"
+        assert (
+            read["upper"] == 0
+        ), "a grading band switched on that the user never asked for"
+
+    def test_the_pass_mark_can_be_raised_with_a_mouse(self):
+        """It could only ever be LOWERED: right of the mark resolved to the upper handle, and
+        the handle itself was owned by the upper one, so no rightward mouse gesture reached it.
+        """
+        read = self._press(0.5, 0.0, [[50, 90]])
+
+        assert read["lower"] == 0.9
+
+    def test_pressing_the_bare_track_to_the_right_is_what_opens_a_band(self):
+        """The one gesture that turns the second cutoff on, and it needs a different target."""
+        read = self._press(0.7, 0.0, [[95]])
+
+        assert (read["lower"], read["upper"]) == (0.7, 0.95)
+
+    def test_an_open_band_still_gives_each_handle_its_own_press(self):
+        read = self._press(0.7, 0.9, [[90, 95]])
+
+        assert (read["lower"], read["upper"]) == (0.7, 0.95)
+
+        read = self._press(0.7, 0.9, [[70, 60]])
+
+        assert (read["lower"], read["upper"]) == (0.6, 0.9)
+
+    def test_closing_the_band_hands_the_press_back_to_the_pass_mark(self):
+        """Drag the upper handle down onto the lower one — the band is off again, so the next
+        press on the single remaining handle must move the pass mark, not reopen the band.
+        """
+        read = self._press(0.7, 0.9, [[90, 70], [70, 85]])
+
+        assert (read["lower"], read["upper"]) == (0.85, 0)
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestBothSettingsOnThePairedRowAreExplained:
+    """The upper mark is a whole setting, and the row is the only place it can be described.
+
+    Before the two marks shared a track it had a row of its own carrying its own help — the
+    only text saying what a second cutoff does, and that `0` means off. `pair_payload` still
+    builds it, `rangeControl` never read it, and `fieldRow` printed the lower field's help
+    alone. So it vanished at exactly the moment "off" stopped being a visible `0` and became
+    a gesture nothing on screen explains.
+    """
+
+    def _row_text(self, help_lower: str, help_upper: str) -> str:
+        script = (
+            _DOM_STUB
+            + _extract("rangeControl", "appendHelp", "helpBlock", "fieldRow")
+            + f"""
+const CONTROLS = {{range: rangeControl}};
+const textControl = () => ({{node: el("div"), read: () => ""}});
+const built = fieldRow({{
+  control: "range", key: "threshold", label: "Pass", min: 0, max: 1, step: 0.05, value: 0.7,
+  help: {json.dumps(help_lower)},
+  upper: {{key: "high", label: "High", value: 0, help: {json.dumps(help_upper)}}},
+}}, 0);
+console.log(JSON.stringify({{text: textOf(built.node)}}));
+"""
+        )
+        return _run_js(script)["text"]
+
+    def test_the_upper_marks_help_reaches_the_row(self):
+        text = self._row_text(
+            "what the pass mark does", "0 = off: one cutoff, pass or fail"
+        )
+
+        assert "0 = off: one cutoff, pass or fail" in text
+
+    def test_the_lower_fields_help_is_still_there(self):
+        text = self._row_text("what the pass mark does", "0 = off")
+
+        assert "what the pass mark does" in text
+
+    def test_a_pair_that_declares_no_upper_help_renders_nothing_extra(self):
+        text = self._row_text("what the pass mark does", "")
+
+        assert text.count("what the pass mark does") == 1
+
+    def test_the_real_typed_accuracy_help_is_the_text_that_shows(self):
+        """Pinned against the shipped descriptor rather than a literal, so the assertion cannot
+        drift away from what the plugin actually declares."""
+        from omnia.gui.config_panel import _field_payloads
+        from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
+
+        plugin = TypedAccuracyPlugin.__new__(TypedAccuracyPlugin)
+        fields = {f.key: f for f in plugin.config_schema()}
+        (payload,) = [
+            p
+            for p in _field_payloads(
+                [fields["threshold"], fields["high_threshold"]],
+                {"threshold": 0.8, "high_threshold": 0.95},
+            )
+            if p["control"] == "range"
+        ]
+        text = self._row_text(payload["help"], payload["upper"]["help"])
+
+        first = payload["upper"]["help"].split("\n")[0]
+        assert first and first in text
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestEachHandleAnnouncesItsScale:
+    """`aria-valuenow` alone is a number a screen reader cannot place."""
+
+    def test_both_handles_carry_the_ends_of_the_track(self):
+        script = _DOM_STUB + _extract("rangeControl") + """
+rangeControl({
+  label: "Pass", min: 0, max: 1, step: 0.05, value: 0.7,
+  upper: {key: "high", label: "High", value: 0.9},
+});
+const handles = NODES.filter((n) => n.attrs.role === "slider");
+console.log(JSON.stringify({attrs: handles.map((h) => h.attrs)}));
+"""
+        for attrs in _run_js(script)["attrs"]:
+            assert (attrs["aria-valuemin"], attrs["aria-valuemax"]) == ("0", "1")
+            assert attrs["aria-valuenow"]
+
+
+class TestOneTrackNeedsOneScale:
+    """Two marks that disagree about the ends of the axis cannot share a track.
+
+    The payload carries the LOWER field's bounds, so an upper mark declaring a wider range is
+    clamped on save — the control offers part of a setting and quietly rewrites the rest. No
+    such pair exists today, which is the point: this makes it impossible rather than unlikely,
+    and it degrades the way a dangling `upper_key` already does, by giving each its own row.
+    """
+
+    def _fields(self, upper_max: float):
+        from omnia.core.plugin import ConfigField
+
+        return [
+            ConfigField(
+                key="threshold",
+                label="Pass mark",
+                kind="float",
+                default=0.7,
+                minimum=0.0,
+                maximum=1.0,
+                upper_key="high_threshold",
+            ),
+            ConfigField(
+                key="high_threshold",
+                label="High mark",
+                kind="float",
+                default=0.0,
+                minimum=0.0,
+                maximum=upper_max,
+            ),
+        ]
+
+    def test_a_matching_pair_shares_one_track(self):
+        from omnia.gui.config_panel import _field_payloads
+
+        payloads = _field_payloads(self._fields(1.0), {})
+
+        assert [p["control"] for p in payloads] == ["range"]
+
+    def test_a_mismatched_pair_gets_a_row_each(self):
+        from omnia.gui.config_panel import _field_payloads
+
+        payloads = _field_payloads(self._fields(5.0), {})
+
+        assert [p["control"] for p in payloads] == ["slider", "slider"]
+
+    def test_the_rejected_partner_is_not_dropped(self):
+        """The trap: rejecting the pairing in one place and not the other loses the setting."""
+        from omnia.gui.config_panel import _field_payloads
+
+        payloads = _field_payloads(self._fields(5.0), {})
+
+        assert [p["key"] for p in payloads] == ["threshold", "high_threshold"]
+        assert payloads[1]["max"] == 5.0, "it kept the scale it declared"
