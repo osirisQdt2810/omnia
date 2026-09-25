@@ -589,3 +589,39 @@ class TestShippedModelDefaultsAreOffered:
 
         assert "gemini-2.5-flash" in catalog.text_models("gemini_vertex")
         assert "gemini-2.5-flash" not in catalog.text_models("gemini")
+
+
+class TestTheExampleDescribesWhatShips:
+    """The example TOML is read by someone setting a provider up for the first time, so a claim
+    in it that the code does not honour costs them an afternoon.
+
+    This one did: it said a self-hosted endpoint "needs nothing but a base_url", while
+    `OpenAICompatibleLLM.from_config` refuses to build without an `api_key` — so an Ollama or
+    llama.cpp user, whose server has no key at all, followed the instructions and got a
+    ProviderError.
+    """
+
+    def _example(self) -> str:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        return (root / "config" / "providers.example.toml").read_text(encoding="utf-8")
+
+    def test_the_provider_really_does_require_a_key(self):
+        """The fact the example now documents. If this ever stops being true, the example is
+        the thing to fix — which is why the assertion lives next to it."""
+        from omnia.core.providers.errors import ProviderError
+        from omnia.core.providers.llm.openai_compatible import OpenAICompatibleProvider
+
+        with pytest.raises(ProviderError, match="api_key"):
+            OpenAICompatibleProvider.from_config(
+                {"provider": "openai_compatible", "base_url": "http://x/v1"}, None
+            )
+
+    def test_the_example_says_so(self):
+        text = self._example()
+
+        assert "api_key is required" in text
+
+    def test_it_does_not_claim_a_base_url_is_enough(self):
+        assert "needs nothing but a base_url" not in self._example()

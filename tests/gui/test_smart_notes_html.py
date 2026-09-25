@@ -1313,3 +1313,71 @@ class TestTheSpeedPickerIsOnThePage:
         rebuild = rebuild[: rebuild.index("function makeSpeedSelect")]
 
         assert "makeSpeedSelect(tr)" in rebuild
+
+
+class TestTheConfiguredModelReachesTheCatalog:
+    """The glue, against the REAL context — which is the half that was missing.
+
+    `catalog_payload` merging a configured model was tested and correct. What was not tested
+    was whether anything ever handed it one: the reader called a method
+    `SmartNotesContext` does not have, a bare `except Exception` absorbed the AttributeError,
+    and the picker went on offering nothing. Logic perfect, feature inert, no test able to
+    tell — so this one goes through the real object.
+    """
+
+    def _context(self, config_dir, **openai_compatible):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        for key, value in openai_compatible.items():
+            repo.set_provider_fields("llm", "openai_compatible", [(key, "text", value)])
+
+        class _Ctx:
+            pass
+
+        ctx = _Ctx()
+        ctx.repo = repo
+        return ctx
+
+    def _models(self, ctx):
+        # No Qt stubs needed: the reader moved out of the dialog shell into a pure module, so
+        # the Account panel can rebuild what the shell baked without the two derivations
+        # drifting apart.
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+
+        inputs = CatalogInputs.read(ctx)
+        return inputs.text_models, inputs.image_models
+
+    def test_a_configured_text_model_is_read(self, config_dir):
+        ctx = self._context(config_dir, text_model="omnia-local")
+
+        text, _image = self._models(ctx)
+
+        assert (
+            text["openai_compatible"] == "omnia-local"
+        ), "the dialog read nothing, so the picker can offer nothing"
+
+    def test_a_configured_image_model_is_read(self, config_dir):
+        ctx = self._context(config_dir, image_model="my-sdxl")
+
+        _text, image = self._models(ctx)
+
+        assert image["openai_compatible"] == "my-sdxl"
+
+    def test_it_reaches_the_catalog_the_page_receives(self, config_dir):
+        ctx = self._context(config_dir, text_model="omnia-local")
+
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+
+        payload = CatalogInputs.read(ctx).catalog()
+
+        assert "omnia-local" in payload["text_models"]["openai_compatible"]
+
+    def test_a_broken_context_degrades_without_taking_the_dialog_down(self):
+        class _Broken:
+            @property
+            def repo(self):
+                raise RuntimeError("providers.toml is unreadable")
+
+        assert self._models(_Broken()) == ({}, {})

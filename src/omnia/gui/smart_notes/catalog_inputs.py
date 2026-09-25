@@ -40,7 +40,7 @@ class CatalogInputs:
         self.image_models = image_models
 
     @classmethod
-    def read(cls, ctx: Any) -> "CatalogInputs":
+    def read(cls, ctx: Any) -> CatalogInputs:
         """Read them off ``ctx``, degrading to empty rather than refusing to open the dialog.
 
         Best-effort on purpose: a providers.toml that will not parse should cost the custom

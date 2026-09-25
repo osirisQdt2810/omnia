@@ -337,3 +337,46 @@ class TestUsageForACustomEndpointJoins:
 
     def test_a_name_nothing_knows_passes_through(self):
         assert self._canonical("not-a-provider") == "not-a-provider"
+
+
+class TestASelfHostedModelIdCanBeEntered:
+    """There has to be somewhere to TYPE the model id, or the design is circular.
+
+    A self-hosted endpoint has no curated ids, so the per-field and default-model pickers offer
+    only what is already configured — and if they were the only way to configure it, a fresh
+    install could never set one. The Keys card is where it is typed.
+    """
+
+    def _card(self):
+        from omnia.core.config.models import LLMSettings
+
+        return next(
+            c for c in key_cards(LLMSettings()) if c["id"] == "openai_compatible"
+        )
+
+    def test_the_text_model_is_a_typed_field(self):
+        fields = {f["key"]: f for f in self._card()["fields"]}
+
+        assert (
+            "text_model" in fields
+        ), "the model id can be picked from a list that only contains itself"
+        assert fields["text_model"]["type"] == "text"
+
+    def test_the_image_model_is_a_typed_field(self):
+        fields = {f["key"]: f for f in self._card()["fields"]}
+
+        assert "image_model" in fields
+        assert fields["image_model"]["type"] == "text"
+
+    def test_the_address_and_the_key_are_there_too(self):
+        keys = {f["key"] for f in self._card()["fields"]}
+
+        assert {"base_url", "api_key"} <= keys
+
+    def test_a_vendor_card_does_not_grow_model_fields(self):
+        """Their ids ARE curated, so a free-text box next to a good list is a way to typo one."""
+        from omnia.core.config.models import LLMSettings
+
+        gemini = next(c for c in key_cards(LLMSettings()) if c["id"] == "gemini")
+
+        assert "text_model" not in {f["key"] for f in gemini["fields"]}
