@@ -1432,6 +1432,8 @@ class TestAnEdgeKnowsWhetherItActuallyBlocks:
         edges = self._edges(depends_on=[FieldDep(field="Word", kind="soft")])
 
         assert edges[("Word", "Definition")]["blocks"] is False
+
+
 class TestTheConfiguredModelReachesTheCatalog:
     """The glue, against the REAL context — which is the half that was missing.
 
