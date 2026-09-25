@@ -601,6 +601,143 @@
   }
 
   /**
+   * One track, two handles: two marks that cut the same axis.
+   *
+   * Two separate sliders can express the same pair, and that is what this replaces. What they
+   * cannot show is the RELATIONSHIP, which is the whole content of the setting — three bands
+   * and where they start. Read as two numbers it has to be reconstructed every time; read as
+   * one track it is the picture.
+   *
+   * Dragging the handles together collapses the top band, and that IS the off switch: the
+   * upper mark stores 0, which the grader already reads as "one cutoff". So turning the
+   * feature off is the same gesture as narrowing it, rather than a separate checkbox that
+   * could disagree with the handles.
+   * @param {!Object} field The field payload, carrying an `upper` block.
+   * @return {{node: !Element, read: function(): *, extra: !Object}}
+   */
+  function rangeControl(field) {
+    const upper = field.upper || {};
+    const low = Number(field.min);
+    const high = Number(field.max);
+    const step = Number(field.step) || 0.05;
+    const span = high - low;
+
+    const wrap = el("div", "omnia-range2");
+    const track = el("div", "omnia-range2-track");
+    const fill = el("div", "omnia-range2-fill");      // between the handles: the middle band
+    const top = el("div", "omnia-range2-top");        // above the upper handle: the top band
+    track.appendChild(fill);
+    track.appendChild(top);
+
+    const snap = function (value) {
+      return Number((Math.round(Number(value) / step) * step).toFixed(4));
+    };
+    const clamp = function (value) { return Math.min(high, Math.max(low, value)); };
+
+    let lo = clamp(snap(Number(field.value)));
+    // 0 means "no top band" and is BELOW the lower mark, so it cannot be a handle position.
+    // The handle parks on the lower mark instead, which is the same thing said visually: no
+    // gap, no band.
+    let hi = Number(upper.value) > lo ? clamp(snap(Number(upper.value))) : lo;
+
+    const makeHandle = function (labelText) {
+      const h = el("div", "omnia-range2-handle");
+      h.tabIndex = 0;
+      h.setAttribute("role", "slider");
+      h.setAttribute("aria-label", labelText);
+      return h;
+    };
+    const loHandle = makeHandle(field.label);
+    const hiHandle = makeHandle(upper.label || "Upper");
+    track.appendChild(loHandle);
+    track.appendChild(hiHandle);
+
+    const legend = el("div", "omnia-range2-legend");
+    const loOut = el("span", "omnia-range2-out");
+    const hiOut = el("span", "omnia-range2-out");
+
+    const pct = function (v) { return span ? ((v - low) / span) * 100 : 0; };
+
+    const paint = function () {
+      const a = pct(lo);
+      const b = pct(hi);
+      loHandle.style.left = a + "%";
+      hiHandle.style.left = b + "%";
+      fill.style.left = a + "%";
+      fill.style.width = Math.max(0, b - a) + "%";
+      top.style.left = b + "%";
+      top.style.width = Math.max(0, 100 - b) + "%";
+      loHandle.setAttribute("aria-valuenow", String(lo));
+      hiHandle.setAttribute("aria-valuenow", String(hi));
+      loOut.textContent = field.label + ": " + lo;
+      // Says "off" rather than showing 0, because 0 is how it is STORED and not what it means.
+      hiOut.textContent = (upper.label || "Upper") + ": " + (hi > lo ? String(hi) : "off");
+      wrap.classList.toggle("omnia-range2-collapsed", !(hi > lo));
+    };
+
+    /** Move one handle, keeping the lower at or below the upper. */
+    const set = function (which, value) {
+      const v = clamp(snap(value));
+      if (which === "lo") {
+        lo = v;
+        if (hi < lo) { hi = lo; }   // pushing the lower mark past the upper collapses the band
+      } else {
+        hi = Math.max(v, lo);       // the upper can never sit below the lower
+      }
+      paint();
+    };
+
+    const valueAt = function (clientX) {
+      const box = track.getBoundingClientRect();
+      if (!box.width) { return lo; }
+      return low + ((clientX - box.left) / box.width) * span;
+    };
+
+    /** Drag whichever handle is nearer the press, so the track responds where it is clicked. */
+    const startDrag = function (ev, forced) {
+      const at = valueAt(ev.clientX);
+      const which = forced || (Math.abs(at - lo) <= Math.abs(at - hi) ? "lo" : "hi");
+      set(which, at);
+      const move = function (e) { set(which, valueAt(e.clientX)); };
+      const stop = function () {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", stop);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", stop);
+      ev.preventDefault();
+    };
+
+    track.addEventListener("mousedown", function (ev) { startDrag(ev, null); });
+    loHandle.addEventListener("mousedown", function (ev) { ev.stopPropagation(); startDrag(ev, "lo"); });
+    hiHandle.addEventListener("mousedown", function (ev) { ev.stopPropagation(); startDrag(ev, "hi"); });
+
+    const keys = function (which, current) {
+      return function (ev) {
+        const by = {ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1,
+                    PageDown: -10, PageUp: 10}[ev.key];
+        if (by === undefined) { return; }
+        ev.preventDefault();
+        set(which, current() + by * step);
+      };
+    };
+    loHandle.addEventListener("keydown", keys("lo", function () { return lo; }));
+    hiHandle.addEventListener("keydown", keys("hi", function () { return hi; }));
+
+    legend.appendChild(loOut);
+    legend.appendChild(hiOut);
+    wrap.appendChild(track);
+    wrap.appendChild(legend);
+    paint();
+
+    const extra = {};
+    // Stored as 0 when the handles meet: that is what the grader reads as "no top band", so
+    // the page writes the same value the engine's default already means.
+    extra[upper.key] = function () { return hi > lo ? hi : 0; };
+    return {node: wrap, read: function () { return lo; }, extra: extra};
+  }
+
+  /**
    * A plain number field, for a number with an open end — a slider needs somewhere to stop.
    * @param {!Object} field The field payload.
    * @return {{node: !Element, read: function(): *}}
@@ -669,6 +806,7 @@
     segmented: segmentedControl,
     dropdown: dropdownControl,
     slider: sliderControl,
+    range: rangeControl,
     number: numberControl,
     text: textControl,
     secret: textControl,
@@ -702,7 +840,9 @@
       row.appendChild(holder);
     }
     appendHelp(row, field.help || "");
-    return {node: row, read: control.read};
+    // `extra` forwarded, not swallowed: a control that owns a second setting registers it
+    // through here, and a row that dropped it would save only half of what the user set.
+    return {node: row, read: control.read, extra: control.extra || {}};
   }
 
   /**
@@ -774,6 +914,12 @@
     (payload.fields || []).forEach(function (field, index) {
       const built = fieldRow(field, index);
       readers[field.key] = built.read;
+      // A control may own more than one setting — a two-handled range writes both of its
+      // marks. Registering the extra readers here keeps saving a plain "read every key"
+      // loop rather than something that knows which controls are special.
+      Object.keys(built.extra || {}).forEach(function (key) {
+        readers[key] = built.extra[key];
+      });
       configFields.appendChild(built.node);
     });
     if (!(payload.fields || []).length) {

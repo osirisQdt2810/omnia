@@ -615,3 +615,163 @@ class TestTheCategoryHandleMatchesTheMarkup:
     def test_an_unrendered_group_does_not_raise(self):
         # Nothing can open its panel anyway — it has no card to press.
         assert category_key("Nowhere", ["Reviewing"]) == "nowhere-1"
+
+
+class TestTwoMarksOnOneAxisAreOneControl:
+    """A pass mark and a "nearly perfect" mark cut the same ratio, so they are one decision.
+
+    Two separate sliders can hold the same two numbers. What they cannot show is the
+    RELATIONSHIP — three bands and where each starts — which is the whole content of the
+    setting. Read as two numbers it has to be reconstructed every time the page is opened.
+    """
+
+    def _pair(self, **kw):
+        from omnia.core.plugin import ConfigField
+
+        lower = ConfigField(
+            key="threshold",
+            label="Pass mark",
+            kind="float",
+            default=0.7,
+            minimum=0.0,
+            maximum=1.0,
+            upper_key="high_threshold",
+        )
+        upper = ConfigField(
+            key="high_threshold",
+            label="High mark",
+            kind="float",
+            default=0.0,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        return [lower, upper]
+
+    def _payloads(self, values):
+        from omnia.gui.config_panel import _field_payloads
+
+        return _field_payloads(self._pair(), values)
+
+    def test_the_pair_becomes_one_range_control(self):
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert payload["control"] == "range"
+        assert payload["value"] == 0.8
+        assert payload["upper"]["value"] == 0.95
+
+    def test_the_upper_field_is_not_drawn_twice(self):
+        """Two controls for one number could disagree on screen, and the user would be right
+        to wonder which one Save believes."""
+        payloads = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert [p["key"] for p in payloads] == ["threshold"]
+
+    def test_the_page_is_told_which_second_key_to_write(self):
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert payload["upperKey"] == "high_threshold"
+        assert payload["upper"]["key"] == "high_threshold"
+
+    def test_the_off_value_still_renders(self):
+        # 0 means "no top band". The handles meet; nothing is missing from the payload.
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.0})
+
+        assert payload["upper"]["value"] == 0.0
+
+    def test_a_dangling_partner_falls_back_to_two_sliders(self):
+        """An `upper_key` naming a field that is not there — renamed, removed, mistyped.
+
+        Falls back rather than dropping a setting: a settings page that silently stops showing
+        an option is a worse failure than one that shows it plainly.
+        """
+        from omnia.core.plugin import ConfigField
+        from omnia.gui.config_panel import _field_payloads
+
+        lonely = ConfigField(
+            key="threshold",
+            label="Pass mark",
+            kind="float",
+            default=0.7,
+            minimum=0.0,
+            maximum=1.0,
+            upper_key="typo_that_does_not_exist",
+        )
+
+        (payload,) = _field_payloads([lonely], {"threshold": 0.8})
+
+        assert payload["control"] == "slider"
+
+    def test_a_fraction_gets_a_step_fine_enough_to_place_a_threshold(self):
+        """Tenths cannot express "95% correct", which is a setting people actually want."""
+        (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
+
+        assert payload["step"] == 0.05
+
+
+class TestTypedAccuracyDrawsItsTwoMarksTogether:
+    """End to end from the real settings model, because the declaration is the load-bearing
+    half: a control that renders perfectly for a hand-built pair and is never reached from the
+    plugin is a feature nobody sees."""
+
+    def _payloads(self, **values):
+        from omnia.core.config.schema import schema_from_model
+        from omnia.gui.config_panel import _field_payloads
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        settings = TypedAccuracySettings(**values)
+        return _field_payloads(
+            schema_from_model(TypedAccuracySettings), settings.dict()
+        )
+
+    def test_the_two_thresholds_share_a_track(self):
+        payloads = self._payloads(threshold=0.8, high_threshold=0.95)
+        by_key = {p["key"]: p for p in payloads}
+
+        assert by_key["threshold"]["control"] == "range"
+        assert by_key["threshold"]["upper"]["key"] == "high_threshold"
+        assert (
+            "high_threshold" not in by_key
+        ), "the upper mark got a second control of its own"
+
+    def test_the_other_options_are_untouched(self):
+        keys = {p["key"] for p in self._payloads()}
+
+        assert {"pass_ease", "fail_ease", "high_ease", "show_stats"} <= keys
+
+
+class TestTheRangeControlWritesBothMarks:
+    """The JS half. A control that owns two settings must register two readers, or Save keeps
+    half of what the user set — and the half it drops is the one with no control of its own.
+    """
+
+    def _js(self) -> str:
+        import omnia.gui.settings_html as settings_html
+        from omnia.gui.assets import read_asset
+
+        return read_asset(settings_html.__file__, "web", "settings.js")
+
+    def test_the_control_is_registered_under_its_payload_name(self):
+        assert "range: rangeControl," in self._js()
+
+    def test_extra_readers_are_collected_on_open(self):
+        js = self._js()
+
+        assert (
+            "built.extra" in js
+        ), "a control owning a second setting has nowhere to register it"
+
+    def test_the_row_forwards_extra_rather_than_swallowing_it(self):
+        js = self._js()
+        row = js[js.index("function fieldRow") :]
+        row = row[: row.index("\n  }")]
+
+        assert "extra: control.extra" in row
+
+    def test_collapsing_the_handles_stores_the_off_value(self):
+        """The handles meeting IS the off switch — one gesture, not a separate checkbox that
+        could disagree with where the handles are."""
+        js = self._js()
+        control = js[js.index("function rangeControl") :]
+        control = control[: control.index("\n  function ")]
+
+        assert "hi > lo ? hi : 0" in control
