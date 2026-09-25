@@ -634,11 +634,21 @@
     };
     const clamp = function (value) { return Math.min(high, Math.max(low, value)); };
 
-    let lo = clamp(snap(Number(field.value)));
+    // RAW, not snapped. Snapping on load and handing the result to Save rewrites a setting
+    // for being looked at: a stored 0.72 becomes 0.70 the moment the panel opens, and pressing
+    // Save to change something else moves the grading cutoff by 0.02 with no interaction and
+    // no notice. Worse for the pair — a stored (0.70, 0.72) collapses to (0.70, 0.70), which
+    // reads as "off" and silently disables a band the user had configured.
+    //
+    // Off-grid values are reachable: the sibling slider's editable readout writes typed values
+    // unsnapped, and these two settings are designed to arrive from sync or another release.
+    // `sliderControl` twenty lines up documents the same bug and the same fix; this is the
+    // second time it has been written, so the invariant now has a test of its own.
+    let lo = clamp(Number(field.value));
     // 0 means "no top band" and is BELOW the lower mark, so it cannot be a handle position.
     // The handle parks on the lower mark instead, which is the same thing said visually: no
-    // gap, no band.
-    let hi = Number(upper.value) > lo ? clamp(snap(Number(upper.value))) : lo;
+    // gap, no band. Compared RAW, so a band that is genuinely active stays active.
+    let hi = Number(upper.value) > lo ? clamp(Number(upper.value)) : lo;
 
     const makeHandle = function (labelText) {
       const h = el("div", "omnia-range2-handle");

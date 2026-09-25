@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import re
+import shutil
+
+import pytest
 
 from omnia.gui.settings_categories import CATEGORY_STYLES, DEFAULT_CATEGORY_STYLE
 from omnia.gui.settings_html import (
@@ -706,6 +709,95 @@ class TestTwoMarksOnOneAxisAreOneControl:
         (payload,) = self._payloads({"threshold": 0.8, "high_threshold": 0.95})
 
         assert payload["step"] == 0.05
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestLookingAtTheControlDoesNotChangeWhatIsStored:
+    """A form must not change a setting because it was looked at.
+
+    `sliderControl` documents this bug and its fix twenty lines above `rangeControl`: it used to
+    snap stored values to the step grid on load, so a stored 1.0 landed on 1.05 and pressing
+    Save to change something ELSE shifted every rate by 0.05, silently. The paired control
+    reintroduced it, which is why the invariant now has a test rather than only a comment.
+
+    Two failures it pins, neither needing the control to be touched:
+
+    * a stored 0.72 pass mark snaps to 0.70 — the grading cutoff moves on any Save;
+    * a stored (0.70, 0.72) collapses to (0.70, 0.70), which reads as OFF, so saving anything
+      on that panel disables a band the user had configured.
+
+    Off-grid values are reachable today: the sibling slider's editable readout writes typed
+    values unsnapped, and these two settings are designed to arrive from sync or a different
+    release.
+    """
+
+    def _read_back(self, lower: float, upper: float) -> dict:
+        """What the control would hand to Save for a stored pair, having only been opened."""
+        import json
+        import re
+        import subprocess
+
+        import omnia.gui.settings_html as settings_html
+        from omnia.gui.assets import read_asset
+
+        source = read_asset(settings_html.__file__, "web", "settings.js")
+        control = re.search(
+            r"  function rangeControl\(field\) \{.*?\n  \}", source, re.S
+        )
+        choices = re.search(r"const SPEED_CHOICES = \[.*?\];", source, re.S)
+        assert control, "rangeControl moved"
+
+        # A DOM thin enough to run the control's constructor: it only builds elements, reads
+        # their geometry on drag, and computes the two values. Nothing is dragged here.
+        script = f"""
+{choices.group(0) if choices else ""}
+const make = () => ({{
+  className: "", tabIndex: 0, style: {{setProperty(){{}}}}, textContent: "", classList: {{toggle(){{}}}},
+  appendChild(){{}}, addEventListener(){{}}, setAttribute(){{}},
+  getBoundingClientRect: () => ({{left: 0, width: 100}}),
+}});
+const el = () => make();
+const document = {{createElement: make}};
+const window = {{addEventListener(){{}}, removeEventListener(){{}}}};
+{control.group(0).replace("  function rangeControl", "function rangeControl")}
+const built = rangeControl({{
+  label: "Pass", min: 0, max: 1, step: 0.05, value: {lower},
+  upper: {{key: "high", label: "High", value: {upper}}},
+}});
+console.log(JSON.stringify({{lower: built.read(), upper: built.extra.high()}}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_an_off_grid_pass_mark_is_handed_back_unchanged(self):
+        assert self._read_back(0.72, 0.0)["lower"] == 0.72
+
+    def test_an_active_band_is_not_collapsed_into_off(self):
+        """(0.70, 0.72) is an ACTIVE band — the grader gates on `high > threshold`."""
+        read = self._read_back(0.70, 0.72)
+
+        assert (
+            read["upper"] == 0.72
+        ), "saving anything on this panel would switch the band off"
+
+    def test_an_on_grid_pair_still_reads_back_as_itself(self):
+        read = self._read_back(0.80, 0.95)
+
+        assert (read["lower"], read["upper"]) == (0.80, 0.95)
+
+    def test_off_still_reads_as_off(self):
+        # The upper mark at or below the lower one means no top band, and stores 0.
+        assert self._read_back(0.80, 0.0)["upper"] == 0
 
 
 class TestTypedAccuracyDrawsItsTwoMarksTogether:
