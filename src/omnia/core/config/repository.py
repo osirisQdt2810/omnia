@@ -30,6 +30,19 @@ from omnia.core.config.secrets import SecretsStore
 from omnia.core.registry import get_registered
 
 
+def _require_custom_domain(domain: str) -> None:
+    """Only ``llm`` can hold a user's own endpoints; anything else is refused.
+
+    ``tts`` was accepted and the write went through, but ``TTSSettings`` has no ``custom``
+    field and no ``subsection()``, so ``active()`` could never resolve the name: the section
+    was write-only. Nothing calls it that way today, which is the moment to close it —
+    accepting a domain whose settings model cannot read the result is a promise the API does
+    not keep.
+    """
+    if domain != "llm":
+        raise ValueError(f"custom endpoints are not supported for: {domain}")
+
+
 class ConfigRepository:
     """Typed config access + persistence to the owning domain live files.
 
@@ -332,8 +345,7 @@ class ConfigRepository:
                 duplicate rather than merging into it: two endpoints sharing a name would be
                 one endpoint, and the second Save would silently overwrite the first.
         """
-        if domain not in ("llm", "tts"):
-            raise ValueError(f"unknown provider domain: {domain}")
+        _require_custom_domain(domain)
         label = label.strip()
         if not label:
             raise ValueError("Give the endpoint a name.")
@@ -360,14 +372,18 @@ class ConfigRepository:
         """
         from omnia.core.config.models import custom_provider_label
 
+        _require_custom_domain(domain)
         label = custom_provider_label(provider)
-        if not label or domain not in ("llm", "tts"):
+        if not label:
             raise ValueError(f"not a removable endpoint: {provider}")
         data = self._loader.read_file("providers.toml")
         table = data.get(domain, {}).get("custom", {})
         for field in list(table.get(label, {})):
             with contextlib.suppress(Exception):
-                self._secrets.forget(self._secret_name(domain, provider, field))
+                # `forget_all`, not `forget`: a credential file is stored under the same stem
+                # plus the extension it arrived with, so forgetting the stem alone left it on
+                # disk with nothing referencing it.
+                self._secrets.forget_all(self._secret_name(domain, provider, field))
         table.pop(label, None)
         # Otherwise the domain goes on naming an endpoint that is gone. `active()` returns None,
         # so the hub falls back to a bare `openai_compatible` with no base URL and no key, and

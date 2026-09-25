@@ -8,6 +8,8 @@ every test here is really about.
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from omnia.core.config.models import (
@@ -520,3 +522,129 @@ class TestEveryWriterNestsACustomEndpoint:
         repo._write_provider_field("llm", "custom:mine", "base_url", "http://x/v1")
 
         assert "custom:mine" not in repo._loader.read_file("providers.toml")["llm"]
+
+
+class TestACustomEndpointCanBeChosenForAnImageField:
+    """Its key card offers an Image model, so a picker has to be able to select it.
+
+    `image_providers` is a narrower list — only providers with an images endpoint — and it was
+    built from the shipped names alone. A custom endpoint IS an openai-compatible instance, so
+    it belongs in both lists; left out of this one, the Image model field on its card saved a
+    value that nothing in the UI could ever reach. `image_models` was already keyed over the
+    custom endpoints, so the entry was built and then never looked up.
+    """
+
+    def _catalog(self, custom=("custom:mine",)):
+        from omnia.core.providers.catalog import catalog_payload
+
+        return catalog_payload(
+            None, {"custom:mine": "my-llm"}, {"custom:mine": "my-sdxl"}, list(custom)
+        )
+
+    def test_it_is_offered_as_an_image_provider(self):
+        assert "custom:mine" in self._catalog()["image_providers"]
+
+    def test_its_configured_image_model_is_reachable(self):
+        catalog = self._catalog()
+
+        assert "my-sdxl" in catalog["image_models"]["custom:mine"]
+        assert catalog["image_models"][
+            "custom:mine"
+        ], "the entry exists but nothing selects it"
+
+    def test_the_image_list_is_still_narrower_than_the_text_one(self):
+        """The point of a separate list: openrouter has no /images/generations endpoint."""
+        catalog = self._catalog()
+
+        assert "openrouter" in catalog["llm_providers"]
+        assert "openrouter" not in catalog["image_providers"]
+
+    def test_with_no_endpoints_the_two_lists_are_the_shipped_ones(self):
+        from omnia.core.providers.catalog import KIND_IMAGE, providers_for
+
+        assert self._catalog(custom=())["image_providers"] == providers_for(KIND_IMAGE)
+
+
+class TestOnlyTheLLMDomainHoldsCustomEndpoints:
+    """`tts` was accepted and the write went through, but nothing could ever read it.
+
+    `TTSSettings` has no `custom` field and no `subsection()`, so `active()` could not resolve
+    the name: the section was write-only. An API that accepts a domain whose settings model
+    cannot read the result is making a promise it does not keep.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_adding_a_tts_endpoint_is_refused(self, repo):
+        with pytest.raises(ValueError):
+            repo.add_custom_provider("tts", "my-voice-box")
+
+    def test_removing_one_is_refused_too(self, repo):
+        with pytest.raises(ValueError):
+            repo.remove_custom_provider("tts", "custom:my-voice-box")
+
+    def test_nothing_is_written_for_the_refused_domain(self, repo):
+        with contextlib.suppress(ValueError):
+            repo.add_custom_provider("tts", "my-voice-box")
+
+        assert "custom" not in repo._loader.read_file("providers.toml").get("tts", {})
+
+    def test_llm_still_works(self, repo):
+        assert repo.add_custom_provider("llm", "gpu") == "custom:gpu"
+
+
+class TestRemovingAnEndpointTakesItsCredentialFileToo:
+    """A credential file is stored under the field's stem PLUS the extension it arrived with.
+
+    Forgetting the stem alone missed it, so a service-account JSON outlived every reference to
+    it — the exact leftover the removal path documents itself as preventing.
+    """
+
+    def _repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_the_file_goes_with_the_endpoint(self, config_dir, tmp_path):
+        repo = self._repo(config_dir)
+        repo.add_custom_provider("llm", "gpu")
+        source = tmp_path / "creds.json"
+        source.write_text('{"type": "service_account"}')
+        repo.set_provider_credential_file("llm", "custom:gpu", "api_key", str(source))
+        secrets = config_dir / ".secrets"
+        assert list(
+            secrets.glob("*.json")
+        ), "nothing was imported, so nothing is being tested"
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert not list(secrets.glob("*.json"))
+
+    def test_a_plain_secret_still_goes(self, config_dir):
+        repo = self._repo(config_dir)
+        repo.add_custom_provider("llm", "gpu")
+        repo.set_provider_fields("llm", "custom:gpu", [("api_key", "secret", "sk-xyz")])
+        secrets = config_dir / ".secrets"
+        assert list(secrets.iterdir())
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert not list(secrets.iterdir())
+
+    def test_another_endpoints_secrets_are_left_alone(self, config_dir):
+        repo = self._repo(config_dir)
+        for label in ("gpu", "spare"):
+            repo.add_custom_provider("llm", label)
+            repo.set_provider_fields(
+                "llm", f"custom:{label}", [("api_key", "secret", f"sk-{label}")]
+            )
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert repo.llm_settings().subsection("custom:spare").api_key == "sk-spare"

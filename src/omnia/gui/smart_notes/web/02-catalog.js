@@ -26,7 +26,8 @@
     if (!half) {
       return;
     }
-    ["llm_providers", "text_models", "image_models"].forEach(function (key) {
+    const keys = ["llm_providers", "image_providers", "text_models", "image_models"];
+    keys.forEach(function (key) {
       if (half[key]) {
         CATALOG[key] = half[key];
       }

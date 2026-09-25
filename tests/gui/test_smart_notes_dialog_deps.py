@@ -1049,6 +1049,25 @@ class TestAnEndpointChangeRefreshesEverythingItInvalidates:
 
         assert "custom:gpu-box" in res["llm_providers"]
 
+    def test_a_new_endpoint_is_immediately_selectable_for_an_image_field(
+        self, config_dir
+    ):
+        """The image picker reads its OWN list — a narrower one — so refreshing three of the
+        four keys leaves it holding the list the dialog opened with."""
+        controller = self._controller(config_dir)
+
+        res = controller.on_add_endpoint({"label": "gpu-box"})
+
+        assert "custom:gpu-box" in res["image_providers"]
+
+    def test_a_removed_endpoint_leaves_every_picker(self, config_dir):
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+
+        res = controller.on_remove_endpoint({"provider": "custom:gpu-box"})
+
+        assert "custom:gpu-box" not in res["image_providers"]
+
     def test_a_removed_endpoint_leaves_the_picker(self, config_dir):
         controller = self._controller(config_dir)
         controller.on_add_endpoint({"label": "gpu-box"})

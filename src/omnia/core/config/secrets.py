@@ -79,6 +79,18 @@ class SecretsStore:
         shutil.copyfile(src_path, self._dir / name)
         return f"{self.FILE_SCHEME}{name}"
 
+    def forget_all(self, stem: str) -> None:
+        """Delete every secret whose name is ``stem``, with or without a file extension.
+
+        A credential FILE is stored as ``<stem><ext>`` — the extension comes from whatever the
+        user browsed to, so the name alone does not identify it. Forgetting the stem therefore
+        missed it, and a service-account JSON outlived the provider that referenced it.
+        """
+        self.forget(stem)
+        with contextlib.suppress(OSError):
+            for path in self._dir.glob(stem + ".*"):
+                path.unlink()
+
     def forget(self, name: str) -> None:
         """Delete ``.secrets/<name>`` if it is there.
 

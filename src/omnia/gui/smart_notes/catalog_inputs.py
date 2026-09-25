@@ -87,6 +87,5 @@ class CatalogInputs:
         the config has moved past.
         """
         full = self.catalog()
-        return {
-            key: full[key] for key in ("llm_providers", "text_models", "image_models")
-        }
+        keys = ("llm_providers", "image_providers", "text_models", "image_models")
+        return {key: full[key] for key in keys}

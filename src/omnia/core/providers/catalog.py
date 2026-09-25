@@ -180,16 +180,24 @@ def voice_options_for_language(
     return _options_for_language(lang, all_voices)
 
 
-def providers_with_custom(custom: list[str] | None = None) -> list[str]:
-    """The shipped LLM providers plus the user's own endpoints, in that order.
+def providers_with_custom(
+    custom: list[str] | None = None, shipped: list[str] | None = None
+) -> list[str]:
+    """``shipped`` (default: every LLM provider) plus the user's own endpoints, in that order.
 
     Shipped first because they are what a fresh profile has; the custom ones are appended in
     the order they were added, so the list does not reshuffle when one is edited.
 
+    ``shipped`` is a parameter because the image picker offers a narrower set — only providers
+    that actually have an images endpoint — and a custom endpoint belongs in BOTH lists, being
+    an openai-compatible instance. One function so the two lists cannot disagree about which
+    endpoints exist.
+
     Takes the names rather than reading settings, so the catalog stays a pure module: what a
     user has configured is the caller's to know.
     """
-    return list(LLM_PROVIDERS) + [name for name in (custom or []) if name]
+    base = list(LLM_PROVIDERS) if shipped is None else list(shipped)
+    return base + [name for name in (custom or []) if name]
 
 
 def _models_with_configured(
@@ -255,7 +263,13 @@ def catalog_payload(
     all_voices = [v for voices in voices_by_provider.values() for v in voices]
     return {
         "llm_providers": providers,
-        "image_providers": providers_for(KIND_IMAGE),
+        # Custom endpoints appear here too. They ARE openai-compatible instances, which is an
+        # image-capable provider, and their key card offers an Image model field — leaving
+        # them out of this list made that field inert: the value saved, and no picker in the
+        # UI could ever select the endpoint it belonged to.
+        "image_providers": providers_with_custom(
+            custom_providers, providers_for(KIND_IMAGE)
+        ),
         "tts_providers": list(TTS_PROVIDERS),
         "languages": [dict(lang) for lang in LANGUAGES],
         "auto_voice_options": {
