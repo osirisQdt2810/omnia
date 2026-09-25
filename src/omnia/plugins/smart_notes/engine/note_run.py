@@ -119,6 +119,21 @@ def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
     Names keep their original case (for the ``missing`` report); matching is the caller's job.
     """
     reads = {name.strip().lower() for name in rule_inputs(rule)}
+    # The empty-prompt case, which `rule_inputs` deliberately leaves out and the run
+    # deliberately reads. A field with no prompt feeds the BASE FIELD to the model
+    # (`prompt_for` returns `fields[source_field]` for a prompt-less rule), but
+    # `rule_source_fields` returns nothing for it — correctly, because the base field is always
+    # present and so is not a graph EDGE. It is still the rule's entire input.
+    #
+    # Added here rather than in `rule_inputs`, which feeds `rule_prerequisites`: a derived base
+    # edge there would give every promptless field an incoming arrow the graph is deliberately
+    # not drawing. This is a question about blocking, so it is answered at the blocking gate.
+    #
+    # Without it the one prerequisite that IS the whole prompt was invisible: a promptless
+    # field on a note with a blank base field called the model with an empty prompt and wrote
+    # back whatever it invented — one paid request per note, and content to clean up after.
+    if rule.source_field and rule.source_is_base_fallback:
+        reads.add(rule.source_field.strip().lower())
     return [
         field
         for field, kind in rule_prerequisites(rule)

@@ -528,8 +528,13 @@ class _RecordingLLM(FakeLLMProvider):
     def __init__(self, by_target=None):
         super().__init__()
         self._by_target = by_target or {}
+        #: Every prompt this was asked for. Some assertions are about what the model was NOT
+        #: called with, and a spy is the only way to say that — a result list cannot
+        #: distinguish "never asked" from "asked and the answer was discarded".
+        self.prompts: list[str] = []
 
     def generate_text(self, prompt, *, system=None, temperature=0.7, max_tokens=None):
+        self.prompts.append(prompt)
         return self._by_target.get(prompt, f"generated:{prompt}")
 
     def generate_image(self, prompt, *, size="1024x1024"):
@@ -903,6 +908,83 @@ class TestGenerateNoteBlocking:
         )
 
         assert _hard_prerequisites(compile_field_rule(config, "Word")) == []
+
+    def test_a_promptless_field_still_blocks_on_its_base_field(self):
+        """A field with NO prompt feeds the base field to the model — that is its whole input.
+
+        `rule_source_fields` returns nothing for it, correctly: the base field is always
+        present, so it is not a graph EDGE. It is still what the run reads, and missing that
+        made the blocking gate invisible to the one prerequisite that IS the entire prompt.
+
+        The failure was live, not theoretical: with the base field blank the model was called
+        with an empty prompt and whatever it invented was written into the note. On a batch
+        that is one paid request per note plus content to clean up.
+        """
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+        from omnia.plugins.smart_notes.engine.note_run import _hard_prerequisites
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        config = SmartNotesFieldConfig(
+            field="Def",
+            enabled=True,
+            prompt="",  # the supported "just feed it the base field" setup
+            depends_on=[FieldDep(field="Word", kind="hard")],
+        )
+
+        assert _hard_prerequisites(compile_field_rule(config, "Word")) == ["Word"]
+
+    def test_a_promptless_field_generates_when_its_base_is_filled(self):
+        # The gate must not become "promptless fields never run".
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [
+                (
+                    "Def",
+                    dict(
+                        enabled=True,
+                        type="text",
+                        prompt="",
+                        depends_on=[FieldDep(field="Word", kind="hard")],
+                    ),
+                )
+            ],
+        )
+
+        results, blocked, _failed = service.generate_note(
+            config, {"Word": "cat", "Def": ""}
+        )
+
+        assert [r.target_field for r, _ in results] == ["Def"]
+        assert blocked == []
+
+    def test_the_model_is_never_called_with_an_empty_prompt(self):
+        """The outcome the whole gate exists to prevent, asserted on the LLM itself."""
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [
+                (
+                    "Def",
+                    dict(
+                        enabled=True,
+                        type="text",
+                        prompt="",
+                        depends_on=[FieldDep(field="Word", kind="hard")],
+                    ),
+                )
+            ],
+        )
+
+        results, blocked, _failed = service.generate_note(
+            config, {"Word": "", "Def": ""}, allow_empty_fields=True
+        )
+
+        assert results == []
+        assert [b.target_field for b in blocked] == ["Def"]
+        assert llm.prompts == [], f"the model was called with {llm.prompts!r}"
 
     def test_already_filled_prereq_counts_present(self):
         # Def is already filled and not overwritten → it is "present" (non-empty) for Usage's
