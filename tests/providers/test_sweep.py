@@ -56,7 +56,14 @@ def routed_http():
 _LLM_CONFIGS = {
     "openai": {"provider": "openai", "api_key": "k"},
     "openrouter": {"provider": "openrouter", "api_key": "k"},
-    "openai_compatible": {"provider": "openai_compatible", "api_key": "k"},
+    # A base_url, because this name means "a server you run" and no longer borrows OpenAI's
+    # address — a self-hosted endpoint with no address is not a configuration, and the sweep
+    # is about exercising each provider as it would really be set up.
+    "openai_compatible": {
+        "provider": "openai_compatible",
+        "api_key": "k",
+        "base_url": "http://127.0.0.1:9/v1",
+    },
     "gemini": {"provider": "gemini", "api_key": "k"},
     "gemini_vertex": {"provider": "gemini_vertex", "project": "p", "access_token": "t"},
 }
@@ -79,7 +86,11 @@ _TTS_BUILD_CONFIGS = {
     "google_translate": {"provider": "google_translate"},
     "openai": {"provider": "openai", "api_key": "k"},
     "openrouter": {"provider": "openrouter", "api_key": "k"},
-    "openai_compatible": {"provider": "openai_compatible", "api_key": "k"},
+    "openai_compatible": {
+        "provider": "openai_compatible",
+        "api_key": "k",
+        "base_url": "http://127.0.0.1:9/v1",
+    },
     "google_cloud": {"provider": "google_cloud", "access_token": "t"},
     "edge_tts": {"provider": "edge_tts"},
     "viettts": {"provider": "viettts", "autostart": False},

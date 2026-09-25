@@ -9,7 +9,10 @@ from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm.base import LLMProvider, PromptParts
 from omnia.core.providers.llm.registry import register_llm
-from omnia.core.providers.openai_family import openai_family_base_url
+from omnia.core.providers.openai_family import (
+    openai_family_base_url,
+    require_base_url,
+)
 
 # Default base URL per config name — the openai family is ONE class under three names that
 # differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
@@ -153,7 +156,9 @@ class OpenAICompatibleProvider(LLMProvider):
         if response_format is not None:
             payload["response_format"] = response_format
         resp = self._http.post_json(
-            f"{self._base_url}/chat/completions", payload, headers=self._headers()
+            f"{require_base_url(self._base_url)}/chat/completions",
+            payload,
+            headers=self._headers(),
         )
         # Return the usage parsed from THIS response; also set last_usage for external readers.
         usage = _usage_from_openai(resp)
@@ -286,7 +291,9 @@ class OpenAICompatibleProvider(LLMProvider):
             "response_format": "b64_json",
         }
         resp = self._http.post_json(
-            f"{self._base_url}/images/generations", payload, headers=self._headers()
+            f"{require_base_url(self._base_url)}/images/generations",
+            payload,
+            headers=self._headers(),
         )
         # The images endpoint reports no token usage; return None (and clear last_usage) so the
         # image call is never attributed a stale text-call usage from shared state.

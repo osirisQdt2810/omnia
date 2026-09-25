@@ -6,7 +6,10 @@ from typing import Any, ClassVar, Optional
 
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
 from omnia.core.providers.errors import ProviderError
-from omnia.core.providers.openai_family import openai_family_base_url
+from omnia.core.providers.openai_family import (
+    openai_family_base_url,
+    require_base_url,
+)
 from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
 from omnia.core.providers.tts.registry import register_tts
@@ -95,7 +98,7 @@ class OpenAICompatibleTTS(TTSProvider):
             # would start failing every synthesis for a preference nobody set.
             payload["speed"] = tts_speed.clamp(speed)
         return self._http.post_json_for_bytes(
-            f"{self._base_url}/audio/speech",
+            f"{require_base_url(self._base_url)}/audio/speech",
             payload,
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
