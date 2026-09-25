@@ -330,6 +330,11 @@ class AccountController:
         ]
         try:
             self._ctx.repo.set_provider_fields("llm", provider, updates)
+        except ValueError as exc:
+            # A card for an endpoint that has since been removed. Saying which one, the way
+            # add and remove already do, beats sending the user to the logs to find out that
+            # the thing they were editing is gone.
+            return {"error": str(exc)}
         except Exception:  # boundary: surface a bad write instead of crashing
             logger.exception("smart_notes: failed to save secrets for %s", provider)
             return {"error": "Could not save — see logs."}

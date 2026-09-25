@@ -86,9 +86,13 @@ class SecretsStore:
         user browsed to, so the name alone does not identify it. Forgetting the stem therefore
         missed it, and a service-account JSON outlived the provider that referenced it.
         """
+        import glob as globlib
+
         self.forget(stem)
         with contextlib.suppress(OSError):
-            for path in self._dir.glob(stem + ".*"):
+            # Escaped: `[` and `]` are legal in a filename and are a character CLASS to glob,
+            # so an endpoint labelled `[brack]` would match — and unlink — another one's file.
+            for path in self._dir.glob(globlib.escape(stem) + ".*"):
                 path.unlink()
 
     def forget(self, name: str) -> None:

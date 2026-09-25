@@ -1191,3 +1191,67 @@ class TestTheCatalogActuallySeesTheUsersEndpoints:
         baked = CatalogInputs.read(ctx).catalog()
         assert res["llm_providers"] == baked["llm_providers"]
         assert res["text_models"] == baked["text_models"]
+
+
+class TestSavingACardForAnEndpointThatIsGone:
+    """The Keys list is drawn once; a card can outlive the endpoint it belongs to.
+
+    `_provider_table` now refuses to recreate the section, which is what makes removal stick —
+    but the save handler caught broad `Exception` and answered "Could not save — see logs.",
+    sending the user to a log file to find out that the thing they were editing no longer
+    exists. Add and remove already say which endpoint they mean.
+    """
+
+    def _controller(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+        from omnia.gui.smart_notes.dialogs.controllers.account import AccountController
+
+        ctx = _fake_ctx()
+        ctx.repo = ConfigRepository(ConfigLoader(config_dir))
+        return AccountController(ctx)
+
+    def test_the_message_names_the_endpoint(self, config_dir):
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+        controller.on_remove_endpoint({"provider": "custom:gpu-box"})
+
+        res = controller.on_set_secrets(
+            {
+                "provider": "custom:gpu-box",
+                "fields": [{"key": "api_key", "type": "secret", "value": "sk-1"}],
+            }
+        )
+
+        assert "gpu-box" in res["error"]
+        assert "logs" not in res["error"]
+
+    def test_it_does_not_bring_the_endpoint_back(self, config_dir):
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+        controller.on_remove_endpoint({"provider": "custom:gpu-box"})
+
+        controller.on_set_secrets(
+            {
+                "provider": "custom:gpu-box",
+                "fields": [{"key": "api_key", "type": "secret", "value": "sk-1"}],
+            }
+        )
+
+        assert not any(
+            card["id"] == "custom:gpu-box"
+            for card in controller.on_account_keys({})["providers"]
+        )
+
+    def test_a_live_card_still_saves(self, config_dir):
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+
+        res = controller.on_set_secrets(
+            {
+                "provider": "custom:gpu-box",
+                "fields": [{"key": "api_key", "type": "secret", "value": "sk-1"}],
+            }
+        )
+
+        assert res.get("ok")

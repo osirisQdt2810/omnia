@@ -648,3 +648,190 @@ class TestRemovingAnEndpointTakesItsCredentialFileToo:
         repo.remove_custom_provider("llm", "custom:gpu")
 
         assert repo.llm_settings().subsection("custom:spare").api_key == "sk-spare"
+
+
+class TestTwoLabelsThatDifferOnlyInCase:
+    """They would be one credential file on both platforms the add-on ships to.
+
+    APFS and NTFS are case-insensitive by default; TOML keys are not. So `gpu` and `GPU` are
+    two endpoints in providers.toml and one file in `.secrets/`: the second key overwrites the
+    first, `gpu` then authenticates with `GPU`'s credential, and removing either one unlinks
+    the file the other still references. CI's Linux leg is case-sensitive, which is why this
+    passed everywhere it was tested — the same blind spot that hid the colon in a filename
+    until the Windows leg caught it.
+
+    Two endpoints that cannot hold separate keys on the user's own machine are one endpoint.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.add_custom_provider("llm", "gpu")
+        return repo
+
+    def test_the_second_one_is_refused(self, repo):
+        with pytest.raises(ValueError):
+            repo.add_custom_provider("llm", "GPU")
+
+    def test_the_message_names_the_endpoint(self, repo):
+        with pytest.raises(ValueError, match="GPU"):
+            repo.add_custom_provider("llm", "GPU")
+
+    def test_the_first_one_is_untouched(self, repo):
+        repo.set_provider_fields("llm", "custom:gpu", [("api_key", "secret", "sk-AAA")])
+
+        with contextlib.suppress(ValueError):
+            repo.add_custom_provider("llm", "GPU")
+
+        assert repo.llm_settings().subsection("custom:gpu").api_key == "sk-AAA"
+
+    def test_a_genuinely_different_label_still_works(self, repo):
+        assert repo.add_custom_provider("llm", "gpu2") == "custom:gpu2"
+
+    def test_the_stored_key_stays_with_its_own_endpoint(self, repo, config_dir):
+        """The property the refusal exists to protect, asserted on the filesystem."""
+        repo.set_provider_fields("llm", "custom:gpu", [("api_key", "secret", "sk-AAA")])
+        with contextlib.suppress(ValueError):
+            repo.add_custom_provider("llm", "GPU")
+            repo.set_provider_fields(
+                "llm", "custom:GPU", [("api_key", "secret", "sk-BBB")]
+            )
+
+        names = {p.name.casefold() for p in (config_dir / ".secrets").iterdir()}
+
+        assert len(names) == 1
+        assert repo.llm_settings().subsection("custom:gpu").api_key == "sk-AAA"
+
+
+class TestRemovingSomethingThatIsNotThere:
+    """Every other custom-endpoint path refuses a label it cannot find; this one popped and
+    reported success. The asymmetry is what bites whoever writes the next caller."""
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_it_is_refused(self, repo):
+        with pytest.raises(ValueError):
+            repo.remove_custom_provider("llm", "custom:never-existed")
+
+    def test_removing_a_real_one_still_works(self, repo):
+        repo.add_custom_provider("llm", "gpu")
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert not repo.llm_settings().custom_providers()
+
+
+class TestAFieldPinnedToADeletedEndpoint:
+    """A note type can pin `custom:gpu` in the collection, and deleting the endpoint cannot
+    reach into every field that named it — so the name outlives the config.
+
+    Rewritten to `openai_compatible` regardless, it arrived with no base URL and no key and
+    the user was told their API key was missing. That is the same misdirection resetting the
+    domain default was meant to end, one level down: it names a credential when what happened
+    is that an endpoint was deleted.
+    """
+
+    def _hub(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+        from omnia.core.providers import ProviderHub
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.add_custom_provider("llm", "gpu")
+        repo.set_provider_fields(
+            "llm",
+            "custom:gpu",
+            [("base_url", "text", "http://x/v1"), ("api_key", "secret", "sk-1")],
+        )
+        return repo, ProviderHub(llm_settings=repo.llm_settings())
+
+    def test_a_live_endpoint_still_resolves_to_the_class_that_serves_it(
+        self, config_dir
+    ):
+        _repo, hub = self._hub(config_dir)
+
+        assert hub._llm_config("custom:gpu")["provider"] == "openai_compatible"
+
+    def test_it_carries_the_endpoints_own_address(self, config_dir):
+        _repo, hub = self._hub(config_dir)
+
+        assert hub._llm_config("custom:gpu")["base_url"] == "http://x/v1"
+
+    def test_a_deleted_one_keeps_its_own_name(self, config_dir):
+        from omnia.core.providers import ProviderHub
+
+        repo, _hub = self._hub(config_dir)
+        repo.remove_custom_provider("llm", "custom:gpu")
+        hub = ProviderHub(llm_settings=repo.llm_settings())
+
+        assert hub._llm_config("custom:gpu")["provider"] == "custom:gpu"
+
+    def test_so_the_error_says_the_provider_is_unknown(self, config_dir):
+        """Not "requires an api_key", which sends the user to look for a key they have."""
+        from omnia.core.providers import ProviderError, ProviderHub
+
+        repo, _hub = self._hub(config_dir)
+        repo.remove_custom_provider("llm", "custom:gpu")
+        hub = ProviderHub(llm_settings=repo.llm_settings())
+
+        with pytest.raises((ProviderError, ValueError, KeyError)) as caught:
+            hub.llm(provider="custom:gpu")
+
+        assert "api_key" not in str(caught.value)
+
+
+class TestForgettingASecretDoesNotReachIntoAnother:
+    """`forget_all` globs the stem, and `[` / `]` are legal in a filename but a character
+    class to glob — so an endpoint labelled `[brack]` could unlink another one's file.
+    """
+
+    def _repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def _with_a_credential_file(self, repo, label, tmp_path, body):
+        """Give `label` a FILE-typed credential — the only kind the glob can reach."""
+        repo.add_custom_provider("llm", label)
+        source = tmp_path / f"{body}.json"
+        source.write_text('{"key": "%s"}' % body)
+        repo.set_provider_credential_file(
+            "llm", f"custom:{label}", "api_key", str(source)
+        )
+
+    def test_a_label_with_glob_characters_only_takes_its_own(
+        self, config_dir, tmp_path
+    ):
+        """`[bg]pu` unescaped is a character class matching `bpu` — another endpoint's stem."""
+        repo = self._repo(config_dir)
+        self._with_a_credential_file(repo, "bpu", tmp_path, "keepme")
+        self._with_a_credential_file(repo, "[bg]pu", tmp_path, "goaway")
+        secrets = config_dir / ".secrets"
+        assert (
+            len(list(secrets.glob("*.json"))) == 2
+        ), "both files must exist to be tested"
+
+        repo.remove_custom_provider("llm", "custom:[bg]pu")
+
+        survivors = [p.name for p in secrets.glob("*.json")]
+        assert (
+            len(survivors) == 1
+        ), f"it took another endpoint's credential: {survivors}"
+        assert "bpu" in survivors[0]
+
+    def test_it_still_takes_its_own(self, config_dir, tmp_path):
+        repo = self._repo(config_dir)
+        self._with_a_credential_file(repo, "[bg]pu", tmp_path, "goaway")
+
+        repo.remove_custom_provider("llm", "custom:[bg]pu")
+
+        assert not list((config_dir / ".secrets").glob("*.json"))

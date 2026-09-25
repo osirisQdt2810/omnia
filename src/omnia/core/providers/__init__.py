@@ -187,8 +187,15 @@ class ProviderHub:
         # protocol, while the name only selects whose URL and key to speak it with. That is
         # what lets any number of them exist without a class, a registration or a code change.
         label = custom_provider_label(name)
-        config: dict[str, Any] = {"provider": "openai_compatible" if label else name}
         active = settings.subsection(name)
+        # Only rewritten when the endpoint still EXISTS. A Smart Notes field can pin
+        # `custom:gpu` in the collection, and deleting the endpoint cannot reach into every
+        # note type that named it — so the name outlives the config. Rewritten unconditionally,
+        # it reached `openai_compatible` with no base URL and no key, and the user was told
+        # their API key was missing. Left alone, it reaches the registry as an unknown name and
+        # says so, which is the thing that actually happened.
+        known = label and isinstance(active, BaseModel)
+        config: dict[str, Any] = {"provider": "openai_compatible" if known else name}
         if isinstance(active, BaseModel):
             data = active.dict()
             # The registry/providers use ``model`` for the chat model; settings use text_model.

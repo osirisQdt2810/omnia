@@ -351,7 +351,19 @@ class ConfigRepository:
             raise ValueError("Give the endpoint a name.")
         data = self._loader.read_file("providers.toml")
         existing = data.setdefault(domain, {}).setdefault("custom", {})
-        if label in existing:
+        # Case-INSENSITIVE, because the credential file is what has to stay distinct and the
+        # two filesystems this ships to — APFS and NTFS — are case-insensitive by default.
+        # TOML keys are not, so `gpu` and `GPU` are two endpoints in the config and one file
+        # on disk: the second key silently overwrites the first, and removing either one
+        # shreds the other's credential. Two endpoints that cannot hold separate keys on the
+        # user's own machine ARE one endpoint, so this is the honest reading of "already in
+        # use" rather than an extra restriction.
+        #
+        # Encoding the case into the filename instead would work, but it would keep a pair of
+        # near-identical cards in the UI that no one can tell apart. CI's Linux leg is
+        # case-sensitive, which is why this passed — the same blind spot that hid the colon.
+        folded = label.casefold()
+        if any(name.casefold() == folded for name in existing):
             raise ValueError(f"There is already an endpoint called “{label}”.")
         existing[label] = {"base_url": "", "api_key": "", "text_model": ""}
         self._loader.write_file("providers.toml", data)
@@ -384,7 +396,12 @@ class ConfigRepository:
                 # plus the extension it arrived with, so forgetting the stem alone left it on
                 # disk with nothing referencing it.
                 self._secrets.forget_all(self._secret_name(domain, provider, field))
-        table.pop(label, None)
+        if label not in table:
+            # Like `_provider_table` and unlike the old silent `pop`: every other custom path
+            # refuses a label that is not there, and a removal reporting success for an
+            # endpoint it did not find is the asymmetry that bites the next caller.
+            raise ValueError(f"There is no endpoint called “{label}”.")
+        table.pop(label)
         # Otherwise the domain goes on naming an endpoint that is gone. `active()` returns None,
         # so the hub falls back to a bare `openai_compatible` with no base URL and no key, and
         # every generation — plus language-detect, Auto-prompt and Improve — fails with
