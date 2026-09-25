@@ -235,7 +235,12 @@ class TestDefaultModels:
 class TestKeyCards:
     def test_lists_managed_providers_in_order(self):
         cards = key_cards(_llm())
-        assert [c["id"] for c in cards] == ["gemini", "gemini_vertex", "openrouter"]
+        assert [c["id"] for c in cards] == [
+            "gemini",
+            "gemini_vertex",
+            "openrouter",
+            "openai_compatible",
+        ]
 
     def test_only_openrouter_has_live_credit(self):
         by_id = {c["id"]: c for c in key_cards(_llm())}

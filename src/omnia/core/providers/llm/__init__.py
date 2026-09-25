@@ -18,10 +18,21 @@ from omnia.core.providers.llm.registry import (
     create_llm_provider,
 )
 
-# LLM providers offered for text/image generation in Smart Notes. A deliberate subset of the
-# registered LLM providers: openrouter already proxies the OpenAI-compatible family, so the
-# bare openai/openai_compatible names are left out of the picker.
-LLM_PROVIDERS: list[str] = ["gemini", "gemini_vertex", "openrouter"]
+# LLM providers offered for text/image generation in Smart Notes. Still a deliberate subset of
+# the registered ones — the bare ``openai`` name stays out, because OpenRouter already proxies
+# the hosted OpenAI family and two routes to one vendor is a choice with no content.
+#
+# ``openai_compatible`` is IN, and the reasoning that kept it out no longer holds. "OpenRouter
+# already proxies the OpenAI-compatible family" is true of hosted endpoints and false of
+# self-hosted ones: nothing proxies a model running on your own GPU behind an SSH tunnel. With
+# it absent the provider could be configured in providers.toml and then not appear in the
+# picker at all — the one supported way to use your own server was invisible in the UI.
+LLM_PROVIDERS: list[str] = [
+    "gemini",
+    "gemini_vertex",
+    "openrouter",
+    "openai_compatible",
+]
 
 # Text models per LLM provider (curated defaults; the GUI merges in the user's saved model).
 #
@@ -61,6 +72,11 @@ _TEXT_MODELS: dict[str, list[str]] = {
     "gemini": list(_GEMINI_AI_STUDIO_TEXT_MODELS),
     "gemini_vertex": list(_GEMINI_VERTEX_TEXT_MODELS),
     "openrouter": list(_OPENROUTER_TEXT_MODELS),
+    # Deliberately EMPTY. The model ids on a self-hosted endpoint are whatever its operator
+    # named them — "omnia-local", "llama3", a HuggingFace path — so any curated list here would
+    # be wrong for everyone. The picker merges the user's saved model in, which is the whole
+    # list that can honestly be offered.
+    "openai_compatible": [],
 }
 
 # Image models per LLM provider — ONLY ids that actually return an inline image through the
@@ -78,6 +94,11 @@ _GEMINI_IMAGE_MODELS: list[str] = [
 _IMAGE_MODELS: dict[str, list[str]] = {
     "gemini": list(_GEMINI_IMAGE_MODELS),
     "gemini_vertex": list(_GEMINI_IMAGE_MODELS),
+    # Empty for the same reason as the text list, and kept rather than omitted so a
+    # self-hosted endpoint that DOES serve /images/generations can be pointed at by typing its
+    # model id. An omitted key would hide the field entirely and make a working setup
+    # unreachable; an empty list offers nothing and accepts what the user knows.
+    "openai_compatible": [],
 }
 
 __all__ = [

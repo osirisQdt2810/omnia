@@ -44,9 +44,31 @@ class TestProviderSubsets:
 
 
 class TestModels:
-    def test_text_models_present_for_each_llm_provider(self):
+    #: The provider whose model ids belong to its operator rather than to a vendor, so no
+    #: curated list here could be right for anybody.
+    OPERATOR_NAMED = {"openai_compatible"}
+
+    def test_every_provider_answers_with_a_list(self):
+        # Never a KeyError: the picker calls this for whatever provider is selected.
         for provider in LLM_PROVIDERS:
+            assert isinstance(text_models(provider), list), provider
+
+    def test_a_vendor_provider_offers_curated_ids(self):
+        """A vendor's ids are knowable, so an empty list there means a provider was added to
+        the picker and its models forgotten — which shows up as a dropdown with nothing in
+        it."""
+        for provider in LLM_PROVIDERS:
+            if provider in self.OPERATOR_NAMED:
+                continue
             assert text_models(provider), f"{provider} has no text models"
+
+    def test_a_self_hosted_endpoint_offers_none_and_that_is_correct(self):
+        """Its ids are whatever its operator named them — "omnia-local", a HuggingFace path.
+
+        The user's own configured id is merged in by `catalog_payload`, which is the only list
+        that can honestly be offered for such a provider.
+        """
+        assert text_models("openai_compatible") == []
 
     def test_models_for_image_kind_uses_image_list(self):
         assert models_for("gemini", "image") == image_models("gemini")
@@ -302,3 +324,57 @@ class TestAStaleCacheCannotHideACuratedVoice:
         shown = {v["voice"] for v in payload["voices"]["google_cloud"]}
 
         assert curated <= shown
+
+
+class TestAConfiguredModelIsOfferedPerField:
+    """A self-hosted endpoint has no curated ids, so without this the model the user already
+    configured is the one thing the per-field picker cannot offer.
+
+    Same shape as the voice-cache fix: merge what is known in, never replace what is shipped.
+    """
+
+    def _payload(self, text=None, image=None):
+        from omnia.core.providers.catalog import catalog_payload
+
+        return catalog_payload(None, text, image)
+
+    def test_the_configured_id_appears(self):
+        payload = self._payload({"openai_compatible": "omnia-local"})
+
+        assert payload["text_models"]["openai_compatible"] == ["omnia-local"]
+
+    def test_a_curated_list_keeps_its_order_and_gains_the_extra(self):
+        """Curated order is a recommendation; the configured id is appended, not prepended."""
+        curated = text_models("gemini")
+        assert curated, "gemini lost its curated ids"
+
+        merged = self._payload({"gemini": "some-private-preview"})["text_models"][
+            "gemini"
+        ]
+
+        assert merged[: len(curated)] == curated
+        assert merged[-1] == "some-private-preview"
+
+    def test_an_id_already_curated_is_not_duplicated(self):
+        curated = text_models("gemini")
+
+        merged = self._payload({"gemini": curated[0]})["text_models"]["gemini"]
+
+        assert merged == curated
+
+    def test_an_unset_model_adds_nothing(self):
+        for value in ("", "   ", None):
+            payload = self._payload({"openai_compatible": value})
+
+            assert payload["text_models"]["openai_compatible"] == []
+
+    def test_image_models_merge_the_same_way(self):
+        payload = self._payload(None, {"openai_compatible": "my-sdxl"})
+
+        assert payload["image_models"]["openai_compatible"] == ["my-sdxl"]
+
+    def test_no_configuration_at_all_is_the_curated_lists(self):
+        payload = self._payload()
+
+        assert payload["text_models"]["gemini"] == text_models("gemini")
+        assert payload["text_models"]["openai_compatible"] == []
