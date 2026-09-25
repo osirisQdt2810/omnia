@@ -99,6 +99,8 @@ class TestOpRegistryCompleteness:
         "account_test",
         "account_keys",
         "account_keys_credit",
+        "add_endpoint",
+        "remove_endpoint",
         "set_default_model",
         "set_auto_voice",
         "refresh_voices",
@@ -914,3 +916,114 @@ class TestPreviewRunsTheRowsToolChain:
 
         assert prompts == [], "it called the provider for a row with no tool"
         assert "No tool is configured" in evals[0]
+
+
+class TestAddingAnEndpointFromThePage:
+    """The Keys subtab can create and delete the user's own endpoints.
+
+    The reply to both carries the refreshed card list, so the change is on screen as part of the
+    click that made it. Refetching instead leaves a window in which the page and the config
+    disagree about what exists — and the thing being added is a credential store, which is a
+    poor subject for a window of disagreement.
+    """
+
+    def _controller(self, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+        from omnia.gui.smart_notes.dialogs.controllers.account import AccountController
+
+        src = Path(__file__).resolve().parents[2] / "src" / "omnia" / "config"
+        for template in src.glob("*.example.toml"):
+            shutil.copy(template, tmp_path / template.name)
+        ctx = _fake_ctx()
+        ctx.repo = ConfigRepository(ConfigLoader(tmp_path))
+        return AccountController(ctx)
+
+    def test_adding_one_returns_the_refreshed_cards(self, tmp_path):
+        controller = self._controller(tmp_path)
+
+        result = controller.on_add_endpoint({"label": "gpu-box"})
+
+        assert result["provider"] == "custom:gpu-box"
+        ids = [c["id"] for c in result["providers"]]
+        assert "custom:gpu-box" in ids, "the new card was not in the same reply"
+
+    def test_the_new_card_is_marked_removable(self, tmp_path):
+        controller = self._controller(tmp_path)
+
+        cards = controller.on_add_endpoint({"label": "gpu-box"})["providers"]
+        card = next(c for c in cards if c["id"] == "custom:gpu-box")
+
+        assert card["custom"] is True
+
+    def test_a_shipped_card_is_not_removable(self, tmp_path):
+        controller = self._controller(tmp_path)
+
+        cards = controller.on_add_endpoint({"label": "gpu-box"})["providers"]
+        card = next(c for c in cards if c["id"] == "gemini")
+
+        assert card["custom"] is False
+
+    def test_a_duplicate_name_comes_back_as_a_message_not_a_crash(self, tmp_path):
+        controller = self._controller(tmp_path)
+        controller.on_add_endpoint({"label": "mine"})
+
+        result = controller.on_add_endpoint({"label": "mine"})
+
+        assert "already" in result["error"]
+        assert "providers" not in result, "a failed add must not redraw the list"
+
+    def test_a_blank_name_is_refused(self, tmp_path):
+        controller = self._controller(tmp_path)
+
+        assert controller.on_add_endpoint({"label": "   "})["error"]
+
+    def test_removing_one_returns_the_refreshed_cards(self, tmp_path):
+        controller = self._controller(tmp_path)
+        controller.on_add_endpoint({"label": "gone"})
+
+        result = controller.on_remove_endpoint({"provider": "custom:gone"})
+
+        assert "custom:gone" not in [c["id"] for c in result["providers"]]
+
+    def test_removing_a_shipped_provider_is_refused(self, tmp_path):
+        controller = self._controller(tmp_path)
+
+        result = controller.on_remove_endpoint({"provider": "gemini"})
+
+        assert result["error"]
+
+
+class TestTheKeysPageOffersTheAddRow:
+    """The JS half: rendering the cards must also render the way to make one."""
+
+    def _js(self) -> str:
+        import omnia.gui.smart_notes.html as html_module
+        from omnia.gui.assets import read_asset
+
+        return read_asset(html_module.__file__, "web", "05-handlers.js")
+
+    def test_the_add_row_is_rendered_with_the_cards(self):
+        js = self._js()
+        render = js[js.index("function renderKeys") :]
+        render = render[: render.index("\n  }")]
+
+        assert "addEndpointRow()" in render
+
+    def test_it_sends_the_add_op(self):
+        assert 'send("add_endpoint"' in self._js()
+
+    def test_removing_is_confirmed_first(self):
+        """It deletes the stored key too, and there is no undo."""
+        js = self._js()
+        assert "window.confirm" in js
+        assert 'send("remove_endpoint"' in js
+
+    def test_only_a_custom_card_gets_a_remove_button(self):
+        js = self._js()
+        card = js[js.index("function keyCard") :]
+
+        assert "if (card.custom)" in card

@@ -13,6 +13,7 @@ layer.
 
 from __future__ import annotations
 
+import contextlib
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
@@ -252,7 +253,7 @@ class ConfigRepository:
         if domain not in ("llm", "tts"):
             raise ValueError(f"unknown provider domain: {domain}")
         data = self._loader.read_file("providers.toml")
-        sub = data.setdefault(domain, {}).setdefault(provider, {})
+        sub = self._provider_table(data, domain, provider)
         for field, kind, value in updates:
             if kind == "file":
                 continue
@@ -282,6 +283,76 @@ class ConfigRepository:
         ref = self._secrets.import_file(name, src_path)
         self._write_provider_field(domain, provider, field, ref)
         return str(self._secrets.resolve(ref))
+
+    @staticmethod
+    def _provider_table(data: dict, domain: str, provider: str) -> dict:
+        """The TOML table a provider's fields live in, created if absent.
+
+        A user's own endpoint lives one level deeper, under ``[llm.custom.<label>]``, so that
+        any number of them can exist without each needing a key of its own at the top of the
+        domain — and so a label can never collide with a shipped provider's section.
+        """
+        from omnia.core.config.models import custom_provider_label
+
+        label = custom_provider_label(provider)
+        if label:
+            return (
+                data.setdefault(domain, {})
+                .setdefault("custom", {})
+                .setdefault(label, {})
+            )
+        return data.setdefault(domain, {}).setdefault(provider, {})
+
+    def add_custom_provider(self, domain: str, label: str) -> str:
+        """Create an empty endpoint called ``label`` and return its provider id.
+
+        Empty rather than pre-filled: the card that appears is then the thing the user fills
+        in, and there is one place the values come from instead of two that could disagree.
+
+        Raises:
+            ValueError: on a blank label, a label already in use, or a bad domain. Refusing a
+                duplicate rather than merging into it: two endpoints sharing a name would be
+                one endpoint, and the second Save would silently overwrite the first.
+        """
+        if domain not in ("llm", "tts"):
+            raise ValueError(f"unknown provider domain: {domain}")
+        label = label.strip()
+        if not label:
+            raise ValueError("Give the endpoint a name.")
+        data = self._loader.read_file("providers.toml")
+        existing = data.setdefault(domain, {}).setdefault("custom", {})
+        if label in existing:
+            raise ValueError(f"There is already an endpoint called “{label}”.")
+        existing[label] = {"base_url": "", "api_key": "", "text_model": ""}
+        self._loader.write_file("providers.toml", data)
+        self._reload()
+        from omnia.core.config.models import custom_provider_name
+
+        return custom_provider_name(label)
+
+    def remove_custom_provider(self, domain: str, provider: str) -> None:
+        """Delete one of the user's endpoints, and the secrets it stored.
+
+        The secrets go too: leaving an orphaned key behind means a credential outliving every
+        reference to it, which is the kind of thing nobody ever goes back and cleans up.
+
+        Raises:
+            ValueError: when ``provider`` is not a custom endpoint. A shipped provider has no
+                delete — removing ``gemini`` would mean removing support for it.
+        """
+        from omnia.core.config.models import custom_provider_label
+
+        label = custom_provider_label(provider)
+        if not label or domain not in ("llm", "tts"):
+            raise ValueError(f"not a removable endpoint: {provider}")
+        data = self._loader.read_file("providers.toml")
+        table = data.get(domain, {}).get("custom", {})
+        for field in list(table.get(label, {})):
+            with contextlib.suppress(Exception):
+                self._secrets.forget(self._secret_name(domain, provider, field))
+        table.pop(label, None)
+        self._loader.write_file("providers.toml", data)
+        self._reload()
 
     @staticmethod
     def _secret_name(domain: str, provider: str, field: str) -> str:

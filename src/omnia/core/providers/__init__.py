@@ -177,8 +177,18 @@ class ProviderHub:
         if settings is None:
             return {"provider": provider} if provider else {}
         name = provider or settings.provider
-        config: dict[str, Any] = {"provider": name}
-        active = getattr(settings, name, None)
+        # Imported here, not at module scope: ``core.config.models`` imports from
+        # ``core.providers.tts`` for its own defaults, so a top-level import the other way
+        # closes the cycle and neither module loads.
+        from omnia.core.config.models import custom_provider_label
+
+        # One of the user's own endpoints is a CONFIGURED INSTANCE of openai_compatible, not a
+        # provider type of its own: the registry is asked for the class that speaks the
+        # protocol, while the name only selects whose URL and key to speak it with. That is
+        # what lets any number of them exist without a class, a registration or a code change.
+        label = custom_provider_label(name)
+        config: dict[str, Any] = {"provider": "openai_compatible" if label else name}
+        active = settings.subsection(name)
         if isinstance(active, BaseModel):
             data = active.dict()
             # The registry/providers use ``model`` for the chat model; settings use text_model.

@@ -261,6 +261,43 @@ _KEY_CARD_SPECS: list[dict] = [
 ]
 
 
+def _custom_key_card_specs(llm: LLMSettings) -> list[dict]:
+    """One card spec per endpoint the user has added.
+
+    Generated from the settings rather than listed as a constant, which is the whole difference
+    between "a provider we ship" and "a provider you configured": there is no fixed set to
+    enumerate, so the cards are whatever is in the config right now. That is also what makes a
+    newly added endpoint appear in Keys immediately — the list is not a copy of anything.
+    """
+    specs: list[dict] = []
+    from omnia.core.config.models import custom_provider_name
+
+    for label in llm.custom:
+        specs.append(
+            {
+                "id": custom_provider_name(label),
+                "label": label,
+                # Nowhere to send them: it is their own endpoint. The link goes to the thing
+                # that IS documented — how to point Omnia at one without exposing it.
+                "console": [
+                    "How to connect one",
+                    "https://github.com/osirisQdt2810/omnia/blob/main/config/providers.example.toml",
+                ],
+                "credit": "note",
+                "note": "Your own endpoint — no balance to read.",
+                "fields": [
+                    ("base_url", "Base URL", "text", "http://127.0.0.1:8721/v1"),
+                    ("api_key", "API key", "secret", ""),
+                    ("text_model", "Text model", "text", ""),
+                    ("image_model", "Image model", "text", ""),
+                ],
+                # Marks it removable: a shipped provider cannot be deleted, one you added can.
+                "custom": True,
+            }
+        )
+    return specs
+
+
 def key_cards(llm: LLMSettings) -> list[dict]:
     """Build the Keys subtab cards: each managed LLM provider's credential fields + state.
 
@@ -277,8 +314,8 @@ def key_cards(llm: LLMSettings) -> list[dict]:
         type, value}]}`` where ``type`` is ``secret`` / ``text`` / ``file``.
     """
     cards: list[dict] = []
-    for spec in _KEY_CARD_SPECS:
-        sub = getattr(llm, spec["id"], None)
+    for spec in _KEY_CARD_SPECS + _custom_key_card_specs(llm):
+        sub = llm.subsection(spec["id"])
         fields = [
             {
                 "key": key,
@@ -297,6 +334,7 @@ def key_cards(llm: LLMSettings) -> list[dict]:
                 "credit": spec["credit"],
                 "note": spec["note"],
                 "active": llm.provider == spec["id"],
+                "custom": bool(spec.get("custom")),
                 "fields": fields,
             }
         )

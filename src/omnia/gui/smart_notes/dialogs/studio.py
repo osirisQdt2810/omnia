@@ -98,6 +98,7 @@ class SmartNotesDialog(WebDialog):
                 catalog=catalog_payload(
                     self._ctx.cached_fetched_voices(),
                     *_configured_models(self._ctx),
+                    _custom_providers(self._ctx),
                 ),
                 tools=self._tools_payload(),
             ),
@@ -161,6 +162,18 @@ class SmartNotesDialog(WebDialog):
         }
 
 
+def _custom_providers(ctx: Any) -> list[str]:
+    """The user's own endpoint ids, so the picker offers them beside the shipped providers.
+
+    Best-effort for the same reason as the models below: a settings file that will not parse
+    should cost the custom endpoints, not the whole dialog.
+    """
+    try:
+        return list(ctx.llm_settings().custom_providers())
+    except Exception:  # boundary: the dialog must still open
+        return []
+
+
 def _configured_models(ctx: Any) -> tuple[dict[str, str], dict[str, str]]:
     """Each LLM provider's currently configured text and image model.
 
@@ -178,8 +191,11 @@ def _configured_models(ctx: Any) -> tuple[dict[str, str], dict[str, str]]:
         llm = ctx.llm_settings()
     except Exception:  # boundary: the dialog must still open
         return text, image
-    for provider in LLM_PROVIDERS:
-        sub = getattr(llm, provider, None)
+    for provider in list(LLM_PROVIDERS) + list(llm.custom_providers()):
+        # `subsection`, not getattr: a custom endpoint lives in a dict, and getattr would
+        # silently skip exactly the providers with no curated models — the ones that need
+        # their configured id offered most.
+        sub = llm.subsection(provider)
         if sub is None:
             continue
         text[provider] = str(getattr(sub, "text_model", "") or "")

@@ -40,6 +40,8 @@ class AccountController:
             "account_credit": self.on_account_credit,
             "account_test": self.on_account_test,
             "account_keys": self.on_account_keys,
+            "add_endpoint": self.on_add_endpoint,
+            "remove_endpoint": self.on_remove_endpoint,
             "account_keys_credit": self.on_account_keys_credit,
             "set_default_model": self.on_set_default_model,
             "set_auto_voice": self.on_set_auto_voice,
@@ -251,6 +253,45 @@ class AccountController:
         from omnia.plugins.smart_notes.account import key_cards
 
         return {"providers": key_cards(self._ctx.repo.llm_settings())}
+
+    def on_add_endpoint(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create one of the user's own endpoints and hand back the refreshed card list.
+
+        The cards come back in the SAME reply rather than the page refetching them, so the new
+        card is on screen as part of the click that made it. A second round trip is a window in
+        which the page and the config disagree about what exists.
+        """
+        from omnia.plugins.smart_notes.account import key_cards
+
+        try:
+            provider = self._ctx.repo.add_custom_provider(
+                "llm", str(data.get("label", ""))
+            )
+        except ValueError as exc:
+            # The user's own mistake — a blank or duplicate name — said back plainly.
+            return {"error": str(exc)}
+        except Exception:  # boundary: a bad write must not take the dialog down
+            logger.exception("smart_notes: failed to add an endpoint")
+            return {"error": "Could not save — see logs."}
+        return {
+            "ok": True,
+            "provider": provider,
+            "providers": key_cards(self._ctx.repo.llm_settings()),
+        }
+
+    def on_remove_endpoint(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Delete one of the user's endpoints, its stored secrets included."""
+        from omnia.plugins.smart_notes.account import key_cards
+
+        provider = str(data.get("provider", ""))
+        try:
+            self._ctx.repo.remove_custom_provider("llm", provider)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception:  # boundary: as above
+            logger.exception("smart_notes: failed to remove %s", provider)
+            return {"error": "Could not remove — see logs."}
+        return {"ok": True, "providers": key_cards(self._ctx.repo.llm_settings())}
 
     def on_set_secrets(self, data: dict[str, Any]) -> dict[str, Any]:
         """Persist a provider card's editable fields in one write (one Save per card).

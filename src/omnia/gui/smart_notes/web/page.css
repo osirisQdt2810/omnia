@@ -1154,3 +1154,18 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
   margin-left: 24px; font-size: 12px; background: none; border: none; padding: 0;
   color: var(--sn-accent, #6c5ce7); cursor: pointer; text-decoration: underline;
 }
+
+/* ── Add-your-own-endpoint row ─────────────────────────────────────────────────────────────
+   Under the cards, not above: the shipped providers are what most profiles use, and a form
+   for a thing you probably do not have should not lead the list. */
+.sn-key-add {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  padding: 10px 12px; border: 1px dashed var(--input-border); border-radius: 10px;
+}
+.sn-key-add-name { flex: 1; min-width: 0; }
+.sn-key-add-status { color: var(--muted); font-size: 12px; }
+/* The Remove button sits at the far right of its card's header, away from Save — one is
+   reversible and the other is not, and adjacent buttons of unequal consequence invite the
+   wrong click. */
+.sn-key-remove { margin-left: auto; opacity: 0.6; }
+.sn-key-remove:hover { opacity: 1; color: var(--fail); }
