@@ -649,6 +649,15 @@
     // The handle parks on the lower mark instead, which is the same thing said visually: no
     // gap, no band. Compared RAW, so a band that is genuinely active stays active.
     let hi = Number(upper.value) > lo ? clamp(Number(upper.value)) : lo;
+    // Whether there IS a top band, held as state rather than inferred from `hi > lo`.
+    //
+    // Inferring it meant the off state turned itself back on: with the band off the upper
+    // handle parks on the lower one, and moving the LOWER mark down left the parked handle
+    // where it was — so `hi > lo` became true and Save wrote a live cutoff. A user nudging the
+    // pass mark by one step enabled a grading band they had never asked for, and changed the
+    // interval every passing card gets. A round trip was worse: drag right and back, and the
+    // band switches on at wherever you turned around.
+    let bandOn = Number(upper.value) > lo;
 
     const makeHandle = function (labelText) {
       const h = el("div", "omnia-range2-handle");
@@ -681,8 +690,9 @@
       hiHandle.setAttribute("aria-valuenow", String(hi));
       loOut.textContent = field.label + ": " + lo;
       // Says "off" rather than showing 0, because 0 is how it is STORED and not what it means.
-      hiOut.textContent = (upper.label || "Upper") + ": " + (hi > lo ? String(hi) : "off");
-      wrap.classList.toggle("omnia-range2-collapsed", !(hi > lo));
+      const on = bandOn && hi > lo;
+      hiOut.textContent = (upper.label || "Upper") + ": " + (on ? String(hi) : "off");
+      wrap.classList.toggle("omnia-range2-collapsed", !on);
     };
 
     /** Move one handle, keeping the lower at or below the upper. */
@@ -690,9 +700,18 @@
       const v = clamp(snap(value));
       if (which === "lo") {
         lo = v;
-        if (hi < lo) { hi = lo; }   // pushing the lower mark past the upper collapses the band
+        // While the band is off the parked handle FOLLOWS, so moving the pass mark can never
+        // open a band on its own. While it is on, the upper mark is only pushed when the lower
+        // would overtake it — which collapses the band, deliberately.
+        if (!bandOn || hi < lo) {
+          hi = lo;
+          bandOn = bandOn && hi > lo;
+        }
       } else {
-        hi = Math.max(v, lo);       // the upper can never sit below the lower
+        hi = Math.max(v, lo);
+        // Moving the UPPER handle is the only gesture that opens or closes the band, which is
+        // what makes "off" something the user chose rather than something that happened.
+        bandOn = hi > lo;
       }
       paint();
     };
@@ -706,7 +725,16 @@
     /** Drag whichever handle is nearer the press, so the track responds where it is clicked. */
     const startDrag = function (ev, forced) {
       const at = valueAt(ev.clientX);
-      const which = forced || (Math.abs(at - lo) <= Math.abs(at - hi) ? "lo" : "hi");
+      // With the band off the handles sit on top of each other, so nearest-handle always
+      // resolves to "lo" and the upper one is unreachable — there would be no way to turn the
+      // band on by dragging at all. A press to the RIGHT of them takes the upper handle, which
+      // is the gesture that means "open a band".
+      const tied = hi === lo;
+      const which =
+        forced ||
+        (tied
+          ? (at > lo ? "hi" : "lo")
+          : (Math.abs(at - lo) <= Math.abs(at - hi) ? "lo" : "hi"));
       set(which, at);
       const move = function (e) { set(which, valueAt(e.clientX)); };
       const stop = function () {
@@ -743,8 +771,11 @@
     const extra = {};
     // Stored as 0 when the handles meet: that is what the grader reads as "no top band", so
     // the page writes the same value the engine's default already means.
-    extra[upper.key] = function () { return hi > lo ? hi : 0; };
-    return {node: wrap, read: function () { return lo; }, extra: extra};
+    extra[upper.key] = function () { return bandOn && hi > lo ? hi : 0; };
+    // `_set` is exposed for the tests, which drive the same function a drag and a keypress
+    // both call. Testing a copy of the logic would have passed while the shipped control had
+    // the off-state bug, which is exactly what happened before this was here.
+    return {node: wrap, read: function () { return lo; }, extra: extra, _set: set};
   }
 
   /**

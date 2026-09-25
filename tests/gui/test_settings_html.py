@@ -800,6 +800,105 @@ console.log(JSON.stringify({{lower: built.read(), upper: built.extra.high()}}));
         assert self._read_back(0.80, 0.0)["upper"] == 0
 
 
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestOffStaysOffUntilTheUpperHandleIsMoved:
+    """ "Off" must be something the user chose, not something that happened to them.
+
+    It was inferred from `hi > lo`, and with the band off the upper handle parks on the lower
+    one — so moving the LOWER mark down left the parked handle behind, `hi > lo` became true,
+    and Save wrote a live cutoff. Nudging the pass mark by one step enabled a grading band
+    nobody asked for and changed the interval every passing card gets. A round trip was worse:
+    drag right and back, and the band switches on wherever you turned around.
+
+    `high_threshold = 0` is the shipped default, so this was every user who had never touched
+    the feature.
+    """
+
+    def _drive(self, lower: float, upper: float, moves: list) -> dict:
+        """Open the control with a stored pair, apply `moves`, and read back what Save gets.
+
+        Each move is ``("lo"|"hi", value)`` — the control's own `set`, which is what a drag and
+        a keypress both go through.
+        """
+        import json
+        import re
+        import subprocess
+
+        import omnia.gui.settings_html as settings_html
+        from omnia.gui.assets import read_asset
+
+        source = read_asset(settings_html.__file__, "web", "settings.js")
+        control = re.search(
+            r"  function rangeControl\(field\) \{.*?\n  \}", source, re.S
+        )
+        assert control, "rangeControl moved"
+
+        script = f"""
+const make = () => ({{
+  className: "", tabIndex: 0, style: {{setProperty(){{}}}}, textContent: "", classList: {{toggle(){{}}}},
+  appendChild(){{}}, addEventListener(fn, cb){{ this._on = this._on || {{}}; this._on[fn] = cb; }},
+  setAttribute(){{}}, getBoundingClientRect: () => ({{left: 0, width: 100}}),
+}});
+const el = () => make();
+const document = {{createElement: make}};
+const window = {{addEventListener(){{}}, removeEventListener(){{}}}};
+{control.group(0).replace("  function rangeControl", "function rangeControl")}
+const built = rangeControl({{
+  label: "Pass", min: 0, max: 1, step: 0.05, value: {lower},
+  upper: {{key: "high", label: "High", value: {upper}}},
+}});
+// Reach `set` through the keyboard handler the control installed on each handle: that is the
+// same function a drag calls, so this drives the real path rather than a copy of it.
+const moves = {json.dumps(moves)};
+for (const [which, value] of moves) {{
+  built._set(which, value);
+}}
+console.log(JSON.stringify({{lower: built.read(), upper: built.extra.high()}}));
+"""
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_moving_only_the_lower_mark_does_not_switch_the_band_on(self):
+        read = self._drive(0.70, 0.0, [["lo", 0.65]])
+
+        assert (
+            read["upper"] == 0
+        ), "adjusting the pass mark enabled a grading band the user never asked for"
+
+    def test_a_round_trip_on_the_lower_mark_leaves_it_off(self):
+        read = self._drive(0.70, 0.0, [["lo", 0.90], ["lo", 0.70]])
+
+        assert read["upper"] == 0
+
+    def test_moving_the_upper_handle_is_what_turns_it_on(self):
+        read = self._drive(0.70, 0.0, [["hi", 0.95]])
+
+        assert read["upper"] == 0.95
+
+    def test_dragging_the_upper_handle_back_down_turns_it_off_again(self):
+        read = self._drive(0.70, 0.95, [["hi", 0.70]])
+
+        assert read["upper"] == 0
+
+    def test_an_active_band_still_follows_the_lower_mark_up(self):
+        # The lower mark overtaking the upper collapses the band — deliberately, and it is the
+        # one case where moving "lo" may change "hi".
+        read = self._drive(0.70, 0.80, [["lo", 0.90]])
+
+        assert read["lower"] == 0.90
+        assert read["upper"] == 0
+
+
 class TestTypedAccuracyDrawsItsTwoMarksTogether:
     """End to end from the real settings model, because the declaration is the load-bearing
     half: a control that renders perfectly for a hand-built pair and is never reached from the
