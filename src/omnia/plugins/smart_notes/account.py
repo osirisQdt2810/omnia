@@ -235,6 +235,41 @@ _KEY_CARD_SPECS: list[dict] = [
         "note": "",
         "fields": [("api_key", "API key", "secret", "")],
     },
+    {
+        # Any server speaking the OpenAI API — a model you run yourself, or a vendor not
+        # listed above. Without a card here the provider could be configured by hand and had
+        # no way to be seen, edited or TESTED from the page, which is where a wrong base_url
+        # or a stale key is actually noticed.
+        "id": "openai_compatible",
+        "label": "Self-hosted / OpenAI-compatible",
+        # No console to send anyone to: it is their own server. The link goes to the thing
+        # that IS documented — how to point Omnia at one without exposing it.
+        "console": [
+            "How to connect one",
+            "https://github.com/osirisQdt2810/omnia/blob/main/config/providers.example.toml",
+        ],
+        "credit": "note",
+        "note": (
+            "No balance to read — it is your own endpoint. Reach a remote one over an SSH "
+            "tunnel so the URL stays 127.0.0.1 and no port is exposed."
+        ),
+        "fields": [
+            ("base_url", "Base URL", "text", "http://127.0.0.1:8721/v1"),
+            ("api_key", "API key", "secret", ""),
+            # Typed, not picked. The model ids on a server you run yourself are whatever its
+            # operator named them, so there is no list to choose from — and without a text
+            # field the design was circular: the picker offers only the id that is already
+            # configured, and the picker was the only place to configure it. A fresh install
+            # could therefore never set one.
+            ("text_model", "Text model", "text", "e.g. omnia-local"),
+            (
+                "image_model",
+                "Image model",
+                "text",
+                "only if it serves /images/generations",
+            ),
+        ],
+    },
 ]
 
 

@@ -11,8 +11,10 @@ the dropdowns from going stale:
 * a user's own saved model/voice string is ALWAYS preserved by the GUI even if it is not in the
   list (the dialog merges it in), so a missing entry never loses a configured value;
 * the LLM provider subset offered for generation is intentionally smaller than every registered
-  provider — ``openrouter`` already fronts the OpenAI-compatible family, so the raw ``openai`` /
-  ``openai_compatible`` names are omitted from the *generation* picker.
+  provider — ``openrouter`` already fronts the hosted OpenAI-compatible family, so the raw
+  ``openai`` name is omitted from the *generation* picker. ``openai_compatible`` IS offered:
+  nothing proxies a server you run yourself, so leaving it out made the one supported way to use
+  your own model invisible in the UI.
 
 Imports nothing from ``aqt``/``anki`` (tests headless). It imports the provider PACKAGES (data
 + the voice aggregation) but never a concrete provider module, and the provider packages never
@@ -67,9 +69,14 @@ _LANGUAGE_LABELS: dict[str, str] = {lang["code"]: lang["label"] for lang in LANG
 def providers_for(kind: str) -> list[str]:
     """Return the provider names offered for a generation ``kind``.
 
-    text → every LLM provider; image → only the LLM providers that ACTUALLY generate images
-    (the keys of ``_IMAGE_MODELS`` — e.g. openrouter has no image endpoint, so it's excluded
-    and never offered for an image field); tts → the TTS providers.
+    text → every LLM provider; image → the LLM providers that CAN generate images (the keys of
+    ``_IMAGE_MODELS`` — openrouter has no image endpoint, so it is excluded and never offered
+    for an image field); tts → the TTS providers.
+
+    "Can" rather than "has curated ids": ``openai_compatible`` is a key with an EMPTY list,
+    because a server you run yourself may serve ``/images/generations`` and only its operator
+    knows what the model is called. Omitting the key would hide the field and make a working
+    setup unreachable; an empty list offers nothing and accepts what the user knows.
     """
     if kind == KIND_TTS:
         return list(TTS_PROVIDERS)
@@ -96,16 +103,30 @@ def models_for(provider: str, kind: str) -> list[str]:
 def _merged_voices(
     fetched: dict[str, list[TTSVoice]] | None = None,
 ) -> dict[str, list[TTSVoice]]:
-    """The aggregated curated voices with ``fetched`` (the Refresh result) merged over them.
+    """The curated voices UNIONed with ``fetched`` (the Refresh result), per provider.
 
-    A provider present in ``fetched`` (e.g. edge_tts) has its curated list REPLACED so the
-    dropdowns show the full enumerated set; every other provider keeps its seed, and a
-    fetched-only provider (no seed entry) is added. This is the single merge rule both the
-    per-language options and the ``voices`` payload share.
+    A fetched entry wins on its voice id — it carries the service's own metadata — and every
+    curated voice survives whether or not the fetch returned it. Fetched-only providers are
+    added. This is the single merge rule both the per-language options and the ``voices``
+    payload share, and it is the same rule ``EdgeTTS.list_voices`` already applies internally.
+
+    It REPLACED the curated list per provider until 2026-09-17, on the assumption that a
+    provider present in ``fetched`` had been fully enumerated. That is true of edge_tts (322
+    voices) and false of the rest: ``refresh_voices`` caches whatever a provider answered, and a
+    provider that cannot enumerate offline answers with its own curated seed. So the cache held
+    a SNAPSHOT of the seed — and because the cache lives in the synced collection and outlives
+    any release, that snapshot then shadowed the seed forever. Seven en-US voices added to
+    ``GoogleCloudTTS.CURATED_VOICES`` did not appear in the picker on a profile that had ever
+    pressed Refresh, and no amount of reinstalling or restarting helped: the code had them, the
+    dropdown did not. A union cannot hide a voice this build knows about.
     """
-    merged = dict(aggregated_voices())
-    if fetched:
-        merged.update(fetched)
+    merged = {
+        provider: list(voices) for provider, voices in aggregated_voices().items()
+    }
+    for provider, voices in (fetched or {}).items():
+        by_id = {voice.voice: voice for voice in merged.get(provider, [])}
+        by_id.update({voice.voice: voice for voice in voices})
+        merged[provider] = list(by_id.values())
     return merged
 
 
@@ -159,8 +180,35 @@ def voice_options_for_language(
     return _options_for_language(lang, all_voices)
 
 
+def _models_with_configured(
+    curated: dict[str, list[str]], configured: dict[str, str] | None
+) -> dict[str, list[str]]:
+    """The curated model ids per provider, with each provider's CONFIGURED id folded in.
+
+    A provider whose ids belong to its operator — a self-hosted endpoint — has no curated list
+    that could be right for anyone, so the picker would offer nothing but "(inherit)" and the
+    model the user actually set would be unreachable per field. Merging the configured id in is
+    the only honest list such a provider can have.
+
+    A union, not a replacement, and the configured id is appended rather than prepended: for a
+    provider that DOES have a curated list, the curated order is a recommendation and should
+    survive.
+    """
+    merged = {provider: list(ids) for provider, ids in curated.items()}
+    for provider, model in (configured or {}).items():
+        model = str(model or "").strip()
+        if not model:
+            continue
+        ids = merged.setdefault(provider, [])
+        if model not in ids:
+            ids.append(model)
+    return merged
+
+
 def catalog_payload(
     fetched_voices: dict[str, list[TTSVoice]] | None = None,
+    configured_text_models: dict[str, str] | None = None,
+    configured_image_models: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Build the JSON-able catalog the Smart Notes page bakes in to drive its dropdowns.
 
@@ -182,6 +230,9 @@ def catalog_payload(
     Args:
         fetched_voices: Optional Refresh result (provider→voices) merged over the seed when
             building ``auto_voice_options``/``voices`` (offline-safe: ``None`` uses the seed).
+        configured_text_models: Each provider's currently configured text model, folded into
+            its list so a self-hosted endpoint's own id is selectable per field.
+        configured_image_models: The same for image models.
     """
     # Aggregate + merge the fetched voices ONCE, then reuse for both the per-language options
     # and the per-provider ``voices`` payload (no re-aggregation per language).
@@ -197,8 +248,12 @@ def catalog_payload(
             for lang in LANGUAGES
             if lang["code"]
         },
-        "text_models": {p: text_models(p) for p in LLM_PROVIDERS},
-        "image_models": {p: image_models(p) for p in LLM_PROVIDERS},
+        "text_models": _models_with_configured(
+            {p: text_models(p) for p in LLM_PROVIDERS}, configured_text_models
+        ),
+        "image_models": _models_with_configured(
+            {p: image_models(p) for p in LLM_PROVIDERS}, configured_image_models
+        ),
         "voices": {
             provider: [
                 {

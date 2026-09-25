@@ -69,6 +69,22 @@ prompt_cache_control = false
 json_output = false
 
 # Any other OpenAI-compatible endpoint (set base_url).
+# Any server that speaks the OpenAI API — including one you run yourself. There is no separate
+# "local model" provider to configure: vLLM, llama.cpp and Ollama all speak this one.
+#
+# Fill in BOTH fields. api_key is required even when your server does not check one — Ollama
+# and an unauthenticated llama.cpp accept anything, but this provider refuses to build without
+# a value, so put a placeholder like "local" there. (A real key, if your server asks for one.)
+#
+# Reach a remote one over an SSH tunnel rather than by opening a port:
+#
+#     ssh -N -L 8721:127.0.0.1:8721 <your-host>
+#     base_url = "http://127.0.0.1:8721/v1"
+#     api_key  = "local"                      # or whatever your server expects
+#
+# base_url stays localhost that way, so this file never learns your server's address — which
+# matters because THIS repo is public and a real base_url in an example is an invitation.
+# Put the real values in config/providers.toml, which is gitignored.
 [llm.openai_compatible]
 api_key = ""
 base_url = ""

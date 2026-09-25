@@ -18,13 +18,19 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-#: Config name -> API base URL. ``openai_compatible`` points at OpenAI's own endpoint because it
-#: is the "some other server speaking this protocol" name: without an explicit ``base_url`` the
-#: only sane guess is the reference implementation.
+from omnia.core.providers.errors import ProviderError
+
+#: Config name -> API base URL. Only for the names that HAVE one: a vendor's endpoint is a fact
+#: about that vendor, so guessing it is safe.
+#:
+#: ``openai_compatible`` is deliberately absent. It used to default to OpenAI's own endpoint on
+#: the reasoning that the reference implementation is the only sane guess — but the name means
+#: "some other server", and a user who picks it and leaves Base URL blank has not asked for
+#: OpenAI. Guessing there sends their prompts, and the key they typed, to a third party they
+#: never named. No default is the only honest answer.
 OPENAI_FAMILY_BASE_URLS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
-    "openai_compatible": "https://api.openai.com/v1",
 }
 
 
@@ -38,10 +44,32 @@ def openai_family_base_url(config: Mapping[str, Any]) -> str:
             other way.
 
     Returns:
-        The base URL, falling back to OpenAI's own endpoint for an unrecognised name.
+        The base URL, or ``""`` when there is nothing to guess — a name meaning "some other
+        server" with no address configured. Empty rather than raising, because building a
+        provider must stay total: the metadata sweep constructs every registered one from an
+        empty config. The complaint belongs at the call. See :func:`require_base_url`.
     """
     explicit = config.get("base_url")
     if explicit:
         return str(explicit)
-    provider = config.get("provider", "openai_compatible")
-    return OPENAI_FAMILY_BASE_URLS.get(provider, OPENAI_FAMILY_BASE_URLS["openai"])
+    provider = str(config.get("provider", "") or "")
+    return OPENAI_FAMILY_BASE_URLS.get(provider, "")
+
+
+def require_base_url(base_url: str) -> str:
+    """Return ``base_url``, or raise the one message that says how to fix it.
+
+    On the request path rather than at construction. An empty base URL used to become OpenAI's
+    own endpoint, so a user who picked "self-hosted" and left the field blank shipped their
+    prompts and their key to a third party they never named — silently, and successfully, which
+    is worse than a failure.
+
+    Raises:
+        ProviderError: when there is no address to call.
+    """
+    if base_url:
+        return base_url
+    raise ProviderError(
+        "This provider has no Base URL set. Fill it in under Usage & keys — it is the "
+        "address of your own server, so there is nothing sensible to guess."
+    )

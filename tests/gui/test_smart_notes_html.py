@@ -1432,3 +1432,76 @@ class TestAnEdgeKnowsWhetherItActuallyBlocks:
         edges = self._edges(depends_on=[FieldDep(field="Word", kind="soft")])
 
         assert edges[("Word", "Definition")]["blocks"] is False
+class TestTheConfiguredModelReachesTheCatalog:
+    """The glue, against the REAL context — which is the half that was missing.
+
+    `catalog_payload` merging a configured model was tested and correct. What was not tested
+    was whether anything ever handed it one: the reader called a method
+    `SmartNotesContext` does not have, a bare `except Exception` absorbed the AttributeError,
+    and the picker went on offering nothing. Logic perfect, feature inert, no test able to
+    tell — so this one goes through the real object.
+    """
+
+    def _context(self, tmp_path, **openai_compatible):
+        import shutil
+        from pathlib import Path
+
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        src = Path(__file__).resolve().parents[2] / "src" / "omnia" / "config"
+        for template in src.glob("*.example.toml"):
+            shutil.copy(template, tmp_path / template.name)
+        repo = ConfigRepository(ConfigLoader(tmp_path))
+        for key, value in openai_compatible.items():
+            repo.set_provider_fields("llm", "openai_compatible", [(key, "text", value)])
+
+        class _Ctx:
+            pass
+
+        ctx = _Ctx()
+        ctx.repo = repo
+        return ctx
+
+    def _models(self, ctx):
+        # The stubs first: importing `studio` reaches Qt widgets, and this test is about the
+        # pure reader inside it rather than anything drawn.
+        from aqt_stubs import install_gui_stubs
+
+        install_gui_stubs()
+        from omnia.gui.smart_notes.dialogs.studio import _configured_models
+
+        return _configured_models(ctx)
+
+    def test_a_configured_text_model_is_read(self, tmp_path):
+        ctx = self._context(tmp_path, text_model="omnia-local")
+
+        text, _image = self._models(ctx)
+
+        assert (
+            text["openai_compatible"] == "omnia-local"
+        ), "the dialog read nothing, so the picker can offer nothing"
+
+    def test_a_configured_image_model_is_read(self, tmp_path):
+        ctx = self._context(tmp_path, image_model="my-sdxl")
+
+        _text, image = self._models(ctx)
+
+        assert image["openai_compatible"] == "my-sdxl"
+
+    def test_it_reaches_the_catalog_the_page_receives(self, tmp_path):
+        from omnia.core.providers.catalog import catalog_payload
+
+        ctx = self._context(tmp_path, text_model="omnia-local")
+
+        payload = catalog_payload(None, *self._models(ctx))
+
+        assert "omnia-local" in payload["text_models"]["openai_compatible"]
+
+    def test_a_broken_context_degrades_without_taking_the_dialog_down(self, tmp_path):
+        class _Broken:
+            @property
+            def repo(self):
+                raise RuntimeError("providers.toml is unreadable")
+
+        assert self._models(_Broken()) == ({}, {})

@@ -44,9 +44,31 @@ class TestProviderSubsets:
 
 
 class TestModels:
-    def test_text_models_present_for_each_llm_provider(self):
+    #: The provider whose model ids belong to its operator rather than to a vendor, so no
+    #: curated list here could be right for anybody.
+    OPERATOR_NAMED = {"openai_compatible"}
+
+    def test_every_provider_answers_with_a_list(self):
+        # Never a KeyError: the picker calls this for whatever provider is selected.
         for provider in LLM_PROVIDERS:
+            assert isinstance(text_models(provider), list), provider
+
+    def test_a_vendor_provider_offers_curated_ids(self):
+        """A vendor's ids are knowable, so an empty list there means a provider was added to
+        the picker and its models forgotten — which shows up as a dropdown with nothing in
+        it."""
+        for provider in LLM_PROVIDERS:
+            if provider in self.OPERATOR_NAMED:
+                continue
             assert text_models(provider), f"{provider} has no text models"
+
+    def test_a_self_hosted_endpoint_offers_none_and_that_is_correct(self):
+        """Its ids are whatever its operator named them — "omnia-local", a HuggingFace path.
+
+        The user's own configured id is merged in by `catalog_payload`, which is the only list
+        that can honestly be offered for such a provider.
+        """
+        assert text_models("openai_compatible") == []
 
     def test_models_for_image_kind_uses_image_list(self):
         assert models_for("gemini", "image") == image_models("gemini")
@@ -145,7 +167,7 @@ class TestVoiceOptionsForLanguage:
         options = voice_options_for_language("xx")
         assert any(opt["value"] == "google_translate:" for opt in options)
 
-    def test_fetched_voices_replace_the_seed_for_their_provider(self):
+    def test_fetched_voices_are_added_alongside_the_seed(self):
         fetched = {
             "edge_tts": [
                 TTSVoice(
@@ -162,8 +184,11 @@ class TestVoiceOptionsForLanguage:
         options = voice_options_for_language("vi", fetched)
         values = {opt["value"] for opt in options}
         assert "edge_tts:vi-VN-FetchedNeural" in values
-        # The seed edge_tts voice is replaced (not merged) by the fetched list.
-        assert "edge_tts:vi-VN-HoaiMyNeural" not in values
+        # UNIONed, not replaced. This pinned the opposite until 2026-09-17: replacing meant a
+        # cache that had only ever recorded a provider's own seed then shadowed that seed
+        # forever, and the cache lives in the synced collection so it outlives any release.
+        # See TestAStaleCacheCannotHideACuratedVoice.
+        assert "edge_tts:vi-VN-HoaiMyNeural" in values
 
 
 class TestAutoVoiceOptionsPayload:
@@ -207,3 +232,169 @@ class TestAutoVoiceOptionsPayload:
         assert "azure_tts" in payload["voices"]
         options = payload["auto_voice_options"]["en"]
         assert any(o["value"] == "azure_tts:en-US-Foo" for o in options)
+
+
+class TestAStaleCacheCannotHideACuratedVoice:
+    """The Refresh cache is a UNION with the curated seed, not a replacement for it.
+
+    It replaced per provider until 2026-09-17, on the assumption that a provider present in the
+    cache had been fully enumerated. True of edge_tts (322 voices); false of the rest, because
+    `refresh_voices` caches whatever a provider answered and a provider that cannot enumerate
+    offline answers with its own curated seed. So the cache held a SNAPSHOT of the seed — and
+    it lives in the SYNCED COLLECTION, so it outlives any release and shadowed the seed forever.
+
+    That is not hypothetical. Seven en-US voices were added to `GoogleCloudTTS.CURATED_VOICES`;
+    on a profile that had ever pressed Refresh they did not appear in the picker, and no amount
+    of reinstalling or restarting helped — the code had them, the dropdown did not.
+    """
+
+    def _voice(self, provider, voice, **kw):
+        from omnia.core.providers.tts import TTSVoice
+
+        return TTSVoice(
+            provider=provider,
+            voice=voice,
+            language=kw.get("language", "English (US)"),
+            name=kw.get("name", voice),
+            gender=kw.get("gender", "Male"),
+            lang_code=kw.get("lang_code", "en"),
+        )
+
+    def _merged(self, fetched):
+        from omnia.core.providers.catalog import _merged_voices
+
+        return _merged_voices(fetched)
+
+    def _curated(self, provider):
+        from omnia.core.providers.catalog import aggregated_voices
+
+        return {v.voice for v in aggregated_voices().get(provider, [])}
+
+    def test_a_curated_voice_absent_from_the_cache_survives(self):
+        curated = self._curated("google_cloud")
+        assert curated, "google_cloud has no curated voices to test with"
+        stale = [self._voice("google_cloud", sorted(curated)[0])]
+
+        shown = {v.voice for v in self._merged({"google_cloud": stale})["google_cloud"]}
+
+        assert (
+            curated <= shown
+        ), f"a stale cache hid {sorted(curated - shown)} — voices this build ships"
+
+    def test_a_fetched_only_voice_is_added(self):
+        # The reason the cache exists: edge_tts enumerates far more than its seed.
+        shown = {
+            v.voice
+            for v in self._merged(
+                {"google_cloud": [self._voice("google_cloud", "en-US-Fetched-Only")]}
+            )["google_cloud"]
+        }
+
+        assert "en-US-Fetched-Only" in shown
+
+    def test_a_fetched_entry_wins_on_its_own_id(self):
+        # It carries the service's own metadata, which is better than the seed's guess.
+        voice = sorted(self._curated("google_cloud"))[0]
+        fetched = self._voice("google_cloud", voice, name="From The Service")
+
+        merged = self._merged({"google_cloud": [fetched]})["google_cloud"]
+        entry = next(v for v in merged if v.voice == voice)
+
+        assert entry.name == "From The Service"
+
+    def test_a_provider_absent_from_the_cache_keeps_its_seed(self):
+        before = self._curated("edge_tts")
+
+        shown = {v.voice for v in self._merged({"google_cloud": []})["edge_tts"]}
+
+        assert shown == before
+
+    def test_no_cache_at_all_is_the_bare_seed(self):
+        assert self._merged(None)["google_cloud"]
+        assert self._merged({})["google_cloud"]
+
+    def test_the_payload_the_page_reads_shows_them_too(self):
+        """End to end: `_merged_voices` being right is worth nothing if the payload re-derives."""
+        from omnia.core.providers.catalog import catalog_payload
+
+        curated = self._curated("google_cloud")
+        stale = [self._voice("google_cloud", sorted(curated)[0])]
+
+        payload = catalog_payload({"google_cloud": stale})
+        shown = {v["voice"] for v in payload["voices"]["google_cloud"]}
+
+        assert curated <= shown
+
+
+class TestAConfiguredModelIsOfferedPerField:
+    """A self-hosted endpoint has no curated ids, so without this the model the user already
+    configured is the one thing the per-field picker cannot offer.
+
+    Same shape as the voice-cache fix: merge what is known in, never replace what is shipped.
+    """
+
+    def _payload(self, text=None, image=None):
+        from omnia.core.providers.catalog import catalog_payload
+
+        return catalog_payload(None, text, image)
+
+    def test_the_configured_id_appears(self):
+        payload = self._payload({"openai_compatible": "omnia-local"})
+
+        assert payload["text_models"]["openai_compatible"] == ["omnia-local"]
+
+    def test_a_curated_list_keeps_its_order_and_gains_the_extra(self):
+        """Curated order is a recommendation; the configured id is appended, not prepended."""
+        curated = text_models("gemini")
+        assert curated, "gemini lost its curated ids"
+
+        merged = self._payload({"gemini": "some-private-preview"})["text_models"][
+            "gemini"
+        ]
+
+        assert merged[: len(curated)] == curated
+        assert merged[-1] == "some-private-preview"
+
+    def test_an_id_already_curated_is_not_duplicated(self):
+        curated = text_models("gemini")
+
+        merged = self._payload({"gemini": curated[0]})["text_models"]["gemini"]
+
+        assert merged == curated
+
+    def test_an_unset_model_adds_nothing(self):
+        for value in ("", "   ", None):
+            payload = self._payload({"openai_compatible": value})
+
+            assert payload["text_models"]["openai_compatible"] == []
+
+    def test_image_models_merge_the_same_way(self):
+        payload = self._payload(None, {"openai_compatible": "my-sdxl"})
+
+        assert payload["image_models"]["openai_compatible"] == ["my-sdxl"]
+
+    def test_no_configuration_at_all_is_the_curated_lists(self):
+        payload = self._payload()
+
+        assert payload["text_models"]["gemini"] == text_models("gemini")
+        assert payload["text_models"]["openai_compatible"] == []
+
+
+class TestWhatTheImageKindOffers:
+    """`_IMAGE_MODELS`' keys mean "can generate images", not "has ids we curated".
+
+    `openai_compatible` is a key with an empty list on purpose: a server you run yourself may
+    serve `/images/generations` and only its operator knows the model's name. Pinned because
+    the distinction is invisible from the dict alone — a reader tidying up "the empty one"
+    would remove a working setup's only route.
+    """
+
+    def test_a_self_hosted_endpoint_may_be_picked_for_images(self):
+        assert "openai_compatible" in providers_for("image")
+
+    def test_it_offers_no_curated_image_ids(self):
+        assert image_models("openai_compatible") == []
+
+    def test_a_provider_with_no_image_endpoint_is_still_excluded(self):
+        # OpenRouter's image output is via chat modalities, not /images/generations.
+        assert "openrouter" not in providers_for("image")
