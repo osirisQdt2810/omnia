@@ -9,6 +9,7 @@ every test here is really about.
 from __future__ import annotations
 
 import contextlib
+import json
 
 import pytest
 
@@ -803,7 +804,7 @@ class TestForgettingASecretDoesNotReachIntoAnother:
         """Give `label` a FILE-typed credential — the only kind the glob can reach."""
         repo.add_custom_provider("llm", label)
         source = tmp_path / f"{body}.json"
-        source.write_text('{"key": "%s"}' % body)
+        source.write_text(json.dumps({"key": body}))
         repo.set_provider_credential_file(
             "llm", f"custom:{label}", "api_key", str(source)
         )
