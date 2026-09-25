@@ -17,6 +17,9 @@ from omnia.core.reviewer.ease_pipeline import EasePipeline
 from omnia.core.reviewer.web_injector import WebInjector, build_message
 from omnia.plugins.typed_accuracy import TypedAccuracyPlugin
 from omnia.plugins.typed_accuracy.logic import (
+    EASE_AGAIN,
+    EASE_EASY,
+    EASE_GOOD,
     accuracy_ratio,
     decide_ease,
     result_code,
@@ -524,3 +527,176 @@ class TestStatsInjector:
         webview = types.SimpleNamespace(eval=lambda _js: None)
         # tmp_path has no assets: inject must swallow the OSError.
         StatsInjector(tmp_path).inject(webview)
+
+
+class TestTheSecondCutoff:
+    """Three bands instead of two, because a typed answer is not a pass/fail thing.
+
+    One line through the ratio can only say right or wrong. "Nearly perfect" and "scraped a
+    pass" are different recalls and earn different intervals, so the pass side splits in two:
+    a middle band and a top one, each with its own ease.
+    """
+
+    def _ease(self, ratio, **kw):
+        opts = dict(threshold=0.8, pass_ease="good", fail_ease="again")
+        opts.update(kw)
+        return decide_ease(
+            ratio,
+            opts["threshold"],
+            opts["pass_ease"],
+            opts["fail_ease"],
+            opts.get("high_threshold", 0.0),
+            opts.get("high_ease", "easy"),
+        )
+
+    def test_the_three_bands(self):
+        band = dict(high_threshold=0.95, high_ease="easy")
+
+        assert self._ease(0.79, **band) == EASE_AGAIN
+        assert self._ease(0.80, **band) == EASE_GOOD
+        assert self._ease(0.94, **band) == EASE_GOOD
+        assert self._ease(0.95, **band) == EASE_EASY
+        assert self._ease(1.00, **band) == EASE_EASY
+
+    def test_each_cutoff_is_inclusive_from_below(self):
+        # Both boundaries belong to the band ABOVE them, matching the single-cutoff rule that
+        # `ratio >= threshold` passes.
+        band = dict(high_threshold=0.95)
+
+        assert self._ease(0.8, **band) == EASE_GOOD
+        assert self._ease(0.95, **band) == EASE_EASY
+
+    def test_zero_means_one_cutoff_exactly_as_before(self):
+        """The default, and what every existing profile has stored — nothing may change."""
+        for ratio in (0.0, 0.5, 0.79, 0.8, 0.99, 1.0):
+            assert self._ease(ratio) == self._ease(ratio, high_threshold=0.0)
+            assert self._ease(ratio) == decide_ease(ratio, 0.8, "good", "again")
+
+    @pytest.mark.parametrize("high", [0.8, 0.5, 0.0])
+    def test_a_cutoff_at_or_below_the_pass_mark_is_ignored(self, high):
+        """A top band starting at or under the pass mark is not a band.
+
+        Both values are SYNCED, so an impossible pair can arrive from another device or a
+        half-finished edit. Degrading to the old behaviour beats refusing to grade — and
+        beats a top band that swallows the middle one.
+        """
+        assert self._ease(0.85, high_threshold=high, high_ease="easy") == EASE_GOOD
+
+    def test_the_top_band_can_stage_nothing(self):
+        # "no" means the user's own press stands, in this band as in the others.
+        assert self._ease(0.99, high_threshold=0.95, high_ease="no") is None
+
+    def test_an_unrecognised_high_ease_falls_back_rather_than_staging_nothing(self):
+        # Same rule as the other bands: a grader that quietly stops grading is harder to
+        # notice than one that grades plainly.
+        assert self._ease(0.99, high_threshold=0.95, high_ease="???") == EASE_EASY
+
+    def test_the_fail_band_is_untouched_by_any_of_it(self):
+        assert self._ease(0.1, high_threshold=0.95, high_ease="easy") == EASE_AGAIN
+
+
+class TestTheSecondCutoffIsNotWrittenUntilItIsUsed:
+    """These settings live in the SYNCED collection blob, so a new key reaches every device.
+
+    A profile that has not turned the second band on must serialize byte-identically to one
+    from before the feature existed — the same discipline `SmartNotesSettings` applies to its
+    own never-set keys.
+    """
+
+    def _settings(self, **kw):
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        return TypedAccuracySettings(**kw)
+
+    def test_an_untouched_profile_writes_neither_key(self):
+        stored = self._settings().dict()
+
+        assert "high_threshold" not in stored
+        assert "high_ease" not in stored
+
+    def test_a_pre_feature_blob_round_trips_unchanged(self):
+        before = {
+            "threshold": 0.8,
+            "pass_ease": "easy",
+            "fail_ease": "again",
+            "show_stats": True,
+        }
+
+        after = self._settings(**before).dict()
+
+        assert after == before
+
+    def test_turning_it_on_does_write_it(self):
+        stored = self._settings(high_threshold=0.95).dict()
+
+        assert stored["high_threshold"] == 0.95
+
+    def test_choosing_the_default_high_ease_is_still_a_choice(self):
+        """Pruned on "never set", not on "equal to the default".
+
+        Keying the prune on the value would delete exactly the choice of a user who picked
+        `easy` deliberately, the moment `easy` is the shipped default.
+        """
+        stored = self._settings(high_ease="easy").dict()
+
+        assert stored["high_ease"] == "easy"
+
+    def test_it_survives_the_round_trip_back(self):
+        stored = self._settings(high_threshold=0.95, high_ease="good").dict()
+        again = self._settings(**stored)
+
+        assert (again.high_threshold, again.high_ease) == (0.95, "good")
+
+
+class TestTheSecondCutoffReachesTheGrader:
+    """End to end through the plugin, because `decide_ease` being right proves nothing alone.
+
+    `on_enable` copies the settings onto the plugin and `_on_rated` passes them back. A version
+    that never read the two new ones would leave every answer graded by the single cutoff, and
+    a test that calls `decide_ease` directly cannot tell — the logic would be perfect and the
+    feature inert.
+    """
+
+    def _graded(self, fake_mw, ratio, **settings):
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        ctx = _context(TypedAccuracySettings(**settings))
+        TypedAccuracyPlugin().on_enable(ctx)
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": ratio, "hasGood": True, "hasBad": False, "hasMiss": False},
+            ),
+            None,
+        )
+        # The ease the grading bar would actually apply for a Good press.
+        return ctx.ease.compute_ease(fake_mw.card, 3)
+
+    def _bands(self):
+        return dict(
+            threshold=0.8,
+            pass_ease="good",
+            fail_ease="again",
+            high_threshold=0.95,
+            high_ease="easy",
+        )
+
+    def test_a_scraped_pass_gets_the_middle_band(self, fake_mw):
+        assert self._graded(fake_mw, 0.85, **self._bands()) == EASE_GOOD
+
+    def test_a_nearly_perfect_answer_gets_the_top_band(self, fake_mw):
+        assert (
+            self._graded(fake_mw, 0.97, **self._bands()) == EASE_EASY
+        ), "the second cutoff never reached the grader"
+
+    def test_a_miss_still_gets_the_fail_band(self, fake_mw):
+        assert self._graded(fake_mw, 0.4, **self._bands()) == EASE_AGAIN
+
+    def test_a_profile_without_the_second_cutoff_is_unchanged(self, fake_mw):
+        # The stored shape of every existing profile: the two new keys are simply absent.
+        graded = self._graded(
+            fake_mw, 0.97, threshold=0.8, pass_ease="good", fail_ease="again"
+        )
+
+        assert graded == EASE_GOOD
