@@ -40,6 +40,8 @@ class AccountController:
             "account_credit": self.on_account_credit,
             "account_test": self.on_account_test,
             "account_keys": self.on_account_keys,
+            "add_endpoint": self.on_add_endpoint,
+            "remove_endpoint": self.on_remove_endpoint,
             "account_keys_credit": self.on_account_keys_credit,
             "set_default_model": self.on_set_default_model,
             "set_auto_voice": self.on_set_auto_voice,
@@ -252,6 +254,65 @@ class AccountController:
 
         return {"providers": key_cards(self._ctx.repo.llm_settings())}
 
+    def on_add_endpoint(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Create one of the user's own endpoints and hand back the refreshed card list.
+
+        The cards come back in the SAME reply rather than the page refetching them, so the new
+        card is on screen as part of the click that made it. A second round trip is a window in
+        which the page and the config disagree about what exists.
+        """
+
+        try:
+            provider = self._ctx.repo.add_custom_provider(
+                "llm", str(data.get("label", ""))
+            )
+        except ValueError as exc:
+            # The user's own mistake — a blank or duplicate name — said back plainly.
+            return {"error": str(exc)}
+        except Exception:  # boundary: a bad write must not take the dialog down
+            logger.exception("smart_notes: failed to add an endpoint")
+            return {"error": "Could not save — see logs."}
+        return {"ok": True, "provider": provider, **self._endpoints_payload()}
+
+    def on_remove_endpoint(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Delete one of the user's endpoints, its stored secrets included."""
+
+        provider = str(data.get("provider", ""))
+        try:
+            self._ctx.repo.remove_custom_provider("llm", provider)
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception:  # boundary: as above
+            logger.exception("smart_notes: failed to remove %s", provider)
+            return {"error": "Could not remove — see logs."}
+        return {"ok": True, **self._endpoints_payload()}
+
+    def _endpoints_payload(self) -> dict[str, Any]:
+        """Everything on screen that adding or removing an endpoint invalidates.
+
+        Three things, in the same reply as the click that changed them, because a second round
+        trip is a window in which the page and the config disagree about what exists:
+
+        * the Keys cards, so the endpoint appears or goes;
+        * the LLM provider list and the model ids per provider, baked into the catalog when the
+          dialog opened — rebuilt through the same reader the bake uses, so the two cannot
+          derive a different answer. A removed
+          endpoint stayed in the Account default picker, and choosing a model for it wrote a
+          section back — so an endpoint whose key had already been shredded reappeared in Keys
+          with no URL and no key. A new one, conversely, could not be picked as a default until
+          the dialog was reopened;
+        * the central defaults, since removing the active endpoint resets the domain's provider
+          and the panel would otherwise go on showing the one that is gone.
+        """
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+        from omnia.plugins.smart_notes.account import key_cards
+
+        return {
+            "providers": key_cards(self._ctx.repo.llm_settings()),
+            "defaults": self._defaults_payload(),
+            **CatalogInputs.read(self._ctx).llm_catalog(),
+        }
+
     def on_set_secrets(self, data: dict[str, Any]) -> dict[str, Any]:
         """Persist a provider card's editable fields in one write (one Save per card).
 
@@ -269,6 +330,11 @@ class AccountController:
         ]
         try:
             self._ctx.repo.set_provider_fields("llm", provider, updates)
+        except ValueError as exc:
+            # A card for an endpoint that has since been removed. Saying which one, the way
+            # add and remove already do, beats sending the user to the logs to find out that
+            # the thing they were editing is gone.
+            return {"error": str(exc)}
         except Exception:  # boundary: surface a bad write instead of crashing
             logger.exception("smart_notes: failed to save secrets for %s", provider)
             return {"error": "Could not save — see logs."}

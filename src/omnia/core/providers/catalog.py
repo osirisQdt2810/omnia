@@ -180,6 +180,26 @@ def voice_options_for_language(
     return _options_for_language(lang, all_voices)
 
 
+def providers_with_custom(
+    custom: list[str] | None = None, shipped: list[str] | None = None
+) -> list[str]:
+    """``shipped`` (default: every LLM provider) plus the user's own endpoints, in that order.
+
+    Shipped first because they are what a fresh profile has; the custom ones are appended in
+    the order they were added, so the list does not reshuffle when one is edited.
+
+    ``shipped`` is a parameter because the image picker offers a narrower set — only providers
+    that actually have an images endpoint — and a custom endpoint belongs in BOTH lists, being
+    an openai-compatible instance. One function so the two lists cannot disagree about which
+    endpoints exist.
+
+    Takes the names rather than reading settings, so the catalog stays a pure module: what a
+    user has configured is the caller's to know.
+    """
+    base = list(LLM_PROVIDERS) if shipped is None else list(shipped)
+    return base + [name for name in (custom or []) if name]
+
+
 def _models_with_configured(
     curated: dict[str, list[str]], configured: dict[str, str] | None
 ) -> dict[str, list[str]]:
@@ -209,6 +229,7 @@ def catalog_payload(
     fetched_voices: dict[str, list[TTSVoice]] | None = None,
     configured_text_models: dict[str, str] | None = None,
     configured_image_models: dict[str, str] | None = None,
+    custom_providers: list[str] | None = None,
 ) -> dict[str, object]:
     """Build the JSON-able catalog the Smart Notes page bakes in to drive its dropdowns.
 
@@ -233,14 +254,22 @@ def catalog_payload(
         configured_text_models: Each provider's currently configured text model, folded into
             its list so a self-hosted endpoint's own id is selectable per field.
         configured_image_models: The same for image models.
+        custom_providers: The user's own endpoint ids, offered beside the shipped providers.
     """
+    providers = providers_with_custom(custom_providers)
     # Aggregate + merge the fetched voices ONCE, then reuse for both the per-language options
     # and the per-provider ``voices`` payload (no re-aggregation per language).
     voices_by_provider = _merged_voices(fetched_voices)
     all_voices = [v for voices in voices_by_provider.values() for v in voices]
     return {
-        "llm_providers": list(LLM_PROVIDERS),
-        "image_providers": providers_for(KIND_IMAGE),
+        "llm_providers": providers,
+        # Custom endpoints appear here too. They ARE openai-compatible instances, which is an
+        # image-capable provider, and their key card offers an Image model field — leaving
+        # them out of this list made that field inert: the value saved, and no picker in the
+        # UI could ever select the endpoint it belonged to.
+        "image_providers": providers_with_custom(
+            custom_providers, providers_for(KIND_IMAGE)
+        ),
         "tts_providers": list(TTS_PROVIDERS),
         "languages": [dict(lang) for lang in LANGUAGES],
         "auto_voice_options": {
@@ -248,11 +277,14 @@ def catalog_payload(
             for lang in LANGUAGES
             if lang["code"]
         },
+        # Keyed over `providers`, not LLM_PROVIDERS: a custom endpoint has no curated ids, so
+        # without an entry of its own the picker would find nothing for it — not even the model
+        # the user configured, which is merged in below.
         "text_models": _models_with_configured(
-            {p: text_models(p) for p in LLM_PROVIDERS}, configured_text_models
+            {p: text_models(p) for p in providers}, configured_text_models
         ),
         "image_models": _models_with_configured(
-            {p: image_models(p) for p in LLM_PROVIDERS}, configured_image_models
+            {p: image_models(p) for p in providers}, configured_image_models
         ),
         "voices": {
             provider: [

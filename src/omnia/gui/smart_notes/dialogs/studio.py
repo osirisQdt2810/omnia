@@ -28,9 +28,8 @@ from aqt.theme import theme_manager
 from omnia import active_voice_cache
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.core.providers.catalog import catalog_payload
-from omnia.core.providers.llm import LLM_PROVIDERS
 from omnia.core.runtime.native_runtime import default_manager
+from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
 from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.gui.smart_notes.dialogs.controllers import (
     AccountController,
@@ -95,9 +94,8 @@ class SmartNotesDialog(WebDialog):
             html=build_smart_notes_html(
                 dark=theme_manager.night_mode,
                 init=self._initial_state(),
-                catalog=catalog_payload(
-                    self._ctx.cached_fetched_voices(),
-                    *_configured_models(self._ctx),
+                catalog=CatalogInputs.read(self._ctx).catalog(
+                    self._ctx.cached_fetched_voices()
                 ),
                 tools=self._tools_payload(),
             ),
@@ -159,34 +157,3 @@ class SmartNotesDialog(WebDialog):
             "note_types": note_types,
             **self._config.load_payload_for(note_types[0]),
         }
-
-
-def _configured_models(ctx: Any) -> tuple[dict[str, str], dict[str, str]]:
-    """Each LLM provider's currently configured text and image model.
-
-    Read so the per-field Model pickers can offer them. A provider whose ids belong to its
-    operator — a self-hosted endpoint — has no curated list, so without this the id the user
-    already configured is the one thing the picker cannot offer.
-
-    Best-effort: a settings object that cannot be read yields empty maps and the pickers fall
-    back to their curated lists, which is what they did before. Failing to OPEN the dialog
-    because one provider subsection is malformed would be a much worse trade.
-    """
-    text: dict[str, str] = {}
-    image: dict[str, str] = {}
-    try:
-        llm = ctx.repo.llm_settings()
-    except Exception:
-        # LOGGED, not swallowed. The bare version of this handler is why the first draft of
-        # this function shipped inert: it called a method the context does not have, the
-        # AttributeError was absorbed, and the picker went on offering nothing with no sign
-        # that anything had failed. A boundary that hides a typo is not a boundary.
-        logger.exception("smart_notes: could not read the configured models")
-        return text, image
-    for provider in LLM_PROVIDERS:
-        sub = getattr(llm, provider, None)
-        if sub is None:
-            continue
-        text[provider] = str(getattr(sub, "text_model", "") or "")
-        image[provider] = str(getattr(sub, "image_model", "") or "")
-    return text, image

@@ -16,6 +16,25 @@
   }
 
   /**
+   * Replace the LLM half of the catalog — the provider list and the model ids per provider.
+   *
+   * The catalog is baked once, when the dialog opens, and the user can add and remove their
+   * own endpoints while it is open. Whatever changed them sends the rebuilt half back.
+   * @param {?Object} half {llm_providers, text_models, image_models}
+   */
+  function applyLlmCatalog(half) {
+    if (!half) {
+      return;
+    }
+    const keys = ["llm_providers", "image_providers", "text_models", "image_models"];
+    keys.forEach(function (key) {
+      if (half[key]) {
+        CATALOG[key] = half[key];
+      }
+    });
+  }
+
+  /**
    * The provider names offered for a kind: TTS providers for sound, LLM providers otherwise.
    * @param {string} kind text | image | tts
    * @return {!Array<string>}

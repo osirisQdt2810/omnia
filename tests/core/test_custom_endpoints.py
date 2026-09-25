@@ -1,0 +1,838 @@
+"""The user's own OpenAI-compatible endpoints: many at once, added and removed at runtime.
+
+A self-hosted server and a colleague's differ by a URL, not by a protocol — so these are
+CONFIGURED INSTANCES of one provider rather than provider types of their own. That is what lets
+any number exist with no class, no registration and no code change, and it is the property
+every test here is really about.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+
+import pytest
+
+from omnia.core.config.models import (
+    LLMSettings,
+    custom_provider_label,
+    custom_provider_name,
+)
+
+
+class TestNamingOne:
+    def test_a_label_becomes_a_prefixed_id(self):
+        assert custom_provider_name("gpu-nha") == "custom:gpu-nha"
+
+    def test_the_label_comes_back_out(self):
+        assert custom_provider_label("custom:gpu-nha") == "gpu-nha"
+
+    @pytest.mark.parametrize("provider", ["gemini", "openrouter", "", "customish"])
+    def test_a_shipped_provider_is_not_a_custom_one(self, provider):
+        assert custom_provider_label(provider) == ""
+
+    def test_a_label_can_never_shadow_a_shipped_provider(self):
+        """Somebody naming theirs "gemini" gets their server, and the real one is untouched.
+
+        The prefix is what makes that true without validating labels against a list that would
+        have to be kept in step with every provider ever added.
+        """
+        llm = LLMSettings.parse_obj(
+            {"custom": {"gemini": {"base_url": "http://mine/v1"}}}
+        )
+
+        assert llm.subsection("custom:gemini").base_url == "http://mine/v1"
+        # The shipped one is untouched, and is still its own settings type rather than having
+        # been replaced by an OpenAI-compatible section wearing its name.
+        shipped = llm.subsection("gemini")
+        assert type(shipped).__name__ == "GeminiLLMSettings"
+        assert not hasattr(shipped, "base_url")
+
+
+class TestResolvingOne:
+    def _llm(self, **custom):
+        return LLMSettings.parse_obj({"custom": custom})
+
+    def test_a_configured_endpoint_resolves(self):
+        llm = self._llm(mine={"base_url": "http://x/v1", "text_model": "omnia-local"})
+
+        assert llm.subsection("custom:mine").text_model == "omnia-local"
+
+    def test_an_unknown_endpoint_is_none_rather_than_an_error(self):
+        """The factory raises its own clear message later; config load must not brick.
+
+        Same rule the shipped providers already follow for an unknown `provider` name.
+        """
+        assert self._llm().subsection("custom:never-made") is None
+
+    def test_the_active_provider_may_be_a_custom_one(self):
+        llm = LLMSettings.parse_obj(
+            {"provider": "custom:mine", "custom": {"mine": {"base_url": "http://x/v1"}}}
+        )
+
+        assert llm.active().base_url == "http://x/v1"
+
+    def test_they_are_listed_in_the_order_added(self):
+        llm = self._llm(first={}, second={}, third={})
+
+        assert llm.custom_providers() == [
+            "custom:first",
+            "custom:second",
+            "custom:third",
+        ]
+
+    def test_none_configured_is_an_empty_list_not_a_missing_key(self):
+        assert LLMSettings().custom_providers() == []
+
+
+class TestBuildingOne:
+    """The hub must ask the registry for the class that speaks the protocol, while the NAME
+    only selects whose URL and key to speak it with."""
+
+    def _hub(self, **custom):
+        from omnia.core.providers import ProviderHub
+
+        return ProviderHub(LLMSettings.parse_obj({"custom": custom}))
+
+    def test_it_builds_as_an_openai_compatible_provider(self):
+        hub = self._hub(mine={"base_url": "http://x/v1", "text_model": "m"})
+
+        assert hub._llm_config("custom:mine")["provider"] == "openai_compatible"
+
+    def test_it_carries_that_endpoints_own_config(self):
+        hub = self._hub(
+            a={"base_url": "http://a/v1", "text_model": "model-a"},
+            b={"base_url": "http://b/v1", "text_model": "model-b"},
+        )
+
+        assert hub._llm_config("custom:a")["base_url"] == "http://a/v1"
+        assert hub._llm_config("custom:b")["model"] == "model-b"
+
+    def test_two_endpoints_do_not_share_a_configuration(self):
+        # The whole point of "many": editing one must not reach the other.
+        hub = self._hub(a={"base_url": "http://a/v1"}, b={"base_url": "http://b/v1"})
+
+        assert (
+            hub._llm_config("custom:a")["base_url"]
+            != hub._llm_config("custom:b")["base_url"]
+        )
+
+    def test_a_shipped_provider_still_resolves_to_itself(self):
+        hub = self._hub(mine={"base_url": "http://x/v1"})
+
+        assert hub._llm_config("gemini")["provider"] == "gemini"
+
+
+class TestOfferingThem:
+    def test_they_are_appended_after_the_shipped_ones(self):
+        """Shipped first because that is what a fresh profile has; custom in the order added,
+        so the picker does not reshuffle when one is edited."""
+        from omnia.core.providers.catalog import providers_with_custom
+        from omnia.core.providers.llm import LLM_PROVIDERS
+
+        offered = providers_with_custom(["custom:a", "custom:b"])
+
+        assert offered[: len(LLM_PROVIDERS)] == list(LLM_PROVIDERS)
+        assert offered[len(LLM_PROVIDERS) :] == ["custom:a", "custom:b"]
+
+    def test_none_configured_leaves_the_list_alone(self):
+        from omnia.core.providers.catalog import providers_with_custom
+        from omnia.core.providers.llm import LLM_PROVIDERS
+
+        assert providers_with_custom(None) == list(LLM_PROVIDERS)
+
+    def test_each_gets_a_model_entry_of_its_own(self):
+        """Without one the picker finds nothing for it — not even the configured model."""
+        from omnia.core.providers.catalog import catalog_payload
+
+        payload = catalog_payload(
+            None, {"custom:a": "model-a"}, None, ["custom:a", "custom:b"]
+        )
+
+        assert payload["text_models"]["custom:a"] == ["model-a"]
+        assert payload["text_models"]["custom:b"] == []
+
+
+class TestAddingAndRemovingOne:
+    """The runtime half: a new endpoint appears in the config, and a removed one takes its
+    stored credential with it."""
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_adding_one_returns_its_provider_id(self, repo):
+        assert repo.add_custom_provider("llm", "gpu-nha") == "custom:gpu-nha"
+
+    def test_it_is_configured_immediately(self, repo):
+        """Immediately, not after a reload: the card the page draws next comes from here."""
+        repo.add_custom_provider("llm", "gpu-nha")
+
+        assert repo.llm_settings().custom_providers() == ["custom:gpu-nha"]
+
+    def test_several_coexist(self, repo):
+        # The whole point of the feature.
+        for label in ("gpu-nha", "ollama", "ban-A"):
+            repo.add_custom_provider("llm", label)
+
+        assert repo.llm_settings().custom_providers() == [
+            "custom:gpu-nha",
+            "custom:ollama",
+            "custom:ban-A",
+        ]
+
+    def test_they_keep_separate_settings(self, repo):
+        repo.add_custom_provider("llm", "a")
+        repo.add_custom_provider("llm", "b")
+
+        repo.set_provider_fields(
+            "llm", "custom:a", [("base_url", "text", "http://a/v1")]
+        )
+        repo.set_provider_fields(
+            "llm", "custom:b", [("base_url", "text", "http://b/v1")]
+        )
+        llm = repo.llm_settings()
+
+        assert llm.subsection("custom:a").base_url == "http://a/v1"
+        assert llm.subsection("custom:b").base_url == "http://b/v1"
+
+    def test_a_duplicate_name_is_refused_rather_than_merged(self, repo):
+        """Two endpoints sharing a name would be one endpoint, and the second Save would
+        silently overwrite the first."""
+        repo.add_custom_provider("llm", "mine")
+
+        with pytest.raises(ValueError, match="already"):
+            repo.add_custom_provider("llm", "mine")
+
+    @pytest.mark.parametrize("label", ["", "   "])
+    def test_a_blank_name_is_refused(self, repo, label):
+        with pytest.raises(ValueError):
+            repo.add_custom_provider("llm", label)
+
+    def test_removing_one_leaves_the_others(self, repo):
+        for label in ("a", "b", "c"):
+            repo.add_custom_provider("llm", label)
+
+        repo.remove_custom_provider("llm", "custom:b")
+
+        assert repo.llm_settings().custom_providers() == ["custom:a", "custom:c"]
+
+    def test_removing_one_forgets_its_secret(self, repo, tmp_path):
+        """A credential outliving every reference to it is the kind of leftover nobody goes
+        back and cleans up."""
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("api_key", "secret", "sk-xyz")]
+        )
+        secrets = list((tmp_path / ".secrets").glob("*api_key*"))
+        assert secrets, "the fixture did not actually store a secret"
+
+        repo.remove_custom_provider("llm", "custom:mine")
+
+        assert not [p for p in secrets if p.exists()]
+
+    def test_a_shipped_provider_cannot_be_removed(self, repo):
+        """Removing `gemini` would mean removing support for it, not removing a setting."""
+        with pytest.raises(ValueError):
+            repo.remove_custom_provider("llm", "gemini")
+
+    def test_a_shipped_provider_still_writes_to_its_own_section(self, repo):
+        # The routing must not capture everything just because it learned about nesting.
+        repo.set_provider_fields("llm", "openrouter", [("api_key", "secret", "sk-1")])
+
+        assert repo.llm_settings().openrouter.api_key == "sk-1"
+
+
+class TestSecretFilenamesSurviveEveryPlatform:
+    """A custom endpoint's id contains a colon, which Windows forbids in a filename.
+
+    Left unsanitised the write simply fails there and the credential is never stored — on the
+    one platform where nobody would think to look. Found by the CI matrix's Windows leg rather
+    than by reading the code.
+    """
+
+    def _name(self, provider):
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository._secret_name("llm", provider, "api_key")
+
+    def test_a_colon_never_reaches_the_filesystem(self):
+        assert ":" not in self._name("custom:mine")
+
+    @pytest.mark.parametrize("char", list(':*?"<>|/\\'))
+    def test_no_reserved_character_survives(self, char):
+        assert char not in self._name(f"custom:na{char}me")
+
+    def test_a_shipped_provider_keeps_its_existing_filename(self):
+        """The substitution must not rename anything that already works — an existing secret
+        whose file moved would read as a credential that vanished."""
+        assert self._name("gemini") == "llm.gemini.api_key"
+        assert self._name("gemini_vertex") == "llm.gemini_vertex.api_key"
+
+    def test_two_endpoints_still_get_different_files(self):
+        assert self._name("custom:a") != self._name("custom:b")
+
+
+class TestACustomEndpointsKeyIsActuallyResolved:
+    """A stored credential is written as a `secret:` reference and must be swapped for its
+    value before a provider sees it.
+
+    `_resolve_secrets` walked only the direct `BaseModel` attributes of `[llm]`, and the user's
+    endpoints live in a `dict`. So the provider authenticated with the literal string
+    `secret:llm.custom-mine.api_key` and every request was rejected — with a 401 from the
+    server, which points at the key being wrong rather than at it never having been read.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_the_stored_key_comes_back_as_its_value(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("api_key", "secret", "sk-xyz")]
+        )
+
+        assert repo.llm_settings().subsection("custom:mine").api_key == "sk-xyz"
+
+    def test_it_is_not_the_reference_string(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("api_key", "secret", "sk-xyz")]
+        )
+
+        assert (
+            not repo.llm_settings()
+            .subsection("custom:mine")
+            .api_key.startswith("secret:")
+        )
+
+    def test_each_endpoint_gets_its_own_key(self, repo):
+        for label, key in (("a", "sk-a"), ("b", "sk-b")):
+            repo.add_custom_provider("llm", label)
+            repo.set_provider_fields(
+                "llm", f"custom:{label}", [("api_key", "secret", key)]
+            )
+        llm = repo.llm_settings()
+
+        assert llm.subsection("custom:a").api_key == "sk-a"
+        assert llm.subsection("custom:b").api_key == "sk-b"
+
+    def test_a_plain_field_is_left_alone(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("base_url", "text", "http://x/v1")]
+        )
+
+        assert repo.llm_settings().subsection("custom:mine").base_url == "http://x/v1"
+
+    def test_a_shipped_provider_still_resolves(self, repo):
+        # The rewrite must not lose the case it already handled.
+        repo.set_provider_fields("llm", "openrouter", [("api_key", "secret", "sk-1")])
+
+        assert repo.llm_settings().openrouter.api_key == "sk-1"
+
+
+class TestChoosingADefaultModelForACustomEndpoint:
+    """The Account picker writes through `set_active_llm`, which wrote flat.
+
+    A custom endpoint lives at `[llm.custom.<label>]`, so a flat write produced a SECOND table
+    — `[llm."custom:mine"]` — that nothing reads. The picker accepted the choice, the file
+    changed, and the setting had no effect: the worst shape a settings bug can take, because
+    everything looks like it worked.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_the_chosen_text_model_is_read_back(self, repo):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", text_model="llama-3.1")
+
+        assert repo.llm_settings().subsection("custom:mine").text_model == "llama-3.1"
+
+    def test_the_chosen_image_model_is_read_back(self, repo):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", image_model="my-sdxl")
+
+        assert repo.llm_settings().subsection("custom:mine").image_model == "my-sdxl"
+
+    def test_it_becomes_the_active_provider(self, repo):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", text_model="m")
+
+        assert repo.llm_settings().provider == "custom:mine"
+
+    def test_it_does_not_leave_a_second_table_nobody_reads(self, repo, tmp_path):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", text_model="m")
+        written = (tmp_path / "providers.toml").read_text(encoding="utf-8")
+
+        assert '[llm."custom:mine"]' not in written
+        assert "[llm.custom.mine]" in written
+
+    def test_it_does_not_disturb_the_endpoints_other_fields(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("base_url", "text", "http://x/v1")]
+        )
+
+        repo.set_active_llm("custom:mine", text_model="m")
+
+        assert repo.llm_settings().subsection("custom:mine").base_url == "http://x/v1"
+
+    def test_a_shipped_provider_still_writes_to_its_own_table(self, repo):
+        repo.set_active_llm("openrouter", text_model="openai/gpt-4o-mini")
+
+        assert repo.llm_settings().openrouter.text_model == "openai/gpt-4o-mini"
+
+
+class TestRemovingTheActiveEndpoint:
+    """Deleting the endpoint the domain points at must not leave it pointing there.
+
+    `active()` then returns None and the hub falls back to a bare `openai_compatible` with no
+    base URL and no key, so every generation — and language-detect, ✨ Auto-prompt and
+    ✦ Improve with it — fails with "requires an api_key". That names a credential, when what
+    the user did was delete an endpoint. A shipped provider at least still reaches the clear
+    "Unknown provider"; the `custom:` branch rewrites the name first and loses even that.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.add_custom_provider("llm", "gpu")
+        repo.set_active_llm("custom:gpu", text_model="llama-3.1")
+        return repo
+
+    def test_the_domain_stops_naming_it(self, repo):
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert repo.llm_settings().provider != "custom:gpu"
+
+    def test_what_is_left_is_a_provider_that_resolves(self, repo):
+        """Not merely "not the deleted one" — the fallback has to be usable."""
+        from omnia.core.config.models import LLMSettings
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert repo.llm_settings().provider == LLMSettings().provider
+
+    def test_removing_an_inactive_one_leaves_the_active_alone(self, repo):
+        repo.add_custom_provider("llm", "spare")
+
+        repo.remove_custom_provider("llm", "custom:spare")
+
+        assert repo.llm_settings().provider == "custom:gpu"
+
+    def test_a_removed_endpoint_cannot_be_written_back_into_existence(self, repo):
+        """The Account panel holds a picker built when the dialog opened, so it still offers an
+        endpoint that has just been deleted. Choosing a model for it used to write `text_model`
+        to a section created on the spot — and a card reappeared in Keys for an endpoint with
+        no URL, no key, and a credential already shredded. Removal has to stay removed.
+        """
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        with pytest.raises(ValueError):
+            repo.set_active_llm("custom:gpu", text_model="llama-3.1")
+
+        assert not repo.llm_settings().custom_providers()
+
+    def test_a_shipped_provider_is_still_written_on_demand(self, repo):
+        """Its name is compiled in, so an absent section only means nothing was written yet."""
+        repo.set_active_llm("gemini", text_model="gemini-2.5-flash")
+
+        assert repo.llm_settings().subsection("gemini").text_model == "gemini-2.5-flash"
+
+
+class TestOneSecretFilePerEndpoint:
+    """Two labels must not share one credential file.
+
+    Every character Windows forbids was mapped to ``-``, which is not injective: ``a:b`` and
+    ``a-b`` landed on the same name, so adding the second endpoint overwrote the first one's
+    key — silently, and with no way to tell which endpoint the surviving key belonged to.
+    """
+
+    def _name(self, provider):
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository._secret_name("llm", provider, "api_key")
+
+    def test_two_labels_one_character_apart_do_not_collide(self):
+        assert self._name("custom:a:b") != self._name("custom:a-b")
+
+    def test_a_shipped_providers_filename_is_untouched(self):
+        """It contains none of these characters, so existing secrets keep resolving."""
+        assert self._name("gemini") == "llm.gemini.api_key"
+
+    def test_nothing_windows_forbids_survives(self):
+        from omnia.core.config.repository import ConfigRepository
+
+        name = self._name('custom:a*b?c"d<e>f|g/h\\i')
+
+        assert not set(name) & set(ConfigRepository._UNSAFE_IN_FILENAMES)
+
+    def test_an_encoded_name_cannot_be_spelt_literally(self):
+        """`%` itself is escaped first, or a literal "%3A" and an encoded ":" would collide."""
+        assert self._name("custom:a%3Ab") != self._name("custom:a:b")
+
+
+class TestEveryWriterNestsACustomEndpoint:
+    """`_provider_table` exists so there is ONE place that knows a custom endpoint nests.
+
+    A flat write produces a second table, ``[llm."custom:mine"]``, that nothing reads: the
+    setting is accepted, the file changes, and nothing happens.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.add_custom_provider("llm", "mine")
+        return repo
+
+    def test_a_raw_field_write_lands_where_it_is_read_from(self, repo):
+        repo._write_provider_field(
+            "llm", "custom:mine", "base_url", "http://127.0.0.1:8721/v1"
+        )
+
+        assert (
+            repo.llm_settings().subsection("custom:mine").base_url
+            == "http://127.0.0.1:8721/v1"
+        )
+
+    def test_it_leaves_no_second_table(self, repo):
+        repo._write_provider_field("llm", "custom:mine", "base_url", "http://x/v1")
+
+        assert "custom:mine" not in repo._loader.read_file("providers.toml")["llm"]
+
+
+class TestACustomEndpointCanBeChosenForAnImageField:
+    """Its key card offers an Image model, so a picker has to be able to select it.
+
+    `image_providers` is a narrower list — only providers with an images endpoint — and it was
+    built from the shipped names alone. A custom endpoint IS an openai-compatible instance, so
+    it belongs in both lists; left out of this one, the Image model field on its card saved a
+    value that nothing in the UI could ever reach. `image_models` was already keyed over the
+    custom endpoints, so the entry was built and then never looked up.
+    """
+
+    def _catalog(self, custom=("custom:mine",)):
+        from omnia.core.providers.catalog import catalog_payload
+
+        return catalog_payload(
+            None, {"custom:mine": "my-llm"}, {"custom:mine": "my-sdxl"}, list(custom)
+        )
+
+    def test_it_is_offered_as_an_image_provider(self):
+        assert "custom:mine" in self._catalog()["image_providers"]
+
+    def test_its_configured_image_model_is_reachable(self):
+        catalog = self._catalog()
+
+        assert "my-sdxl" in catalog["image_models"]["custom:mine"]
+        assert catalog["image_models"][
+            "custom:mine"
+        ], "the entry exists but nothing selects it"
+
+    def test_the_image_list_is_still_narrower_than_the_text_one(self):
+        """The point of a separate list: openrouter has no /images/generations endpoint."""
+        catalog = self._catalog()
+
+        assert "openrouter" in catalog["llm_providers"]
+        assert "openrouter" not in catalog["image_providers"]
+
+    def test_with_no_endpoints_the_two_lists_are_the_shipped_ones(self):
+        from omnia.core.providers.catalog import KIND_IMAGE, providers_for
+
+        assert self._catalog(custom=())["image_providers"] == providers_for(KIND_IMAGE)
+
+
+class TestOnlyTheLLMDomainHoldsCustomEndpoints:
+    """`tts` was accepted and the write went through, but nothing could ever read it.
+
+    `TTSSettings` has no `custom` field and no `subsection()`, so `active()` could not resolve
+    the name: the section was write-only. An API that accepts a domain whose settings model
+    cannot read the result is making a promise it does not keep.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_adding_a_tts_endpoint_is_refused(self, repo):
+        with pytest.raises(ValueError):
+            repo.add_custom_provider("tts", "my-voice-box")
+
+    def test_removing_one_is_refused_too(self, repo):
+        with pytest.raises(ValueError):
+            repo.remove_custom_provider("tts", "custom:my-voice-box")
+
+    def test_nothing_is_written_for_the_refused_domain(self, repo):
+        with contextlib.suppress(ValueError):
+            repo.add_custom_provider("tts", "my-voice-box")
+
+        assert "custom" not in repo._loader.read_file("providers.toml").get("tts", {})
+
+    def test_llm_still_works(self, repo):
+        assert repo.add_custom_provider("llm", "gpu") == "custom:gpu"
+
+
+class TestRemovingAnEndpointTakesItsCredentialFileToo:
+    """A credential file is stored under the field's stem PLUS the extension it arrived with.
+
+    Forgetting the stem alone missed it, so a service-account JSON outlived every reference to
+    it — the exact leftover the removal path documents itself as preventing.
+    """
+
+    def _repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_the_file_goes_with_the_endpoint(self, config_dir, tmp_path):
+        repo = self._repo(config_dir)
+        repo.add_custom_provider("llm", "gpu")
+        source = tmp_path / "creds.json"
+        source.write_text('{"type": "service_account"}')
+        repo.set_provider_credential_file("llm", "custom:gpu", "api_key", str(source))
+        secrets = config_dir / ".secrets"
+        assert list(
+            secrets.glob("*.json")
+        ), "nothing was imported, so nothing is being tested"
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert not list(secrets.glob("*.json"))
+
+    def test_a_plain_secret_still_goes(self, config_dir):
+        repo = self._repo(config_dir)
+        repo.add_custom_provider("llm", "gpu")
+        repo.set_provider_fields("llm", "custom:gpu", [("api_key", "secret", "sk-xyz")])
+        secrets = config_dir / ".secrets"
+        assert list(secrets.iterdir())
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert not list(secrets.iterdir())
+
+    def test_another_endpoints_secrets_are_left_alone(self, config_dir):
+        repo = self._repo(config_dir)
+        for label in ("gpu", "spare"):
+            repo.add_custom_provider("llm", label)
+            repo.set_provider_fields(
+                "llm", f"custom:{label}", [("api_key", "secret", f"sk-{label}")]
+            )
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert repo.llm_settings().subsection("custom:spare").api_key == "sk-spare"
+
+
+class TestTwoLabelsThatDifferOnlyInCase:
+    """They would be one credential file on both platforms the add-on ships to.
+
+    APFS and NTFS are case-insensitive by default; TOML keys are not. So `gpu` and `GPU` are
+    two endpoints in providers.toml and one file in `.secrets/`: the second key overwrites the
+    first, `gpu` then authenticates with `GPU`'s credential, and removing either one unlinks
+    the file the other still references. CI's Linux leg is case-sensitive, which is why this
+    passed everywhere it was tested — the same blind spot that hid the colon in a filename
+    until the Windows leg caught it.
+
+    Two endpoints that cannot hold separate keys on the user's own machine are one endpoint.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.add_custom_provider("llm", "gpu")
+        return repo
+
+    def test_the_second_one_is_refused(self, repo):
+        with pytest.raises(ValueError):
+            repo.add_custom_provider("llm", "GPU")
+
+    def test_the_message_names_the_endpoint(self, repo):
+        with pytest.raises(ValueError, match="GPU"):
+            repo.add_custom_provider("llm", "GPU")
+
+    def test_the_first_one_is_untouched(self, repo):
+        repo.set_provider_fields("llm", "custom:gpu", [("api_key", "secret", "sk-AAA")])
+
+        with contextlib.suppress(ValueError):
+            repo.add_custom_provider("llm", "GPU")
+
+        assert repo.llm_settings().subsection("custom:gpu").api_key == "sk-AAA"
+
+    def test_a_genuinely_different_label_still_works(self, repo):
+        assert repo.add_custom_provider("llm", "gpu2") == "custom:gpu2"
+
+    def test_the_stored_key_stays_with_its_own_endpoint(self, repo, config_dir):
+        """The property the refusal exists to protect, asserted on the filesystem."""
+        repo.set_provider_fields("llm", "custom:gpu", [("api_key", "secret", "sk-AAA")])
+        with contextlib.suppress(ValueError):
+            repo.add_custom_provider("llm", "GPU")
+            repo.set_provider_fields(
+                "llm", "custom:GPU", [("api_key", "secret", "sk-BBB")]
+            )
+
+        names = {p.name.casefold() for p in (config_dir / ".secrets").iterdir()}
+
+        assert len(names) == 1
+        assert repo.llm_settings().subsection("custom:gpu").api_key == "sk-AAA"
+
+
+class TestRemovingSomethingThatIsNotThere:
+    """Every other custom-endpoint path refuses a label it cannot find; this one popped and
+    reported success. The asymmetry is what bites whoever writes the next caller."""
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_it_is_refused(self, repo):
+        with pytest.raises(ValueError):
+            repo.remove_custom_provider("llm", "custom:never-existed")
+
+    def test_removing_a_real_one_still_works(self, repo):
+        repo.add_custom_provider("llm", "gpu")
+
+        repo.remove_custom_provider("llm", "custom:gpu")
+
+        assert not repo.llm_settings().custom_providers()
+
+
+class TestAFieldPinnedToADeletedEndpoint:
+    """A note type can pin `custom:gpu` in the collection, and deleting the endpoint cannot
+    reach into every field that named it — so the name outlives the config.
+
+    Rewritten to `openai_compatible` regardless, it arrived with no base URL and no key and
+    the user was told their API key was missing. That is the same misdirection resetting the
+    domain default was meant to end, one level down: it names a credential when what happened
+    is that an endpoint was deleted.
+    """
+
+    def _hub(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+        from omnia.core.providers import ProviderHub
+
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.add_custom_provider("llm", "gpu")
+        repo.set_provider_fields(
+            "llm",
+            "custom:gpu",
+            [("base_url", "text", "http://x/v1"), ("api_key", "secret", "sk-1")],
+        )
+        return repo, ProviderHub(llm_settings=repo.llm_settings())
+
+    def test_a_live_endpoint_still_resolves_to_the_class_that_serves_it(
+        self, config_dir
+    ):
+        _repo, hub = self._hub(config_dir)
+
+        assert hub._llm_config("custom:gpu")["provider"] == "openai_compatible"
+
+    def test_it_carries_the_endpoints_own_address(self, config_dir):
+        _repo, hub = self._hub(config_dir)
+
+        assert hub._llm_config("custom:gpu")["base_url"] == "http://x/v1"
+
+    def test_a_deleted_one_keeps_its_own_name(self, config_dir):
+        from omnia.core.providers import ProviderHub
+
+        repo, _hub = self._hub(config_dir)
+        repo.remove_custom_provider("llm", "custom:gpu")
+        hub = ProviderHub(llm_settings=repo.llm_settings())
+
+        assert hub._llm_config("custom:gpu")["provider"] == "custom:gpu"
+
+    def test_so_the_error_says_the_provider_is_unknown(self, config_dir):
+        """Not "requires an api_key", which sends the user to look for a key they have."""
+        from omnia.core.providers import ProviderError, ProviderHub
+
+        repo, _hub = self._hub(config_dir)
+        repo.remove_custom_provider("llm", "custom:gpu")
+        hub = ProviderHub(llm_settings=repo.llm_settings())
+
+        with pytest.raises((ProviderError, ValueError, KeyError)) as caught:
+            hub.llm(provider="custom:gpu")
+
+        assert "api_key" not in str(caught.value)
+
+
+class TestForgettingASecretDoesNotReachIntoAnother:
+    """`forget_all` globs the stem, and `[` / `]` are legal in a filename but a character
+    class to glob — so an endpoint labelled `[brack]` could unlink another one's file.
+    """
+
+    def _repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def _with_a_credential_file(self, repo, label, tmp_path, body):
+        """Give `label` a FILE-typed credential — the only kind the glob can reach."""
+        repo.add_custom_provider("llm", label)
+        source = tmp_path / f"{body}.json"
+        source.write_text(json.dumps({"key": body}))
+        repo.set_provider_credential_file(
+            "llm", f"custom:{label}", "api_key", str(source)
+        )
+
+    def test_a_label_with_glob_characters_only_takes_its_own(
+        self, config_dir, tmp_path
+    ):
+        """`[bg]pu` unescaped is a character class matching `bpu` — another endpoint's stem."""
+        repo = self._repo(config_dir)
+        self._with_a_credential_file(repo, "bpu", tmp_path, "keepme")
+        self._with_a_credential_file(repo, "[bg]pu", tmp_path, "goaway")
+        secrets = config_dir / ".secrets"
+        assert (
+            len(list(secrets.glob("*.json"))) == 2
+        ), "both files must exist to be tested"
+
+        repo.remove_custom_provider("llm", "custom:[bg]pu")
+
+        survivors = [p.name for p in secrets.glob("*.json")]
+        assert (
+            len(survivors) == 1
+        ), f"it took another endpoint's credential: {survivors}"
+        assert "bpu" in survivors[0]
+
+    def test_it_still_takes_its_own(self, config_dir, tmp_path):
+        repo = self._repo(config_dir)
+        self._with_a_credential_file(repo, "[bg]pu", tmp_path, "goaway")
+
+        repo.remove_custom_provider("llm", "custom:[bg]pu")
+
+        assert not list((config_dir / ".secrets").glob("*.json"))

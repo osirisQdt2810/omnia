@@ -13,6 +13,7 @@ layer.
 
 from __future__ import annotations
 
+import contextlib
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
@@ -27,6 +28,19 @@ from omnia.core.config.models import (
 )
 from omnia.core.config.secrets import SecretsStore
 from omnia.core.registry import get_registered
+
+
+def _require_custom_domain(domain: str) -> None:
+    """Only ``llm`` can hold a user's own endpoints; anything else is refused.
+
+    ``tts`` was accepted and the write went through, but ``TTSSettings`` has no ``custom``
+    field and no ``subsection()``, so ``active()`` could never resolve the name: the section
+    was write-only. Nothing calls it that way today, which is the moment to close it —
+    accepting a domain whose settings model cannot read the result is a promise the API does
+    not keep.
+    """
+    if domain != "llm":
+        raise ValueError(f"custom endpoints are not supported for: {domain}")
 
 
 class ConfigRepository:
@@ -172,16 +186,21 @@ class ConfigRepository:
     ) -> None:
         """Set the active LLM provider (and optionally its text/image model), preserving creds.
 
-        Writes ``[llm].provider`` plus the chosen model field on the ``[llm.<provider>]``
-        subsection in providers.toml, then reloads. Other fields (api keys, base urls) are
-        left untouched. Used by the Account default-model picker (text → ``text_model``,
-        image → ``image_model``).
+        Writes ``[llm].provider`` plus the chosen model field on that provider's subsection in
+        providers.toml, then reloads. Other fields (api keys, base urls) are left untouched.
+        Used by the Account default-model picker (text → ``text_model``, image →
+        ``image_model``).
+
+        Goes through ``_provider_table`` for the same reason ``set_provider_fields`` does: a
+        custom endpoint lives at ``[llm.custom.<label>]``, and writing it flat produced a
+        SECOND table, ``[llm."custom:mine"]``, that nothing reads. The picker accepted the
+        choice, the file changed, and the setting had no effect.
         """
         data = self._loader.read_file("providers.toml")
         llm = data.setdefault("llm", {})
         llm["provider"] = provider
         if text_model is not None or image_model is not None:
-            sub = llm.setdefault(provider, {})
+            sub = self._provider_table(data, "llm", provider)
             if text_model is not None:
                 sub["text_model"] = text_model
             if image_model is not None:
@@ -252,7 +271,7 @@ class ConfigRepository:
         if domain not in ("llm", "tts"):
             raise ValueError(f"unknown provider domain: {domain}")
         data = self._loader.read_file("providers.toml")
-        sub = data.setdefault(domain, {}).setdefault(provider, {})
+        sub = self._provider_table(data, domain, provider)
         for field, kind, value in updates:
             if kind == "file":
                 continue
@@ -284,13 +303,149 @@ class ConfigRepository:
         return str(self._secrets.resolve(ref))
 
     @staticmethod
-    def _secret_name(domain: str, provider: str, field: str) -> str:
+    def _provider_table(data: dict, domain: str, provider: str) -> dict:
+        """The TOML table a provider's fields live in.
+
+        A user's own endpoint lives one level deeper, under ``[llm.custom.<label>]``, so that
+        any number of them can exist without each needing a key of its own at the top of the
+        domain — and so a label can never collide with a shipped provider's section.
+
+        A shipped provider's table is created on demand: the name is compiled in, so an absent
+        section only means nothing has been written to it yet. A custom one is NOT, because
+        there the section IS the endpoint — creating it would bring an endpoint into existence
+        as a side effect of writing a field to it.
+
+        That is not hypothetical. Delete the active endpoint and the Account panel keeps the
+        id it was holding in a picker built when the dialog opened; changing the model there
+        writes ``text_model``, which recreated the section, and a card reappeared in Keys for
+        an endpoint with no URL, no key, and a credential already shredded. Removal has to
+        stay removed, so every writer but :meth:`add_custom_provider` must find it or fail.
+
+        Raises:
+            ValueError: for a custom endpoint that does not exist.
+        """
+        from omnia.core.config.models import custom_provider_label
+
+        label = custom_provider_label(provider)
+        if label:
+            table = data.setdefault(domain, {}).setdefault("custom", {})
+            if label not in table:
+                raise ValueError(f"There is no endpoint called “{label}”.")
+            return table[label]
+        return data.setdefault(domain, {}).setdefault(provider, {})
+
+    def add_custom_provider(self, domain: str, label: str) -> str:
+        """Create an empty endpoint called ``label`` and return its provider id.
+
+        Empty rather than pre-filled: the card that appears is then the thing the user fills
+        in, and there is one place the values come from instead of two that could disagree.
+
+        Raises:
+            ValueError: on a blank label, a label already in use, or a bad domain. Refusing a
+                duplicate rather than merging into it: two endpoints sharing a name would be
+                one endpoint, and the second Save would silently overwrite the first.
+        """
+        _require_custom_domain(domain)
+        label = label.strip()
+        if not label:
+            raise ValueError("Give the endpoint a name.")
+        data = self._loader.read_file("providers.toml")
+        existing = data.setdefault(domain, {}).setdefault("custom", {})
+        # Case-INSENSITIVE, because the credential file is what has to stay distinct and the
+        # two filesystems this ships to — APFS and NTFS — are case-insensitive by default.
+        # TOML keys are not, so `gpu` and `GPU` are two endpoints in the config and one file
+        # on disk: the second key silently overwrites the first, and removing either one
+        # shreds the other's credential. Two endpoints that cannot hold separate keys on the
+        # user's own machine ARE one endpoint, so this is the honest reading of "already in
+        # use" rather than an extra restriction.
+        #
+        # Encoding the case into the filename instead would work, but it would keep a pair of
+        # near-identical cards in the UI that no one can tell apart. CI's Linux leg is
+        # case-sensitive, which is why this passed — the same blind spot that hid the colon.
+        folded = label.casefold()
+        if any(name.casefold() == folded for name in existing):
+            raise ValueError(f"There is already an endpoint called “{label}”.")
+        existing[label] = {"base_url": "", "api_key": "", "text_model": ""}
+        self._loader.write_file("providers.toml", data)
+        self._reload()
+        from omnia.core.config.models import custom_provider_name
+
+        return custom_provider_name(label)
+
+    def remove_custom_provider(self, domain: str, provider: str) -> None:
+        """Delete one of the user's endpoints, and the secrets it stored.
+
+        The secrets go too: leaving an orphaned key behind means a credential outliving every
+        reference to it, which is the kind of thing nobody ever goes back and cleans up.
+
+        Raises:
+            ValueError: when ``provider`` is not a custom endpoint. A shipped provider has no
+                delete — removing ``gemini`` would mean removing support for it.
+        """
+        from omnia.core.config.models import custom_provider_label
+
+        _require_custom_domain(domain)
+        label = custom_provider_label(provider)
+        if not label:
+            raise ValueError(f"not a removable endpoint: {provider}")
+        data = self._loader.read_file("providers.toml")
+        table = data.get(domain, {}).get("custom", {})
+        for field in list(table.get(label, {})):
+            with contextlib.suppress(Exception):
+                # `forget_all`, not `forget`: a credential file is stored under the same stem
+                # plus the extension it arrived with, so forgetting the stem alone left it on
+                # disk with nothing referencing it.
+                self._secrets.forget_all(self._secret_name(domain, provider, field))
+        if label not in table:
+            # Like `_provider_table` and unlike the old silent `pop`: every other custom path
+            # refuses a label that is not there, and a removal reporting success for an
+            # endpoint it did not find is the asymmetry that bites the next caller.
+            raise ValueError(f"There is no endpoint called “{label}”.")
+        table.pop(label)
+        # Otherwise the domain goes on naming an endpoint that is gone. `active()` returns None,
+        # so the hub falls back to a bare `openai_compatible` with no base URL and no key, and
+        # every generation — plus language-detect, Auto-prompt and Improve — fails with
+        # "requires an api_key", pointing the user at a credential rather than at the endpoint
+        # they deleted. A shipped provider at least still reaches "Unknown provider"; the
+        # `custom:` branch rewrites the name first and loses even that.
+        section = data.setdefault(domain, {})
+        if section.get("provider") == provider:
+            section["provider"] = self._default_provider(domain)
+        self._loader.write_file("providers.toml", data)
+        self._reload()
+
+    @staticmethod
+    def _default_provider(domain: str) -> str:
+        """The provider a domain falls back to, read from the settings model's own default."""
+        from omnia.core.config.models import LLMSettings, TTSSettings
+
+        model = LLMSettings if domain == "llm" else TTSSettings
+        return str(model.__fields__["provider"].default)
+
+    #: Characters Windows forbids in a filename. A custom endpoint's provider id contains a
+    #: colon (``custom:mine``), which is legal on Linux and macOS and not on Windows — where
+    #: the write simply fails and the credential is never stored. Caught by the CI matrix's
+    #: Windows leg, which is exactly what it is for.
+    _UNSAFE_IN_FILENAMES = ':*?"<>|/\\'
+
+    @classmethod
+    def _secret_name(cls, domain: str, provider: str, field: str) -> str:
         """The secrets filename for a credential field: ``<domain>.<provider>.<field>``.
 
         Dotted + domain-prefixed: the domain keeps ``llm.openai.api_key`` and
         ``tts.openai.api_key`` (same provider name across domains) from colliding on one file.
+
+        Characters no filesystem in the matrix accepts are percent-encoded. Encoding rather
+        than substituting keeps the mapping injective: collapsing them all to ``-`` made the
+        labels ``a:b`` and ``a-b`` share one file, so adding the second endpoint overwrote the
+        first one's key. A shipped provider's name contains none of these characters, so its
+        filename is unchanged and existing secrets keep resolving.
         """
-        return f"{domain}.{provider}.{field}"
+        # `%` first, or an encoded name and a literal one could still collide.
+        safe = provider.replace("%", "%25")
+        for char in cls._UNSAFE_IN_FILENAMES:
+            safe = safe.replace(char, f"%{ord(char):02X}")
+        return f"{domain}.{safe}.{field}"
 
     def _write_provider_field(
         self, domain: str, provider: str, field: str, value: str
@@ -299,7 +454,12 @@ class ConfigRepository:
         if domain not in ("llm", "tts"):
             raise ValueError(f"unknown provider domain: {domain}")
         data = self._loader.read_file("providers.toml")
-        data.setdefault(domain, {}).setdefault(provider, {})[field] = value
+        # Through `_provider_table` like every other writer: a custom endpoint nests, and the
+        # flat write this used to do produced a second table nothing reads — the setting was
+        # accepted, the file changed, and nothing happened. Not reachable today (custom cards
+        # declare no file-typed field) which is why it is worth closing now rather than after
+        # one does.
+        self._provider_table(data, domain, provider)[field] = value
         self._loader.write_file("providers.toml", data)
         self._reload()
 
@@ -308,16 +468,32 @@ class ConfigRepository:
 
         Runs after every load so providers receive plain credentials; the reference scheme is
         an on-disk concern only.
+
+        Walks the DICT-valued subsections too, which is where the user's own endpoints live.
+        Only direct ``BaseModel`` attributes were visited before, so a custom endpoint's
+        ``secret:`` reference was handed to the provider verbatim — it authenticated with the
+        literal string ``secret:llm.custom-mine.api_key`` and every request was rejected.
         """
         for section in (self._config.llm, self._config.tts):
             for name in type(section).__fields__:
-                sub = getattr(section, name, None)
-                if not isinstance(sub, BaseModel):
-                    continue
-                for field in type(sub).__fields__:
-                    value = getattr(sub, field, None)
-                    if self._secrets.is_ref(value):
-                        setattr(sub, field, self._secrets.resolve(value))
+                self._resolve_in(getattr(section, name, None))
+
+    def _resolve_in(self, value: Any) -> None:
+        """Replace every credential reference inside ``value``, whatever shape it arrives in.
+
+        One function for both shapes rather than two loops: the next settings model to hold a
+        map of subsections gets this for free, and cannot be forgotten the way ``custom`` was.
+        """
+        if isinstance(value, dict):
+            for item in value.values():
+                self._resolve_in(item)
+            return
+        if not isinstance(value, BaseModel):
+            return
+        for field in type(value).__fields__:
+            field_value = getattr(value, field, None)
+            if self._secrets.is_ref(field_value):
+                setattr(value, field, self._secrets.resolve(field_value))
 
     @staticmethod
     def _tts_voice_field(provider: str) -> Optional[str]:

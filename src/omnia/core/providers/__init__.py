@@ -177,8 +177,25 @@ class ProviderHub:
         if settings is None:
             return {"provider": provider} if provider else {}
         name = provider or settings.provider
-        config: dict[str, Any] = {"provider": name}
-        active = getattr(settings, name, None)
+        # Imported here, not at module scope: ``core.config.models`` imports from
+        # ``core.providers.tts`` for its own defaults, so a top-level import the other way
+        # closes the cycle and neither module loads.
+        from omnia.core.config.models import custom_provider_label
+
+        # One of the user's own endpoints is a CONFIGURED INSTANCE of openai_compatible, not a
+        # provider type of its own: the registry is asked for the class that speaks the
+        # protocol, while the name only selects whose URL and key to speak it with. That is
+        # what lets any number of them exist without a class, a registration or a code change.
+        label = custom_provider_label(name)
+        active = settings.subsection(name)
+        # Only rewritten when the endpoint still EXISTS. A Smart Notes field can pin
+        # `custom:gpu` in the collection, and deleting the endpoint cannot reach into every
+        # note type that named it — so the name outlives the config. Rewritten unconditionally,
+        # it reached `openai_compatible` with no base URL and no key, and the user was told
+        # their API key was missing. Left alone, it reaches the registry as an unknown name and
+        # says so, which is the thing that actually happened.
+        known = label and isinstance(active, BaseModel)
+        config: dict[str, Any] = {"provider": "openai_compatible" if known else name}
         if isinstance(active, BaseModel):
             data = active.dict()
             # The registry/providers use ``model`` for the chat model; settings use text_model.

@@ -1325,17 +1325,11 @@ class TestTheConfiguredModelReachesTheCatalog:
     tell — so this one goes through the real object.
     """
 
-    def _context(self, tmp_path, **openai_compatible):
-        import shutil
-        from pathlib import Path
-
+    def _context(self, config_dir, **openai_compatible):
         from omnia.core.config.loader import ConfigLoader
         from omnia.core.config.repository import ConfigRepository
 
-        src = Path(__file__).resolve().parents[2] / "src" / "omnia" / "config"
-        for template in src.glob("*.example.toml"):
-            shutil.copy(template, tmp_path / template.name)
-        repo = ConfigRepository(ConfigLoader(tmp_path))
+        repo = ConfigRepository(ConfigLoader(config_dir))
         for key, value in openai_compatible.items():
             repo.set_provider_fields("llm", "openai_compatible", [(key, "text", value)])
 
@@ -1347,17 +1341,16 @@ class TestTheConfiguredModelReachesTheCatalog:
         return ctx
 
     def _models(self, ctx):
-        # The stubs first: importing `studio` reaches Qt widgets, and this test is about the
-        # pure reader inside it rather than anything drawn.
-        from aqt_stubs import install_gui_stubs
+        # No Qt stubs needed: the reader moved out of the dialog shell into a pure module, so
+        # the Account panel can rebuild what the shell baked without the two derivations
+        # drifting apart.
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
 
-        install_gui_stubs()
-        from omnia.gui.smart_notes.dialogs.studio import _configured_models
+        inputs = CatalogInputs.read(ctx)
+        return inputs.text_models, inputs.image_models
 
-        return _configured_models(ctx)
-
-    def test_a_configured_text_model_is_read(self, tmp_path):
-        ctx = self._context(tmp_path, text_model="omnia-local")
+    def test_a_configured_text_model_is_read(self, config_dir):
+        ctx = self._context(config_dir, text_model="omnia-local")
 
         text, _image = self._models(ctx)
 
@@ -1365,23 +1358,23 @@ class TestTheConfiguredModelReachesTheCatalog:
             text["openai_compatible"] == "omnia-local"
         ), "the dialog read nothing, so the picker can offer nothing"
 
-    def test_a_configured_image_model_is_read(self, tmp_path):
-        ctx = self._context(tmp_path, image_model="my-sdxl")
+    def test_a_configured_image_model_is_read(self, config_dir):
+        ctx = self._context(config_dir, image_model="my-sdxl")
 
         _text, image = self._models(ctx)
 
         assert image["openai_compatible"] == "my-sdxl"
 
-    def test_it_reaches_the_catalog_the_page_receives(self, tmp_path):
-        from omnia.core.providers.catalog import catalog_payload
+    def test_it_reaches_the_catalog_the_page_receives(self, config_dir):
+        ctx = self._context(config_dir, text_model="omnia-local")
 
-        ctx = self._context(tmp_path, text_model="omnia-local")
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
 
-        payload = catalog_payload(None, *self._models(ctx))
+        payload = CatalogInputs.read(ctx).catalog()
 
         assert "omnia-local" in payload["text_models"]["openai_compatible"]
 
-    def test_a_broken_context_degrades_without_taking_the_dialog_down(self, tmp_path):
+    def test_a_broken_context_degrades_without_taking_the_dialog_down(self):
         class _Broken:
             @property
             def repo(self):

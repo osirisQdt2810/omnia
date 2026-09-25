@@ -1158,6 +1158,24 @@
    * Render the Keys subtab from the account_keys response.
    * @param {?Object} res {providers: [{id, label, console, credit, note, active, fields}]}.
    */
+  /**
+   * Apply an add/remove reply: the Keys cards, the provider list the default picker is built
+   * from, and the central defaults.
+   *
+   * The catalog is baked when the dialog opens, so without this a removed endpoint stayed
+   * selectable in the Account default picker — and choosing a model for it wrote its section
+   * back, resurrecting in Keys an endpoint whose key had already been shredded. A newly added
+   * one, conversely, could not be chosen as a default until the dialog was reopened.
+   * @param {?Object} res The reply from add_endpoint / remove_endpoint.
+   */
+  function applyEndpointChange(res) {
+    applyLlmCatalog(res);
+    if (res && res.defaults) {
+      acctDefaults = res.defaults;
+    }
+    renderKeys(res);
+  }
+
   function renderKeys(res) {
     keysData = (res && res.providers) || [];
     keysEl.innerHTML = "";
@@ -1168,6 +1186,71 @@
     keysData.forEach(function (card) {
       keysEl.appendChild(keyCard(card));
     });
+    keysEl.appendChild(addEndpointRow());
+  }
+
+  /**
+   * The "add your own endpoint" row, under the cards.
+   *
+   * Under rather than above: the shipped providers are what most profiles use, and a form for
+   * a thing you probably do not have should not be the first thing in the list.
+   *
+   * The reply carries the refreshed cards, so the new card is on screen as part of the click
+   * that made it. Refetching instead would leave a window in which the page and the config
+   * disagree about what exists.
+   * @return {!HTMLElement}
+   */
+  function addEndpointRow() {
+    const row = document.createElement("div");
+    row.className = "sn-key-add";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "sn-key-add-name";
+    input.placeholder = "Name your endpoint — e.g. my-gpu-box";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "sn-btn sn-key-add-btn";
+    button.textContent = "Add endpoint";
+
+    const status = document.createElement("span");
+    status.className = "sn-key-add-status";
+
+    const submit = function () {
+      const label = input.value.trim();
+      if (!label) {
+        status.textContent = "Give it a name first.";
+        input.focus();
+        return;
+      }
+      button.disabled = true;
+      status.textContent = "Adding…";
+      send("add_endpoint", {label: label}, function (res) {
+        button.disabled = false;
+        if (!res || res.error) {
+          // The server's own words: "already an endpoint called X" is more use than a
+          // generic failure, and it is the message that tells the user what to change.
+          status.textContent = (res && res.error) || "Could not add.";
+          return;
+        }
+        input.value = "";
+        status.textContent = "";
+        applyEndpointChange(res);
+      });
+    };
+    button.addEventListener("click", submit);
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submit();
+      }
+    });
+
+    row.appendChild(input);
+    row.appendChild(button);
+    row.appendChild(status);
+    return row;
   }
 
   /**
@@ -1194,6 +1277,31 @@
       chip.className = "sn-key-chip";
       chip.textContent = "active";
       head.appendChild(chip);
+    }
+    if (card.custom) {
+      // Only on an endpoint the user added. A shipped provider has no Remove, because
+      // removing `gemini` would mean removing support for it rather than a setting.
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "sn-iconbtn sn-key-remove";
+      remove.textContent = "✕";
+      remove.title = "Remove this endpoint";
+      remove.addEventListener("click", function () {
+        // Confirmed, because it also deletes the stored key and there is no undo.
+        if (!window.confirm("Remove “" + card.label + "” and its saved key?")) {
+          return;
+        }
+        remove.disabled = true;
+        send("remove_endpoint", {provider: card.id}, function (res) {
+          if (!res || res.error) {
+            remove.disabled = false;
+            window.alert((res && res.error) || "Could not remove.");
+            return;
+          }
+          applyEndpointChange(res);
+        });
+      });
+      head.appendChild(remove);
     }
 
     // Save + status pushed to the far right of the header (one Save per card; a file field

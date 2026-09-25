@@ -105,12 +105,36 @@ class OpenAICompatibleLLMSettings(LLMModelSettings):
     json_output: bool = False
 
 
+#: Prefix marking a provider name as one of the user's own endpoints rather than a built-in.
+#:
+#: A prefix rather than a bare name so a custom endpoint can never shadow — or be shadowed by —
+#: a shipped provider. Somebody naming theirs "gemini" gets ``custom:gemini``, which resolves to
+#: their server and leaves the real one alone.
+CUSTOM_PREFIX = "custom:"
+
+
+def custom_provider_name(label: str) -> str:
+    """The provider id for a user endpoint labelled ``label``."""
+    return f"{CUSTOM_PREFIX}{label}"
+
+
+def custom_provider_label(provider: str) -> str:
+    """The label inside a custom provider id, or ``""`` when it is not one."""
+    return provider[len(CUSTOM_PREFIX) :] if provider.startswith(CUSTOM_PREFIX) else ""
+
+
 class LLMSettings(PersistedModel):
     """LLM provider selection + per-provider config (one subsection per provider).
 
     ``provider`` selects the active subsection; :meth:`active` returns it (or None for an
     unknown name, so the factory raises the clear "unknown provider" error lazily rather
     than bricking config load).
+
+    Beyond the shipped subsections there is ``custom``: any number of the user's own
+    OpenAI-compatible endpoints, each keyed by a label they choose. They are configured
+    instances of one provider rather than new provider types — which is why they need no
+    registration, no class, and no code: a self-hosted vLLM and a colleague's server differ by
+    a URL, not by a protocol.
     """
 
     provider: str = "gemini_vertex"
@@ -131,11 +155,30 @@ class LLMSettings(PersistedModel):
     openai_compatible: OpenAICompatibleLLMSettings = Field(
         default_factory=OpenAICompatibleLLMSettings
     )
+    #: The user's own endpoints, ``{label: settings}``. Lives in ``providers.toml``, which does
+    #: NOT sync — so adding one cannot reach another device and cannot break an older build.
+    custom: dict[str, OpenAICompatibleLLMSettings] = Field(default_factory=dict)
+
+    def subsection(self, provider: str) -> Optional[BaseModel]:
+        """The settings for ``provider``, shipped or custom, or None when there are none.
+
+        The single place that understands :data:`CUSTOM_PREFIX`. Everything else asks this and
+        stays unaware that a provider name can mean "a configured instance" rather than "a
+        registered class".
+        """
+        label = custom_provider_label(provider)
+        if label:
+            return self.custom.get(label)
+        sub = getattr(self, provider, None)
+        return sub if isinstance(sub, BaseModel) else None
+
+    def custom_providers(self) -> list[str]:
+        """Every configured endpoint's provider id, in the order they were added."""
+        return [custom_provider_name(label) for label in self.custom]
 
     def active(self) -> Optional[BaseModel]:
         """Return the settings subsection for the selected ``provider`` (None if unknown)."""
-        sub = getattr(self, self.provider, None)
-        return sub if isinstance(sub, BaseModel) else None
+        return self.subsection(self.provider)
 
 
 # --- TTS provider settings ------------------------------------------------------------

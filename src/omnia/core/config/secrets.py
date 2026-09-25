@@ -22,6 +22,7 @@ headless.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 from pathlib import Path
 
@@ -77,6 +78,35 @@ class SecretsStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src_path, self._dir / name)
         return f"{self.FILE_SCHEME}{name}"
+
+    def forget_all(self, stem: str) -> None:
+        """Delete every secret whose name is ``stem``, with or without a file extension.
+
+        A credential FILE is stored as ``<stem><ext>`` — the extension comes from whatever the
+        user browsed to, so the name alone does not identify it. Forgetting the stem therefore
+        missed it, and a service-account JSON outlived the provider that referenced it.
+        """
+        import glob as globlib
+
+        self.forget(stem)
+        with contextlib.suppress(OSError):
+            # Escaped: `[` and `]` are legal in a filename and are a character CLASS to glob,
+            # so an endpoint labelled `[brack]` would match — and unlink — another one's file.
+            for path in self._dir.glob(globlib.escape(stem) + ".*"):
+                path.unlink()
+
+    def forget(self, name: str) -> None:
+        """Delete ``.secrets/<name>`` if it is there.
+
+        Called when the thing that referenced a secret is removed. Blanking it instead would
+        leave a credential on disk with nothing pointing at it — which is exactly the kind of
+        leftover nobody goes back and cleans up.
+
+        A missing file is not an error: the caller is asking for the secret to be gone, and it
+        is.
+        """
+        with contextlib.suppress(OSError):
+            (self._dir / name).unlink()
 
     def _read(self, name: str) -> str:
         path = self._dir / name
