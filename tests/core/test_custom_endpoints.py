@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from omnia.core.config.models import (
-    CUSTOM_PREFIX,
     LLMSettings,
     custom_provider_label,
     custom_provider_name,
@@ -248,3 +247,33 @@ class TestAddingAndRemovingOne:
         repo.set_provider_fields("llm", "openrouter", [("api_key", "secret", "sk-1")])
 
         assert repo.llm_settings().openrouter.api_key == "sk-1"
+
+
+class TestSecretFilenamesSurviveEveryPlatform:
+    """A custom endpoint's id contains a colon, which Windows forbids in a filename.
+
+    Left unsanitised the write simply fails there and the credential is never stored — on the
+    one platform where nobody would think to look. Found by the CI matrix's Windows leg rather
+    than by reading the code.
+    """
+
+    def _name(self, provider):
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository._secret_name("llm", provider, "api_key")
+
+    def test_a_colon_never_reaches_the_filesystem(self):
+        assert ":" not in self._name("custom:mine")
+
+    @pytest.mark.parametrize("char", list(':*?"<>|/\\'))
+    def test_no_reserved_character_survives(self, char):
+        assert char not in self._name(f"custom:na{char}me")
+
+    def test_a_shipped_provider_keeps_its_existing_filename(self):
+        """The substitution must not rename anything that already works — an existing secret
+        whose file moved would read as a credential that vanished."""
+        assert self._name("gemini") == "llm.gemini.api_key"
+        assert self._name("gemini_vertex") == "llm.gemini_vertex.api_key"
+
+    def test_two_endpoints_still_get_different_files(self):
+        assert self._name("custom:a") != self._name("custom:b")

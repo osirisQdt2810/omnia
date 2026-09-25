@@ -354,14 +354,27 @@ class ConfigRepository:
         self._loader.write_file("providers.toml", data)
         self._reload()
 
-    @staticmethod
-    def _secret_name(domain: str, provider: str, field: str) -> str:
+    #: Characters Windows forbids in a filename. A custom endpoint's provider id contains a
+    #: colon (``custom:mine``), which is legal on Linux and macOS and not on Windows — where
+    #: the write simply fails and the credential is never stored. Caught by the CI matrix's
+    #: Windows leg, which is exactly what it is for.
+    _UNSAFE_IN_FILENAMES = ':*?"<>|/\\'
+
+    @classmethod
+    def _secret_name(cls, domain: str, provider: str, field: str) -> str:
         """The secrets filename for a credential field: ``<domain>.<provider>.<field>``.
 
         Dotted + domain-prefixed: the domain keeps ``llm.openai.api_key`` and
         ``tts.openai.api_key`` (same provider name across domains) from colliding on one file.
+
+        Characters no filesystem in the matrix accepts are replaced with ``-``. A shipped
+        provider's name contains none of them, so its filename is unchanged and existing
+        secrets keep resolving — the substitution only ever fires for a name the user chose.
         """
-        return f"{domain}.{provider}.{field}"
+        safe = provider
+        for char in cls._UNSAFE_IN_FILENAMES:
+            safe = safe.replace(char, "-")
+        return f"{domain}.{safe}.{field}"
 
     def _write_provider_field(
         self, domain: str, provider: str, field: str, value: str
