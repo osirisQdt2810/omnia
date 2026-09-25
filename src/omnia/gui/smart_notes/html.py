@@ -700,6 +700,9 @@ def graph_payload(config: SmartNotesNoteTypeConfig) -> dict[str, object]:
                 "dst": edge.dst,
                 "kind": edge.kind,
                 "derived": edge.derived,
+                # Whether this edge would actually hold generation back. Narrower than
+                # `kind == "hard"`, and the gen-order preview must use THIS — see GraphEdge.
+                "blocks": edge.blocks,
                 "from_tool": edge.from_tool,
                 "cycle": (edge.src.strip().lower(), edge.dst.strip().lower())
                 in cycle_keys,

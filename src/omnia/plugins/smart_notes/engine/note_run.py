@@ -28,14 +28,13 @@ Pure logic — no ``aqt``/``anki``, no threading.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Optional, Union
 
 from omnia.plugins.smart_notes.engine.ordering import order_rule_levels, order_rules
 from omnia.plugins.smart_notes.engine.rules import (
-    rule_inputs,
-    rule_prerequisites,
+    blocking_prerequisites,
     should_skip_rule,
 )
 from omnia.plugins.smart_notes.provenance import ALWAYS
@@ -56,23 +55,14 @@ class BlockedField:
     themselves been blocked/failed. Blocking is transitive: a blocked field puts no value in
     the working map, so its own hard dependents block in turn.
 
-    ``unread`` is the subset of those that NO tool in the chain reads — fields that block only
-    because an explicit ``depends_on`` edge says to wait for them. The two are worth telling
-    apart when explaining the block: reporting both as "needs" tells the user their tool
-    requires a field it never opens, which sends them to fix the tool instead of the edge. A
-    Clone Field row reading one field, with a stale edge onto another, reported "needs A, B"
-    and there was no way to tell from the message that B was removable.
+    Every name here is one the chain READS — see :func:`blocking_prerequisites`. A field that
+    only appears in the row's ``depends_on`` cannot reach this list, because its contents have
+    no route into the output and waiting for them could not change the result. That is what
+    makes "needs" an honest word for everything in ``missing``.
     """
 
     target_field: str
     missing: list[str]
-    unread: list[str] = field(default_factory=list)
-
-    @property
-    def needed(self) -> list[str]:
-        """The blocked prerequisites the chain actually reads, in ``missing`` order."""
-        unread = {name.strip().lower() for name in self.unread}
-        return [name for name in self.missing if name.strip().lower() not in unread]
 
 
 @dataclass(frozen=True)
@@ -101,19 +91,6 @@ class FailedField:
     error: str
     kind: str = "error"
     note_id: int = 0
-
-
-def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
-    """Return the field names ``rule`` HARD-depends on (the gate's blocking prerequisites).
-
-    Reads the rule's prerequisites through the single source of truth
-    (:func:`~omnia.plugins.smart_notes.engine.rules.rule_prerequisites`) and keeps only the
-    ``"hard"`` ones — soft prerequisites order generation but never block. The explicit
-    kind-override (e.g. a derived source recoloured ``"soft"``) is already applied there, so a
-    softened source is correctly excluded here. Names keep their original case (for the
-    ``missing`` report); matching is the caller's job.
-    """
-    return [field for field, kind in rule_prerequisites(rule) if kind == "hard"]
 
 
 class NoteRun:
@@ -205,17 +182,10 @@ class NoteRun:
         for rule in level:
             missing = self._missing_hard_prerequisites(rule)
             if missing:
-                # Split here, where the rule is in hand: `rule_inputs` is what the chain reads,
-                # and anything blocking outside it is an explicit edge the user can remove.
-                reads = {name.strip().lower() for name in rule_inputs(rule)}
                 self._blocked.append(
                     (
                         self._position[id(rule)],
-                        BlockedField(
-                            rule.target_field,
-                            missing,
-                            [n for n in missing if n.strip().lower() not in reads],
-                        ),
+                        BlockedField(rule.target_field, missing),
                     )
                 )
                 continue  # writes no value → hard dependents block transitively
@@ -328,6 +298,6 @@ class NoteRun:
         present |= self._produced
         return [
             prereq
-            for prereq in _hard_prerequisites(rule)
+            for prereq in blocking_prerequisites(rule)
             if prereq.strip().lower() not in present
         ]

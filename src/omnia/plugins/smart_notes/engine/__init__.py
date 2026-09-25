@@ -48,6 +48,7 @@ from omnia.plugins.smart_notes.engine.ordering import (
 )
 from omnia.plugins.smart_notes.engine.rules import (
     applies_to_deck,
+    blocking_prerequisites,
     compile_field_rule,
     compile_note_type_rules,
     dedupe_preserving_order,
@@ -112,6 +113,7 @@ __all__ = [
     "WavePlanner",
     "WaveTask",
     "applies_to_deck",
+    "blocking_prerequisites",
     "compile_field_rule",
     "compile_note_type_rules",
     "convert_markdown_to_html",

@@ -89,6 +89,11 @@ class TestGraphPayload:
             "derived": True,
             "from_tool": False,
             "cycle": False,
+            # …and it really does hold generation back: the prompt reads {{Word}}. `blocks` is
+            # narrower than `kind == "hard"` — an edge onto a field the chain never opens
+            # orders without blocking — so the gen-order preview reads this rather than the
+            # kind, and agrees with the run.
+            "blocks": True,
         } in gp["edges"]
         # every node carries a layout column/row (computed in Python)
         assert all("column" in n and "row" in n for n in gp["nodes"])
@@ -1283,6 +1288,54 @@ console.log(JSON.stringify(out));
         assert row["label"] == "Speed: inherit"
 
 
+class TestThePacePickerIsOnlyOnSoundRows:
+    """Text and image have no pace, so the control should not be drawn on their rows.
+
+    `.sn-na` is not enough. It blurs the cell and blocks clicks, which is the right treatment
+    for Voice — a row can be switched to sound and the saved voice still means something — but
+    the control is still DRAWN, so every text row carried a visible Speed dropdown it can never
+    use and paid its height in the table. A pace on a text row means nothing at all.
+    """
+
+    def _render_source(self) -> str:
+        import omnia.gui.smart_notes.html as html_module
+        from omnia.gui.assets import read_asset
+
+        return read_asset(html_module.__file__, "web", "03-render.js")
+
+    def test_the_append_is_guarded_by_the_rows_kind(self):
+        """Read off the source rather than the DOM: the guard sits inside `rebuildVoice`,
+        which needs the whole page IIFE to run. What matters is that the append is conditional
+        on the row's type at all — an unguarded `appendChild` is the regression."""
+        source = self._render_source()
+        start = source.index("function rebuildVoice")
+        body = source[start : source.index("function makeSpeedSelect")]
+
+        assert (
+            "makeSpeedSelect(tr)" in body
+        ), "the picker stopped being built with the cell"
+        append = body[body.index("makeSpeedSelect(tr)") - 400 :]
+        assert (
+            "isTts(" in append
+        ), "the pace picker is appended unconditionally — text and image rows draw one too"
+
+    def test_the_kind_change_path_rebuilds_the_cell(self):
+        """Switching text → sound has to make the picker appear, and sound → text remove it.
+
+        Both go through `rebuildProvider`, which ends by calling `rebuildVoice`; if that chain
+        is broken the guard above is correct and the UI still stale.
+        """
+        source = self._render_source()
+        start = source.index("function onKindChange")
+        body = source[start : source.index("\n  }", start)]
+
+        assert "rebuildProvider(tr, kind" in body, body
+
+        provider = source[source.index("function rebuildProvider") :]
+        provider = provider[: provider.index("\n  }")]
+        assert "rebuildVoice(tr, current)" in provider, provider
+
+
 class TestTheSpeedPickerIsOnThePage:
     """The control itself: it exists, it offers inherit, and it posts what it offers."""
 
@@ -1313,6 +1366,72 @@ class TestTheSpeedPickerIsOnThePage:
         rebuild = rebuild[: rebuild.index("function makeSpeedSelect")]
 
         assert "makeSpeedSelect(tr)" in rebuild
+
+
+class TestAnEdgeKnowsWhetherItActuallyBlocks:
+    """`kind == "hard"` and "would hold generation back" stopped being the same question.
+
+    An explicit edge onto a field the chain never reads ORDERS without blocking. The gen-order
+    animation filtered on the kind, so it marked a node blocked that generates perfectly well —
+    the same wrong message the run itself stopped giving, moved to another screen.
+
+    The payload now carries the run's own answer, so the two cannot drift.
+    """
+
+    def _edges(self, depends_on=(), prompt="Define {{Word}}"):
+        from omnia.gui.smart_notes.html import graph_payload
+        from omnia.plugins.smart_notes.config import (
+            SmartNotesFieldConfig,
+            SmartNotesNoteTypeConfig,
+        )
+
+        config = SmartNotesNoteTypeConfig(
+            note_type="Vocab",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt=prompt,
+                    depends_on=list(depends_on),
+                ),
+                SmartNotesFieldConfig(field="Notes", enabled=False, type="text"),
+            ],
+        )
+        return {(e["src"], e["dst"]): e for e in graph_payload(config)["edges"]}
+
+    def test_an_edge_the_chain_reads_blocks(self):
+        edges = self._edges()
+
+        assert edges[("Word", "Definition")]["blocks"] is True
+
+    def test_a_hard_edge_nothing_reads_does_not(self):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        edges = self._edges(depends_on=[FieldDep(field="Notes", kind="hard")])
+
+        edge = edges[("Notes", "Definition")]
+        assert edge["kind"] == "hard", "it is still a hard edge — it still ORDERS"
+        assert (
+            edge["blocks"] is False
+        ), "the gen-order preview would mark this node blocked, and the run would generate it"
+
+    def test_a_soft_edge_never_blocks(self):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        edges = self._edges(depends_on=[FieldDep(field="Notes", kind="soft")])
+
+        assert edges[("Notes", "Definition")]["blocks"] is False
+
+    def test_a_softened_read_source_stops_blocking(self):
+        """The kind override still works: a source the chain DOES read, marked soft, orders
+        without blocking."""
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        edges = self._edges(depends_on=[FieldDep(field="Word", kind="soft")])
+
+        assert edges[("Word", "Definition")]["blocks"] is False
 
 
 class TestTheConfiguredModelReachesTheCatalog:

@@ -1075,62 +1075,132 @@ class TestTheClipperHonoursTheOverwriteScope:
         assert unstamp(note["Definition"]) == "generated"
 
 
-class TestTheClipperBlockedMessageNamesTheRealReason:
-    """Same distinction as the batch summary, in the clipper's own wording.
+class TestThePreviewAgreesWithTheRun:
+    """The clipper greys a field out and says it needs something. Pressing generate anyway
+    produced it fine.
 
-    "Needs X" is right for a prerequisite the chain reads and wrong for one that only blocks
-    because the row's `depends_on` says to wait for it.
+    `_predicted_blocks` filtered `rule_prerequisites` on `kind == "hard"` inline — which WAS
+    the run's rule, until the run's changed. Two copies of one rule is how a preview comes to
+    disagree with the thing it is previewing, and a preview that refuses a field the engine
+    would have generated is worse than no preview: it tells the user not to try.
+
+    The edge has to point at a field with no rule of its own — a hand-written `Notes`,
+    `Example 1` — because a generatable target is already counted present by `_predicted_blocks`.
     """
 
-    def _block(self, missing, unread=()):
-        from omnia.plugins.smart_notes.engine import BlockedField
-
-        return BlockedField("Audio", list(missing), list(unread))
-
-    def _render(self, block):
-        from omnia.plugins.smart_notes.integration.regen import _blocked_message
-
-        return _blocked_message(block)
-
-    def test_a_read_prerequisite_is_still_needed(self):
-        message = self._render(self._block(["Backup"]))
-
-        assert message.startswith("Needs "), message
-        assert "Backup" in message and "empty" in message
-
-    def test_an_unread_edge_says_where_to_remove_it(self):
-        message = self._render(self._block(["Example 1"], ["Example 1"]))
-
-        assert "Needs" not in message, message
-        assert "no tool reads" in message
-        assert "Dependencies" in message, "the user is not told where to fix it"
-
-    def test_a_mix_reports_both_without_conflating_them(self):
-        message = self._render(self._block(["Backup", "Example 1"], ["Example 1"]))
-
-        assert "Needs “Backup”" in message, message
-        assert "also waiting on “Example 1”" in message, message
-
-    def test_it_reaches_the_reported_outcome(self, monkeypatch):
-        """End to end: a row whose chain reads one field but carries an edge onto another.
-
-        The renderer being right is worth nothing if `regenerate` does not use it — or if the
-        SPLIT is never computed, which is the half a hand-built `BlockedField` cannot exercise.
-        """
+    def _config_with_stale_edge(self):
         from omnia.plugins.smart_notes.config import FieldDep
 
         config = _config()
-        target = next(f for f in config.fields if f.field == "Definition")
-        target.depends_on = [FieldDep(field="Example", kind="hard", auto=False)]
-        note = _FakeNote(1, "Vocab", {"Word": "cat", "Definition": "", "Example": ""})
+        config.fields = [f for f in config.fields if f.field == "Definition"]
+        # `Definition`'s prompt is "define {{Word}}" — nothing reads `Notes`.
+        config.fields[0].depends_on = [FieldDep(field="Notes", kind="hard", auto=False)]
+        return config
+
+    def _service(self, monkeypatch):
+        config = self._config_with_stale_edge()
+        note = _FakeNote(
+            1, "Vocab", {"Word": "cat", "Definition": "", "Example": "", "Notes": ""}
+        )
+        service, _compat = _build(monkeypatch, note, _settings(config))
+        return service
+
+    def test_the_preview_does_not_call_it_blocked(self, monkeypatch):
+        service = self._service(monkeypatch)
+
+        assert service.field_states(1).get("Definition") != "blocked"
+
+    def test_and_the_run_generates_it(self, monkeypatch):
+        # The other half of the same claim: the two must AGREE, so both are asserted.
+        service = self._service(monkeypatch)
+
+        (outcome,) = service.regenerate(1, ["Definition"])
+
+        assert outcome.status == "generated"
+
+    def test_a_genuinely_missing_input_is_still_previewed_as_blocked(self, monkeypatch):
+        """The fix must not turn the preview into "nothing is ever blocked"."""
+        config = _config()
+        config.fields = [f for f in config.fields if f.field == "Definition"]
+        note = _FakeNote(1, "Vocab", {"Word": "", "Definition": "", "Example": ""})
         service, _compat = _build(monkeypatch, note, _settings(config))
 
-        outcomes = {o.field: o for o in service.regenerate(1, ["Definition"])}
-        message = outcomes["Definition"].message
+        assert service.field_states(1).get("Definition") == "blocked"
 
-        assert "Example" in message, message
-        # The wording that only appears once the PRODUCER has split the block. A version that
-        # always passed an empty `unread` would leave every message reading "needs", and a test
-        # that builds `BlockedField` by hand cannot tell.
-        assert "no tool reads" in message, message
-        assert "Needs \u201cExample\u201d" not in message, message
+
+class TestAPromptlessRowIsHeldToTheSameRule:
+    """`source_is_base_fallback` says the row has no prompt — not that anything reads one.
+
+    The base field is added to the blocking set for a promptless row because a promptless AI
+    row feeds the base field straight to the model, and nothing else would notice it was
+    empty. But a promptless CLONE row reads its own `sentence_field` and never opens the
+    prompt, so the base field is not its input either. Adding it unconditionally put the
+    original bug back through the branch meant to be the exception: a leftover hard edge onto
+    the base field held the row forever and reported it as needed.
+    """
+
+    def _rule(self, tools, prompt="", depends_on=()):
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        return compile_field_rule(
+            SmartNotesFieldConfig(
+                field="Audio",
+                enabled=True,
+                type="text",
+                prompt=prompt,
+                tools=list(tools),
+                depends_on=list(depends_on),
+            ),
+            "Word",
+        )
+
+    def _blockers(self, rule):
+        from omnia.plugins.smart_notes.engine import blocking_prerequisites
+
+        return {name.strip().lower() for name in blocking_prerequisites(rule)}
+
+    def _dep(self, field, kind="hard"):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        return FieldDep(field=field, kind=kind)
+
+    def _clone(self, source):
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        return FieldToolConfig(tool="cloze", params={"sentence_field": source})
+
+    def test_a_promptless_clone_row_does_not_block_on_the_base_field(self):
+        rule = self._rule([self._clone("Backup")], depends_on=[self._dep("Word")])
+
+        assert "word" not in self._blockers(rule)
+
+    def test_it_still_blocks_on_what_it_reads(self):
+        rule = self._rule([self._clone("Backup")], depends_on=[self._dep("Word")])
+
+        assert "backup" in self._blockers(rule)
+
+    def test_a_promptless_ai_row_still_blocks_on_the_base_field(self):
+        """This is the case the branch exists for: the base field IS the whole prompt, so an
+        empty one means calling the model with nothing and paying for what it invents.
+        """
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        rule = self._rule(
+            [FieldToolConfig(tool="ai", params={})], depends_on=[self._dep("Word")]
+        )
+
+        assert "word" in self._blockers(rule)
+
+    def test_switching_the_tool_moves_the_blocker(self):
+        """Dependencies follow the tool, which is the whole point of the change."""
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        deps = [self._dep("Word"), self._dep("Backup")]
+        cloned = self._blockers(self._rule([self._clone("Backup")], depends_on=deps))
+        aied = self._blockers(
+            self._rule([FieldToolConfig(tool="ai", params={})], depends_on=deps)
+        )
+
+        assert cloned == {"backup"}
+        assert aied == {"word"}

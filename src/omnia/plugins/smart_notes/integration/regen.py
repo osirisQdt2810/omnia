@@ -44,12 +44,11 @@ from omnia.core import anki_compat
 from omnia.core.concurrency.pool import pooled_dispatch
 from omnia.core.logging import get_logger
 from omnia.plugins.smart_notes.engine import (
-    BlockedField,
     applies_to_deck,
+    blocking_prerequisites,
     compile_note_type_rules,
 )
 from omnia.plugins.smart_notes.engine.rules import (
-    rule_prerequisites,
     rule_source_fields,
 )
 from omnia.plugins.smart_notes.integration.batch import note_materializer
@@ -343,11 +342,16 @@ class RegenerationService:
         snapshot: _NoteSnapshot,
         candidates: list[str],
     ) -> set[str]:
-        """Return the candidates whose HARD prerequisites are visibly unmet right now.
+        """Return the candidates the run would hold back, given what the note holds right now.
+
+        Asks :func:`~omnia.plugins.smart_notes.engine.blocking_prerequisites` — the RUN's own
+        rule — rather than filtering prerequisites here. The two were separate copies of
+        `kind == "hard"` and drifted the moment the run's rule changed, which is how a preview
+        comes to disagree with the thing it is previewing.
 
         A prerequisite counts as met when the note already holds a non-blank value for it, or
-        when it is itself one of the fields about to be attempted. That makes this set a subset
-        of what a real run would block, which is the direction :meth:`field_states` wants.
+        when it is itself one of the fields about to be attempted. That keeps this a subset of
+        what a real run would block, which is the direction :meth:`field_states` wants.
         """
         if config is None or not candidates:
             return set()
@@ -363,8 +367,12 @@ class RegenerationService:
             if rule.target_field in wanted
             and any(
                 field.strip().lower() not in present
-                for field, kind in rule_prerequisites(rule)
-                if kind == "hard"
+                # The RUN's own rule, not a copy of it. This used to filter
+                # `rule_prerequisites` on `kind == "hard"` inline, which was the run's rule
+                # too — until the run's changed. A preview that disagrees with the run it is
+                # previewing is worse than no preview: the clipper greyed a field out and told
+                # the user it needed something, and pressing generate anyway produced it fine.
+                for field in blocking_prerequisites(rule)
             )
         }
 
@@ -451,7 +459,7 @@ class RegenerationService:
             outcomes[block.target_field] = FieldOutcome(
                 block.target_field,
                 STATUS_BLOCKED,
-                _blocked_message(block),
+                f"Needs {_join(block.missing)}, which {_is_are(block.missing)} still empty.",
             )
         for failure in failed:
             # Both FailedField kinds land here: ``error`` (a tool broke) and ``unproductive``
@@ -620,29 +628,6 @@ def _refusal(
         name,
         STATUS_NOT_GENERATABLE,
         f"This version of Omnia cannot generate “{row.type}” fields — update Omnia.",
-    )
-
-
-def _blocked_message(block: BlockedField) -> str:
-    """Why a field did not generate, distinguishing an input from a bare ordering edge.
-
-    "Needs X" is right for a prerequisite the chain READS and wrong for one that only blocks
-    because the row's ``depends_on`` says to wait for it — the tool never opens that field, so
-    the message sends the user to fix a tool that is working.
-    """
-    if not block.unread:
-        return (
-            f"Needs {_join(block.missing)}, which {_is_are(block.missing)} still empty."
-        )
-    waiting = (
-        f"waiting on {_join(block.unread)}, which no tool reads — remove that dependency "
-        "under Dependencies, or fill the field"
-    )
-    if not block.needed:
-        return f"Still {waiting}."
-    return (
-        f"Needs {_join(block.needed)}, which {_is_are(block.needed)} still empty; also "
-        f"{waiting}."
     )
 
 

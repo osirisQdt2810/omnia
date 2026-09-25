@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from omnia.plugins.smart_notes.engine.ordering import SmartNotesCycleError
 from omnia.plugins.smart_notes.engine.rules import (
+    blocking_prerequisites,
     compile_field_rule,
     rule_prerequisites,
     rule_source_fields,
@@ -56,6 +57,13 @@ class GraphEdge:
     but only a PROMPT edge can be deleted by rewriting the prompt at Save — without this flag
     the graph would offer that rewrite for an edge it cannot possibly remove, and the edge would
     silently reappear.
+
+    ``blocks`` is whether this edge would actually HOLD BACK generation, which is narrower than
+    ``kind == "hard"``: an edge onto a field the chain never reads orders without blocking, so a
+    surface that treats every hard edge as blocking disagrees with the run. The gen-order
+    preview did exactly that and told users a field was blocked that generates fine. Computed
+    from the run's own :func:`~omnia.plugins.smart_notes.engine.blocking_prerequisites` so the
+    two cannot drift.
     """
 
     src: str
@@ -63,6 +71,7 @@ class GraphEdge:
     kind: str
     derived: bool
     from_tool: bool = False
+    blocks: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,8 +209,18 @@ class FieldGraph:
             kind: str,
             *,
             derived: bool,
+            blocking: set[str],
             from_tool: bool = False,
         ) -> None:
+            """Record one edge. ``blocking`` is the set the RUN would hold ``dst`` back on.
+
+            Passed in rather than read from an enclosing dict keyed by ``dst``: through the
+            closure it was correct only because every ``add_edge`` for a field happened in the
+            same loop iteration that had just computed its set. Move one call out of that
+            iteration and every edge silently gets ``blocks=False`` — and the only symptom is a
+            preview that quietly stops marking anything blocked, which is not a symptom anyone
+            notices. A parameter makes the ordering hazard unrepresentable.
+            """
             if src_lower not in display or dst_lower not in display:
                 return  # edge references a field not present in the note type — drop it
             edges[src_lower, dst_lower] = GraphEdge(
@@ -210,6 +229,7 @@ class FieldGraph:
                 kind=kind,
                 derived=derived,
                 from_tool=from_tool,
+                blocks=src_lower in blocking,
             )
 
         for field in config.fields:
@@ -219,6 +239,10 @@ class FieldGraph:
             # Build the same rule the engine compiles so the graph reads dependencies through
             # the single source of truth (rule_prerequisites); the graph only adds ``derived``.
             rule = compile_field_rule(field, base)
+            # The run's own answer, not `kind == "hard"`. An edge onto a field the chain never
+            # reads orders without blocking, and a surface that conflates the two tells the
+            # user a field is blocked that generates perfectly well.
+            blocking = {name.strip().lower() for name in blocking_prerequisites(rule)}
             prompt_sources = {name.strip().lower() for name in rule_source_fields(rule)}
             tool_sources = {
                 name.strip().lower() for name in tool_referenced_fields(rule.tools)
@@ -236,6 +260,7 @@ class FieldGraph:
                     kind,
                     derived=from_prompt or src_lower in tool_sources,
                     from_tool=not from_prompt and src_lower in tool_sources,
+                    blocking=blocking,
                 )
 
         return cls(nodes=nodes, edges=list(edges.values()))

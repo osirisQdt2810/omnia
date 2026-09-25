@@ -5,9 +5,11 @@
  * The "▶ Preview gen order" button animates the ORDER fields are generated in, from a seed the
  * user picks: the base Word is always "given"; Context (and any other input) are optional
  * checkboxes. It replays the engine's dependency route (mirrors engine/ordering.order_rules +
- * the NoteRun block gate): HARD edges order AND block (a field waits for its hard prerequisites
- * and is blocked when one is missing), SOFT edges order best-effort (the prerequisite generates
- * first so the dependent is richer).
+ * the NoteRun block gate): HARD edges ORDER — a field waits for its hard prerequisites — and
+ * those of them the field's tool actually READS also BLOCK it while they are empty. The two
+ * are not the same set: an edge onto a field nothing in the chain opens orders without
+ * blocking, and Python decides which is which (each edge carries a `blocks` flag). SOFT edges
+ * order best-effort (the prerequisite generates first so the dependent is richer).
  *
  * It mirrors the order, NOT the timing. Generation runs a whole dependency LEVEL at a time (see
  * engine/ordering.order_rule_levels), so independent fields really finish together, while this
@@ -58,6 +60,26 @@ function gpPrereqs(name, kind) {
   const out = [];
   (graphData.edges || []).forEach(function (e) {
     if ((e.dst || "").toLowerCase() === lc && e.kind === kind) {
+      out.push(e.src);
+    }
+  });
+  return out;
+}
+
+/**
+ * The prerequisites that would actually HOLD BACK `name` — the run's own set.
+ *
+ * Not every hard edge: one onto a field the chain never reads orders without blocking. This
+ * animation used to filter on `kind === "hard"` and so marked a node blocked that generates
+ * perfectly well, which is the same wrong message the run itself stopped giving.
+ * @param {string} name The field.
+ * @return {!Array<string>} Prerequisite field names.
+ */
+function gpBlockers(name) {
+  const lc = (name || "").toLowerCase();
+  const out = [];
+  (graphData.edges || []).forEach(function (e) {
+    if ((e.dst || "").toLowerCase() === lc && e.blocks) {
       out.push(e.src);
     }
   });
@@ -319,7 +341,7 @@ function gpPlay_() {
       gpStatus.innerHTML =
         "✓ Done — <b>" +
         gen +
-        "</b> fields generate in order (blocked ones need a missing hard input).";
+        "</b> fields generate in order (blocked ones are missing an input their tool reads).";
       gpPlay.disabled = false;
       gpTimer = null;
       return;
@@ -330,8 +352,13 @@ function gpPlay_() {
     if (el) {
       el.classList.remove("sn-gp-pending");
     }
-    const hard = gpPrereqs(node.name, "hard");
-    const missing = hard.filter(function (p) {
+    // Held, not recomputed: the same list decides whether the node is blocked and, when it
+    // is not, what the "←" annotation names. Removing one of its two readers and leaving the
+    // other reading a binding that no longer existed threw a ReferenceError inside the
+    // timeout callback, before the line that reschedules it — so the animation stopped dead
+    // on the first field for everyone, with Play left disabled.
+    const blockers = gpBlockers(node.name);
+    const missing = blockers.filter(function (p) {
       return !working[p.toLowerCase()];
     });
     if (missing.length) {
@@ -345,7 +372,7 @@ function gpPlay_() {
         order.length +
         ") ⛔ <b>" +
         esc(node.name) +
-        "</b> blocked — missing hard input: " +
+        "</b> blocked — missing input: " +
         missing.map(esc).join(", ");
     } else {
       if (el) {
@@ -357,8 +384,8 @@ function gpPlay_() {
         return working[p.toLowerCase()];
       });
       let msg = "(" + step + "/" + order.length + ") ⚡ <b>" + esc(node.name) + "</b>";
-      if (hard.length) {
-        msg += " ← " + hard.map(esc).join(", ");
+      if (blockers.length) {
+        msg += " ← " + blockers.map(esc).join(", ");
       }
       if (soft.length) {
         msg += " · enriched by " + soft.map(esc).join(", ");
