@@ -173,16 +173,21 @@ class ConfigRepository:
     ) -> None:
         """Set the active LLM provider (and optionally its text/image model), preserving creds.
 
-        Writes ``[llm].provider`` plus the chosen model field on the ``[llm.<provider>]``
-        subsection in providers.toml, then reloads. Other fields (api keys, base urls) are
-        left untouched. Used by the Account default-model picker (text → ``text_model``,
-        image → ``image_model``).
+        Writes ``[llm].provider`` plus the chosen model field on that provider's subsection in
+        providers.toml, then reloads. Other fields (api keys, base urls) are left untouched.
+        Used by the Account default-model picker (text → ``text_model``, image →
+        ``image_model``).
+
+        Goes through ``_provider_table`` for the same reason ``set_provider_fields`` does: a
+        custom endpoint lives at ``[llm.custom.<label>]``, and writing it flat produced a
+        SECOND table, ``[llm."custom:mine"]``, that nothing reads. The picker accepted the
+        choice, the file changed, and the setting had no effect.
         """
         data = self._loader.read_file("providers.toml")
         llm = data.setdefault("llm", {})
         llm["provider"] = provider
         if text_model is not None or image_model is not None:
-            sub = llm.setdefault(provider, {})
+            sub = self._provider_table(data, "llm", provider)
             if text_model is not None:
                 sub["text_model"] = text_model
             if image_model is not None:
@@ -392,16 +397,32 @@ class ConfigRepository:
 
         Runs after every load so providers receive plain credentials; the reference scheme is
         an on-disk concern only.
+
+        Walks the DICT-valued subsections too, which is where the user's own endpoints live.
+        Only direct ``BaseModel`` attributes were visited before, so a custom endpoint's
+        ``secret:`` reference was handed to the provider verbatim — it authenticated with the
+        literal string ``secret:llm.custom-mine.api_key`` and every request was rejected.
         """
         for section in (self._config.llm, self._config.tts):
             for name in type(section).__fields__:
-                sub = getattr(section, name, None)
-                if not isinstance(sub, BaseModel):
-                    continue
-                for field in type(sub).__fields__:
-                    value = getattr(sub, field, None)
-                    if self._secrets.is_ref(value):
-                        setattr(sub, field, self._secrets.resolve(value))
+                self._resolve_in(getattr(section, name, None))
+
+    def _resolve_in(self, value: Any) -> None:
+        """Replace every credential reference inside ``value``, whatever shape it arrives in.
+
+        One function for both shapes rather than two loops: the next settings model to hold a
+        map of subsections gets this for free, and cannot be forgotten the way ``custom`` was.
+        """
+        if isinstance(value, dict):
+            for item in value.values():
+                self._resolve_in(item)
+            return
+        if not isinstance(value, BaseModel):
+            return
+        for field in type(value).__fields__:
+            field_value = getattr(value, field, None)
+            if self._secrets.is_ref(field_value):
+                setattr(value, field, self._secrets.resolve(field_value))
 
     @staticmethod
     def _tts_voice_field(provider: str) -> Optional[str]:

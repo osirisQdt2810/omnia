@@ -277,3 +277,140 @@ class TestSecretFilenamesSurviveEveryPlatform:
 
     def test_two_endpoints_still_get_different_files(self):
         assert self._name("custom:a") != self._name("custom:b")
+
+
+class TestACustomEndpointsKeyIsActuallyResolved:
+    """A stored credential is written as a `secret:` reference and must be swapped for its
+    value before a provider sees it.
+
+    `_resolve_secrets` walked only the direct `BaseModel` attributes of `[llm]`, and the user's
+    endpoints live in a `dict`. So the provider authenticated with the literal string
+    `secret:llm.custom-mine.api_key` and every request was rejected — with a 401 from the
+    server, which points at the key being wrong rather than at it never having been read.
+    """
+
+    @pytest.fixture
+    def repo(self, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        src = Path(__file__).resolve().parents[2] / "config"
+        for template in src.glob("*.example.toml"):
+            shutil.copy(template, tmp_path / template.name)
+        return ConfigRepository(ConfigLoader(tmp_path))
+
+    def test_the_stored_key_comes_back_as_its_value(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("api_key", "secret", "sk-xyz")]
+        )
+
+        assert repo.llm_settings().subsection("custom:mine").api_key == "sk-xyz"
+
+    def test_it_is_not_the_reference_string(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("api_key", "secret", "sk-xyz")]
+        )
+
+        assert (
+            not repo.llm_settings()
+            .subsection("custom:mine")
+            .api_key.startswith("secret:")
+        )
+
+    def test_each_endpoint_gets_its_own_key(self, repo):
+        for label, key in (("a", "sk-a"), ("b", "sk-b")):
+            repo.add_custom_provider("llm", label)
+            repo.set_provider_fields(
+                "llm", f"custom:{label}", [("api_key", "secret", key)]
+            )
+        llm = repo.llm_settings()
+
+        assert llm.subsection("custom:a").api_key == "sk-a"
+        assert llm.subsection("custom:b").api_key == "sk-b"
+
+    def test_a_plain_field_is_left_alone(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("base_url", "text", "http://x/v1")]
+        )
+
+        assert repo.llm_settings().subsection("custom:mine").base_url == "http://x/v1"
+
+    def test_a_shipped_provider_still_resolves(self, repo):
+        # The rewrite must not lose the case it already handled.
+        repo.set_provider_fields("llm", "openrouter", [("api_key", "secret", "sk-1")])
+
+        assert repo.llm_settings().openrouter.api_key == "sk-1"
+
+
+class TestChoosingADefaultModelForACustomEndpoint:
+    """The Account picker writes through `set_active_llm`, which wrote flat.
+
+    A custom endpoint lives at `[llm.custom.<label>]`, so a flat write produced a SECOND table
+    — `[llm."custom:mine"]` — that nothing reads. The picker accepted the choice, the file
+    changed, and the setting had no effect: the worst shape a settings bug can take, because
+    everything looks like it worked.
+    """
+
+    @pytest.fixture
+    def repo(self, tmp_path):
+        import shutil
+        from pathlib import Path
+
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        src = Path(__file__).resolve().parents[2] / "config"
+        for template in src.glob("*.example.toml"):
+            shutil.copy(template, tmp_path / template.name)
+        return ConfigRepository(ConfigLoader(tmp_path))
+
+    def test_the_chosen_text_model_is_read_back(self, repo):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", text_model="llama-3.1")
+
+        assert repo.llm_settings().subsection("custom:mine").text_model == "llama-3.1"
+
+    def test_the_chosen_image_model_is_read_back(self, repo):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", image_model="my-sdxl")
+
+        assert repo.llm_settings().subsection("custom:mine").image_model == "my-sdxl"
+
+    def test_it_becomes_the_active_provider(self, repo):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", text_model="m")
+
+        assert repo.llm_settings().provider == "custom:mine"
+
+    def test_it_does_not_leave_a_second_table_nobody_reads(self, repo, tmp_path):
+        repo.add_custom_provider("llm", "mine")
+
+        repo.set_active_llm("custom:mine", text_model="m")
+        written = (tmp_path / "providers.toml").read_text(encoding="utf-8")
+
+        assert '[llm."custom:mine"]' not in written
+        assert "[llm.custom.mine]" in written
+
+    def test_it_does_not_disturb_the_endpoints_other_fields(self, repo):
+        repo.add_custom_provider("llm", "mine")
+        repo.set_provider_fields(
+            "llm", "custom:mine", [("base_url", "text", "http://x/v1")]
+        )
+
+        repo.set_active_llm("custom:mine", text_model="m")
+
+        assert repo.llm_settings().subsection("custom:mine").base_url == "http://x/v1"
+
+    def test_a_shipped_provider_still_writes_to_its_own_table(self, repo):
+        repo.set_active_llm("openrouter", text_model="openai/gpt-4o-mini")
+
+        assert repo.llm_settings().openrouter.text_model == "openai/gpt-4o-mini"
