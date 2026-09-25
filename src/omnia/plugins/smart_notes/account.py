@@ -38,10 +38,16 @@ def _canonical_llm_provider(provider: str) -> str:
     ``"openai_compatible"``. Normalizing the models-in-use join key to that same class name is
     what lets :func:`merge_usage`'s left-join actually attach the recorded counts. An unknown
     id passes through unchanged.
+
+    A user's own endpoint is an openai-compatible one under a name they chose, so it resolves
+    through the same class — the registry does not know the name. Without that the Account tab
+    showed a ``custom:gpu`` row with zero calls beside an ``openai_compatible`` row carrying
+    the counts those very calls had made.
     """
+    from omnia.core.config.models import custom_provider_label
     from omnia.core.providers.llm.registry import get_llm
 
-    cls = get_llm(provider)
+    cls = get_llm("openai_compatible" if custom_provider_label(provider) else provider)
     return cls.name if cls is not None else provider
 
 

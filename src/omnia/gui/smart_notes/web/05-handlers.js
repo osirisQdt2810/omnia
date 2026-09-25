@@ -1158,6 +1158,24 @@
    * Render the Keys subtab from the account_keys response.
    * @param {?Object} res {providers: [{id, label, console, credit, note, active, fields}]}.
    */
+  /**
+   * Apply an add/remove reply: the Keys cards, the provider list the default picker is built
+   * from, and the central defaults.
+   *
+   * The catalog is baked when the dialog opens, so without this a removed endpoint stayed
+   * selectable in the Account default picker — and choosing a model for it wrote its section
+   * back, resurrecting in Keys an endpoint whose key had already been shredded. A newly added
+   * one, conversely, could not be chosen as a default until the dialog was reopened.
+   * @param {?Object} res The reply from add_endpoint / remove_endpoint.
+   */
+  function applyEndpointChange(res) {
+    applyLlmCatalog(res);
+    if (res && res.defaults) {
+      acctDefaults = res.defaults;
+    }
+    renderKeys(res);
+  }
+
   function renderKeys(res) {
     keysData = (res && res.providers) || [];
     keysEl.innerHTML = "";
@@ -1218,7 +1236,7 @@
         }
         input.value = "";
         status.textContent = "";
-        renderKeys(res);
+        applyEndpointChange(res);
       });
     };
     button.addEventListener("click", submit);
@@ -1280,7 +1298,7 @@
             window.alert((res && res.error) || "Could not remove.");
             return;
           }
-          renderKeys(res);
+          applyEndpointChange(res);
         });
       });
       head.appendChild(remove);

@@ -747,3 +747,26 @@ def call_or_xfail(fn, *args, **kwargs):
                 f"provider limit (quota/rate/token/transient): {str(exc)[:200]}"
             )
         raise
+
+
+@pytest.fixture
+def config_dir(tmp_path):
+    """A temp directory holding the repo's ``*.example.toml``, for a real ConfigRepository.
+
+    Four fixtures grew their own copy of this, and two pointed at ``src/omnia/config`` — a path
+    that has not existed since the non-source data moved to the repo root. ``Path.glob`` on a
+    missing directory yields nothing and raises nothing, so those two seeded no templates and
+    ran against a bare directory while describing themselves as running against a real config
+    dir. They passed either way, which is what made it invisible.
+
+    One copy of the path now, and it refuses to be wrong quietly.
+    """
+    import shutil
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "config"
+    templates = sorted(src.glob("*.example.toml"))
+    assert templates, f"no config templates under {src}"
+    for template in templates:
+        shutil.copy(template, tmp_path / template.name)
+    return tmp_path

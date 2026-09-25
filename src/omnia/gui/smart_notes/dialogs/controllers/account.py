@@ -261,7 +261,6 @@ class AccountController:
         card is on screen as part of the click that made it. A second round trip is a window in
         which the page and the config disagree about what exists.
         """
-        from omnia.plugins.smart_notes.account import key_cards
 
         try:
             provider = self._ctx.repo.add_custom_provider(
@@ -273,15 +272,10 @@ class AccountController:
         except Exception:  # boundary: a bad write must not take the dialog down
             logger.exception("smart_notes: failed to add an endpoint")
             return {"error": "Could not save — see logs."}
-        return {
-            "ok": True,
-            "provider": provider,
-            "providers": key_cards(self._ctx.repo.llm_settings()),
-        }
+        return {"ok": True, "provider": provider, **self._endpoints_payload()}
 
     def on_remove_endpoint(self, data: dict[str, Any]) -> dict[str, Any]:
         """Delete one of the user's endpoints, its stored secrets included."""
-        from omnia.plugins.smart_notes.account import key_cards
 
         provider = str(data.get("provider", ""))
         try:
@@ -291,7 +285,33 @@ class AccountController:
         except Exception:  # boundary: as above
             logger.exception("smart_notes: failed to remove %s", provider)
             return {"error": "Could not remove — see logs."}
-        return {"ok": True, "providers": key_cards(self._ctx.repo.llm_settings())}
+        return {"ok": True, **self._endpoints_payload()}
+
+    def _endpoints_payload(self) -> dict[str, Any]:
+        """Everything on screen that adding or removing an endpoint invalidates.
+
+        Three things, in the same reply as the click that changed them, because a second round
+        trip is a window in which the page and the config disagree about what exists:
+
+        * the Keys cards, so the endpoint appears or goes;
+        * the LLM provider list and the model ids per provider, baked into the catalog when the
+          dialog opened — rebuilt through the same reader the bake uses, so the two cannot
+          derive a different answer. A removed
+          endpoint stayed in the Account default picker, and choosing a model for it wrote a
+          section back — so an endpoint whose key had already been shredded reappeared in Keys
+          with no URL and no key. A new one, conversely, could not be picked as a default until
+          the dialog was reopened;
+        * the central defaults, since removing the active endpoint resets the domain's provider
+          and the panel would otherwise go on showing the one that is gone.
+        """
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+        from omnia.plugins.smart_notes.account import key_cards
+
+        return {
+            "providers": key_cards(self._ctx.repo.llm_settings()),
+            "defaults": self._defaults_payload(),
+            **CatalogInputs.read(self._ctx).llm_catalog(),
+        }
 
     def on_set_secrets(self, data: dict[str, Any]) -> dict[str, Any]:
         """Persist a provider card's editable fields in one write (one Save per card).

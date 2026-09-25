@@ -28,9 +28,8 @@ from aqt.theme import theme_manager
 from omnia import active_voice_cache
 from omnia.core import anki_compat
 from omnia.core.logging import get_logger
-from omnia.core.providers.catalog import catalog_payload
-from omnia.core.providers.llm import LLM_PROVIDERS
 from omnia.core.runtime.native_runtime import default_manager
+from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
 from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 from omnia.gui.smart_notes.dialogs.controllers import (
     AccountController,
@@ -95,10 +94,8 @@ class SmartNotesDialog(WebDialog):
             html=build_smart_notes_html(
                 dark=theme_manager.night_mode,
                 init=self._initial_state(),
-                catalog=catalog_payload(
-                    self._ctx.cached_fetched_voices(),
-                    *_configured_models(self._ctx),
-                    _custom_providers(self._ctx),
+                catalog=CatalogInputs.read(self._ctx).catalog(
+                    self._ctx.cached_fetched_voices()
                 ),
                 tools=self._tools_payload(),
             ),
@@ -160,44 +157,3 @@ class SmartNotesDialog(WebDialog):
             "note_types": note_types,
             **self._config.load_payload_for(note_types[0]),
         }
-
-
-def _custom_providers(ctx: Any) -> list[str]:
-    """The user's own endpoint ids, so the picker offers them beside the shipped providers.
-
-    Best-effort for the same reason as the models below: a settings file that will not parse
-    should cost the custom endpoints, not the whole dialog.
-    """
-    try:
-        return list(ctx.llm_settings().custom_providers())
-    except Exception:  # boundary: the dialog must still open
-        return []
-
-
-def _configured_models(ctx: Any) -> tuple[dict[str, str], dict[str, str]]:
-    """Each LLM provider's currently configured text and image model.
-
-    Read so the per-field Model pickers can offer them. A provider whose ids belong to its
-    operator — a self-hosted endpoint — has no curated list, so without this the id the user
-    already configured is the one thing the picker cannot offer.
-
-    Best-effort: a settings object that cannot be read yields empty maps and the pickers fall
-    back to their curated lists, which is what they did before. Failing to OPEN the dialog
-    because one provider subsection is malformed would be a much worse trade.
-    """
-    text: dict[str, str] = {}
-    image: dict[str, str] = {}
-    try:
-        llm = ctx.llm_settings()
-    except Exception:  # boundary: the dialog must still open
-        return text, image
-    for provider in list(LLM_PROVIDERS) + list(llm.custom_providers()):
-        # `subsection`, not getattr: a custom endpoint lives in a dict, and getattr would
-        # silently skip exactly the providers with no curated models — the ones that need
-        # their configured id offered most.
-        sub = llm.subsection(provider)
-        if sub is None:
-            continue
-        text[provider] = str(getattr(sub, "text_model", "") or "")
-        image[provider] = str(getattr(sub, "image_model", "") or "")
-    return text, image

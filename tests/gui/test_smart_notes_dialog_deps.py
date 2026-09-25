@@ -927,23 +927,17 @@ class TestAddingAnEndpointFromThePage:
     poor subject for a window of disagreement.
     """
 
-    def _controller(self, tmp_path):
-        import shutil
-        from pathlib import Path
-
+    def _controller(self, config_dir):
         from omnia.core.config.loader import ConfigLoader
         from omnia.core.config.repository import ConfigRepository
         from omnia.gui.smart_notes.dialogs.controllers.account import AccountController
 
-        src = Path(__file__).resolve().parents[2] / "src" / "omnia" / "config"
-        for template in src.glob("*.example.toml"):
-            shutil.copy(template, tmp_path / template.name)
         ctx = _fake_ctx()
-        ctx.repo = ConfigRepository(ConfigLoader(tmp_path))
+        ctx.repo = ConfigRepository(ConfigLoader(config_dir))
         return AccountController(ctx)
 
-    def test_adding_one_returns_the_refreshed_cards(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_adding_one_returns_the_refreshed_cards(self, config_dir):
+        controller = self._controller(config_dir)
 
         result = controller.on_add_endpoint({"label": "gpu-box"})
 
@@ -951,24 +945,24 @@ class TestAddingAnEndpointFromThePage:
         ids = [c["id"] for c in result["providers"]]
         assert "custom:gpu-box" in ids, "the new card was not in the same reply"
 
-    def test_the_new_card_is_marked_removable(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_the_new_card_is_marked_removable(self, config_dir):
+        controller = self._controller(config_dir)
 
         cards = controller.on_add_endpoint({"label": "gpu-box"})["providers"]
         card = next(c for c in cards if c["id"] == "custom:gpu-box")
 
         assert card["custom"] is True
 
-    def test_a_shipped_card_is_not_removable(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_a_shipped_card_is_not_removable(self, config_dir):
+        controller = self._controller(config_dir)
 
         cards = controller.on_add_endpoint({"label": "gpu-box"})["providers"]
         card = next(c for c in cards if c["id"] == "gemini")
 
         assert card["custom"] is False
 
-    def test_a_duplicate_name_comes_back_as_a_message_not_a_crash(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_a_duplicate_name_comes_back_as_a_message_not_a_crash(self, config_dir):
+        controller = self._controller(config_dir)
         controller.on_add_endpoint({"label": "mine"})
 
         result = controller.on_add_endpoint({"label": "mine"})
@@ -976,21 +970,21 @@ class TestAddingAnEndpointFromThePage:
         assert "already" in result["error"]
         assert "providers" not in result, "a failed add must not redraw the list"
 
-    def test_a_blank_name_is_refused(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_a_blank_name_is_refused(self, config_dir):
+        controller = self._controller(config_dir)
 
         assert controller.on_add_endpoint({"label": "   "})["error"]
 
-    def test_removing_one_returns_the_refreshed_cards(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_removing_one_returns_the_refreshed_cards(self, config_dir):
+        controller = self._controller(config_dir)
         controller.on_add_endpoint({"label": "gone"})
 
         result = controller.on_remove_endpoint({"provider": "custom:gone"})
 
         assert "custom:gone" not in [c["id"] for c in result["providers"]]
 
-    def test_removing_a_shipped_provider_is_refused(self, tmp_path):
-        controller = self._controller(tmp_path)
+    def test_removing_a_shipped_provider_is_refused(self, config_dir):
+        controller = self._controller(config_dir)
 
         result = controller.on_remove_endpoint({"provider": "gemini"})
 
@@ -1027,3 +1021,154 @@ class TestTheKeysPageOffersTheAddRow:
         card = js[js.index("function keyCard") :]
 
         assert "if (card.custom)" in card
+
+
+class TestAnEndpointChangeRefreshesEverythingItInvalidates:
+    """Adding or removing an endpoint changes three things on screen, not one.
+
+    The reply carried only the Keys cards. The Account default picker is built from a provider
+    list baked into the catalog when the dialog opened, so a removed endpoint stayed selectable
+    there — and choosing a model for it wrote its section back, resurrecting in Keys an
+    endpoint whose stored key had already been shredded. A newly added one, conversely, could
+    not be chosen as a default until the dialog was reopened.
+    """
+
+    def _controller(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+        from omnia.gui.smart_notes.dialogs.controllers.account import AccountController
+
+        ctx = _fake_ctx()
+        ctx.repo = ConfigRepository(ConfigLoader(config_dir))
+        return AccountController(ctx)
+
+    def test_a_new_endpoint_is_immediately_selectable_as_a_default(self, config_dir):
+        controller = self._controller(config_dir)
+
+        res = controller.on_add_endpoint({"label": "gpu-box"})
+
+        assert "custom:gpu-box" in res["llm_providers"]
+
+    def test_a_removed_endpoint_leaves_the_picker(self, config_dir):
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+
+        res = controller.on_remove_endpoint({"provider": "custom:gpu-box"})
+
+        assert "custom:gpu-box" not in res["llm_providers"]
+
+    def test_removing_the_active_one_hands_back_defaults_that_no_longer_name_it(
+        self, config_dir
+    ):
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+        controller.on_set_default_model(
+            {"kind": "text", "provider": "custom:gpu-box", "model": "llama-3.1"}
+        )
+
+        res = controller.on_remove_endpoint({"provider": "custom:gpu-box"})
+
+        assert res["defaults"]["text"]["provider"] != "custom:gpu-box"
+
+    def test_choosing_a_model_for_a_removed_endpoint_says_so_instead_of_recreating_it(
+        self, config_dir
+    ):
+        """What a stale picker would send. It must not bring the endpoint back."""
+        controller = self._controller(config_dir)
+        controller.on_add_endpoint({"label": "gpu-box"})
+        controller.on_remove_endpoint({"provider": "custom:gpu-box"})
+
+        res = controller.on_set_default_model(
+            {"kind": "text", "provider": "custom:gpu-box", "model": "llama-3.1"}
+        )
+
+        assert res.get("error")
+        assert not any(
+            card["id"] == "custom:gpu-box"
+            for card in controller.on_account_keys({})["providers"]
+        )
+
+    def test_the_keys_cards_still_come_back_too(self, config_dir):
+        controller = self._controller(config_dir)
+
+        res = controller.on_add_endpoint({"label": "gpu-box"})
+
+        assert any(card["id"] == "custom:gpu-box" for card in res["providers"])
+
+
+class TestTheCatalogActuallySeesTheUsersEndpoints:
+    """The reader asked the context for a method it does not have.
+
+    `SmartNotesContext` exposes `.repo`; there is no `ctx.llm_settings()`. The call raised
+    `AttributeError` into a bare `except Exception` meant for an unparseable config, so it
+    returned empty every single time: no custom endpoint ever reached a Provider dropdown, and
+    the configured-model merge — the whole reason a self-hosted endpoint's own model id is
+    selectable per field — never ran. Nothing failed, which is why nothing showed it.
+
+    Both call sites go through one reader now, so the dialog's bake and the Account panel's
+    rebuild cannot answer "which providers exist" differently.
+    """
+
+    def _ctx(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        ctx = _fake_ctx()
+        ctx.repo = ConfigRepository(ConfigLoader(config_dir))
+        return ctx
+
+    def test_an_endpoint_the_user_added_is_in_the_catalog(self, config_dir):
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+
+        ctx = self._ctx(config_dir)
+        ctx.repo.add_custom_provider("llm", "gpu")
+
+        assert "custom:gpu" in CatalogInputs.read(ctx).catalog()["llm_providers"]
+
+    def test_its_configured_model_is_offered_for_it(self, config_dir):
+        """It has no curated ids, so without this the picker offers nothing at all for it."""
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+
+        ctx = self._ctx(config_dir)
+        ctx.repo.add_custom_provider("llm", "gpu")
+        ctx.repo.set_active_llm("custom:gpu", text_model="qwen2.5-14b")
+
+        catalog = CatalogInputs.read(ctx).catalog()
+
+        assert "qwen2.5-14b" in catalog["text_models"]["custom:gpu"]
+
+    def test_a_shipped_providers_configured_model_is_folded_in_too(self, config_dir):
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+
+        ctx = self._ctx(config_dir)
+        ctx.repo.set_active_llm("openai_compatible", text_model="some-local-build")
+
+        catalog = CatalogInputs.read(ctx).catalog()
+
+        assert "some-local-build" in catalog["text_models"]["openai_compatible"]
+
+    def test_a_context_that_cannot_be_read_still_yields_a_catalog(self, config_dir):
+        """A providers.toml that will not parse costs the endpoints, not the dialog."""
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+
+        class Broken:
+            @property
+            def repo(self):
+                raise RuntimeError("providers.toml is not valid TOML")
+
+        inputs = CatalogInputs.read(Broken())
+
+        assert inputs.custom_providers == []
+        assert inputs.catalog()["llm_providers"]
+
+    def test_the_rebuild_and_the_bake_agree(self, config_dir):
+        """One reader, so the Account reply and the dialog's bake cannot disagree."""
+        from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
+        from omnia.gui.smart_notes.dialogs.controllers.account import AccountController
+
+        ctx = self._ctx(config_dir)
+        res = AccountController(ctx).on_add_endpoint({"label": "gpu"})
+
+        baked = CatalogInputs.read(ctx).catalog()
+        assert res["llm_providers"] == baked["llm_providers"]
+        assert res["text_models"] == baked["text_models"]

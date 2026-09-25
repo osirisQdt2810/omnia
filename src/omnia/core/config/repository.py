@@ -291,21 +291,34 @@ class ConfigRepository:
 
     @staticmethod
     def _provider_table(data: dict, domain: str, provider: str) -> dict:
-        """The TOML table a provider's fields live in, created if absent.
+        """The TOML table a provider's fields live in.
 
         A user's own endpoint lives one level deeper, under ``[llm.custom.<label>]``, so that
         any number of them can exist without each needing a key of its own at the top of the
         domain — and so a label can never collide with a shipped provider's section.
+
+        A shipped provider's table is created on demand: the name is compiled in, so an absent
+        section only means nothing has been written to it yet. A custom one is NOT, because
+        there the section IS the endpoint — creating it would bring an endpoint into existence
+        as a side effect of writing a field to it.
+
+        That is not hypothetical. Delete the active endpoint and the Account panel keeps the
+        id it was holding in a picker built when the dialog opened; changing the model there
+        writes ``text_model``, which recreated the section, and a card reappeared in Keys for
+        an endpoint with no URL, no key, and a credential already shredded. Removal has to
+        stay removed, so every writer but :meth:`add_custom_provider` must find it or fail.
+
+        Raises:
+            ValueError: for a custom endpoint that does not exist.
         """
         from omnia.core.config.models import custom_provider_label
 
         label = custom_provider_label(provider)
         if label:
-            return (
-                data.setdefault(domain, {})
-                .setdefault("custom", {})
-                .setdefault(label, {})
-            )
+            table = data.setdefault(domain, {}).setdefault("custom", {})
+            if label not in table:
+                raise ValueError(f"There is no endpoint called “{label}”.")
+            return table[label]
         return data.setdefault(domain, {}).setdefault(provider, {})
 
     def add_custom_provider(self, domain: str, label: str) -> str:
@@ -356,8 +369,25 @@ class ConfigRepository:
             with contextlib.suppress(Exception):
                 self._secrets.forget(self._secret_name(domain, provider, field))
         table.pop(label, None)
+        # Otherwise the domain goes on naming an endpoint that is gone. `active()` returns None,
+        # so the hub falls back to a bare `openai_compatible` with no base URL and no key, and
+        # every generation — plus language-detect, Auto-prompt and Improve — fails with
+        # "requires an api_key", pointing the user at a credential rather than at the endpoint
+        # they deleted. A shipped provider at least still reaches "Unknown provider"; the
+        # `custom:` branch rewrites the name first and loses even that.
+        section = data.setdefault(domain, {})
+        if section.get("provider") == provider:
+            section["provider"] = self._default_provider(domain)
         self._loader.write_file("providers.toml", data)
         self._reload()
+
+    @staticmethod
+    def _default_provider(domain: str) -> str:
+        """The provider a domain falls back to, read from the settings model's own default."""
+        from omnia.core.config.models import LLMSettings, TTSSettings
+
+        model = LLMSettings if domain == "llm" else TTSSettings
+        return str(model.__fields__["provider"].default)
 
     #: Characters Windows forbids in a filename. A custom endpoint's provider id contains a
     #: colon (``custom:mine``), which is legal on Linux and macOS and not on Windows — where
@@ -372,13 +402,16 @@ class ConfigRepository:
         Dotted + domain-prefixed: the domain keeps ``llm.openai.api_key`` and
         ``tts.openai.api_key`` (same provider name across domains) from colliding on one file.
 
-        Characters no filesystem in the matrix accepts are replaced with ``-``. A shipped
-        provider's name contains none of them, so its filename is unchanged and existing
-        secrets keep resolving — the substitution only ever fires for a name the user chose.
+        Characters no filesystem in the matrix accepts are percent-encoded. Encoding rather
+        than substituting keeps the mapping injective: collapsing them all to ``-`` made the
+        labels ``a:b`` and ``a-b`` share one file, so adding the second endpoint overwrote the
+        first one's key. A shipped provider's name contains none of these characters, so its
+        filename is unchanged and existing secrets keep resolving.
         """
-        safe = provider
+        # `%` first, or an encoded name and a literal one could still collide.
+        safe = provider.replace("%", "%25")
         for char in cls._UNSAFE_IN_FILENAMES:
-            safe = safe.replace(char, "-")
+            safe = safe.replace(char, f"%{ord(char):02X}")
         return f"{domain}.{safe}.{field}"
 
     def _write_provider_field(
@@ -388,7 +421,12 @@ class ConfigRepository:
         if domain not in ("llm", "tts"):
             raise ValueError(f"unknown provider domain: {domain}")
         data = self._loader.read_file("providers.toml")
-        data.setdefault(domain, {}).setdefault(provider, {})[field] = value
+        # Through `_provider_table` like every other writer: a custom endpoint nests, and the
+        # flat write this used to do produced a second table nothing reads — the setting was
+        # accepted, the file changed, and nothing happened. Not reachable today (custom cards
+        # declare no file-typed field) which is why it is worth closing now rather than after
+        # one does.
+        self._provider_table(data, domain, provider)[field] = value
         self._loader.write_file("providers.toml", data)
         self._reload()
 

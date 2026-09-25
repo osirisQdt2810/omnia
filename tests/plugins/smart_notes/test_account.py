@@ -309,3 +309,31 @@ class TestFetchCredit:
         http = FakeHttpClient(responder=boom)
         provider = self._provider("https://openrouter.ai/api/v1", http)
         assert provider.fetch_credit() is None
+
+
+class TestUsageForACustomEndpointJoins:
+    """A user's own endpoint is an openai-compatible one under a name they chose.
+
+    The usage recorder writes each row under the provider CLASS name, so every openai-family
+    id collapses to `openai_compatible`. The registry does not know a `custom:` name, so it
+    passed through unchanged and the join key never matched: the Account tab showed a
+    `custom:gpu` row with zero calls beside an `openai_compatible` row carrying the counts
+    those very calls had made.
+    """
+
+    def _canonical(self, provider):
+        from omnia.plugins.smart_notes.account import _canonical_llm_provider
+
+        return _canonical_llm_provider(provider)
+
+    def test_a_custom_endpoint_resolves_to_the_class_that_serves_it(self):
+        assert self._canonical("custom:gpu") == self._canonical("openai_compatible")
+
+    def test_the_shipped_family_still_collapses(self):
+        assert self._canonical("openrouter") == self._canonical("openai_compatible")
+
+    def test_a_provider_of_its_own_is_left_alone(self):
+        assert self._canonical("gemini") != self._canonical("openai_compatible")
+
+    def test_a_name_nothing_knows_passes_through(self):
+        assert self._canonical("not-a-provider") == "not-a-provider"
