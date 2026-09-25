@@ -56,7 +56,7 @@ class BlockedField:
     themselves been blocked/failed. Blocking is transitive: a blocked field puts no value in
     the working map, so its own hard dependents block in turn.
 
-    Every name here is one the chain READS — see :func:`_hard_prerequisites`. A field that
+    Every name here is one the chain READS — see :func:`blocking_prerequisites`. A field that
     only appears in the row's ``depends_on`` cannot reach this list, because its contents have
     no route into the output and waiting for them could not change the result. That is what
     makes "needs" an honest word for everything in ``missing``.
@@ -94,8 +94,14 @@ class FailedField:
     note_id: int = 0
 
 
-def _hard_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
+def blocking_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
     """Return the field names that may BLOCK ``rule``: hard prerequisites the chain reads.
+
+    PUBLIC, and named for what it decides rather than for how it filters. Three surfaces ask
+    "would this field be held back" — the run, the clipper's field preview, and the graph's
+    gen-order animation — and each used to answer with its own copy of ``kind == "hard"``. One
+    of them changing is how a preview comes to disagree with the run it is previewing, which is
+    worse than no preview at all.
 
     Two filters, and the second one is the point.
 
@@ -346,6 +352,6 @@ class NoteRun:
         present |= self._produced
         return [
             prereq
-            for prereq in _hard_prerequisites(rule)
+            for prereq in blocking_prerequisites(rule)
             if prereq.strip().lower() not in present
         ]

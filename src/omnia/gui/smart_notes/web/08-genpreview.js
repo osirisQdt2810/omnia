@@ -65,6 +65,26 @@ function gpPrereqs(name, kind) {
 }
 
 /**
+ * The prerequisites that would actually HOLD BACK `name` — the run's own set.
+ *
+ * Not every hard edge: one onto a field the chain never reads orders without blocking. This
+ * animation used to filter on `kind === "hard"` and so marked a node blocked that generates
+ * perfectly well, which is the same wrong message the run itself stopped giving.
+ * @param {string} name The field.
+ * @return {!Array<string>} Prerequisite field names.
+ */
+function gpBlockers(name) {
+  const lc = (name || "").toLowerCase();
+  const out = [];
+  (graphData.edges || []).forEach(function (e) {
+    if ((e.dst || "").toLowerCase() === lc && e.blocks) {
+      out.push(e.src);
+    }
+  });
+  return out;
+}
+
+/**
  * The topological generation order (excluding the base), mirroring engine order_rules: HARD edges
  * are strict constraints; SOFT edges are added only when they don't close a cycle (best-effort);
  * stable Kahn's breaks ties by input order.
@@ -330,8 +350,7 @@ function gpPlay_() {
     if (el) {
       el.classList.remove("sn-gp-pending");
     }
-    const hard = gpPrereqs(node.name, "hard");
-    const missing = hard.filter(function (p) {
+    const missing = gpBlockers(node.name).filter(function (p) {
       return !working[p.toLowerCase()];
     });
     if (missing.length) {

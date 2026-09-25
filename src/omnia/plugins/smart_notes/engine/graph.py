@@ -26,6 +26,7 @@ import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from omnia.plugins.smart_notes.engine.note_run import blocking_prerequisites
 from omnia.plugins.smart_notes.engine.ordering import SmartNotesCycleError
 from omnia.plugins.smart_notes.engine.rules import (
     compile_field_rule,
@@ -56,6 +57,13 @@ class GraphEdge:
     but only a PROMPT edge can be deleted by rewriting the prompt at Save — without this flag
     the graph would offer that rewrite for an edge it cannot possibly remove, and the edge would
     silently reappear.
+
+    ``blocks`` is whether this edge would actually HOLD BACK generation, which is narrower than
+    ``kind == "hard"``: an edge onto a field the chain never reads orders without blocking, so a
+    surface that treats every hard edge as blocking disagrees with the run. The gen-order
+    preview did exactly that and told users a field was blocked that generates fine. Computed
+    from the run's own :func:`~omnia.plugins.smart_notes.engine.blocking_prerequisites` so the
+    two cannot drift.
     """
 
     src: str
@@ -63,6 +71,7 @@ class GraphEdge:
     kind: str
     derived: bool
     from_tool: bool = False
+    blocks: bool = False
 
 
 @dataclass(frozen=True)
@@ -194,6 +203,9 @@ class FieldGraph:
         # kind and duplicate edges collapse. Derived edges are added first, then explicit.
         edges: dict[tuple[str, str], GraphEdge] = {}
 
+        # Which (src, dst) pairs the RUN would actually hold back on, asked once per field.
+        blocking: dict[str, set[str]] = {}
+
         def add_edge(
             src_lower: str,
             dst_lower: str,
@@ -210,6 +222,7 @@ class FieldGraph:
                 kind=kind,
                 derived=derived,
                 from_tool=from_tool,
+                blocks=src_lower in blocking.get(dst_lower, set()),
             )
 
         for field in config.fields:
@@ -219,6 +232,12 @@ class FieldGraph:
             # Build the same rule the engine compiles so the graph reads dependencies through
             # the single source of truth (rule_prerequisites); the graph only adds ``derived``.
             rule = compile_field_rule(field, base)
+            # The run's own answer, not `kind == "hard"`. An edge onto a field the chain never
+            # reads orders without blocking, and a surface that conflates the two tells the
+            # user a field is blocked that generates perfectly well.
+            blocking[dst_lower] = {
+                name.strip().lower() for name in blocking_prerequisites(rule)
+            }
             prompt_sources = {name.strip().lower() for name in rule_source_fields(rule)}
             tool_sources = {
                 name.strip().lower() for name in tool_referenced_fields(rule.tools)

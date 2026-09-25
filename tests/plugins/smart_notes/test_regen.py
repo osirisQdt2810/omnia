@@ -1073,3 +1073,56 @@ class TestTheClipperHonoursTheOverwriteScope:
         service.regenerate(1, ["Definition"])
 
         assert unstamp(note["Definition"]) == "generated"
+
+
+class TestThePreviewAgreesWithTheRun:
+    """The clipper greys a field out and says it needs something. Pressing generate anyway
+    produced it fine.
+
+    `_predicted_blocks` filtered `rule_prerequisites` on `kind == "hard"` inline — which WAS
+    the run's rule, until the run's changed. Two copies of one rule is how a preview comes to
+    disagree with the thing it is previewing, and a preview that refuses a field the engine
+    would have generated is worse than no preview: it tells the user not to try.
+
+    The edge has to point at a field with no rule of its own — a hand-written `Notes`,
+    `Example 1` — because a generatable target is already counted present by `_predicted_blocks`.
+    """
+
+    def _config_with_stale_edge(self):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        config = _config()
+        config.fields = [f for f in config.fields if f.field == "Definition"]
+        # `Definition`'s prompt is "define {{Word}}" — nothing reads `Notes`.
+        config.fields[0].depends_on = [FieldDep(field="Notes", kind="hard", auto=False)]
+        return config
+
+    def _service(self, monkeypatch):
+        config = self._config_with_stale_edge()
+        note = _FakeNote(
+            1, "Vocab", {"Word": "cat", "Definition": "", "Example": "", "Notes": ""}
+        )
+        service, _compat = _build(monkeypatch, note, _settings(config))
+        return service
+
+    def test_the_preview_does_not_call_it_blocked(self, monkeypatch):
+        service = self._service(monkeypatch)
+
+        assert service.field_states(1).get("Definition") != "blocked"
+
+    def test_and_the_run_generates_it(self, monkeypatch):
+        # The other half of the same claim: the two must AGREE, so both are asserted.
+        service = self._service(monkeypatch)
+
+        (outcome,) = service.regenerate(1, ["Definition"])
+
+        assert outcome.status == "generated"
+
+    def test_a_genuinely_missing_input_is_still_previewed_as_blocked(self, monkeypatch):
+        """The fix must not turn the preview into "nothing is ever blocked"."""
+        config = _config()
+        config.fields = [f for f in config.fields if f.field == "Definition"]
+        note = _FakeNote(1, "Vocab", {"Word": "", "Definition": "", "Example": ""})
+        service, _compat = _build(monkeypatch, note, _settings(config))
+
+        assert service.field_states(1).get("Definition") == "blocked"

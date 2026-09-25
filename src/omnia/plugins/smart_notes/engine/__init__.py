@@ -40,7 +40,7 @@ from omnia.plugins.smart_notes.engine.interpolation import (
     validate_brace_syntax,
 )
 from omnia.plugins.smart_notes.engine.markdown import convert_markdown_to_html
-from omnia.plugins.smart_notes.engine.note_run import NoteRun
+from omnia.plugins.smart_notes.engine.note_run import NoteRun, blocking_prerequisites
 from omnia.plugins.smart_notes.engine.ordering import (
     SmartNotesCycleError,
     order_rule_levels,
@@ -112,6 +112,7 @@ __all__ = [
     "WavePlanner",
     "WaveTask",
     "applies_to_deck",
+    "blocking_prerequisites",
     "compile_field_rule",
     "compile_note_type_rules",
     "convert_markdown_to_html",

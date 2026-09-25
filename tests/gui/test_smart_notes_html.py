@@ -89,6 +89,11 @@ class TestGraphPayload:
             "derived": True,
             "from_tool": False,
             "cycle": False,
+            # …and it really does hold generation back: the prompt reads {{Word}}. `blocks` is
+            # narrower than `kind == "hard"` — an edge onto a field the chain never opens
+            # orders without blocking — so the gen-order preview reads this rather than the
+            # kind, and agrees with the run.
+            "blocks": True,
         } in gp["edges"]
         # every node carries a layout column/row (computed in Python)
         assert all("column" in n and "row" in n for n in gp["nodes"])
@@ -1361,3 +1366,69 @@ class TestTheSpeedPickerIsOnThePage:
         rebuild = rebuild[: rebuild.index("function makeSpeedSelect")]
 
         assert "makeSpeedSelect(tr)" in rebuild
+
+
+class TestAnEdgeKnowsWhetherItActuallyBlocks:
+    """`kind == "hard"` and "would hold generation back" stopped being the same question.
+
+    An explicit edge onto a field the chain never reads ORDERS without blocking. The gen-order
+    animation filtered on the kind, so it marked a node blocked that generates perfectly well —
+    the same wrong message the run itself stopped giving, moved to another screen.
+
+    The payload now carries the run's own answer, so the two cannot drift.
+    """
+
+    def _edges(self, depends_on=(), prompt="Define {{Word}}"):
+        from omnia.gui.smart_notes.html import graph_payload
+        from omnia.plugins.smart_notes.config import (
+            SmartNotesFieldConfig,
+            SmartNotesNoteTypeConfig,
+        )
+
+        config = SmartNotesNoteTypeConfig(
+            note_type="Vocab",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Definition",
+                    enabled=True,
+                    type="text",
+                    prompt=prompt,
+                    depends_on=list(depends_on),
+                ),
+                SmartNotesFieldConfig(field="Notes", enabled=False, type="text"),
+            ],
+        )
+        return {(e["src"], e["dst"]): e for e in graph_payload(config)["edges"]}
+
+    def test_an_edge_the_chain_reads_blocks(self):
+        edges = self._edges()
+
+        assert edges[("Word", "Definition")]["blocks"] is True
+
+    def test_a_hard_edge_nothing_reads_does_not(self):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        edges = self._edges(depends_on=[FieldDep(field="Notes", kind="hard")])
+
+        edge = edges[("Notes", "Definition")]
+        assert edge["kind"] == "hard", "it is still a hard edge — it still ORDERS"
+        assert (
+            edge["blocks"] is False
+        ), "the gen-order preview would mark this node blocked, and the run would generate it"
+
+    def test_a_soft_edge_never_blocks(self):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        edges = self._edges(depends_on=[FieldDep(field="Notes", kind="soft")])
+
+        assert edges[("Notes", "Definition")]["blocks"] is False
+
+    def test_a_softened_read_source_stops_blocking(self):
+        """The kind override still works: a source the chain DOES read, marked soft, orders
+        without blocking."""
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        edges = self._edges(depends_on=[FieldDep(field="Word", kind="soft")])
+
+        assert edges[("Word", "Definition")]["blocks"] is False

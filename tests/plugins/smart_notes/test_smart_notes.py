@@ -876,7 +876,7 @@ class TestGenerateNoteBlocking:
         mattering the moment no tool in the chain opens them.
         """
         from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
-        from omnia.plugins.smart_notes.engine.note_run import _hard_prerequisites
+        from omnia.plugins.smart_notes.engine.note_run import blocking_prerequisites
         from omnia.plugins.smart_notes.engine.rules import compile_field_rule
 
         shared = dict(
@@ -890,14 +890,14 @@ class TestGenerateNoteBlocking:
         )
         by_ai = SmartNotesFieldConfig(**shared, tools=[{"tool": "ai", "params": {}}])
 
-        assert _hard_prerequisites(compile_field_rule(cloned, "Word")) == ["Backup"]
-        assert _hard_prerequisites(compile_field_rule(by_ai, "Word")) == ["Sentence"]
+        assert blocking_prerequisites(compile_field_rule(cloned, "Word")) == ["Backup"]
+        assert blocking_prerequisites(compile_field_rule(by_ai, "Word")) == ["Sentence"]
 
     def test_a_soft_override_on_a_read_field_still_wins(self):
         # The kind override must survive the new filter: a source the chain DOES read, marked
         # soft in the graph, orders without blocking exactly as before.
         from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
-        from omnia.plugins.smart_notes.engine.note_run import _hard_prerequisites
+        from omnia.plugins.smart_notes.engine.note_run import blocking_prerequisites
         from omnia.plugins.smart_notes.engine.rules import compile_field_rule
 
         config = SmartNotesFieldConfig(
@@ -907,7 +907,7 @@ class TestGenerateNoteBlocking:
             depends_on=[FieldDep(field="Word", kind="soft")],
         )
 
-        assert _hard_prerequisites(compile_field_rule(config, "Word")) == []
+        assert blocking_prerequisites(compile_field_rule(config, "Word")) == []
 
     def test_a_promptless_field_still_blocks_on_its_base_field(self):
         """A field with NO prompt feeds the base field to the model — that is its whole input.
@@ -921,7 +921,7 @@ class TestGenerateNoteBlocking:
         that is one paid request per note plus content to clean up.
         """
         from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
-        from omnia.plugins.smart_notes.engine.note_run import _hard_prerequisites
+        from omnia.plugins.smart_notes.engine.note_run import blocking_prerequisites
         from omnia.plugins.smart_notes.engine.rules import compile_field_rule
 
         config = SmartNotesFieldConfig(
@@ -931,7 +931,7 @@ class TestGenerateNoteBlocking:
             depends_on=[FieldDep(field="Word", kind="hard")],
         )
 
-        assert _hard_prerequisites(compile_field_rule(config, "Word")) == ["Word"]
+        assert blocking_prerequisites(compile_field_rule(config, "Word")) == ["Word"]
 
     def test_a_promptless_field_generates_when_its_base_is_filled(self):
         # The gate must not become "promptless fields never run".
