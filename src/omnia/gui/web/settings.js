@@ -664,6 +664,10 @@
       h.tabIndex = 0;
       h.setAttribute("role", "slider");
       h.setAttribute("aria-label", labelText);
+      // A slider announces where it is; without the ends, "0.8" is a number with no scale and
+      // a screen reader has nothing to place it against.
+      h.setAttribute("aria-valuemin", String(low));
+      h.setAttribute("aria-valuemax", String(high));
       return h;
     };
     const loHandle = makeHandle(field.label);
@@ -693,6 +697,25 @@
       const on = bandOn && hi > lo;
       hiOut.textContent = (upper.label || "Upper") + ": " + (on ? String(hi) : "off");
       wrap.classList.toggle("omnia-range2-collapsed", !on);
+      // While the band is off there is conceptually ONE handle on screen — the pass mark. The
+      // upper one is not parked invisibly on top of it; it does not exist yet, so it takes no
+      // presses.
+      //
+      // Leaving it hit-testable made the shipped default unusable. Both handles are absolute
+      // siblings with no z-index, so the later one paints on top and takes any press they
+      // share — and with `high_threshold = 0` they always share one, because that is where the
+      // upper handle parks. Dragging the only visible handle therefore moved the UPPER mark:
+      // the pass mark would not budge, and the drag switched on a grading band, staging Easy
+      // for every answer above wherever the user let go. The setting they meant to change never
+      // moved, and one they had never heard of turned on.
+      //
+      // Which handle a press means cannot be decided by paint order. It is decided by the
+      // target: the visible mark is the pass mark, and OPENING a band is a different gesture on
+      // a different target — bare track, to its right, which is where the band would go.
+      hiHandle.style.pointerEvents = on ? "" : "none";
+      // That gesture has no affordance of its own while collapsed, so the region it applies to
+      // says what it does.
+      top.title = on ? "" : "Press here to add a second, higher cutoff";
     };
 
     /** Move one handle, keeping the lower at or below the upper. */
@@ -725,10 +748,10 @@
     /** Drag whichever handle is nearer the press, so the track responds where it is clicked. */
     const startDrag = function (ev, forced) {
       const at = valueAt(ev.clientX);
-      // With the band off the handles sit on top of each other, so nearest-handle always
-      // resolves to "lo" and the upper one is unreachable — there would be no way to turn the
-      // band on by dragging at all. A press to the RIGHT of them takes the upper handle, which
-      // is the gesture that means "open a band".
+      // Reached from the TRACK, since a press on either handle names its own. With the band off
+      // the handles sit on top of each other, so nearest-handle cannot separate them: a press to
+      // the RIGHT of the mark takes the upper handle, which is the gesture that means "open a
+      // band", and anywhere else moves the pass mark.
       const tied = hi === lo;
       const which =
         forced ||
@@ -775,7 +798,12 @@
     // `_set` is exposed for the tests, which drive the same function a drag and a keypress
     // both call. Testing a copy of the logic would have passed while the shipped control had
     // the off-state bug, which is exactly what happened before this was here.
-    return {node: wrap, read: function () { return lo; }, extra: extra, _set: set};
+    // The second mark is a whole setting with no row of its own, so its description — the only
+    // place the page explains what a second cutoff does, and that "off" is a state the user
+    // chose rather than a value that is missing — would otherwise be built by Python, put in
+    // the payload, and dropped here.
+    return {node: wrap, read: function () { return lo; }, extra: extra,
+            help: upper.help || "", _set: set};
   }
 
   /**
@@ -881,6 +909,10 @@
       row.appendChild(holder);
     }
     appendHelp(row, field.help || "");
+    // A paired control carries a second setting on the same row; its help follows the row's own.
+    if (control.help) {
+      appendHelp(row, control.help);
+    }
     // `extra` forwarded, not swallowed: a control that owns a second setting registers it
     // through here, and a row that dropped it would save only half of what the user set.
     return {node: row, read: control.read, extra: control.extra || {}};

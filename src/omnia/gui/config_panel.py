@@ -280,6 +280,33 @@ def panel_payload(
     }
 
 
+def _pair_partner(
+    field: ConfigField, by_key: dict[str, ConfigField]
+) -> Optional[ConfigField]:
+    """The second handle for ``field``, or ``None`` when the two cannot share one track.
+
+    Two reasons a declared pairing does not resolve, and both end the same way — each setting
+    keeps its own row:
+
+    * the named field is not there (renamed, removed, or spelt wrong);
+    * the two disagree about the scale. One track has one set of ends, and the payload carries
+      the LOWER field's, so an upper mark declaring a wider range would be silently clamped on
+      save — a setting rewritten to a value its own declaration allows, by a control that never
+      offered the rest of it.
+
+    Unpairing rather than raising keeps the failure in the settings model from reaching the
+    user as a dialog that will not open: every option is still on screen and still settable.
+    """
+    if not field.upper_key:
+        return None
+    upper = by_key.get(field.upper_key)
+    if upper is None:
+        return None
+    if (upper.minimum, upper.maximum) != (field.minimum, field.maximum):
+        return None
+    return upper
+
+
 def _field_payloads(
     fields: list[ConfigField], values: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -294,16 +321,16 @@ def _field_payloads(
     stops showing an option is a worse failure than one that shows it plainly.
     """
     by_key = {field.key: field for field in fields}
-    paired_away = {
-        field.upper_key
-        for field in fields
-        if field.upper_key and field.upper_key in by_key
-    }
+    # Resolved ONCE and reused, so "this field is the second handle of another" and "this field
+    # has a second handle" can never disagree. Asking the question twice is how a rejected
+    # partner gets skipped as paired-away and then never drawn at all.
+    partners = {field.key: _pair_partner(field, by_key) for field in fields}
+    paired_away = {upper.key for upper in partners.values() if upper is not None}
     payloads: list[dict[str, Any]] = []
     for field in fields:
         if field.key in paired_away:
             continue
-        upper = by_key.get(field.upper_key) if field.upper_key else None
+        upper = partners[field.key]
         if upper is None:
             # Strip the dangling pairing before building: `control_for` reads `upper_key` and
             # would say "range" for a payload with no second handle in it, which the page
