@@ -1126,3 +1126,81 @@ class TestThePreviewAgreesWithTheRun:
         service, _compat = _build(monkeypatch, note, _settings(config))
 
         assert service.field_states(1).get("Definition") == "blocked"
+
+
+class TestAPromptlessRowIsHeldToTheSameRule:
+    """`source_is_base_fallback` says the row has no prompt — not that anything reads one.
+
+    The base field is added to the blocking set for a promptless row because a promptless AI
+    row feeds the base field straight to the model, and nothing else would notice it was
+    empty. But a promptless CLONE row reads its own `sentence_field` and never opens the
+    prompt, so the base field is not its input either. Adding it unconditionally put the
+    original bug back through the branch meant to be the exception: a leftover hard edge onto
+    the base field held the row forever and reported it as needed.
+    """
+
+    def _rule(self, tools, prompt="", depends_on=()):
+        from omnia.plugins.smart_notes.config import SmartNotesFieldConfig
+        from omnia.plugins.smart_notes.engine.rules import compile_field_rule
+
+        return compile_field_rule(
+            SmartNotesFieldConfig(
+                field="Audio",
+                enabled=True,
+                type="text",
+                prompt=prompt,
+                tools=list(tools),
+                depends_on=list(depends_on),
+            ),
+            "Word",
+        )
+
+    def _blockers(self, rule):
+        from omnia.plugins.smart_notes.engine import blocking_prerequisites
+
+        return {name.strip().lower() for name in blocking_prerequisites(rule)}
+
+    def _dep(self, field, kind="hard"):
+        from omnia.plugins.smart_notes.config import FieldDep
+
+        return FieldDep(field=field, kind=kind)
+
+    def _clone(self, source):
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        return FieldToolConfig(tool="cloze", params={"sentence_field": source})
+
+    def test_a_promptless_clone_row_does_not_block_on_the_base_field(self):
+        rule = self._rule([self._clone("Backup")], depends_on=[self._dep("Word")])
+
+        assert "word" not in self._blockers(rule)
+
+    def test_it_still_blocks_on_what_it_reads(self):
+        rule = self._rule([self._clone("Backup")], depends_on=[self._dep("Word")])
+
+        assert "backup" in self._blockers(rule)
+
+    def test_a_promptless_ai_row_still_blocks_on_the_base_field(self):
+        """This is the case the branch exists for: the base field IS the whole prompt, so an
+        empty one means calling the model with nothing and paying for what it invents.
+        """
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        rule = self._rule(
+            [FieldToolConfig(tool="ai", params={})], depends_on=[self._dep("Word")]
+        )
+
+        assert "word" in self._blockers(rule)
+
+    def test_switching_the_tool_moves_the_blocker(self):
+        """Dependencies follow the tool, which is the whole point of the change."""
+        from omnia.plugins.smart_notes.config import FieldToolConfig
+
+        deps = [self._dep("Word"), self._dep("Backup")]
+        cloned = self._blockers(self._rule([self._clone("Backup")], depends_on=deps))
+        aied = self._blockers(
+            self._rule([FieldToolConfig(tool="ai", params={})], depends_on=deps)
+        )
+
+        assert cloned == {"backup"}
+        assert aied == {"word"}

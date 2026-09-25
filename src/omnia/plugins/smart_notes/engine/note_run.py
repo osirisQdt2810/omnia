@@ -34,8 +34,7 @@ from typing import TYPE_CHECKING, Optional, Union
 
 from omnia.plugins.smart_notes.engine.ordering import order_rule_levels, order_rules
 from omnia.plugins.smart_notes.engine.rules import (
-    rule_inputs,
-    rule_prerequisites,
+    blocking_prerequisites,
     should_skip_rule,
 )
 from omnia.plugins.smart_notes.provenance import ALWAYS
@@ -92,65 +91,6 @@ class FailedField:
     error: str
     kind: str = "error"
     note_id: int = 0
-
-
-def blocking_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
-    """Return the field names that may BLOCK ``rule``: hard prerequisites the chain reads.
-
-    PUBLIC, and named for what it decides rather than for how it filters. Three surfaces ask
-    "would this field be held back" — the run, the clipper's field preview, and the graph's
-    gen-order animation — and each used to answer with its own copy of ``kind == "hard"``. One
-    of them changing is how a preview comes to disagree with the run it is previewing, which is
-    worse than no preview at all.
-
-    Two filters, and the second one is the point.
-
-    ``"hard"`` — soft prerequisites order generation but never block, and the explicit
-    kind-override (a derived source recoloured ``"soft"``) is already applied by
-    :func:`~omnia.plugins.smart_notes.engine.rules.rule_prerequisites`, so a softened source is
-    correctly excluded.
-
-    READ BY THE CHAIN — blocking exists so a tool is never run against an empty input and made
-    to invent content from nothing. A field no tool opens cannot do that: its contents have no
-    route into the output, so waiting for them is waiting for something that could not change
-    the result either way. A Clone Field row reading one field, carrying an explicit edge onto
-    another, was held on that other field forever and reported as needing it — the user was
-    told their tool required a field it never asked for.
-
-    The edge still ORDERS (``rule_prerequisites`` is what ordering reads, and it is untouched),
-    so "generate this after that" is unaffected. What it no longer does is gate. Dependencies
-    therefore follow the tool: swap the chain to ``ai`` and the prompt's refs become the
-    blocking set instead, which is what the row then actually reads.
-
-    Names keep their original case (for the ``missing`` report); matching is the caller's job.
-    """
-    reads = {name.strip().lower() for name in rule_inputs(rule)}
-    # The empty-prompt case, which `rule_inputs` deliberately leaves out and the run
-    # deliberately reads. A field with no prompt feeds the BASE FIELD to the model
-    # (`prompt_for` returns `fields[source_field]` for a prompt-less rule), but
-    # `rule_source_fields` returns nothing for it — correctly, because the base field is always
-    # present and so is not a graph EDGE. It is still the rule's entire input.
-    #
-    # Added here rather than in `rule_inputs`, which feeds `rule_prerequisites`: a derived base
-    # edge there would give every promptless field an incoming arrow the graph is deliberately
-    # not drawing. This is a question about blocking, so it is answered at the blocking gate.
-    #
-    # Without it the one prerequisite that IS the whole prompt was invisible: a promptless
-    # field on a note with a blank base field called the model with an empty prompt and wrote
-    # back whatever it invented — one paid request per note, and content to clean up after.
-    #
-    # It closes that only where the user drew the edge, since the returned list is still
-    # filtered through `rule_prerequisites`, which for a promptless rule holds nothing but the
-    # explicit `depends_on` entries. A promptless field with no edge at all still reaches the
-    # model with a blank prompt; that hole predates this and wants a gate of its own rather
-    # than a wider filter here.
-    if rule.source_field and rule.source_is_base_fallback:
-        reads.add(rule.source_field.strip().lower())
-    return [
-        field
-        for field, kind in rule_prerequisites(rule)
-        if kind == "hard" and field.strip().lower() in reads
-    ]
 
 
 class NoteRun:

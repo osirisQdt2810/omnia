@@ -16,6 +16,7 @@ assembles it, the only undefined names left are the page's real globals, listed 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 
@@ -28,11 +29,30 @@ PAGE_GLOBALS = ("pycmd", "SN_TYPES")
 #: Browser globals the bundles legitimately use. Not `eslint-config-*`'s browser preset: this
 #: is a QtWebEngine view, the list is short, and an explicit one says which host APIs the page
 #: is allowed to assume.
-BROWSER_GLOBALS = (
-    "window document console navigator location alert confirm setTimeout clearTimeout "
-    "setInterval clearInterval requestAnimationFrame getComputedStyle MutationObserver "
-    "Event URL Blob FileReader DOMParser XMLHttpRequest fetch Image"
-).split()
+BROWSER_GLOBALS = [
+    "window",
+    "document",
+    "console",
+    "navigator",
+    "location",
+    "alert",
+    "confirm",
+    "setTimeout",
+    "clearTimeout",
+    "setInterval",
+    "clearInterval",
+    "requestAnimationFrame",
+    "getComputedStyle",
+    "MutationObserver",
+    "Event",
+    "URL",
+    "Blob",
+    "FileReader",
+    "DOMParser",
+    "XMLHttpRequest",
+    "fetch",
+    "Image",
+]
 
 
 def _bundles() -> dict[str, str]:
@@ -56,13 +76,37 @@ def _lint(tmp_path, bundles: dict[str, str]) -> list[dict]:
         "export default [{files: ['**/*.js'], languageOptions: "
         "{ecmaVersion: 2020, sourceType: 'script', globals: "
         + json.dumps(globals_map)
-        + "}, rules: {'no-undef': 'error'}}];"
+        + "}, rules: {'no-undef': 'error'}}];",
+        encoding="utf-8",
     )
     for name, source in bundles.items():
-        (tmp_path / name).write_text(source)
-    result = subprocess.run(
+        # Explicit: Windows writes in the locale codec by default and the bundles are full of
+        # arrows and check marks, so the check died on cp1252 before eslint saw a byte — which
+        # is what the Windows leg reported the first time this ran.
+        (tmp_path / name).write_text(source, encoding="utf-8")
+    try:
+        result = _run(tmp_path, bundles)
+    except OSError as exc:
+        # On Windows `npx` is a `.cmd`, which CreateProcess will not launch directly. Rather
+        # than shelling out (and quoting paths by hand), the check runs where it can: the
+        # Linux leg of the matrix is the gate, and this is JavaScript — nothing about the
+        # result is platform-specific.
+        pytest.skip(f"cannot launch npx here: {exc}")
+    if not result.stdout.strip():
+        pytest.skip(f"eslint unavailable (no network for npx?): {result.stderr[:300]}")
+    return [
+        {"file": os.path.basename(entry["filePath"]), **message}
+        for entry in json.loads(result.stdout)
+        for message in entry["messages"]
+    ]
+
+
+def _run(tmp_path, bundles: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
         [
-            "npx",
+            # Resolved, not the bare name: on Windows `npx` is a `.cmd` shim and subprocess
+            # does not go through the shell to find it.
+            shutil.which("npx") or "npx",
             "--yes",
             "eslint@9",
             "--no-config-lookup",
@@ -78,13 +122,6 @@ def _lint(tmp_path, bundles: dict[str, str]) -> list[dict]:
         encoding="utf-8",
         timeout=600,
     )
-    if not result.stdout.strip():
-        pytest.skip(f"eslint unavailable (no network for npx?): {result.stderr[:300]}")
-    return [
-        {"file": entry["filePath"].rsplit("/", 1)[-1], **message}
-        for entry in json.loads(result.stdout)
-        for message in entry["messages"]
-    ]
 
 
 @pytest.mark.skipif(

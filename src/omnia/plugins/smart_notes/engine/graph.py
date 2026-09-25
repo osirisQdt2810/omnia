@@ -26,9 +26,9 @@ import math
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from omnia.plugins.smart_notes.engine.note_run import blocking_prerequisites
 from omnia.plugins.smart_notes.engine.ordering import SmartNotesCycleError
 from omnia.plugins.smart_notes.engine.rules import (
+    blocking_prerequisites,
     compile_field_rule,
     rule_prerequisites,
     rule_source_fields,
@@ -203,17 +203,24 @@ class FieldGraph:
         # kind and duplicate edges collapse. Derived edges are added first, then explicit.
         edges: dict[tuple[str, str], GraphEdge] = {}
 
-        # Which (src, dst) pairs the RUN would actually hold back on, asked once per field.
-        blocking: dict[str, set[str]] = {}
-
         def add_edge(
             src_lower: str,
             dst_lower: str,
             kind: str,
             *,
             derived: bool,
+            blocking: set[str],
             from_tool: bool = False,
         ) -> None:
+            """Record one edge. ``blocking`` is the set the RUN would hold ``dst`` back on.
+
+            Passed in rather than read from an enclosing dict keyed by ``dst``: through the
+            closure it was correct only because every ``add_edge`` for a field happened in the
+            same loop iteration that had just computed its set. Move one call out of that
+            iteration and every edge silently gets ``blocks=False`` — and the only symptom is a
+            preview that quietly stops marking anything blocked, which is not a symptom anyone
+            notices. A parameter makes the ordering hazard unrepresentable.
+            """
             if src_lower not in display or dst_lower not in display:
                 return  # edge references a field not present in the note type — drop it
             edges[src_lower, dst_lower] = GraphEdge(
@@ -222,7 +229,7 @@ class FieldGraph:
                 kind=kind,
                 derived=derived,
                 from_tool=from_tool,
-                blocks=src_lower in blocking.get(dst_lower, set()),
+                blocks=src_lower in blocking,
             )
 
         for field in config.fields:
@@ -235,9 +242,7 @@ class FieldGraph:
             # The run's own answer, not `kind == "hard"`. An edge onto a field the chain never
             # reads orders without blocking, and a surface that conflates the two tells the
             # user a field is blocked that generates perfectly well.
-            blocking[dst_lower] = {
-                name.strip().lower() for name in blocking_prerequisites(rule)
-            }
+            blocking = {name.strip().lower() for name in blocking_prerequisites(rule)}
             prompt_sources = {name.strip().lower() for name in rule_source_fields(rule)}
             tool_sources = {
                 name.strip().lower() for name in tool_referenced_fields(rule.tools)
@@ -255,6 +260,7 @@ class FieldGraph:
                     kind,
                     derived=from_prompt or src_lower in tool_sources,
                     from_tool=not from_prompt and src_lower in tool_sources,
+                    blocking=blocking,
                 )
 
         return cls(nodes=nodes, edges=list(edges.values()))
