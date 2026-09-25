@@ -48,6 +48,16 @@ config/features.toml
 config/providers.toml
 .secrets/
 
+# Notes about a PRIVATE endpoint — the host, port and key of a self-hosted model server.
+# This repo is public: a base_url pointing at somebody's machine is an invitation, and a
+# leaked key is worse. Anything describing a real deployment stays out, by pattern rather
+# than by remembering.
+*.local.md
+*.local.toml
+*.local.json
+api-key*.txt
+deploy/private/
+
 # NOTE: vendor/ and models/ are intentionally NOT ignored — vendored pure-Python deps and the
 # bundled voice models are committed so the shipped add-on works without a build step.
 references/
