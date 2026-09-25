@@ -378,3 +378,23 @@ class TestAConfiguredModelIsOfferedPerField:
 
         assert payload["text_models"]["gemini"] == text_models("gemini")
         assert payload["text_models"]["openai_compatible"] == []
+
+
+class TestWhatTheImageKindOffers:
+    """`_IMAGE_MODELS`' keys mean "can generate images", not "has ids we curated".
+
+    `openai_compatible` is a key with an empty list on purpose: a server you run yourself may
+    serve `/images/generations` and only its operator knows the model's name. Pinned because
+    the distinction is invisible from the dict alone — a reader tidying up "the empty one"
+    would remove a working setup's only route.
+    """
+
+    def test_a_self_hosted_endpoint_may_be_picked_for_images(self):
+        assert "openai_compatible" in providers_for("image")
+
+    def test_it_offers_no_curated_image_ids(self):
+        assert image_models("openai_compatible") == []
+
+    def test_a_provider_with_no_image_endpoint_is_still_excluded(self):
+        # OpenRouter's image output is via chat modalities, not /images/generations.
+        assert "openrouter" not in providers_for("image")

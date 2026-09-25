@@ -11,8 +11,10 @@ the dropdowns from going stale:
 * a user's own saved model/voice string is ALWAYS preserved by the GUI even if it is not in the
   list (the dialog merges it in), so a missing entry never loses a configured value;
 * the LLM provider subset offered for generation is intentionally smaller than every registered
-  provider — ``openrouter`` already fronts the OpenAI-compatible family, so the raw ``openai`` /
-  ``openai_compatible`` names are omitted from the *generation* picker.
+  provider — ``openrouter`` already fronts the hosted OpenAI-compatible family, so the raw
+  ``openai`` name is omitted from the *generation* picker. ``openai_compatible`` IS offered:
+  nothing proxies a server you run yourself, so leaving it out made the one supported way to use
+  your own model invisible in the UI.
 
 Imports nothing from ``aqt``/``anki`` (tests headless). It imports the provider PACKAGES (data
 + the voice aggregation) but never a concrete provider module, and the provider packages never
@@ -67,9 +69,14 @@ _LANGUAGE_LABELS: dict[str, str] = {lang["code"]: lang["label"] for lang in LANG
 def providers_for(kind: str) -> list[str]:
     """Return the provider names offered for a generation ``kind``.
 
-    text → every LLM provider; image → only the LLM providers that ACTUALLY generate images
-    (the keys of ``_IMAGE_MODELS`` — e.g. openrouter has no image endpoint, so it's excluded
-    and never offered for an image field); tts → the TTS providers.
+    text → every LLM provider; image → the LLM providers that CAN generate images (the keys of
+    ``_IMAGE_MODELS`` — openrouter has no image endpoint, so it is excluded and never offered
+    for an image field); tts → the TTS providers.
+
+    "Can" rather than "has curated ids": ``openai_compatible`` is a key with an EMPTY list,
+    because a server you run yourself may serve ``/images/generations`` and only its operator
+    knows what the model is called. Omitting the key would hide the field and make a working
+    setup unreachable; an empty list offers nothing and accepts what the user knows.
     """
     if kind == KIND_TTS:
         return list(TTS_PROVIDERS)
