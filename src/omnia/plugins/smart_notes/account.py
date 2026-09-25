@@ -256,6 +256,18 @@ _KEY_CARD_SPECS: list[dict] = [
         "fields": [
             ("base_url", "Base URL", "text", "http://127.0.0.1:8721/v1"),
             ("api_key", "API key", "secret", ""),
+            # Typed, not picked. The model ids on a server you run yourself are whatever its
+            # operator named them, so there is no list to choose from — and without a text
+            # field the design was circular: the picker offers only the id that is already
+            # configured, and the picker was the only place to configure it. A fresh install
+            # could therefore never set one.
+            ("text_model", "Text model", "text", "e.g. omnia-local"),
+            (
+                "image_model",
+                "Image model",
+                "text",
+                "only if it serves /images/generations",
+            ),
         ],
     },
 ]
