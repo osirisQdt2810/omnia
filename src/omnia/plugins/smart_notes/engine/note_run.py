@@ -138,6 +138,12 @@ def blocking_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
     # Without it the one prerequisite that IS the whole prompt was invisible: a promptless
     # field on a note with a blank base field called the model with an empty prompt and wrote
     # back whatever it invented — one paid request per note, and content to clean up after.
+    #
+    # It closes that only where the user drew the edge, since the returned list is still
+    # filtered through `rule_prerequisites`, which for a promptless rule holds nothing but the
+    # explicit `depends_on` entries. A promptless field with no edge at all still reaches the
+    # model with a blank prompt; that hole predates this and wants a gate of its own rather
+    # than a wider filter here.
     if rule.source_field and rule.source_is_base_fallback:
         reads.add(rule.source_field.strip().lower())
     return [
