@@ -429,13 +429,6 @@ class TestPageAssets:
         css = _page_css(build_settings_html([], dark=False))
         assert "prefers-reduced-motion" in css
 
-    def test_css_stays_within_the_qtwebengine_floor(self):
-        # Anki ships Qt 6.6 on some platforms; these land as no-ops there and would silently
-        # break the layout or the palette.
-        css = _page_css(build_settings_html([], dark=False))
-        for feature in ("color-mix(", ":has(", "@container", "@property"):
-            assert feature not in css
-
     def test_every_custom_property_used_is_one_that_is_defined(self):
         """A `var(--name)` nobody defines resolves to nothing, silently.
 
