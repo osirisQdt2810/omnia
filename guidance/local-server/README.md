@@ -126,7 +126,7 @@ counts as free. Expected timings, measured on the reference setup:
 | Request | Warm | Cold (engines stopped) |
 |---|---|---|
 | Short text answer | ~0.4 s | 85–100 s — the process, CUDA, loading the weights (6 s) and engine warm-up (39 s) |
-| Image, 1024×1024 (what Omnia sends) | ~7 s | ~26 s, on top of the text engine if both were stopped |
+| Image, 1024×1024 (what Omnia sends) | ~7 s | 23–26 s, on top of the text engine if both were stopped |
 
 So the first generation after 30 idle minutes takes about a minute and a half, and every one after
 it is fast. Image time barely depends on size: with CPU offload most of it is moving weights onto
