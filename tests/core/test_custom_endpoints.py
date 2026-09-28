@@ -220,14 +220,14 @@ class TestAddingAndRemovingOne:
 
         assert repo.llm_settings().custom_providers() == ["custom:a", "custom:c"]
 
-    def test_removing_one_forgets_its_secret(self, repo, tmp_path):
+    def test_removing_one_forgets_its_secret(self, repo, config_dir):
         """A credential outliving every reference to it is the kind of leftover nobody goes
         back and cleans up."""
         repo.add_custom_provider("llm", "mine")
         repo.set_provider_fields(
             "llm", "custom:mine", [("api_key", "secret", "sk-xyz")]
         )
-        secrets = list((tmp_path / ".secrets").glob("*api_key*"))
+        secrets = list((config_dir / ".secrets").glob("*api_key*"))
         assert secrets, "the fixture did not actually store a secret"
 
         repo.remove_custom_provider("llm", "custom:mine")
@@ -376,11 +376,11 @@ class TestChoosingADefaultModelForACustomEndpoint:
 
         assert repo.llm_settings().provider == "custom:mine"
 
-    def test_it_does_not_leave_a_second_table_nobody_reads(self, repo, tmp_path):
+    def test_it_does_not_leave_a_second_table_nobody_reads(self, repo, config_dir):
         repo.add_custom_provider("llm", "mine")
 
         repo.set_active_llm("custom:mine", text_model="m")
-        written = (tmp_path / "providers.toml").read_text(encoding="utf-8")
+        written = (config_dir / "providers.toml").read_text(encoding="utf-8")
 
         assert '[llm."custom:mine"]' not in written
         assert "[llm.custom.mine]" in written

@@ -753,7 +753,7 @@ def call_or_xfail(fn, *args, **kwargs):
 def config_dir(tmp_path):
     """A temp directory holding the repo's ``*.example.toml``, for a real ConfigRepository.
 
-    Four fixtures grew their own copy of this, and two pointed at ``src/omnia/config`` — a path
+    Six fixtures grew their own copy of this, and four pointed at ``src/omnia/config`` — a path
     that has not existed since the non-source data moved to the repo root. ``Path.glob`` on a
     missing directory yields nothing and raises nothing, so those two seeded no templates and
     ran against a bare directory while describing themselves as running against a real config
@@ -767,6 +767,10 @@ def config_dir(tmp_path):
     src = Path(__file__).resolve().parents[1] / "config"
     templates = sorted(src.glob("*.example.toml"))
     assert templates, f"no config templates under {src}"
+    # Its own subdirectory, as in the add-on (`config/` beside the package), so `tmp_path`
+    # stays free for the scratch files a test brings — a credential to import, a second store.
+    target = tmp_path / "config"
+    target.mkdir()
     for template in templates:
-        shutil.copy(template, tmp_path / template.name)
-    return tmp_path
+        shutil.copy(template, target / template.name)
+    return target
