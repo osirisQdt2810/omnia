@@ -61,7 +61,9 @@ call() {
       -o "$WORK/body" -w '%{http_code} %{time_total}' "$BASE$path" || echo "000 0")"
   fi
   CODE="${out%% *}"; TIME="${out##* }"
-  TIME="${TIME%????}"   # curl prints six decimals; two are plenty (and no locale-sensitive printf)
+  # Two decimals, whatever curl prints (three before 7.73, six since). LC_ALL=C because awk formats
+  # in the user's locale — a comma-decimal system would print "0,42" — while curl always writes ".".
+  TIME="$(LC_ALL=C awk -v t="$TIME" 'BEGIN { printf "%.2f", t }')"
 }
 
 echo "Endpoint: $BASE"
@@ -144,10 +146,17 @@ PY
 fi
 
 call GET /status
-[ "$CODE" = "200" ] && engines
+if [ "$CODE" = "200" ]; then
+  engines
+else
+  echo "        (could not read /status afterwards: HTTP $CODE — the layers above still passed)"
+fi
 
 if [ "$STOP" = "1" ]; then
+  # Loud, not best-effort: --stop is how a colleague gets the card back, and a silent failure
+  # here would report "passed" while the GPU stayed taken.
   call POST /stop
-  [ "$CODE" = "200" ] && pass "handed the GPU back (/stop)"
+  [ "$CODE" = "200" ] || fail "stop" "HTTP $CODE from /stop — the GPU may still be held; check /status"
+  pass "handed the GPU back (/stop)"
 fi
 echo "All layers passed."
