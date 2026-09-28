@@ -52,8 +52,8 @@ class TestConfigRepository:
         ):
             assert config_repo.is_enabled(pid) is False
 
-    def test_set_enabled_persists_and_reloads(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_enabled_persists_and_reloads(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_enabled("auto_flip", True)
         assert repo.is_enabled("auto_flip") is True
@@ -62,8 +62,8 @@ class TestConfigRepository:
         fresh = ConfigRepository(ConfigLoader(tmp_cfg))
         assert fresh.is_enabled("auto_flip") is True
 
-    def test_update_section_changes_typed_settings(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_update_section_changes_typed_settings(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.update_section("auto_flip", {"delay_question_seconds": 5.5})
         settings = repo.feature_settings("auto_flip")
@@ -76,18 +76,18 @@ class TestConfigRepository:
     def test_feature_settings_none_for_unknown(self, config_repo):
         assert config_repo.feature_settings("not_a_plugin") is None
 
-    def test_feature_settings_returns_typed_model_from_namespace(self, tmp_path):
+    def test_feature_settings_returns_typed_model_from_namespace(self, config_dir):
         # The plugin's OWN config_model parses its raw [plugin] namespace from the merged dict.
         from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
 
-        tmp_cfg = _tmp_config(tmp_path)
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.update_section("typed_accuracy", {"threshold": 0.42})
         settings = repo.feature_settings("typed_accuracy")
         assert isinstance(settings, TypedAccuracySettings)
         assert settings.threshold == 0.42
 
-    def test_feature_settings_tolerates_unknown_keys(self, tmp_path):
+    def test_feature_settings_tolerates_unknown_keys(self, config_dir):
         """An unknown key in a plugin's namespace must NOT break that plugin's settings.
 
         Changed deliberately (was: asserts a ``ValidationError``). ``features.toml`` lives in
@@ -97,7 +97,7 @@ class TestConfigRepository:
         device. The plugin models are ``PersistedModel``s now: the key rides along untouched
         and the known settings still parse.
         """
-        tmp_cfg = _tmp_config(tmp_path)
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.update_section("overdue_guard", {"from_a_newer_omnia": 5})
         settings = repo.feature_settings("overdue_guard")
@@ -105,8 +105,8 @@ class TestConfigRepository:
         assert settings.min_days == 2  # type: ignore[attr-defined]
         assert settings.dict()["from_a_newer_omnia"] == 5  # round-trips, never dropped
 
-    def test_edited_value_wins_over_default(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_edited_value_wins_over_default(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.update_section("typed_accuracy", {"threshold": 0.9})
         assert repo.feature_settings("typed_accuracy").threshold == 0.9
@@ -121,16 +121,16 @@ class TestRawSection:
     deletes the keys its own model cannot read (ADR-010, one layer above the models).
     """
 
-    def test_returns_the_section_as_stored(self, tmp_path):
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+    def test_returns_the_section_as_stored(self, config_dir):
+        repo = ConfigRepository(ConfigLoader(config_dir))
         repo.update_section("typed_accuracy", {"threshold": 0.42})
 
         assert repo.raw_section("typed_accuracy")["threshold"] == 0.42
 
-    def test_keeps_what_the_typed_read_would_refuse(self, tmp_path):
+    def test_keeps_what_the_typed_read_would_refuse(self, config_dir):
         # A value of the WRONG TYPE makes feature_settings raise for the whole section; the
         # raw read still hands it back, which is what keeps a save from deleting it.
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo = ConfigRepository(ConfigLoader(config_dir))
         repo.update_section("overdue_guard", {"min_days": "soon"})
 
         with pytest.raises(ValidationError):
@@ -140,8 +140,8 @@ class TestRawSection:
     def test_an_absent_section_is_an_empty_dict(self, config_repo):
         assert config_repo.raw_section("not_a_plugin") == {}
 
-    def test_the_result_is_a_copy(self, tmp_path):
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+    def test_the_result_is_a_copy(self, config_dir):
+        repo = ConfigRepository(ConfigLoader(config_dir))
         repo.update_section("auto_flip", {"per_deck": {"1": {"enabled": False}}})
 
         section = repo.raw_section("auto_flip")
@@ -159,33 +159,33 @@ class TestSectionRejects:
     for the panel that would let the value be corrected.
     """
 
-    def test_a_value_the_model_refuses_is_reported(self, tmp_path):
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+    def test_a_value_the_model_refuses_is_reported(self, config_dir):
+        repo = ConfigRepository(ConfigLoader(config_dir))
 
         # WordLookupSettings bounds the port at 1024; 80 is a real port and an invalid one.
         assert repo.section_rejects("word_lookup", {"port": 80})
 
-    def test_the_message_names_the_field(self, tmp_path):
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+    def test_the_message_names_the_field(self, config_dir):
+        repo = ConfigRepository(ConfigLoader(config_dir))
 
         # Not pydantic's multi-line dump: this goes in a settings panel.
         message = repo.section_rejects("word_lookup", {"port": 80})
         assert "port" in message
         assert "\n" not in message
 
-    def test_a_value_the_model_accepts_is_not(self, tmp_path):
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+    def test_a_value_the_model_accepts_is_not(self, config_dir):
+        repo = ConfigRepository(ConfigLoader(config_dir))
 
         assert repo.section_rejects("word_lookup", {"port": 8080}) == ""
 
-    def test_it_judges_the_MERGE_not_the_keys_handed_in(self, tmp_path):
+    def test_it_judges_the_MERGE_not_the_keys_handed_in(self, config_dir):
         """A partial write is checked against what is already stored, not on its own.
 
         The panel sends only the fields it drew. Parsing those alone would reject every
         required field it did not send, and would miss a value that is only invalid beside
         one already in the file.
         """
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo = ConfigRepository(ConfigLoader(config_dir))
         repo.update_section("typed_accuracy", {"threshold": 0.9})
 
         assert repo.section_rejects("typed_accuracy", {"pass_ease": "easy"}) == ""
@@ -194,9 +194,9 @@ class TestSectionRejects:
         # Nothing to validate against is not the same as invalid.
         assert config_repo.section_rejects("not_a_plugin", {"anything": 1}) == ""
 
-    def test_it_does_not_write(self, tmp_path):
+    def test_it_does_not_write(self, config_dir):
         # The point of asking first is that asking changes nothing.
-        repo = ConfigRepository(ConfigLoader(_tmp_config(tmp_path)))
+        repo = ConfigRepository(ConfigLoader(config_dir))
         before = repo.raw_section("word_lookup")
 
         repo.section_rejects("word_lookup", {"port": 80})
@@ -207,8 +207,8 @@ class TestSectionRejects:
 class TestProviderConfigWrites:
     """The Account dialog's writes: default-model picker + Keys subtab secret edits."""
 
-    def test_set_active_llm_sets_provider_and_text_model(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_active_llm_sets_provider_and_text_model(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_active_llm("gemini", text_model="gemini-3.5-flash")
         assert repo.config.llm.provider == "gemini"
@@ -218,30 +218,30 @@ class TestProviderConfigWrites:
         assert fresh.config.llm.provider == "gemini"
         assert fresh.config.llm.gemini.text_model == "gemini-3.5-flash"
 
-    def test_set_active_llm_preserves_other_credentials(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_active_llm_preserves_other_credentials(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_provider_secret("llm", "gemini", "api_key", "keep-me")
         repo.set_active_llm("gemini", text_model="m2")
         assert repo.config.llm.gemini.api_key == "keep-me"
         assert repo.config.llm.gemini.text_model == "m2"
 
-    def test_set_active_llm_image_model_only(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_active_llm_image_model_only(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_active_llm("openrouter", image_model="openai/gpt-image-1")
         assert repo.config.llm.provider == "openrouter"
         assert repo.config.llm.openrouter.image_model == "openai/gpt-image-1"
 
-    def test_set_active_tts_sets_voice_for_supported_provider(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_active_tts_sets_voice_for_supported_provider(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_active_tts("edge_tts", voice="vi-VN-HoaiMyNeural")
         assert repo.config.tts.provider == "edge_tts"
         assert repo.config.tts.edge_tts.voice == "vi-VN-HoaiMyNeural"
 
-    def test_set_auto_voice_writes_language_mapping(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_auto_voice_writes_language_mapping(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_auto_voice("ja", "edge_tts:ja-JP-NanamiNeural")
         assert repo.config.tts.auto_voices["ja"] == "edge_tts:ja-JP-NanamiNeural"
@@ -249,8 +249,8 @@ class TestProviderConfigWrites:
         fresh = ConfigRepository(ConfigLoader(tmp_cfg))
         assert fresh.config.tts.auto_voices["ja"] == "edge_tts:ja-JP-NanamiNeural"
 
-    def test_set_auto_voice_empty_value_deletes_the_entry(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_auto_voice_empty_value_deletes_the_entry(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_auto_voice("ja", "edge_tts:ja-JP-NanamiNeural")
         repo.set_auto_voice("ja", "")
@@ -258,34 +258,34 @@ class TestProviderConfigWrites:
         fresh = ConfigRepository(ConfigLoader(tmp_cfg))
         assert "ja" not in fresh.config.tts.auto_voices
 
-    def test_set_active_tts_writes_piper_voice_to_its_model_field(self, tmp_path):
+    def test_set_active_tts_writes_piper_voice_to_its_model_field(self, config_dir):
         # piper has no `voice` field — its selectable "voice" is the .onnx model, so the
         # value is stored as `model` (otherwise it would silently revert in the picker).
-        tmp_cfg = _tmp_config(tmp_path)
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_active_tts("piper", voice="vi_VN-vais1000-medium")
         assert repo.config.tts.provider == "piper"
         assert repo.config.tts.piper.model == "vi_VN-vais1000-medium"
 
-    def test_set_active_tts_skips_voice_for_voiceless_provider(self, tmp_path):
+    def test_set_active_tts_skips_voice_for_voiceless_provider(self, config_dir):
         # google_translate has no `voice` field; writing one would persist a key the provider
         # never reads. The provider must still switch, and the config must reload cleanly.
-        tmp_cfg = _tmp_config(tmp_path)
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_active_tts("google_translate", voice="ignored")
         assert repo.config.tts.provider == "google_translate"
         assert repo.config.tts.google_translate.lang  # reloaded fine
 
-    def test_set_provider_secret_persists_nested_field(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_provider_secret_persists_nested_field(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         repo.set_provider_secret("llm", "gemini_vertex", "project", "my-proj")
         assert repo.config.llm.gemini_vertex.project == "my-proj"
         fresh = ConfigRepository(ConfigLoader(tmp_cfg))
         assert fresh.config.llm.gemini_vertex.project == "my-proj"
 
-    def test_set_provider_secret_rejects_unknown_domain(self, tmp_path):
-        tmp_cfg = _tmp_config(tmp_path)
+    def test_set_provider_secret_rejects_unknown_domain(self, config_dir):
+        tmp_cfg = config_dir
         repo = ConfigRepository(ConfigLoader(tmp_cfg))
         with pytest.raises(ValueError):
             repo.set_provider_secret("nope", "gemini", "api_key", "x")
@@ -294,15 +294,15 @@ class TestProviderConfigWrites:
 class TestSecretsOutOfConfig:
     """Credentials are stored as references; the TOML never holds the raw secret."""
 
-    def _repo(self, tmp_path):
+    def _repo(self, config_dir, tmp_path):
         from omnia.core.config.secrets import SecretsStore
 
-        tmp_cfg = _tmp_config(tmp_path)
+        tmp_cfg = config_dir
         store = SecretsStore(tmp_path / "secrets")
         return ConfigRepository(ConfigLoader(tmp_cfg), store), tmp_cfg
 
-    def test_secret_field_is_stored_as_reference_not_raw(self, tmp_path):
-        repo, tmp_cfg = self._repo(tmp_path)
+    def test_secret_field_is_stored_as_reference_not_raw(self, config_dir, tmp_path):
+        repo, tmp_cfg = self._repo(config_dir, tmp_path)
         repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "AIza-XYZ")])
         # On disk the TOML holds only a reference; the raw key is nowhere in the file.
         raw = (tmp_cfg / "providers.toml").read_bytes()
@@ -312,10 +312,10 @@ class TestSecretsOutOfConfig:
         # But the loaded config resolves it back to the real key for the providers.
         assert repo.config.llm.gemini.api_key == "AIza-XYZ"
 
-    def test_secret_resolves_on_a_fresh_repo(self, tmp_path):
+    def test_secret_resolves_on_a_fresh_repo(self, config_dir, tmp_path):
         from omnia.core.config.secrets import SecretsStore
 
-        repo, tmp_cfg = self._repo(tmp_path)
+        repo, tmp_cfg = self._repo(config_dir, tmp_path)
         repo.set_provider_fields(
             "llm", "openrouter", [("api_key", "secret", "sk-or-123")]
         )
@@ -324,26 +324,26 @@ class TestSecretsOutOfConfig:
         )
         assert fresh.config.llm.openrouter.api_key == "sk-or-123"
 
-    def test_non_secret_field_stays_inline(self, tmp_path):
-        repo, tmp_cfg = self._repo(tmp_path)
+    def test_non_secret_field_stays_inline(self, config_dir, tmp_path):
+        repo, tmp_cfg = self._repo(config_dir, tmp_path)
         repo.set_provider_fields(
             "llm", "gemini_vertex", [("project", "text", "my-proj")]
         )
         on_disk = tomllib.loads((tmp_cfg / "providers.toml").read_text())
         assert on_disk["llm"]["gemini_vertex"]["project"] == "my-proj"
 
-    def test_file_kind_is_skipped_by_set_provider_fields(self, tmp_path):
-        repo, _ = self._repo(tmp_path)
+    def test_file_kind_is_skipped_by_set_provider_fields(self, config_dir, tmp_path):
+        repo, _ = self._repo(config_dir, tmp_path)
         # A "file" field is imported via Browse, never written by the batch save.
         repo.set_provider_fields(
             "llm", "gemini_vertex", [("credentials_path", "file", "/some/path")]
         )
         assert repo.config.llm.gemini_vertex.credentials_path == ""
 
-    def test_credential_file_imported_and_resolves_to_path(self, tmp_path):
+    def test_credential_file_imported_and_resolves_to_path(self, config_dir, tmp_path):
         src = tmp_path / "sa.json"
         src.write_text('{"type":"service_account"}')
-        repo, _ = self._repo(tmp_path)
+        repo, _ = self._repo(config_dir, tmp_path)
         resolved = repo.set_provider_credential_file(
             "llm", "gemini_vertex", "credentials_path", str(src)
         )
@@ -356,15 +356,15 @@ class TestSecretsOutOfConfig:
         # The loaded config resolves the ref to the absolute path of the secrets copy.
         assert repo.config.llm.gemini_vertex.credentials_path == resolved
 
-    def test_clearing_a_secret_writes_empty(self, tmp_path):
-        repo, _ = self._repo(tmp_path)
+    def test_clearing_a_secret_writes_empty(self, config_dir, tmp_path):
+        repo, _ = self._repo(config_dir, tmp_path)
         repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "k")])
         repo.set_provider_fields("llm", "gemini", [("api_key", "secret", "")])
         assert repo.config.llm.gemini.api_key == ""
 
-    def test_same_field_name_across_domains_no_collision(self, tmp_path):
+    def test_same_field_name_across_domains_no_collision(self, config_dir, tmp_path):
         # llm.openai.api_key and tts.openai.api_key must not share a secrets file.
-        repo, _ = self._repo(tmp_path)
+        repo, _ = self._repo(config_dir, tmp_path)
         repo.set_provider_fields("llm", "openai", [("api_key", "secret", "llm-key")])
         repo.set_provider_fields("tts", "openai", [("api_key", "secret", "tts-key")])
         assert repo.config.llm.openai.api_key == "llm-key"
@@ -514,21 +514,6 @@ class TestTomlConfigLoaderTemplateDir:
         loader.ensure_live_files()
         assert (tmp_path / "omnia.toml").exists()
         assert loader.read_file("omnia.toml") == {"log_level": "INFO"}
-
-
-def _tmp_config(tmp_path):
-    """Seed ``tmp_path`` from the tracked ``*.example.toml`` templates and return it.
-
-    Gives each test an isolated config directory; the loader's ``ensure_live_files`` then
-    creates the live files from these templates, so no real credentials are involved.
-    """
-    import shutil
-    from pathlib import Path
-
-    src = Path(__file__).resolve().parent.parent.parent / "src" / "omnia" / "config"
-    for template in src.glob("*.example.toml"):
-        shutil.copy(template, tmp_path / template.name)
-    return tmp_path
 
 
 class TestShippedModelDefaultsAreOffered:

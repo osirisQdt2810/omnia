@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from omnia.core import registry
 from omnia.core.config import ConfigLoader, ConfigRepository
 from omnia.core.manager import PluginManager, group_plugins, grouped_plugins
 from omnia.core.plugin import AddonPaths, FeaturePlugin
-
-_CONFIG_DIR = Path(__file__).resolve().parent.parent.parent / "src" / "omnia" / "config"
 
 
 @pytest.fixture(autouse=True)
@@ -24,17 +20,11 @@ def clean_registry():
 
 
 @pytest.fixture
-def make_manager(tmp_path):
+def make_manager(tmp_path, config_dir):
     """Factory: build a PluginManager over a fresh repository (isolated tmp config dir)."""
-    import shutil
-
-    cfg_dir = tmp_path / "config"
-    cfg_dir.mkdir()
-    for template in _CONFIG_DIR.glob("*.example.toml"):
-        shutil.copy(template, cfg_dir / template.name)
 
     def _make():
-        repo = ConfigRepository(ConfigLoader(cfg_dir))
+        repo = ConfigRepository(ConfigLoader(config_dir))
         paths = AddonPaths(tmp_path, tmp_path / "web", tmp_path / "uf")
         return PluginManager(repo, paths), repo
 
