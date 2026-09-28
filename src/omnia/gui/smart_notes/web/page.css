@@ -14,6 +14,12 @@ body.omnia-light {
   --shadow: rgba(20,30,60,0.12); --head: rgba(91,110,245,0.10); --fail: #c0392b;
   --ok: #1f8a55;
   --head-bg: #e7eaf6; --overlay: rgba(20,30,60,0.34);
+  /* Tints mixed by hand, like `--head`: CSS colour mixing is below the QtWebEngine floor, and a
+     declaration the engine cannot parse is dropped whole — the chip keeps its border and
+     loses its fill, silently. Each MUST stay its base colour at the stated alpha; a test
+     re-derives them from the base, so changing `--accent` without them fails loudly. */
+  --accent-tint: rgba(91,110,245,0.12); --accent-2-tint: rgba(138,92,246,0.12);
+  --accent-2-wash: rgba(138,92,246,0.10); --ok-tint: rgba(31,138,85,0.12);
 }
 body.omnia-dark {
   --bg-top: #1b1e27; --bg-bottom: #14161d; --fg: #e7e9f0; --muted: #9aa3b2;
@@ -24,6 +30,8 @@ body.omnia-dark {
   --shadow: rgba(0,0,0,0.45); --head: rgba(124,140,255,0.16); --fail: #ff6b6b;
   --ok: #3ecf8e;
   --head-bg: #2a2f40; --overlay: rgba(0,0,0,0.55);
+  --accent-tint: rgba(124,140,255,0.12); --accent-2-tint: rgba(166,133,255,0.12);
+  --accent-2-wash: rgba(166,133,255,0.10); --ok-tint: rgba(62,207,142,0.12);
 }
 body {
   color: var(--fg);
@@ -890,17 +898,17 @@ select:disabled { opacity: 0.7; }
 /* `ai` costs tokens — the accent marks the one step in a chain that is not free. */
 .sn-chip-ai {
   border-color: var(--accent); color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--accent-tint);
 }
 /* The deterministic builtins: green, because they are the free path. */
 .sn-chip-cloze, .sn-chip-cloze-audio {
   border-color: var(--ok, #30a46c); color: var(--ok, #30a46c);
-  background: color-mix(in srgb, var(--ok, #30a46c) 12%, transparent);
+  background: var(--ok-tint, rgba(48,164,108,0.12));
 }
 /* A user-authored tool (`user:<slug>` → `user-<slug>`), distinct from both. */
 .sn-tools-btn [class*="sn-chip-user-"] {
   border-color: var(--accent-2, #8b7cf6); color: var(--accent-2, #8b7cf6);
-  background: color-mix(in srgb, var(--accent-2, #8b7cf6) 12%, transparent);
+  background: var(--accent-2-tint, rgba(139,124,246,0.12));
 }
 .sn-tools-btn.sn-tools-none .sn-chip { opacity: 0.75; }
 .sn-tools-card { max-width: 620px; }
@@ -977,7 +985,7 @@ input.sn-tool-param-input[type="checkbox"] { max-width: none; }
 .sn-ut-risks {
   margin-top: 8px; padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45;
   border: 1px solid var(--accent-2); color: var(--fg);
-  background: color-mix(in srgb, var(--accent-2) 10%, transparent);
+  background: var(--accent-2-wash);
 }
 .sn-ut-risks[hidden] { display: none; }
 /* Inline with the sentence: the folder is being named, so the way to open it belongs there. */
