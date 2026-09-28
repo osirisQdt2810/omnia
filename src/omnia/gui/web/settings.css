@@ -667,7 +667,9 @@ body {
    leaving a sliver of colour that reads as "nearly off". */
 .omnia-range2-collapsed .omnia-range2-top { opacity: 0.18; }
 .omnia-range2-legend {
-  display: flex; justify-content: space-between; gap: 12px;
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
   font-size: 12px; color: var(--muted);
 }
-.omnia-range2-out { white-space: nowrap; }
+/* Each mark's name beside the box that sets it — the slider's readout, one per handle. */
+.omnia-range2-out { white-space: nowrap; display: inline-flex; align-items: center; gap: 8px; }
+.omnia-range2-out .omnia-slide-value::placeholder { color: rgba(255, 255, 255, 0.78); }

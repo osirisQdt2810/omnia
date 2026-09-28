@@ -676,12 +676,40 @@
     track.appendChild(hiHandle);
 
     const legend = el("div", "omnia-range2-legend");
-    const loOut = el("span", "omnia-range2-out");
-    const hiOut = el("span", "omnia-range2-out");
+    // EDITABLE, like the slider's readout — not labels. Dragging is for "about here"; a
+    // particular value is typed. The track reaches only its step grid, so a stored 0.72
+    // survives being looked at but, once nudged, can never be entered again — and the single
+    // slider these two marks replaced let you type it, so the track alone was a regression.
+    const makeBox = function (labelText) {
+      const out = el("label", "omnia-range2-out", labelText);
+      const box = document.createElement("input");
+      box.type = "number";
+      box.className = "omnia-slide-value";
+      box.min = String(low);
+      box.max = String(high);
+      box.step = String(step);
+      box.setAttribute("aria-label", labelText);
+      out.appendChild(box);
+      return {out: out, box: box};
+    };
+    const loPart = makeBox(field.label);
+    const hiPart = makeBox(upper.label || "Upper");
+    const loOut = loPart.out;
+    const hiOut = hiPart.out;
+    const loBox = loPart.box;
+    const hiBox = hiPart.box;
+    // Empty with "off" showing, rather than 0: 0 is how "off" is STORED, not what it means —
+    // and clearing the box is how it is typed.
+    hiBox.placeholder = "off";
 
     const pct = function (v) { return span ? ((v - low) / span) * 100 : 0; };
 
-    const paint = function () {
+    /**
+     * Draw the current pair. `editing` is the box being typed into, which is left alone:
+     * rewriting an input under the cursor turns "0" on the way to "0.95" into a fight.
+     * @param {?Element=} editing
+     */
+    const paint = function (editing) {
       const a = pct(lo);
       const b = pct(hi);
       loHandle.style.left = a + "%";
@@ -692,10 +720,13 @@
       top.style.width = Math.max(0, 100 - b) + "%";
       loHandle.setAttribute("aria-valuenow", String(lo));
       hiHandle.setAttribute("aria-valuenow", String(hi));
-      loOut.textContent = field.label + ": " + lo;
-      // Says "off" rather than showing 0, because 0 is how it is STORED and not what it means.
       const on = bandOn && hi > lo;
-      hiOut.textContent = (upper.label || "Upper") + ": " + (on ? String(hi) : "off");
+      if (editing !== loBox) {
+        loBox.value = String(lo);
+      }
+      if (editing !== hiBox) {
+        hiBox.value = on ? String(hi) : "";
+      }
       wrap.classList.toggle("omnia-range2-collapsed", !on);
       // While the band is off there is conceptually ONE handle on screen — the pass mark. The
       // upper one is not parked invisibly on top of it; it does not exist yet, so it takes no
@@ -718,9 +749,14 @@
       top.title = on ? "" : "Press here to add a second, higher cutoff";
     };
 
-    /** Move one handle, keeping the lower at or below the upper. */
-    const set = function (which, value) {
-      const v = clamp(snap(value));
+    /**
+     * Put one mark at `v` EXACTLY, keeping the lower at or below the upper. Every input comes
+     * through here, so a typed value and a dragged one obey the same band rules.
+     * @param {string} which "lo" or "hi".
+     * @param {number} v An already-clamped value.
+     * @param {?Element=} editing The box being typed into, if any.
+     */
+    const place = function (which, v, editing) {
       if (which === "lo") {
         lo = v;
         // While the band is off the parked handle FOLLOWS, so moving the pass mark can never
@@ -736,7 +772,12 @@
         // what makes "off" something the user chose rather than something that happened.
         bandOn = hi > lo;
       }
-      paint();
+      paint(editing);
+    };
+
+    /** A drag or a key moves on the step grid; a typed value does not (see the boxes). */
+    const set = function (which, value) {
+      place(which, clamp(snap(value)));
     };
 
     const valueAt = function (clientX) {
@@ -784,6 +825,36 @@
     };
     loHandle.addEventListener("keydown", keys("lo", function () { return lo; }));
     hiHandle.addEventListener("keydown", keys("hi", function () { return hi; }));
+
+    // A typed value is taken EXACTLY — snapped, the box could not reach 0.72 any more than the
+    // track can — and only clamped into range. `badInput` is the browser saying the text is
+    // not a number YET ("-", "1."), which is mid-edit, not a value.
+    const typed = function (box) {
+      if (box.validity && box.validity.badInput) {
+        return null;
+      }
+      const v = parseFloat(box.value);
+      return isNaN(v) ? null : clamp(v);
+    };
+    loBox.addEventListener("input", function () {
+      const v = typed(loBox);
+      if (v !== null) {
+        place("lo", v, loBox);
+      }
+    });
+    hiBox.addEventListener("input", function () {
+      const v = typed(hiBox);
+      if (v !== null) {
+        place("hi", v, hiBox);
+      } else if (!(hiBox.validity && hiBox.validity.badInput) && !String(hiBox.value).trim()) {
+        // Cleared on purpose: the upper mark back onto the lower, which is "off".
+        place("hi", lo, hiBox);
+      }
+    });
+    // Only once editing ends is a box tidied — out of range back inside, an abandoned edit back
+    // to the value actually held.
+    loBox.addEventListener("blur", function () { paint(null); });
+    hiBox.addEventListener("blur", function () { paint(null); });
 
     legend.appendChild(loOut);
     legend.appendChild(hiOut);
