@@ -1128,6 +1128,43 @@ class TestThePreviewAgreesWithTheRun:
         assert service.field_states(1).get("Definition") == "blocked"
 
 
+class TestAPromptlessRowWithABlankBaseIsHeldEverywhere:
+    """A row with no prompt sends the base field as its whole prompt.
+
+    With a blank base and no edge drawn, the run called the model with an empty prompt. The fix
+    lives in the one gate every surface asks, so the clipper's preview has to agree: blocked in
+    the preview, blocked in the run, and the model not called by either.
+    """
+
+    def _service(self, monkeypatch, word):
+        config = _config()
+        config.fields = [f for f in config.fields if f.field == "Definition"]
+        config.fields[0].prompt = ""
+        config.fields[0].depends_on = []
+        note = _FakeNote(1, "Vocab", {"Word": word, "Definition": "", "Example": ""})
+        service, _compat = _build(monkeypatch, note, _settings(config))
+        return service
+
+    def test_the_preview_calls_it_blocked(self, monkeypatch):
+        service = self._service(monkeypatch, word="")
+
+        assert service.field_states(1).get("Definition") == "blocked"
+
+    def test_and_the_run_does_not_generate_it(self, monkeypatch):
+        service = self._service(monkeypatch, word="")
+
+        (outcome,) = service.regenerate(1, ["Definition"])
+
+        assert outcome.status != "generated", outcome
+
+    def test_a_filled_base_is_neither_previewed_nor_run_as_blocked(self, monkeypatch):
+        service = self._service(monkeypatch, word="cat")
+
+        assert service.field_states(1).get("Definition") != "blocked"
+        (outcome,) = service.regenerate(1, ["Definition"])
+        assert outcome.status == "generated"
+
+
 class TestAPromptlessRowIsHeldToTheSameRule:
     """`source_is_base_fallback` says the row has no prompt — not that anything reads one.
 

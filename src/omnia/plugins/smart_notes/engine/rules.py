@@ -472,6 +472,10 @@ def blocking_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
     therefore follow the tool: swap the chain to ``ai`` and the prompt's refs become the
     blocking set instead, which is what the row then actually reads.
 
+    One entry is not an edge at all: a row with NO prompt whose chain reads the prompt sends the
+    base field as the whole of it, so the base field blocks — with or without an edge onto it,
+    and whatever kind that edge is. See the comments in the body for why neither may opt out.
+
     Names keep their original case (for the ``missing`` report); matching is the caller's job.
     """
     from omnia.plugins.smart_notes.engine.tools.registry import chain_reads_prompt
@@ -496,20 +500,32 @@ def blocking_prerequisites(rule: SmartNotesFieldRule) -> list[str]:
     # Without it the one prerequisite that IS the whole prompt was invisible: a promptless
     # field on a note with a blank base field called the model with an empty prompt and wrote
     # back whatever it invented — one paid request per note, and content to clean up after.
-    #
-    # It closes that only where the user drew the edge, since the returned list is still
-    # filtered through `rule_prerequisites`, which for a promptless rule holds nothing but the
-    # explicit `depends_on` entries. A promptless field with no edge at all still reaches the
-    # model with a blank prompt; that hole predates this and wants a gate of its own rather
-    # than a wider filter here.
-    if (
+    base_is_the_prompt = bool(
         rule.source_field
         and rule.source_is_base_fallback
         and chain_reads_prompt(rule.tools)
-    ):
+    )
+    if base_is_the_prompt:
         reads.add(rule.source_field.strip().lower())
-    return [
+    prerequisites = rule_prerequisites(rule)
+    blocking = [
         field
-        for field, kind in rule_prerequisites(rule)
+        for field, kind in prerequisites
         if kind == "hard" and field.strip().lower() in reads
     ]
+    # And it blocks whether or not anyone drew the edge. Filtering through `rule_prerequisites`
+    # alone closed the hole only for a row that happened to carry an explicit hard edge onto
+    # the base field — for a promptless rule that list holds nothing but explicit `depends_on`
+    # entries, and the DEFAULT row has none. So the default row, with a blank base, still sent
+    # the model an empty prompt.
+    #
+    # Whatever KIND of edge is declared, too. Soft means "generate without it; it only makes
+    # the result richer", which is never true of the one field that is the entire prompt —
+    # without it there is nothing to generate from, only an empty request. So there is no soft
+    # version of this dependency to honour, and an `auto` classifier edge that happened to come
+    # out soft must not quietly reopen the hole.
+    if base_is_the_prompt:
+        already = {field.strip().lower() for field in blocking}
+        if rule.source_field.strip().lower() not in already:
+            blocking.append(rule.source_field)
+    return blocking
