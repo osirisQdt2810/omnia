@@ -1278,3 +1278,110 @@ class TestOneTrackNeedsOneScale:
 
         assert [p["key"] for p in payloads] == ["threshold", "high_threshold"]
         assert payloads[1]["max"] == 5.0, "it kept the scale it declared"
+
+
+@pytest.mark.skipif(
+    shutil.which("node") is None,
+    reason="needs a JS engine; CI runners all ship node, a contributor's box may not",
+)
+class TestAParticularValueCanBeTyped:
+    """The track reaches only its step grid; a particular value is typed.
+
+    Before the two marks shared a track, the pass mark was a slider with an editable readout,
+    so 0.72 could be entered. The track kept a stored 0.72 intact while merely looked at, but
+    once nudged it could never be entered again — a regression the shared track introduced.
+
+    These drive the boxes through their own `input`/`blur` listeners, the path a keystroke takes.
+    """
+
+    def _type(self, lower, upper, steps):
+        """Open the control on a stored pair, apply `steps`, and read everything back.
+
+        Each step is ``[box, text]`` — set that box's text and fire `input` — or ``[box, None,
+        "bad"]`` for text the browser cannot parse yet (`validity.badInput`), or
+        ``["blur", box]``.
+        """
+        script = _DOM_STUB + _extract("rangeControl") + f"""
+const built = rangeControl({{
+  label: "Pass", min: 0, max: 1, step: 0.05, value: {lower},
+  upper: {{key: "high", label: "High", value: {upper}}},
+}});
+const [loBox, hiBox] = NODES.filter((n) => n.tag === "input" && n.type === "number");
+const boxes = {{lo: loBox, hi: hiBox}};
+for (const step of {json.dumps(steps)}) {{
+  if (step[0] === "blur") {{ boxes[step[1]]._on.blur(); continue; }}
+  const box = boxes[step[0]];
+  box.validity = {{badInput: step[2] === "bad"}};
+  box.value = step[1] === null ? "" : step[1];
+  box._on.input();
+}}
+console.log(JSON.stringify({{
+  lower: built.read(), upper: built.extra.high(),
+  loBox: loBox.value, hiBox: hiBox.value, placeholder: hiBox.placeholder,
+}}));
+"""
+        return _run_js(script)
+
+    def test_a_pass_mark_off_the_step_grid_can_be_typed(self):
+        read = self._type(0.7, 0.0, [["lo", "0.72"]])
+
+        assert (
+            read["lower"] == 0.72
+        ), "the box snapped it, like the track it was meant to beat"
+        assert read["upper"] == 0
+
+    def test_typing_an_upper_mark_opens_the_band_at_exactly_that_value(self):
+        read = self._type(0.7, 0.0, [["hi", "0.93"]])
+
+        assert (read["lower"], read["upper"]) == (0.7, 0.93)
+
+    def test_clearing_the_upper_box_turns_the_band_off(self):
+        read = self._type(0.7, 0.9, [["hi", ""]])
+
+        assert read["upper"] == 0
+
+    def test_text_that_is_not_a_number_yet_moves_nothing(self):
+        """`-` or `1.` on the way to a value: the browser reports badInput and an empty value,
+        which must not be mistaken for clearing the box."""
+        read = self._type(0.7, 0.9, [["hi", None, "bad"], ["lo", None, "bad"]])
+
+        assert (read["lower"], read["upper"]) == (0.7, 0.9)
+
+    def test_a_typed_value_is_clamped_into_range(self):
+        read = self._type(0.7, 0.0, [["hi", "1.5"], ["lo", "-3"]])
+
+        assert (read["lower"], read["upper"]) == (0.0, 1.0)
+
+    def test_typing_the_pass_mark_past_the_upper_collapses_the_band(self):
+        """The same rule a drag obeys: the lower overtaking the upper collapses the band."""
+        read = self._type(0.7, 0.9, [["lo", "0.95"]])
+
+        assert (read["lower"], read["upper"]) == (0.95, 0)
+
+    def test_the_box_being_typed_into_is_not_rewritten_under_the_cursor(self):
+        """ "0" on the way to "0.95" is "off" for an instant; the box must keep saying "0"."""
+        read = self._type(0.7, 0.9, [["hi", "0"]])
+
+        assert read["hiBox"] == "0"
+        assert read["upper"] == 0
+
+    def test_leaving_the_box_tidies_it(self):
+        read = self._type(0.7, 0.9, [["hi", "0"], ["blur", "hi"]])
+
+        assert (
+            read["hiBox"] == ""
+        ), "an off band shows an empty box, with 'off' as placeholder"
+
+    def test_the_boxes_open_on_the_stored_values(self):
+        on = self._type(0.72, 0.95, [])
+        off = self._type(0.7, 0.0, [])
+
+        assert (on["loBox"], on["hiBox"]) == ("0.72", "0.95")
+        assert (off["hiBox"], off["placeholder"]) == ("", "off")
+
+    def test_the_off_state_still_survives_a_typed_pass_mark(self):
+        """The #109 invariant, through the new door: moving only the pass mark never opens a
+        band, whether dragged or typed."""
+        read = self._type(0.7, 0.0, [["lo", "0.6"], ["lo", "0.8"]])
+
+        assert (read["lower"], read["upper"]) == (0.8, 0)
