@@ -986,6 +986,81 @@ class TestGenerateNoteBlocking:
         assert [b.target_field for b in blocked] == ["Def"]
         assert llm.prompts == [], f"the model was called with {llm.prompts!r}"
 
+    @pytest.mark.parametrize("allow_empty_fields", [True, False])
+    def test_nor_when_the_user_never_drew_an_edge(self, allow_empty_fields):
+        """The DEFAULT promptless row, which has no `depends_on` at all.
+
+        A row with no prompt feeds the base field to the model as the whole prompt, so a blank
+        base means a paid request with nothing in it and whatever the model invents written
+        back. The gate caught that only when the user had happened to draw a hard edge onto the
+        base field — which the default row does not have, and nothing prompts anyone to add.
+        `should_skip_rule` does not catch it either: a promptless row names no source fields,
+        so the empty-input guard has nothing to look at, with or without `allow_empty_fields`.
+        """
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [("Def", dict(enabled=True, type="text", prompt=""))],
+        )
+
+        results, blocked, _failed = service.generate_note(
+            config, {"Word": "", "Def": ""}, allow_empty_fields=allow_empty_fields
+        )
+
+        assert llm.prompts == [], f"the model was called with {llm.prompts!r}"
+        assert results == []
+        assert [b.target_field for b in blocked] == ["Def"]
+        assert [m.lower() for m in blocked[0].missing] == ["word"], blocked[0]
+
+    @pytest.mark.parametrize("auto", [True, False])
+    def test_nor_when_the_edge_onto_the_base_is_soft(self, auto):
+        """Soft means "generate without it, it only enriches" — never true of the whole prompt.
+
+        Honouring it here would let an `auto` classifier edge that came out soft reopen the
+        hole silently, and a hand-set one would only buy an empty, paid request.
+        """
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [
+                (
+                    "Def",
+                    dict(
+                        enabled=True,
+                        type="text",
+                        prompt="",
+                        depends_on=[FieldDep(field="Word", kind="soft", auto=auto)],
+                    ),
+                )
+            ],
+        )
+
+        _results, blocked, _failed = service.generate_note(
+            config, {"Word": "", "Def": ""}, allow_empty_fields=True
+        )
+
+        assert llm.prompts == [], f"the model was called with {llm.prompts!r}"
+        assert [b.target_field for b in blocked] == ["Def"]
+
+    def test_a_filled_base_still_generates_without_an_edge(self):
+        """The gate must not cost the row its normal run: filled base, no edge, one call."""
+        llm = _RecordingLLM()
+        service = GenerationService(_stub_hub(llm=llm))
+        config = _config(
+            "Word",
+            [("Def", dict(enabled=True, type="text", prompt=""))],
+        )
+
+        results, blocked, _failed = service.generate_note(
+            config, {"Word": "cat", "Def": ""}, allow_empty_fields=True
+        )
+
+        assert blocked == []
+        assert [rule.target_field for rule, _result in results] == ["Def"]
+        assert llm.prompts and "cat" in llm.prompts[0]
+
     def test_already_filled_prereq_counts_present(self):
         # Def is already filled and not overwritten → it is "present" (non-empty) for Usage's
         # hard prereq, so Usage is NOT blocked (it generates). Def itself is skipped (filled).
