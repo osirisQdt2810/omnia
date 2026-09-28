@@ -21,6 +21,151 @@ Format for each entry:
 
 ---
 
+## 2026-09-25 — A field waits only for what its tools actually read
+
+**What:** The Smart Notes blocking gate holds a field back only on hard prerequisites its tool
+chain READS (`rule_inputs`), not on every hard edge in `depends_on`. It is one public function,
+`blocking_prerequisites` in `engine/rules.py`, and all three surfaces that ask "is this field held
+back" go through it: the run (`NoteRun`), the clipper's field preview (`regen._predicted_blocks`)
+and the graph's ▶ gen-order animation, which reads a per-edge `blocks` flag computed in Python
+instead of re-deriving `kind == "hard"` in JS. Blocked messages name the prerequisite actually
+read. A row with no prompt whose chain reads the prompt blocks on the base field — the whole of
+its input — with or without an edge onto it, and whatever that edge's kind (#114). A `no-undef`
+lint now runs over the assembled page bundles.
+
+**Why:** A Clone Field row (`Example 1 (audio)` cloned from its backup) carried a leftover hard
+edge onto `Example 1`, and thousands of notes were reported "also waiting on Example 1": the user
+was told their tool needed a field it never opens, and generation was withheld for a reason that
+could not exist. Three surfaces each held their own copy of the filter, so fixing one left the
+other two saying the old thing. Separately, the default promptless row sent the model an empty
+prompt whenever the base field was blank — a paid request producing invented content.
+
+**Files:** `plugins/smart_notes/engine/rules.py` (`rule_inputs`, `blocking_prerequisites`),
+`engine/note_run.py` (the gate), `engine/graph.py` (`GraphEdge.blocks`),
+`integration/regen.py` (`_predicted_blocks`, the blocked/skip messages), `integration/batch.py`,
+`gui/smart_notes/html.py` (payload), `gui/smart_notes/web/08-genpreview.js` (`gpBlockers`),
+`tests/gui/test_web_bundles_lint.py` (new).
+
+**How to verify:**
+```bash
+pytest tests/plugins/smart_notes/test_regen.py -q -k "PreviewAgreesWithTheRun or PromptlessRow"
+pytest tests/plugins/smart_notes/test_smart_notes.py -q -k "empty_prompt or never_drew_an_edge"
+pytest tests/gui/test_web_bundles_lint.py -q      # needs node/npx
+```
+
+**Notes / rollback:** A deliberate behaviour loss: an explicit hard edge onto a field the chain
+never reads now only ORDERS; it no longer gates. To hold a field back on something, its tool has
+to read it. `rule_prerequisites` (ordering and the hard-cycle check) is unchanged. The lint runs
+eslint through `npx` over the bundles AS ASSEMBLED — linting the eleven Smart Notes pieces
+separately reports every cross-piece reference as undefined — and skips where `npx` cannot launch
+(Windows, where it is a `.cmd` shim) or has no network; the Linux CI leg is the gate.
+
+---
+
+## 2026-09-25 — Your own OpenAI-compatible endpoints, as many as you need
+
+**What:** Account → Keys → **Add endpoint** creates a named endpoint: a configured instance of
+the `openai_compatible` provider, stored under `[llm.custom.<label>]` with its own base URL, key,
+text model and image model. It can be tested in the playground, chosen as the central default or
+per field — for text and for image — and removed along with its stored secrets. Adding or
+removing one refreshes the Keys cards, both provider pickers and the defaults in the same reply.
+Usage rows for it join under the provider class that served them. `config/providers.example.toml`
+documents pointing Omnia at a self-hosted OpenAI-compatible server through an SSH tunnel, without
+the host ever appearing in the repo.
+
+**Why:** The hosted keys expired and the user runs their own GPU server (a lazily started vLLM
+text engine plus an SDXL-Turbo image server behind one authenticated gateway). A single
+`openai_compatible` slot allowed one endpoint, and the pickers never learned an endpoint's
+configured model id — the one thing a self-hosted endpoint has instead of a curated list.
+
+**Files:** `core/config/models.py` (`CUSTOM_PREFIX`, `custom_provider_name/label`,
+`LLMSettings.custom`, `subsection()`, `custom_providers()`), `core/config/repository.py`
+(`add/remove_custom_provider`, `_provider_table`, `_secret_name`, `_resolve_in`),
+`core/config/secrets.py` (`forget_all`), `core/providers/__init__.py` (`_llm_config`),
+`core/providers/catalog.py` (`providers_with_custom`), `core/providers/openai_family.py`
+(`require_base_url`), `gui/smart_notes/catalog_inputs.py` (new — `CatalogInputs`),
+`gui/smart_notes/dialogs/controllers/account.py`, `plugins/smart_notes/account.py`,
+`gui/smart_notes/web/02-catalog.js`, `05-handlers.js`, `config/providers.example.toml`.
+
+**How to verify:**
+```bash
+pytest tests/core/test_custom_endpoints.py tests/gui/test_smart_notes_dialog_deps.py -q
+```
+By hand: Keys → Add endpoint `gpu` → base URL `http://127.0.0.1:8721/v1`, key, text model
+`omnia-local`, image model `sdxl-turbo` → Save → Test; then pick it under Default model.
+
+**Notes / rollback:** A custom section IS the endpoint, so only `add_custom_provider` may create
+one; every other writer finds it or raises. That is what keeps a removal removed — a picker still
+holding a deleted id used to write its section back. Removing the active endpoint resets
+`[llm].provider`, and a field still pinned to a deleted endpoint gets "unknown provider" rather
+than a misleading "requires an api_key". Labels are unique case-insensitively (APFS and NTFS would
+otherwise put two endpoints' keys in one file) and secret filenames are percent-encoded (Windows
+forbids `:`). Custom endpoints are LLM-only: the `tts` domain is refused.
+
+---
+
+## 2026-09-25 — Typing accuracy grades in three bands, set on one track
+
+**What:** Typed Accuracy gains an optional second cutoff, `high_threshold`, with its own ease,
+`high_ease` (default Easy): below `threshold` stages the fail ease, from `threshold` up to
+`high_threshold` the pass ease, and at or above `high_threshold` the high ease. `0`, or any value
+at or below `threshold`, means off — one cutoff, as before. The settings panel draws the pair as
+one track with two handles (a new `rangeControl`, driven by `ConfigField.upper_key`), and each
+mark has a number box that takes an exact value (#115).
+
+**Why:** One cutoff can only say right or wrong. A near-perfect answer and a scraped pass are
+different recalls and deserve different intervals.
+
+**Files:** `plugins/typed_accuracy/config.py` (the two keys, pruned while unset),
+`plugins/typed_accuracy/logic.py` (the three bands), `core/plugin.py` (`ConfigField.upper_key`),
+`core/config/schema.py`, `gui/config_panel.py` (`pair_payload`, `_pair_partner`),
+`gui/web/settings.js` (`rangeControl`), `gui/web/settings.css`.
+
+**How to verify:**
+```bash
+pytest tests/plugins/typed_accuracy -q
+pytest tests/gui/test_settings_html.py -q -k "Handle or Typed or Stored or OffStays"
+```
+
+**Notes / rollback:** Both keys are pruned from the synced blob until set, so a device running an
+older Omnia never meets them (ADR-010). With the band off, the upper handle takes no presses:
+dragging the only visible handle moves the pass mark, and a band is opened by pressing the bare
+track to its right or typing an upper value. Moving only the pass mark never opens a band. A pair
+whose two fields disagree about the scale is drawn as two sliders rather than silently clamped.
+
+---
+
+## 2026-09-17 — Omnia knows which field contents are its own
+
+**What:** Text Omnia writes carries an invisible fingerprint comment and media it generates is
+named `omnia-*`; `provenance.is_ours` decides whether a field still holds Omnia's untouched output.
+A Smart Notes **overwrite scope** — `always`, `ours_only`, `not_ours` — decides what a regeneration
+may replace, and every write path stores through `provenance.to_store`: the batch runner, review,
+clipper regeneration, the prompt dialog and the plugin's note hook. Media a regeneration supersedes
+is trashed only when the new value actually replaced it.
+
+**Why:** Regenerating could silently destroy a field the user had edited by hand, and a clipper
+could rewrite such a field with no way to say "only replace what Omnia wrote".
+
+**Files:** `plugins/smart_notes/provenance.py` (new), `plugins/smart_notes/config.py`
+(`overwrite_scope`), `integration/batch.py`, `integration/regen.py`, `integration/review.py`,
+`plugins/smart_notes/__init__.py`, `gui/smart_notes/dialogs/prompt.py`.
+
+**How to verify:**
+```bash
+pytest tests/plugins/smart_notes/test_provenance.py tests/plugins/smart_notes/test_regen.py -q
+```
+
+**Notes / rollback:** `overwrite_scope` is a plain `str` with a documented fallback, not a
+`Literal`: the store is parsed inside note-add hooks with no try/except, so an unknown value from a
+newer device would crash every add (ADR-010). An empty value is never stamped — a bare marker would
+read as "filled" and the field would never be retried. `is_ours` strips markup first, so the
+trailing `<br>` or `&nbsp;` Anki's editor leaves behind does not count as the user's text. Anki's
+`add_data_to_folder_uniquely` returns the SAME filename for identical bytes, so superseded media is
+found by diffing old against new; an identical regeneration never trashes its own file.
+
+---
+
 ## 2026-09-17 — A generated voice speaks at the pace you choose
 
 **What:** `TTSProvider.synthesize` takes a `speed` multiplier, and every provider converts it to
