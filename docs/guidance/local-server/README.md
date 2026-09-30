@@ -43,6 +43,20 @@ in those rows of the Fields table instead.
 The token is what grants access, so keep it to yourself. If someone else needs access, they
 should get their own token, which can then be revoked without affecting yours.
 
+## Coming from the single Self-hosted card
+
+Earlier versions had one built-in card for this, **Self-hosted / OpenAI-compatible**. It is
+gone: every server is now an endpoint you add by name, and you can add as many as you need.
+
+If you had filled that card in, there is nothing to do. The first time the new version starts,
+the card becomes an endpoint called **Self-hosted** (**Self-hosted 2** if you already had one by
+that name) with the same address, token and models. If the card was your default model, the
+endpoint now is, and fields that used the card use the endpoint. Each computer converts its own
+card, because the address and token are kept on that computer.
+
+A card that was never filled in is simply gone. A field that still names it tells you to add an
+endpoint: add one as above, then pick it for that field or as the default model.
+
 ## Run your own server
 
 [omnia-llm](https://github.com/osirisQdt2810/omnia-llm) is a ready-made server for Omnia. Pick
