@@ -681,6 +681,97 @@ class TestTheRetiredIdResolves:
         assert str(caught.value) == _RETIRED_SLOT
 
 
+class TestAWriteThroughTheRetiredIdFollowsIt:
+    """Reads of `openai_compatible` resolve to the endpoint the slot moved to; a write that
+    landed on the old table instead would be accepted and then never read."""
+
+    def _moved(self, config_dir):
+        _write(config_dir)
+        repo = _repo(config_dir)
+        repo.migrate_legacy_endpoint()
+        return repo
+
+    def test_a_field_lands_on_the_endpoint(self, config_dir):
+        repo = self._moved(config_dir)
+
+        repo.set_provider_fields(
+            "llm", "openai_compatible", [("base_url", "text", "http://new/v1")]
+        )
+
+        llm = _raw(config_dir)["llm"]
+        assert llm["custom"]["Self-hosted"]["base_url"] == "http://new/v1"
+        assert llm["openai_compatible"]["base_url"] == "https://gpu.example/v1"
+
+    def test_a_key_is_stored_under_the_endpoints_name(self, config_dir):
+        repo = self._moved(config_dir)
+
+        repo.set_provider_fields(
+            "llm", "openai_compatible", [("api_key", "secret", "sk-new")]
+        )
+
+        assert _secret_files(config_dir) == [_NEW_KEY_FILE]
+        assert repo.llm_settings().subsection("custom:Self-hosted").api_key == "sk-new"
+
+    def test_a_credential_file_is_named_for_the_endpoint(self, config_dir, tmp_path):
+        repo = self._moved(config_dir)
+        source = tmp_path / "creds.json"
+        source.write_text("{}", encoding="utf-8")
+
+        repo.set_provider_credential_file(
+            "llm", "openai_compatible", "api_key", str(source)
+        )
+
+        endpoint = _raw(config_dir)["llm"]["custom"]["Self-hosted"]
+        assert endpoint["api_key"] == f"secret-file:{_NEW_KEY_FILE}.json"
+
+    def test_a_default_model_lands_on_the_endpoint(self, config_dir):
+        repo = self._moved(config_dir)
+
+        repo.set_active_llm("openai_compatible", text_model="qwen")
+
+        assert repo.llm_settings().subsection("custom:Self-hosted").text_model == "qwen"
+
+    def test_a_removed_endpoint_refuses_it(self, config_dir):
+        """The same refusal as for any removed endpoint, rather than a write to a table
+        nothing reads any more."""
+        repo = self._moved(config_dir)
+        repo.remove_custom_provider("llm", "custom:Self-hosted")
+        before = _bytes(config_dir)
+
+        with pytest.raises(ValueError, match="Self-hosted"):
+            repo.set_provider_fields(
+                "llm", "openai_compatible", [("base_url", "text", "http://new/v1")]
+            )
+
+        assert _bytes(config_dir) == before
+
+    def test_an_unmoved_slot_is_written_as_before(self, config_dir):
+        _write(config_dir, _SLOT.replace("https://gpu.example/v1", ""))
+        repo = _repo(config_dir)
+        repo.migrate_legacy_endpoint()
+
+        repo.set_provider_fields(
+            "llm", "openai_compatible", [("base_url", "text", "http://new/v1")]
+        )
+
+        assert _raw(config_dir)["llm"]["openai_compatible"]["base_url"] == (
+            "http://new/v1"
+        )
+
+    def test_the_tts_provider_of_that_name_is_its_own(self, config_dir):
+        """TTS has an `openai_compatible` too, and nothing retired it."""
+        repo = self._moved(config_dir)
+
+        repo.set_provider_fields(
+            "tts", "openai_compatible", [("base_url", "text", "http://tts/v1")]
+        )
+
+        assert repo.tts_settings().openai_compatible.base_url == "http://tts/v1"
+        assert repo.llm_settings().subsection("custom:Self-hosted").base_url == (
+            "https://gpu.example/v1"
+        )
+
+
 class _Col:
     """A collection whose config is a dict, and which records every write."""
 

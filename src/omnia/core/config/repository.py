@@ -275,6 +275,8 @@ class ConfigRepository:
         """
         if domain not in ("llm", "tts"):
             raise ValueError(f"unknown provider domain: {domain}")
+        # Resolved once, here, so the secret below is named for the table it lands in.
+        provider = self._write_target(domain, provider)
         data = self._loader.read_file("providers.toml")
         sub = self._provider_table(data, domain, provider)
         for field, kind, value in updates:
@@ -302,13 +304,24 @@ class ConfigRepository:
         ``secret-file:`` reference to the TOML, so the JSON itself never lives in the config
         dir and the stored value is portable (it follows the add-on, not the source path).
         """
+        provider = self._write_target(domain, provider)
         name = self._secret_name(domain, provider, field) + Path(src_path).suffix
         ref = self._secrets.import_file(name, src_path)
         self._write_provider_field(domain, provider, field, ref)
         return str(self._secrets.resolve(ref))
 
-    @staticmethod
-    def _provider_table(data: dict, domain: str, provider: str) -> dict:
+    def _write_target(self, domain: str, provider: str) -> str:
+        """The provider a write to ``provider`` lands on, the retired LLM slot resolved.
+
+        Reads of ``openai_compatible`` resolve to the endpoint the slot moved to
+        (:meth:`LLMSettings.subsection`), so a write must too, or it is accepted and then never
+        read. Only for ``llm``: TTS has an ``openai_compatible`` of its own that nothing retired.
+        """
+        if domain != "llm":
+            return provider
+        return self._config.llm.canonical_provider(provider)
+
+    def _provider_table(self, data: dict, domain: str, provider: str) -> dict:
         """The TOML table a provider's fields live in.
 
         A user's own endpoint lives one level deeper, under ``[llm.custom.<label>]``, so that
@@ -326,11 +339,16 @@ class ConfigRepository:
         an endpoint with no URL, no key, and a credential already shredded. Removal has to
         stay removed, so every writer but :meth:`add_custom_provider` must find it or fail.
 
+        The retired ``openai_compatible`` LLM slot is resolved first (:meth:`_write_target`),
+        so a write through it lands on its endpoint — and, once that endpoint is removed, is
+        refused like a write to any other removed endpoint.
+
         Raises:
             ValueError: for a custom endpoint that does not exist.
         """
         from omnia.core.config.models import custom_provider_label
 
+        provider = self._write_target(domain, provider)
         label = custom_provider_label(provider)
         if label:
             table = data.setdefault(domain, {}).setdefault("custom", {})
