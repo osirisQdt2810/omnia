@@ -220,11 +220,17 @@
    * the Model + Voice pickers (which depend on the chosen provider).
    * @param {!HTMLTableRowElement} tr The row.
    * @param {string} kind text | image | tts
-   * @param {string} presetProvider Provider to preselect (validated against the kind's list).
+   * @param {string} presetProvider Provider to preselect; one the kind's list does not offer
+   *     stays selected as "<id> (saved)".
    */
   function rebuildProvider(tr, kind, presetProvider) {
     const providers = [""].concat(providerNames(kind));
-    const current = providers.indexOf(presetProvider) >= 0 ? presetProvider : "";
+    // A saved provider the list does not offer is KEPT, shown as "<id> (saved)" the way the
+    // Model and Voice pickers already keep theirs. It used to become "(inherit)", which looked
+    // harmless and was not: collectRows posts what the picker shows, so the next save of ANY
+    // row on the note type silently un-pinned the field — a pin on an endpoint removed since,
+    // or on a provider this build no longer lists, turned into the default provider.
+    const current = presetProvider || "";
     const options = providers.map(function (p) {
       return {value: p, label: p === "" ? "(inherit)" : p};
     });
