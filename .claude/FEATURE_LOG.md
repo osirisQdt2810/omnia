@@ -54,13 +54,18 @@ pytest tests/core/test_legacy_endpoint.py tests/core/test_custom_endpoints.py -q
 pytest tests/gui/test_provider_picker.py tests/gui/test_smart_notes_dialog_deps.py -q
 ```
 By hand: with a filled-in card from an older build, start Anki once — Keys shows a
-**Self-hosted** card holding the same address and token, and it is the active default.
+**Self-hosted** card holding the same address and token, and, if the old card was the default
+model, it is the active default.
 
 **Notes / rollback:** The move writes `providers.toml` only when something changed and never
 writes the collection. Its one write drops the file's comments (tomli_w writes none), so the file
-as it was is copied first to `.secrets/providers.toml.pre-022`. Reverting the code leaves a working older-build
-setup: `[llm.openai_compatible]` is intact, its `moved_to` key is tolerated and its key reference
-resolves. Edits made to the old card on a downgraded build are not moved again.
+as it was is copied first to `.secrets/providers.toml.pre-022`. Downgrading to the previous
+release keeps working: `[llm.openai_compatible]` is intact, its `moved_to` key is tolerated and
+its key reference resolves. But that release shows both the old card and **Self-hosted**, and
+removing **Self-hosted** there also shreds the old card's key (both name one file) and resets the
+default. Builds before #111 cannot resolve `[llm].provider = "custom:Self-hosted"`, and builds
+before ADR-010 refuse the file outright. Edits made to the old card on a downgraded build are not
+moved again.
 
 ---
 

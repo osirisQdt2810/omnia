@@ -2276,8 +2276,9 @@ endpoint without one send no model at all.
 - The synced blob keeps `openai_compatible` on every row pinned to it, through saves too,
   unless the user picks another provider for that row; every device goes on resolving the pin
   with its own slot or endpoint, and no new keys appear.
-- A downgrade still works: the old table is intact, `moved_to` rides along as an unknown key
-  (`PersistedModel`), and its key reference still resolves.
+- A downgrade to the previous release (#111 or later) keeps working: the old table is intact,
+  `moved_to` rides along as an unknown key (`PersistedModel`), its key reference resolves, and
+  the default builds the endpoint.
 
 **Negative**
 - The move's write drops every comment in `providers.toml`: tomli_w writes none. The file as it
@@ -2288,6 +2289,17 @@ endpoint without one send no model at all.
   settings subsection that serve it.
 - Changes made to the old card on a downgraded build are not carried over again: `moved_to`
   makes the move happen once.
+- On the previous release a migrated file shows two cards for one server, "Self-hosted /
+  OpenAI-compatible" and "Self-hosted". Both tables name one key file, so removing "Self-hosted"
+  there also shreds the old card's key and resets the default provider; the old card then fails
+  with "requires an api_key".
+- Older builds fare worse, as checked against their code. A build from before #111 cannot
+  resolve `[llm].provider = "custom:Self-hosted"`: every field left on "(inherit)" fails with
+  "Unknown LLM provider" until the default is picked again, though fields pinned to
+  `openai_compatible` still work. A build from before ADR-010 (2026-08-14) refuses the file
+  outright, because `moved_to` and `[llm.custom]` are unknown keys to its strict models, so the
+  add-on does not load until `providers.toml` is restored from `.secrets/providers.toml.pre-022`
+  and the key entered again.
 - On a machine whose slot never had an address, a field still pinned to the old id fails with a
   message until the user picks an endpoint for it.
 - The alias cannot fade out on its own: a row keeps `openai_compatible` until the user re-pins
