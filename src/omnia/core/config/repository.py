@@ -20,14 +20,19 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from omnia.core.config.legacy_endpoint import LegacyEndpointMigration
 from omnia.core.config.loader import BaseConfigLoader
 from omnia.core.config.models import (
     LLMSettings,
     OmniaConfig,
     TTSSettings,
+    label_in_use,
 )
 from omnia.core.config.secrets import SecretsStore
+from omnia.core.logging import get_logger
 from omnia.core.registry import get_registered
+
+_logger = get_logger("config")
 
 
 def _require_custom_domain(domain: str) -> None:
@@ -351,19 +356,8 @@ class ConfigRepository:
             raise ValueError("Give the endpoint a name.")
         data = self._loader.read_file("providers.toml")
         existing = data.setdefault(domain, {}).setdefault("custom", {})
-        # Case-INSENSITIVE, because the credential file is what has to stay distinct and the
-        # two filesystems this ships to — APFS and NTFS — are case-insensitive by default.
-        # TOML keys are not, so `gpu` and `GPU` are two endpoints in the config and one file
-        # on disk: the second key silently overwrites the first, and removing either one
-        # shreds the other's credential. Two endpoints that cannot hold separate keys on the
-        # user's own machine ARE one endpoint, so this is the honest reading of "already in
-        # use" rather than an extra restriction.
-        #
-        # Encoding the case into the filename instead would work, but it would keep a pair of
-        # near-identical cards in the UI that no one can tell apart. CI's Linux leg is
-        # case-sensitive, which is why this passed — the same blind spot that hid the colon.
-        folded = label.casefold()
-        if any(name.casefold() == folded for name in existing):
+        # Case-insensitive — see `label_in_use` for why `gpu` and `GPU` are one endpoint.
+        if label_in_use(existing, label):
             raise ValueError(f"There is already an endpoint called “{label}”.")
         existing[label] = {"base_url": "", "api_key": "", "text_model": ""}
         self._loader.write_file("providers.toml", data)
@@ -413,6 +407,44 @@ class ConfigRepository:
             section["provider"] = self._default_provider(domain)
         self._loader.write_file("providers.toml", data)
         self._reload()
+
+    def migrate_legacy_endpoint(self) -> str:
+        """Move a configured ``[llm.openai_compatible]`` into a named endpoint (ADR-022).
+
+        Once per machine, at startup: the move marks the slot, so every later call finds
+        nothing to do unless an older build wrote the slot's id back into ``[llm].provider``,
+        which it points at the endpoint again. Touches ``providers.toml`` and ``.secrets/``
+        only — both local files under either storage backend — and never the collection.
+
+        An explicit call rather than part of the constructor, so building a repository stays
+        free of side effects for the tests and tools that do it.
+
+        Returns:
+            The endpoint's label when this call moved the slot, else ``""``.
+        """
+        data = self._loader.read_file("providers.toml")
+        result = LegacyEndpointMigration(self._secrets, self._secret_name).run(data)
+        if not result.changed:
+            # Nothing written, and that matters: tomli_w drops every comment in the file, so
+            # a write that changed nothing would still strip the user's notes on every start.
+            return ""
+        # New secret (already stored by the move), then the TOML naming it, then the old
+        # secret: a failed write at any point leaves a key the file on disk still names.
+        self._loader.write_file("providers.toml", data)
+        if result.stale_secret:
+            self._secrets.forget(result.stale_secret)
+        self._reload()
+        # The label only: never the key, and never the host it points at.
+        if result.moved_to:
+            _logger.info(
+                "moved [llm.openai_compatible] to endpoint '%s'", result.moved_to
+            )
+        else:
+            _logger.info(
+                "[llm].provider named [llm.openai_compatible] again; pointed it at the "
+                "endpoint the slot moved to"
+            )
+        return result.moved_to
 
     @staticmethod
     def _default_provider(domain: str) -> str:

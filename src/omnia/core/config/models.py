@@ -22,6 +22,7 @@ pure-Python core, so it vendors cleanly for both macOS and Windows.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, ClassVar, Optional
 
 from pydantic import BaseModel, Field
@@ -121,6 +122,47 @@ class CustomEndpointLLMSettings(OpenAICompatibleLLMSettings):
     embedding_model: str = ""
 
 
+class LegacyEndpointLLMSettings(OpenAICompatibleLLMSettings):
+    """``[llm.openai_compatible]``, the retired single self-hosted slot (ADR-022).
+
+    Still read, because an older build on this machine and a Smart Notes field pinned to the
+    slot's id in the synced collection both rely on it; no longer offered anywhere. Its model
+    defaults stay OpenAI's, since those are what an existing slot has always resolved to.
+
+    ``moved_to`` is the label of the endpoint this machine converted the slot into, ``""``
+    until it has. It is what makes the move happen once, and what the retired id resolves
+    through (:meth:`LLMSettings.canonical_provider`).
+    """
+
+    moved_to: str = ""
+
+
+#: The retired single slot's provider id. Still REGISTERED — every named endpoint is built
+#: through it — and still a valid pin, resolved as an alias of the endpoint it moved to.
+LEGACY_ENDPOINT_PROVIDER = "openai_compatible"
+
+#: What a configured slot is called once it is a named endpoint (``Self-hosted 2`` on a clash).
+LEGACY_ENDPOINT_LABEL = "Self-hosted"
+
+
+def label_in_use(labels: Iterable[str], label: str) -> bool:
+    """Whether ``label`` already names one of ``labels``, compared case-insensitively.
+
+    Case-INSENSITIVE, because the credential file is what has to stay distinct and the two
+    filesystems this ships to — APFS and NTFS — are case-insensitive by default. TOML keys are
+    not, so `gpu` and `GPU` are two endpoints in the config and one file on disk: the second
+    key silently overwrites the first, and removing either one shreds the other's credential.
+    Two endpoints that cannot hold separate keys on the user's own machine ARE one endpoint, so
+    this is the honest reading of "already in use" rather than an extra restriction.
+
+    Encoding the case into the filename instead would work, but it would keep a pair of
+    near-identical cards in the UI that no one can tell apart. CI's Linux leg is
+    case-sensitive, which is why this passed — the same blind spot that hid the colon.
+    """
+    folded = label.casefold()
+    return any(name.casefold() == folded for name in labels)
+
+
 #: Prefix marking a provider name as one of the user's own endpoints rather than a built-in.
 #:
 #: A prefix rather than a bare name so a custom endpoint can never shadow — or be shadowed by —
@@ -168,20 +210,40 @@ class LLMSettings(PersistedModel):
             base_url="https://openrouter.ai/api/v1", text_model="openai/gpt-4o-mini"
         )
     )
-    openai_compatible: OpenAICompatibleLLMSettings = Field(
-        default_factory=OpenAICompatibleLLMSettings
+    openai_compatible: LegacyEndpointLLMSettings = Field(
+        default_factory=LegacyEndpointLLMSettings
     )
     #: The user's own endpoints, ``{label: settings}``. Lives in ``providers.toml``, which does
     #: NOT sync — so adding one cannot reach another device and cannot break an older build.
     custom: dict[str, CustomEndpointLLMSettings] = Field(default_factory=dict)
+
+    def canonical_provider(self, provider: str) -> str:
+        """The provider id ``provider`` resolves to: the endpoint the retired slot moved to.
+
+        ``openai_compatible`` stays a valid id after its slot became a named endpoint, because
+        a Smart Notes field in the SYNCED collection may pin it and nothing rewrites the
+        collection on its own (ADR-022). Resolving it here, where it is consumed, keeps the
+        stored value verbatim — ADR-010's rule for a value this build no longer offers.
+
+        Once moved, it is the endpoint's id even after that endpoint is removed: a pin then
+        reports the endpoint as unknown rather than quietly falling back to a slot the user can
+        no longer see, so a removal stays removed. Anything else is returned unchanged.
+        """
+        moved_to = self.openai_compatible.moved_to
+        if provider == LEGACY_ENDPOINT_PROVIDER and moved_to:
+            return custom_provider_name(moved_to)
+        return provider
 
     def subsection(self, provider: str) -> Optional[BaseModel]:
         """The settings for ``provider``, shipped or custom, or None when there are none.
 
         The single place that understands :data:`CUSTOM_PREFIX`. Everything else asks this and
         stays unaware that a provider name can mean "a configured instance" rather than "a
-        registered class".
+        registered class". It resolves the retired slot's id first, which is how ``active()``,
+        the Keys cards and the catalog see a moved slot as its endpoint with no code of their
+        own.
         """
+        provider = self.canonical_provider(provider)
         label = custom_provider_label(provider)
         if label:
             return self.custom.get(label)
