@@ -125,9 +125,10 @@ Tools → Omnia → Smart Notes → ⚙ Options → Usage & Keys → 🔑 Keys
 The **⚙ Options** button is on the Smart Notes panel itself. The word "Keys" appears nowhere
 until that modal is open *and* the **Usage & Keys** tab is selected.
 
-The page shows **three cards** — Gemini · AI Studio, Gemini · Vertex AI, OpenRouter — and only
-those three. Each has its own fields, a link to its console, and, for OpenRouter, a live credit
-balance. Nothing you can do adds a fourth card (§3.3).
+The page shows **three built-in cards** — Gemini · AI Studio, Gemini · Vertex AI, OpenRouter —
+plus one card for each endpoint you add (§3.3). Each has its own fields and a link: to its
+console for a built-in card, and to the guide for connecting a server for an endpoint.
+OpenRouter's card also shows a live credit balance.
 
 Keys are written to `user_files/config/.secrets/`, one file per key, never into your collection
 and never into the collection sync.
@@ -162,10 +163,12 @@ built-in cards plus one per endpoint you add, and the Text subtab's dropdown off
 names.
 
 > **A server of your own, or any other OpenAI-compatible service:** add it as an endpoint. In
-> **🔑 Keys**, type a name, press **Add endpoint**, and fill in its Base URL and API key — see
+> **🔑 Keys**, type a name and press **Add endpoint**. On its card fill in **Base URL** and
+> **API key**, press **↻ Load models**, pick a **Text model**, and press **Save**: the boxes are
+> filled from the list, but nothing is kept until you save. See
 > [Self-hosted models](guidance/local-server/README.md). OpenAI itself has no card of its own:
-> add it as an endpoint with the Base URL `https://api.openai.com/v1`, or edit `[llm.openai]`
-> in `user_files/config/providers.toml` by hand.
+> add it the same way with the Base URL `https://api.openai.com/v1`, or edit `[llm.openai]` in
+> `user_files/config/providers.toml` by hand.
 
 Inside **⚙ Options → Usage & Keys** there are four subtabs. Knowing which does what saves a lot
 of hunting:
@@ -569,8 +572,10 @@ If you just want to see everything work, in order:
 There isn't a built-in one, and you have not missed a setting. The Keys page has three built-in
 cards (Gemini · AI Studio, Gemini · Vertex AI, OpenRouter) plus one per endpoint you add.
 
-Add it as an endpoint: in **🔑 Keys**, type a name such as `openai`, press **Add endpoint**, then
-set its Base URL to `https://api.openai.com/v1` and paste your key. Any other OpenAI-compatible
+Add it as an endpoint: in **🔑 Keys**, type a name such as `openai` and press **Add endpoint**.
+On its card set **Base URL** to `https://api.openai.com/v1`, paste your key as **API key**, press
+**↻ Load models**, pick a **Text model**, and press **Save**. An endpoint saved without a Text
+model sends no model at all, and OpenAI refuses the request. Any other OpenAI-compatible
 service, or a server of your own, is added the same way — see
 [Self-hosted models](guidance/local-server/README.md).
 
