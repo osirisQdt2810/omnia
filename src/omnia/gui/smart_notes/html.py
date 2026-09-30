@@ -68,7 +68,7 @@ This module imports only pure data (the config models + the provider catalog); n
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from omnia.core.providers.catalog import catalog_payload
@@ -517,7 +517,7 @@ def note_type_config_from_payload(
     base_field: str,
     rows: list[dict[str, object]],
     decks: list[int] | None = None,
-    positions: dict[str, object] | None = None,
+    positions: Mapping[str, object] | None = None,
     stored: SmartNotesNoteTypeConfig | None = None,
 ) -> SmartNotesNoteTypeConfig:
     """Assemble a :class:`SmartNotesNoteTypeConfig` from the posted note type, base, rows, decks.
