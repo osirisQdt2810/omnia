@@ -360,13 +360,15 @@ class TestASelfHostedModelIdCanBeEntered:
         assert (
             "text_model" in fields
         ), "the model id can be picked from a list that only contains itself"
-        assert fields["text_model"]["type"] == "text"
+        # "model": still a free-text box (typed), which the page can also fill from the
+        # endpoint's own list — see tests/gui/test_endpoint_models.py.
+        assert fields["text_model"]["type"] == "model"
 
     def test_the_image_model_is_a_typed_field(self):
         fields = {f["key"]: f for f in self._card()["fields"]}
 
         assert "image_model" in fields
-        assert fields["image_model"]["type"] == "text"
+        assert fields["image_model"]["type"] == "model"
 
     def test_the_address_and_the_key_are_there_too(self):
         keys = {f["key"] for f in self._card()["fields"]}

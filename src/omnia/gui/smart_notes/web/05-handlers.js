@@ -1326,9 +1326,114 @@
       el.appendChild(keyField(card.id, f));
     });
 
+    // An endpoint whose ids belong to its operator lists them itself (GET /models): offer
+    // those instead of making the user type one. The boxes stay editable — a server that
+    // cannot list is still usable, and so is a model it does not list.
+    if ((card.fields || []).some(function (f) { return f.type === "model"; })) {
+      el.appendChild(modelsRow(card, el));
+      const url = (card.fields || []).filter(function (f) { return f.key === "base_url"; })[0];
+      if (url && url.value) {
+        loadEndpointModels(card.id, el);
+      }
+    }
+
     el.appendChild(keyCredit(card));
     return el;
   }
+
+  /**
+   * The "↻ Load models" button and the line that says what the endpoint listed.
+   * @param {!Object} card The provider card payload.
+   * @param {!HTMLElement} el The card element.
+   * @return {!HTMLElement}
+   */
+  function modelsRow(card, el) {
+    const row = document.createElement("div");
+    row.className = "sn-key-field sn-key-models";
+    const label = document.createElement("div");
+    label.className = "sn-key-label";
+    row.appendChild(label);
+    const controls = document.createElement("div");
+    controls.className = "sn-key-controls";
+    const load = document.createElement("button");
+    load.type = "button";
+    load.className = "sn-btn sn-key-load-models";
+    load.textContent = "↻ Load models";
+    load.title = "Ask this endpoint which models it serves (GET /models)";
+    load.addEventListener("click", function () {
+      loadEndpointModels(card.id, el);
+    });
+    const note = document.createElement("span");
+    note.className = "sn-key-models-note";
+    controls.appendChild(load);
+    controls.appendChild(note);
+    row.appendChild(controls);
+    return row;
+  }
+
+  /**
+   * Ask the endpoint for its models, using what is in the card now (saved or not).
+   * @param {string} provider The card's provider id.
+   * @param {!HTMLElement} el The card element.
+   */
+  function loadEndpointModels(provider, el) {
+    const value = function (key) {
+      const input = el.querySelector('.sn-key-input[data-key="' + key + '"]');
+      return input ? input.value.trim() : "";
+    };
+    const note = el.querySelector(".sn-key-models-note");
+    if (note) {
+      note.className = "sn-key-models-note";
+      note.textContent = "Loading models…";
+    }
+    send("list_endpoint_models",
+         {provider: provider, base_url: value("base_url"), api_key: value("api_key")}, null);
+  }
+
+  /**
+   * Receive an endpoint's model list: fill each model box's suggestions, and an empty box with
+   * the first one listed (the user still presses Save).
+   * @param {string} provider The card's provider id.
+   * @param {!Object} res {text: [ids], image: [ids]} or {error}.
+   */
+  window.__snEndpointModels = function (provider, res) {
+    const el = Array.prototype.filter.call(
+      document.querySelectorAll(".sn-key-card"),
+      function (card) { return card.dataset.provider === provider; })[0];
+    if (!el) {
+      return;
+    }
+    const note = el.querySelector(".sn-key-models-note");
+    if (res && res.error) {
+      if (note) {
+        note.className = "sn-key-models-note sn-err";
+        note.textContent = res.error + " — you can still type a model id.";
+      }
+      return;
+    }
+    const found = {text: (res && res.text) || [], image: (res && res.image) || []};
+    Array.prototype.forEach.call(el.querySelectorAll('.sn-key-input[data-ftype="model"]'),
+      function (input) {
+        const ids = found[input.dataset.kind] || [];
+        const list = document.getElementById(input.getAttribute("list"));
+        if (list) {
+          list.textContent = "";
+          ids.forEach(function (id) {
+            const option = document.createElement("option");
+            option.value = id;
+            list.appendChild(option);
+          });
+        }
+        if (!input.value && ids.length) {
+          input.value = ids[0];
+        }
+      });
+    if (note) {
+      note.className = "sn-key-models-note sn-key-ok";
+      note.textContent = found.text.length + " text · " + found.image.length +
+          " image model(s) — click a box to pick, then Save";
+    }
+  };
 
   /**
    * Build one credential field row: a masked/text/file input + an eye reveal (secret) or a
@@ -1338,6 +1443,8 @@
    * @param {!Object} f {key, label, type, value}.
    * @return {!HTMLElement}
    */
+  let modelListSeq = 0;
+
   function keyField(provider, f) {
     const row = document.createElement("div");
     row.className = "sn-key-field";
@@ -1365,6 +1472,15 @@
       input.placeholder = f.placeholder;
     }
     controls.appendChild(input);
+
+    if (f.type === "model") {
+      // Suggestions, not a lock: the box stays free text (see modelsRow).
+      input.dataset.kind = f.key === "image_model" ? "image" : "text";
+      const list = document.createElement("datalist");
+      list.id = "sn-models-" + (++modelListSeq);
+      input.setAttribute("list", list.id);
+      controls.appendChild(list);
+    }
 
     if (f.type === "secret") {
       const eye = document.createElement("button");
@@ -1421,6 +1537,9 @@
         status.textContent = "✓ Saved";
         if (card.credit === "live") {
           send("account_keys_credit", {}, null);
+        }
+        if (el.querySelector(".sn-key-models")) {
+          loadEndpointModels(card.id, el);
         }
       } else {
         status.className = "sn-key-status sn-err";

@@ -43,6 +43,7 @@ class AccountController:
             "add_endpoint": self.on_add_endpoint,
             "remove_endpoint": self.on_remove_endpoint,
             "account_keys_credit": self.on_account_keys_credit,
+            "list_endpoint_models": self.on_list_endpoint_models,
             "set_default_model": self.on_set_default_model,
             "set_auto_voice": self.on_set_auto_voice,
             "refresh_voices": self.on_refresh_voices,
@@ -376,6 +377,65 @@ class AccountController:
         """Replay the last sound preview/test clip (the playground "Play again" button)."""
         if self._ctx.last_audio_path:
             anki_compat.replay_audio_file(self._ctx.last_audio_path)
+
+    def on_list_endpoint_models(self, data: dict[str, Any]) -> None:
+        """Ask an OpenAI-compatible endpoint which models it serves (off-thread; pushed back).
+
+        So the Text / Image model boxes offer what the server actually has instead of asking
+        the user to type an id they would have to look up. Uses what is IN the card — a URL
+        and key typed a moment ago, not yet saved — falling back to the saved values, so the
+        list can be checked before pressing Save. Pushed via ``window.__snEndpointModels``.
+        """
+        provider = str(data.get("provider", ""))
+        sub = self._ctx.repo.llm_settings().subsection(provider)
+        base_url = str(
+            data.get("base_url") or getattr(sub, "base_url", "") or ""
+        ).strip()
+        api_key = str(data.get("api_key") or getattr(sub, "api_key", "") or "").strip()
+        if not base_url:
+            self._push_endpoint_models(provider, error="Fill in the Base URL first.")
+            return
+        if not api_key:
+            self._push_endpoint_models(
+                provider,
+                error="Fill in the API key (any text, if your server needs none).",
+            )
+            return
+
+        def fetch() -> list[Any]:
+            from omnia.core.providers.llm.openai_compatible import (
+                OpenAICompatibleProvider,
+            )
+
+            return OpenAICompatibleProvider(
+                api_key=api_key, base_url=base_url
+            ).list_models()
+
+        anki_compat.run_in_background(
+            fetch,
+            on_success=lambda models: self._push_endpoint_models(
+                provider, models=models
+            ),
+            on_failure=lambda exc: self._push_endpoint_models(
+                provider, error=self._ctx.friendly(exc, "Could not list models")
+            ),
+            label="Omnia: listing the endpoint's models…",
+        )
+
+    def _push_endpoint_models(
+        self, provider: str, *, models: Optional[list[Any]] = None, error: str = ""
+    ) -> None:
+        """Send ``{text: [ids], image: [ids]}`` (or ``{error}``) to the Keys card."""
+        if error:
+            payload: dict[str, Any] = {"error": error}
+        else:
+            payload = {
+                kind: [m.id for m in (models or []) if m.kind == kind]
+                for kind in ("text", "image")
+            }
+        self._ctx.eval_js(
+            f"window.__snEndpointModels({json.dumps(provider)}, {json.dumps(payload)});"
+        )
 
     def on_account_keys_credit(self, _data: dict[str, Any]) -> None:
         """Fetch the OpenRouter balance from its configured key (off-thread) for the Keys subtab.

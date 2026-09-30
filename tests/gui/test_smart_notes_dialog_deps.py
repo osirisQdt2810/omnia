@@ -99,6 +99,7 @@ class TestOpRegistryCompleteness:
         "account_test",
         "account_keys",
         "account_keys_credit",
+        "list_endpoint_models",
         "add_endpoint",
         "remove_endpoint",
         "set_default_model",
