@@ -18,6 +18,7 @@ from omnia.core.providers.llm.registry import create_llm_provider
 from omnia.core.providers.openai_family import (
     OPENAI_FAMILY_BASE_URLS,
     openai_family_base_url,
+    with_api_path,
 )
 from omnia.core.providers.tts.registry import create_tts_provider
 
@@ -140,3 +141,21 @@ class TestTheLlmDefaultProvider:
         assert type(provider).__name__ == "OpenAICompatibleProvider"
         # No URL, because no vendor was named — the complaint comes at the call.
         assert provider._base_url == ""
+
+
+@pytest.mark.parametrize(
+    "typed, corrected",
+    [
+        ("https://h", "https://h/v1"),
+        ("https://h/", "https://h/v1"),
+        ("  http://127.0.0.1:8731  ", "http://127.0.0.1:8731/v1"),
+        ("https://h/v1", ""),
+        ("https://h/api/v1", ""),
+        ("https://h/openai", ""),
+        ("h:8731", ""),
+        ("", ""),
+    ],
+)
+def test_only_a_bare_address_gets_the_api_path(typed, corrected):
+    """A path of the user's own is their choice; only the address alone is completed."""
+    assert with_api_path(typed) == corrected

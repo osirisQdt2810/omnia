@@ -116,8 +116,11 @@ class TestTheKeysCardOp:
         def list_models(self):
             seen["base_url"], seen["api_key"] = self._base_url, self._api_key
             seen["http"] = self._http
+            seen.setdefault("tried", []).append(self._base_url)
             if isinstance(provider_answer, Exception):
                 raise provider_answer
+            if callable(provider_answer):
+                return provider_answer(self._base_url)
             return provider_answer
 
         monkeypatch.setattr(OpenAICompatibleProvider, "list_models", list_models)
@@ -213,12 +216,87 @@ class TestTheKeysCardOp:
 
         assert "401" in self._pushed(evals)[1]["error"]
 
+    def test_a_bare_server_address_finds_its_models_under_v1(
+        self, config_dir, monkeypatch
+    ):
+        """The address alone is the commonest slip: the listing is tried once more under /v1,
+        and the card is handed the address that worked, so it is the one that gets saved.
+        """
+
+        def answer(base_url):
+            if base_url == "https://h":
+                raise ProviderError("HTTP 404 from https://h/models", status_code=404)
+            return [ListedModel("qwen"), ListedModel("sdxl-turbo", "image")]
+
+        controller, evals, seen = self._controller(config_dir, monkeypatch, answer)
+        controller.on_list_endpoint_models(
+            {"provider": "custom:gpu", "base_url": "https://h", "api_key": "t"}
+        )
+
+        assert seen["tried"] == ["https://h", "https://h/v1"]
+        assert self._pushed(evals)[1] == {
+            "text": ["qwen"],
+            "image": ["sdxl-turbo"],
+            "base_url": "https://h/v1",
+        }
+
+    def test_an_address_with_a_path_is_not_second_guessed(
+        self, config_dir, monkeypatch
+    ):
+        controller, evals, seen = self._controller(
+            config_dir,
+            monkeypatch,
+            ProviderError("HTTP 404 from https://h/api/models", status_code=404),
+        )
+        controller.on_list_endpoint_models(
+            {"provider": "p", "base_url": "https://h/api", "api_key": "t"}
+        )
+
+        assert seen["tried"] == ["https://h/api"]
+        assert "404" in self._pushed(evals)[1]["error"]
+
+    def test_only_a_404_is_tried_again_under_v1(self, config_dir, monkeypatch):
+        """A refused token is refused wherever the API lives: asking twice would only double
+        the wait and the failed-token count."""
+        controller, _evals, seen = self._controller(
+            config_dir,
+            monkeypatch,
+            ProviderError("HTTP 401: invalid or missing API key", status_code=401),
+        )
+        controller.on_list_endpoint_models(
+            {"provider": "p", "base_url": "https://h", "api_key": "bad"}
+        )
+
+        assert seen["tried"] == ["https://h"]
+
+    def test_when_v1_does_not_help_the_address_typed_is_the_one_explained(
+        self, config_dir, monkeypatch
+    ):
+        def answer(base_url):
+            raise ProviderError(f"HTTP 404 from {base_url}/models", status_code=404)
+
+        controller, evals, seen = self._controller(config_dir, monkeypatch, answer)
+        controller.on_list_endpoint_models(
+            {"provider": "p", "base_url": "https://h", "api_key": "t"}
+        )
+
+        assert seen["tried"] == ["https://h", "https://h/v1"]
+        error = self._pushed(evals)[1]["error"]
+        assert "https://h/models" in error and "/v1" not in error
+
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
 class TestTheCardOffersWhatWasListed:
     """The page half: the shipped receiver, run in node over a DOM just big enough."""
 
-    def _run(self, typed_text="", typed_image="", payload=None):
+    def _run(
+        self,
+        typed_text="",
+        typed_image="",
+        payload=None,
+        base="https://h/v1",
+        pick=None,
+    ):
         source = (
             Path(__file__).resolve().parents[2]
             / "src/omnia/gui/smart_notes/web/05-handlers.js"
@@ -227,15 +305,29 @@ class TestTheCardOffersWhatWasListed:
             r"  window\.__snEndpointModels = function.*?\n  \};", source, re.S
         )
         assert receiver, "__snEndpointModels moved"
+        pick_js = ""
+        if pick:
+            kind, chosen = pick
+            pick_js = (
+                f"picks.{kind}.value = {json.dumps(chosen)}; picks.{kind}.onchange();"
+            )
         script = f"""
 function node(props) {{ return Object.assign({{children: [], className: "", textContent: "",
+  value: "", hidden: false, selectedIndex: -1,
   appendChild(c) {{ this.children.push(c); }}, getAttribute(k) {{ return this.attrs[k]; }}, attrs: {{}} }}, props); }}
 const lists = {{L1: node({{}}), L2: node({{}})}};
 const text = node({{value: {json.dumps(typed_text)}, dataset: {{kind: "text"}}, attrs: {{list: "L1"}}}});
 const image = node({{value: {json.dumps(typed_image)}, dataset: {{kind: "image"}}, attrs: {{list: "L2"}}}});
+const base = node({{value: {json.dumps(base)}}});
+const picks = {{text: node({{hidden: true}}), image: node({{hidden: true}})}};
 const note = node({{}});
 const card = node({{dataset: {{provider: "custom:gpu"}},
-  querySelector(s) {{ return s === ".sn-key-models-note" ? note : null; }},
+  querySelector(s) {{
+    if (s === ".sn-key-models-note") return note;
+    if (s === '.sn-key-input[data-key="base_url"]') return base;
+    const m = s.match(/^\\.sn-key-model-pick\\[data-kind="(\\w+)"\\]$/);
+    return m ? picks[m[1]] : null;
+  }},
   querySelectorAll(s) {{ return [text, image]; }} }});
 const document = {{
   querySelectorAll() {{ return [card]; }},
@@ -245,8 +337,11 @@ const document = {{
 const window = {{}};
 {receiver.group(0).strip()}
 window.__snEndpointModels("custom:gpu", {json.dumps(payload)});
+{pick_js}
 console.log(JSON.stringify({{
   textOptions: lists.L1.children.map((o) => o.value), imageOptions: lists.L2.children.map((o) => o.value),
+  textPick: picks.text.children.map((o) => o.value), imagePick: picks.image.children.map((o) => o.value),
+  imagePickHidden: picks.image.hidden, base: base.value,
   text: text.value, image: image.value, note: note.textContent, noteClass: note.className }}));
 """
         out = subprocess.run(
@@ -284,3 +379,45 @@ console.log(JSON.stringify({{
 
         assert "404" in got["note"] and "type a model id" in got["note"]
         assert "sn-err" in got["noteClass"]
+
+    def test_the_picker_lists_every_model_even_when_the_box_is_filled(self):
+        """A datalist hides whatever does not match the text in its box, so a box holding
+        gpt-image-1 offered nothing at all. The picker beside it always lists every model.
+        """
+        got = self._run(
+            typed_image="gpt-image-1",
+            payload={"text": ["qwen"], "image": ["sdxl-turbo"]},
+        )
+
+        assert got["imagePick"] == ["", "sdxl-turbo"] and not got["imagePickHidden"]
+        assert got["image"] == "gpt-image-1"  # left alone until the user picks
+
+    def test_picking_a_model_puts_it_in_its_box(self):
+        got = self._run(
+            typed_image="gpt-image-1",
+            payload={"text": [], "image": ["sdxl-turbo"]},
+            pick=("image", "sdxl-turbo"),
+        )
+
+        assert got["image"] == "sdxl-turbo"
+
+    def test_a_model_the_server_does_not_have_is_named(self):
+        got = self._run(
+            typed_image="gpt-image-1",
+            payload={"text": ["qwen"], "image": ["sdxl-turbo"]},
+        )
+
+        assert "gpt-image-1 is not on this server" in got["note"]
+
+    def test_a_kind_with_nothing_listed_shows_no_picker(self):
+        got = self._run(payload={"text": ["qwen"], "image": []})
+
+        assert got["imagePickHidden"]
+
+    def test_a_corrected_address_is_written_into_the_base_url_box(self):
+        got = self._run(
+            base="https://h",
+            payload={"text": ["qwen"], "image": [], "base_url": "https://h/v1"},
+        )
+
+        assert got["base"] == "https://h/v1" and "/v1" in got["note"]

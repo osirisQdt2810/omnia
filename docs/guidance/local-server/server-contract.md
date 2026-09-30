@@ -29,7 +29,7 @@ presses **↻ Load models**.
 
 ```json
 {"object": "list", "data": [
-  {"id": "omnia-local", "object": "model", "kind": "text"},
+  {"id": "qwen2.5-14b-instruct-awq", "object": "model", "kind": "text"},
   {"id": "sdxl-turbo", "object": "model", "kind": "image"}
 ]}
 ```
@@ -47,7 +47,7 @@ a card opens gives up after 8 seconds and the others after 30, so it has to be q
 Omnia sends:
 
 ```json
-{"model": "omnia-local",
+{"model": "qwen2.5-14b-instruct-awq",
  "messages": [{"role": "system", "content": "…"}, {"role": "user", "content": "…"}],
  "temperature": 0.7,
  "max_tokens": 512,

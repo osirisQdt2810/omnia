@@ -15,6 +15,7 @@ valid key, so it fails as a confusing HTTP error rather than as a configuration 
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
@@ -54,6 +55,24 @@ def openai_family_base_url(config: Mapping[str, Any]) -> str:
         return str(explicit)
     provider = str(config.get("provider", "") or "")
     return OPENAI_FAMILY_BASE_URLS.get(provider, "")
+
+
+def with_api_path(base_url: str) -> str:
+    """``base_url`` with ``/v1`` added when it is a bare server address, else ``""``.
+
+    The commonest slip when pointing Omnia at a server is its address alone, with the API one
+    level down: every OpenAI-compatible server answers under ``/v1``. Only a URL with NO path
+    is corrected. One with a path of its own (``/api/v1``, ``/openai``) is the user's choice,
+    and guessing past it would hide a real mistake.
+    """
+    parts = urllib.parse.urlsplit(base_url.strip())
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.netloc
+        or parts.path.strip("/")
+    ):
+        return ""
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, "/v1", "", ""))
 
 
 def require_base_url(base_url: str) -> str:
