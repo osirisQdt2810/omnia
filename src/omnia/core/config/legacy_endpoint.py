@@ -25,7 +25,6 @@ from typing import Any, Optional
 from omnia.core.config.models import (
     LEGACY_ENDPOINT_LABEL,
     LEGACY_ENDPOINT_PROVIDER,
-    LegacyEndpointLLMSettings,
     custom_provider_name,
     label_in_use,
 )
@@ -33,11 +32,6 @@ from omnia.core.config.secrets import SecretsStore
 from omnia.core.logging import get_logger
 
 _logger = get_logger("config")
-
-#: The model ids the slot fell back to when its table did not name them. A named endpoint's
-#: defaults are empty, so each absent one is written out, or the endpoint would stop sending the
-#: model the slot sent.
-_MODEL_FIELDS = ("text_model", "image_model", "embedding_model")
 
 
 @dataclass(frozen=True)
@@ -104,7 +98,10 @@ class LegacyEndpointMigration:
         """Copy the slot into a new endpoint and mark it moved; return (label, stale secret).
 
         Every key is carried verbatim, unknown ones included, except the bookkeeping
-        ``moved_to``, which belongs to the slot.
+        ``moved_to``, which belongs to the slot. Nothing is added: a model id the slot left to
+        its default resolves the same on the endpoint — the text model has the same default,
+        and with no image model the provider sends the same fallback — so writing one out
+        would only put OpenAI's ``gpt-image-1`` in the endpoint's Image model box.
         """
         custom = llm.setdefault("custom", {})
         label = self._free_label(custom)
@@ -113,10 +110,6 @@ class LegacyEndpointMigration:
             for key, value in legacy.items()
             if key != "moved_to"
         }
-        for field in _MODEL_FIELDS:
-            endpoint.setdefault(
-                field, LegacyEndpointLLMSettings.__fields__[field].default
-            )
         ref, stale = self._move_key(legacy.get("api_key"), custom_provider_name(label))
         if ref:
             # One file, named for its owner, and both tables name it: removing the endpoint

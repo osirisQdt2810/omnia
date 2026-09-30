@@ -30,9 +30,10 @@ on a clash) with every key carried over, its secret moved to a file named for th
 `[llm].provider` re-pointed at it (ADR-022). `openai_compatible` stays registered and resolves as
 a read-only alias (`LLMSettings.canonical_provider`), so field pins in the synced collection keep
 working; the dialog shows them as the endpoint, and a save gives each row its stored id back
-unless the user picks another provider for it. The field Provider picker now keeps a saved provider it does not list as "(saved)"
-instead of dropping it to "(inherit)". Named endpoints default to empty model ids, so a new
-endpoint's Image model box no longer says `gpt-image-1`.
+unless the user picks another provider for it. The field Provider picker now keeps a saved
+provider it does not list as "(saved)" instead of dropping it to "(inherit)". Named endpoints no
+longer inherit OpenAI's image and embedding ids, so a new endpoint's Image model box no longer
+says `gpt-image-1`; the text model keeps its `gpt-4o-mini` default, which is what gets sent.
 
 **Why:** Two ways to connect one server — the single card and the named endpoints — with the
 card's OpenAI defaults leaking into the endpoints. The requirement was that a filled-in card keeps

@@ -12,6 +12,7 @@ rewrite, so what is on disk afterwards is the thing under test.
 
 from __future__ import annotations
 
+import base64
 import copy
 import json
 
@@ -98,6 +99,22 @@ def _built(settings, provider):
     return ProviderHub(llm_settings=settings).llm(provider=provider)._wrapped
 
 
+def _requests(settings, provider):
+    """Every HTTP call one text and one image generation through ``provider`` make."""
+    from conftest import FakeHttpClient
+
+    def answer(_method, url, _body, _headers):
+        if url.endswith("/images/generations"):
+            return {"data": [{"b64_json": base64.b64encode(b"png").decode()}]}
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    http = FakeHttpClient(responder=answer)
+    built = ProviderHub(llm_settings=settings, http=http).llm(provider=provider)
+    built.generate_text("Define {{Word}}", system="be brief")
+    built.generate_image("a cat")
+    return http.calls
+
+
 class TestMovingTheSlot:
     def test_it_reports_where_the_slot_went(self, config_dir):
         _write(config_dir)
@@ -128,39 +145,32 @@ class TestMovingTheSlot:
         assert llm["openai_compatible"]["moved_to"] == "Self-hosted"
         assert "moved_to" not in llm["custom"]["Self-hosted"]
 
-    def test_a_model_the_slot_never_named_keeps_the_slots_default(self, config_dir):
-        """The slot fell back to gpt-4o-mini; a named endpoint falls back to nothing. So the
-        move writes the slot's default out, or the endpoint would stop sending a model.
-        """
+    def test_a_model_the_slot_never_named_is_not_written_in(self, config_dir):
+        """Only what the slot held is carried. Writing its defaults out would put
+        `image_model = "gpt-image-1"`, a model no self-hosted server has, in the most visible
+        endpoint there is — and the requests below are identical without it."""
         _write(config_dir, _SLOT_NAMING_NO_MODEL)
-        repo = _repo(config_dir)
 
-        repo.migrate_legacy_endpoint()
+        _repo(config_dir).migrate_legacy_endpoint()
 
         written = _raw(config_dir)["llm"]["custom"]["Self-hosted"]
-        assert written["text_model"] == "gpt-4o-mini"
-        assert repo.llm_settings().subsection("custom:Self-hosted").text_model == (
-            "gpt-4o-mini"
-        )
+        assert not {"text_model", "image_model", "embedding_model"} & set(written)
 
     @pytest.mark.parametrize(
         "text",
         [_SLOT, _SLOT_NAMING_NO_MODEL],
         ids=["every model named", "every model left to default"],
     )
-    def test_it_builds_exactly_the_provider_the_slot_built(self, config_dir, text):
-        """The round trip that matters: the same address, key and models, before and after."""
+    def test_it_sends_exactly_the_requests_the_slot_sent(self, config_dir, text):
+        """The round trip that matters: the same text and image request, byte for byte —
+        address, key, model and every setting — before the move and after it."""
         _write(config_dir, text)
         repo = _repo(config_dir)
-        before = _built(repo.llm_settings(), "openai_compatible")
+        before = _requests(repo.llm_settings(), "openai_compatible")
 
         repo.migrate_legacy_endpoint()
-        after = _built(repo.llm_settings(), "custom:Self-hosted")
 
-        fields = ("_base_url", "_api_key", "_model", "_image_model")
-        assert [getattr(after, f) for f in fields] == [
-            getattr(before, f) for f in fields
-        ]
+        assert _requests(repo.llm_settings(), "custom:Self-hosted") == before
 
 
 class TestTheActiveProviderFollows:

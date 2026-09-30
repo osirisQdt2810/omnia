@@ -2210,13 +2210,13 @@ synced field pins, `.secrets/` file names — hold them.
    `PluginManager`, `ConfigRepository.migrate_legacy_endpoint()` moves a slot that has a base URL
    into a new endpoint, `Self-hosted` (`Self-hosted 2`, … when the name is taken, compared
    case-insensitively; an endpoint the user made is never edited or merged into). Every key is
-   carried verbatim, unknown ones included, and a model id the slot left to its default is
-   written out as that default, so the endpoint builds the same provider the slot built. The key
-   moves to one secret file named for the endpoint, which both tables then reference; an inline
-   key moves out of the TOML. The slot is marked `moved_to = "<label>"`, which is what makes the
-   move happen once. The raw `providers.toml` is edited in place, and written only when
-   something changed, because tomli_w drops the user's comments. A slot with no base URL never
-   worked and is left untouched.
+   carried verbatim, unknown ones included, and nothing is added: a model id the slot left to its
+   default resolves the same on the endpoint, so the endpoint sends the requests the slot sent.
+   The key moves to one secret file named for the endpoint, which both tables then reference; an
+   inline key moves out of the TOML. The slot is marked `moved_to = "<label>"`, which is what
+   makes the move happen once. The raw `providers.toml` is edited in place, and written only
+   when something changed, because tomli_w drops the user's comments. A slot with no base URL
+   never worked and is left untouched.
 2. **Re-point the default on every start.** When `[llm].provider` is `openai_compatible` and the
    endpoint the slot moved to exists, the provider becomes `custom:<label>`. Running this on
    every start also corrects an older build on the same machine writing the old id back.
@@ -2237,8 +2237,12 @@ synced field pins, `.secrets/` file names — hold them.
    `LegacyEndpointLLMSettings`, which adds `moved_to`) and the TTS `openai_compatible` provider all
    stay. Removing the slot and the alias is left to a future ADR.
 
-Named endpoints also stop inheriting OpenAI's model ids: `CustomEndpointLLMSettings` defaults
-every model id to empty, which is what put `gpt-image-1` in a new endpoint's Image model box.
+Named endpoints also stop inheriting OpenAI's image and embedding ids:
+`CustomEndpointLLMSettings` defaults them to empty, which is what put `gpt-image-1` in a new
+endpoint's Image model box. With no image model the provider sends its own fallback, the same
+`gpt-image-1`, so no request changes. The text model keeps the inherited `gpt-4o-mini`, because
+the hub always sends a table's text model: an empty default would have made a hand-written
+endpoint without one send no model at all.
 
 ### Rationale
 - **Convert rather than start fresh**: the requirement is "keep working with no action", and the
