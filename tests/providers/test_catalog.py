@@ -17,6 +17,7 @@ from omnia.core.providers.catalog import (
     voice_options_for_language,
     voices_for,
 )
+from omnia.core.providers.llm import _IMAGE_MODELS, _TEXT_MODELS
 from omnia.core.providers.tts.base import TTSVoice
 
 
@@ -58,13 +59,12 @@ class TestModels:
         for provider in LLM_PROVIDERS:
             assert text_models(provider), f"{provider} has no text models"
 
-    def test_a_self_hosted_endpoint_offers_none_and_that_is_correct(self):
-        """Its ids are whatever its operator named them — "omnia-local", a HuggingFace path.
-
-        The user's own configured id is merged in by `catalog_payload`, which is the only list
-        that can honestly be offered for such a provider.
-        """
-        assert text_models("custom:gpu") == []
+    def test_the_retired_slot_has_no_entry_of_its_own(self):
+        """A server of your own is a named endpoint now; its ids are whatever its operator
+        named them, and `catalog_payload` merges the configured one in. The retired slot's
+        empty entry must not come back into the data the pickers read (ADR-022)."""
+        assert "openai_compatible" not in LLM_PROVIDERS
+        assert "openai_compatible" not in _TEXT_MODELS
 
     def test_models_for_image_kind_uses_image_list(self):
         assert models_for("gemini", "image") == image_models("gemini")
@@ -394,8 +394,8 @@ class TestWhatTheImageKindOffers:
 
         assert "custom:gpu" in payload["image_providers"]
 
-    def test_it_offers_no_curated_image_ids(self):
-        assert image_models("custom:gpu") == []
+    def test_the_retired_slot_has_no_image_entry_either(self):
+        assert "openai_compatible" not in _IMAGE_MODELS
 
     def test_a_provider_with_no_image_endpoint_is_still_excluded(self):
         # OpenRouter's image output is via chat modalities, not /images/generations.

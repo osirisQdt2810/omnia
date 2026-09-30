@@ -515,6 +515,37 @@ class TestTheMoveItselfIsPure:
 
         assert (result.new_secret, result.stale_secrets) == (None, ())
 
+    @pytest.mark.parametrize(
+        ("data", "where"),
+        [
+            ({"llm": "not a table"}, "[llm]"),
+            ({"llm": {"openai_compatible": "not a table"}}, "[llm.openai_compatible]"),
+            (
+                {
+                    "llm": {
+                        "openai_compatible": {"base_url": "https://gpu.example/v1"},
+                        "custom": "not a table",
+                    }
+                },
+                "[llm.custom]",
+            ),
+        ],
+        ids=["llm", "the slot", "custom"],
+    )
+    def test_a_malformed_file_is_left_alone_and_said_so(self, data, where, config_log):
+        before = copy.deepcopy(data)
+
+        result = self._run(data)
+
+        assert (result.changed, result.stale_secrets) == (False, ())
+        assert data == before
+        assert any(where in line for line in config_log)
+
+    @pytest.mark.parametrize("data", [{}, {"llm": {}}], ids=["no llm", "no slot"])
+    def test_a_missing_table_is_nothing_to_report(self, data, config_log):
+        assert not self._run(data).changed
+        assert not config_log
+
     def test_a_later_run_still_names_the_old_key_nothing_reads(self):
         """Every run, not just the one that moves: see `TestALeftoverOldKeyIsCleared`."""
         data = self._slot()
