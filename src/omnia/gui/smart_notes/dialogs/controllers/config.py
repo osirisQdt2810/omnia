@@ -29,6 +29,7 @@ from omnia.gui.smart_notes.html import (
 from omnia.plugins.smart_notes.config import (
     MAX_NOTES_PER_CALL,
     MAX_WORKERS,
+    SmartNotesNoteTypeConfig,
     SmartNotesSettings,
 )
 from omnia.plugins.smart_notes.integration.installer import (
@@ -102,13 +103,30 @@ class ConfigController:
         """
         payload = load_payload(
             note_type,
-            self._ctx.settings().note_type_config(note_type),
+            self._stored_config(note_type),
             anki_compat.note_type_field_names(note_type),
             available_llm_providers(),
             all_decks=self._ctx.all_decks(),
         )
         payload["options"] = self._options_payload()
         return payload
+
+    def _stored_config(self, note_type: str) -> SmartNotesNoteTypeConfig | None:
+        """``note_type``'s saved config as the table should SHOW it: each pin as it resolves.
+
+        A field pinned to the retired ``openai_compatible`` slot is shown as the endpoint the
+        slot moved to (ADR-022), so its picker selects something it offers. Nothing is written:
+        ``on_save`` persists whatever the page posts back, so the new id reaches the synced
+        collection for exactly the note types the user saves, and for no other.
+        """
+        config: SmartNotesNoteTypeConfig | None = self._ctx.settings().note_type_config(
+            note_type
+        )
+        if config is None:
+            return None
+        return config.with_llm_providers(
+            self._ctx.repo.llm_settings().canonical_provider
+        )
 
     def on_list_note_types(self, _data: dict[str, Any]) -> list[str]:
         return anki_compat.note_type_names()
@@ -120,7 +138,7 @@ class ConfigController:
         # Re-render the rows for the chosen base field, keeping any saved config for the rest.
         note_type = str(data.get("note_type", ""))
         base_field = str(data.get("base_field", ""))
-        config = self._ctx.settings().note_type_config(note_type)
+        config = self._stored_config(note_type)
         all_fields = anki_compat.note_type_field_names(note_type)
         rows = rows_for_note_type(config, all_fields, base_field)
         row_payloads = [row_to_payload(row) for row in rows]

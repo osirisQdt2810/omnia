@@ -157,6 +157,68 @@ class TestSmartNotesModel:
         assert scoped.decks == [10, 20]
 
 
+class TestShowingAPinAsItResolves:
+    """`with_llm_providers` is what the dialog shows a note type through (ADR-022): a pin on
+    the retired `openai_compatible` slot reads as the endpoint it moved to."""
+
+    @staticmethod
+    def _canonical(provider):
+        return "custom:Self-hosted" if provider == "openai_compatible" else provider
+
+    @staticmethod
+    def _config():
+        return SmartNotesNoteTypeConfig(
+            note_type="Vocab",
+            base_field="Word",
+            decks=[10],
+            fields=[
+                SmartNotesFieldConfig(
+                    field="Meaning", type="text", provider="openai_compatible"
+                ),
+                SmartNotesFieldConfig(
+                    field="Picture", type="image", provider="openai_compatible"
+                ),
+                SmartNotesFieldConfig(
+                    field="Audio", type="tts", provider="openai_compatible"
+                ),
+                SmartNotesFieldConfig(
+                    field="Clip", type="video", provider="openai_compatible"
+                ),
+                SmartNotesFieldConfig(field="Example", type="text", provider="gemini"),
+            ],
+        )
+
+    def _shown(self):
+        shown = self._config().with_llm_providers(self._canonical)
+        return {field.field: field.provider for field in shown.fields}
+
+    def test_text_and_image_rows_name_what_they_resolve_to(self):
+        shown = self._shown()
+
+        assert (shown["Meaning"], shown["Picture"]) == (
+            "custom:Self-hosted",
+            "custom:Self-hosted",
+        )
+        assert shown["Example"] == "gemini"
+
+    def test_a_sound_row_keeps_its_tts_provider(self):
+        """TTS has an `openai_compatible` of its own, and nothing retired that one."""
+        assert self._shown()["Audio"] == "openai_compatible"
+
+    def test_a_type_this_build_does_not_implement_is_left_alone(self):
+        """A newer release's row is not this build's to interpret (ADR-010)."""
+        assert self._shown()["Clip"] == "openai_compatible"
+
+    def test_the_config_it_was_made_from_is_untouched(self):
+        config = self._config()
+        before = config.dict()
+
+        shown = config.with_llm_providers(self._canonical)
+        shown.decks.append(20)
+
+        assert config.dict() == before
+
+
 class TestFieldDepModel:
     def test_kind_defaults_to_hard(self):
         assert FieldDep(field="Word").kind == "hard"

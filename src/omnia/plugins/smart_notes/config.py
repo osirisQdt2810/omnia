@@ -15,6 +15,7 @@ stores, stays a :class:`~omnia.core.config.base.StrictModel`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -25,6 +26,8 @@ from omnia.core.config.base import PersistedModel, StrictModel
 from omnia.plugins.smart_notes.provenance import ALWAYS
 
 _GENERATION_TYPES = {"text", "image", "tts"}
+# The types whose ``provider`` is an LLM id. A ``tts`` row names a TTS provider instead.
+_LLM_GENERATION_TYPES = {"text", "image"}
 
 # The tool a field with no explicit chain runs: the provider-backed path smart_notes had
 # before tool chains existed. Named here rather than on the tool class so the config layer
@@ -328,6 +331,31 @@ class SmartNotesNoteTypeConfig(PersistedModel):
             and field.field != self.base_field
             and field.supports_generation()
         ]
+
+    def with_llm_providers(
+        self, canonical: Callable[[str], str]
+    ) -> SmartNotesNoteTypeConfig:
+        """A copy whose text and image rows name the LLM provider each pin RESOLVES to.
+
+        For display only. The dialog shows a field pinned to the retired ``openai_compatible``
+        slot as the endpoint it moved to (ADR-022), so its Provider picker selects a provider
+        it actually offers. The source is never mutated and nothing here is saved: the synced
+        collection keeps the stored id verbatim until the user saves this note type, so a
+        device on an older build goes on reading exactly the blob it wrote.
+
+        A ``tts`` row is left alone — its provider is a TTS id, and TTS has an
+        ``openai_compatible`` of its own that nothing retired — and so is a row of a type this
+        build does not implement, which is not this build's to interpret (ADR-010).
+
+        Args:
+            canonical: Maps a stored LLM provider id to the id it resolves to, e.g.
+                :meth:`~omnia.core.config.models.LLMSettings.canonical_provider`.
+        """
+        shown: SmartNotesNoteTypeConfig = self.copy(deep=True)
+        for field in shown.fields:
+            if field.type in _LLM_GENERATION_TYPES:
+                field.provider = canonical(field.provider)
+        return shown
 
 
 class SmartNotesSettings(PersistedModel):
