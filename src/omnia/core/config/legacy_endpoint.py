@@ -122,8 +122,8 @@ class LegacyEndpointMigration:
     def _stale(self, data: dict[str, Any], moved_from: str) -> tuple[str, ...]:
         """The key files nothing in ``data`` names: the one this run moved from, and the slot's.
 
-        The slot's own file is checked on every run once the slot HAS moved, not only on the run
-        that moves it. A crash after the TOML is written and before the old key is forgotten
+        The slot's own file is checked on every run once the move has TAKEN its key over, not
+        only on the run that moves it. A crash after the TOML is written and before the old key is forgotten
         would otherwise leave that key on disk for good, since every later run is at most a
         re-point. Before a move it is never reported: a key file restored ahead of
         providers.toml on a new computer, or left beside a file that was emptied, is still the
@@ -132,12 +132,22 @@ class LegacyEndpointMigration:
         """
         llm = data.get("llm")
         legacy = llm.get(LEGACY_ENDPOINT_PROVIDER) if isinstance(llm, dict) else None
-        moved = isinstance(legacy, dict) and bool(
+        moved_to = (
             str(legacy.get("moved_to") or "").strip()
+            if isinstance(legacy, dict)
+            else ""
+        )
+        # Taken over means the slot now names the endpoint's key file. A slot that moved with
+        # no key of its own (the box was cleared, the file restored later) never had it taken,
+        # and the file is then still the one thing that could bring the key back.
+        taken = bool(moved_to) and str(
+            legacy.get("api_key") or ""
+        ) == SecretsStore.value_ref(
+            self._secret_name("llm", custom_provider_name(moved_to), "api_key")
         )
         slots_own = (
             self._secret_name("llm", LEGACY_ENDPOINT_PROVIDER, "api_key")
-            if moved
+            if taken
             else ""
         )
         names = dict.fromkeys(name for name in (moved_from, slots_own) if name)
@@ -171,9 +181,12 @@ class LegacyEndpointMigration:
         secret, stale = self._move_key(
             legacy.get("api_key"), custom_provider_name(label)
         )
+        # A ref copied verbatim (`secret-file:`, or a dangling `secret:`) is not named for the
+        # endpoint, and removing the endpoint later leaves that file alone.
         if secret is not None:
-            # One file, named for its owner, and both tables name it: removing the endpoint
-            # later shreds the key, while a downgraded build reading the slot still finds one.
+            # One file, named for its owner, and both tables name it: a downgraded build reading
+            # the slot still finds the key, and removing the endpoint later shreds it and clears
+            # the slot's reference in the same write.
             endpoint["api_key"] = legacy["api_key"] = SecretsStore.value_ref(
                 secret.name
             )

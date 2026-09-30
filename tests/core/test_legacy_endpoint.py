@@ -464,6 +464,32 @@ class TestTheKeyMoves:
         repo.remove_custom_provider("llm", "custom:Self-hosted")
 
         assert _secret_files(config_dir) == []
+        # ... and the slot no longer names the file: nothing on disk points at a missing key.
+        assert _raw(config_dir)["llm"]["openai_compatible"]["api_key"] == ""
+
+    def test_an_endpoint_added_again_under_the_label_does_not_lend_the_slot_its_key(
+        self, config_dir
+    ):
+        """The slot and the endpoint shared one file. Re-adding "Self-hosted" for another server
+        stored its token in that file, and a build reading the slot then sent the new
+        server's token to the slot's old address."""
+        _write(config_dir)
+        repo = _repo(config_dir)
+        repo.migrate_legacy_endpoint()
+        repo.remove_custom_provider("llm", "custom:Self-hosted")
+
+        provider = repo.add_custom_provider("llm", "Self-hosted")
+        repo.set_provider_fields(
+            "llm",
+            provider,
+            [
+                ("base_url", "text", "https://another-server/v1"),
+                ("api_key", "secret", "tok-NEW"),
+            ],
+        )
+
+        assert repo.config.llm.openai_compatible.api_key == ""
+        assert repo.llm_settings().subsection(provider).api_key == "tok-NEW"
 
     def test_a_key_file_another_table_still_names_is_kept(self, config_dir):
         """Only a key nothing points at any more is forgotten. The file names are the owners'
@@ -681,6 +707,19 @@ class TestALeftoverOldKeyIsCleared:
         _write(config_dir, providers_toml)
 
         _repo(config_dir).migrate_legacy_endpoint()
+
+        assert _OLD_KEY_FILE in _secret_files(config_dir)
+
+    def test_a_key_the_move_never_took_is_kept(self, config_dir):
+        """A slot that moved with its key box cleared still leaves the old file beside it
+        (clearing the box never deleted it). The move did not carry that key, so the file is
+        the only copy left, and it is not the move's to delete."""
+        _write(
+            config_dir,
+            _SLOT.replace(f'api_key = "secret:{_OLD_KEY_FILE}"', 'api_key = ""'),
+        )
+
+        assert _repo(config_dir).migrate_legacy_endpoint() == "Self-hosted"
 
         assert _OLD_KEY_FILE in _secret_files(config_dir)
 

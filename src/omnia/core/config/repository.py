@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from omnia.core.config.legacy_endpoint import LegacyEndpointMigration
 from omnia.core.config.loader import BaseConfigLoader
 from omnia.core.config.models import (
+    LEGACY_ENDPOINT_PROVIDER,
     LLMSettings,
     OmniaConfig,
     TTSSettings,
@@ -414,6 +415,19 @@ class ConfigRepository:
             # endpoint it did not find is the asymmetry that bites the next caller.
             raise ValueError(f"There is no endpoint called “{label}”.")
         table.pop(label)
+        slot = data.get(domain, {}).get(LEGACY_ENDPOINT_PROVIDER)
+        shared = SecretsStore.value_ref(self._secret_name(domain, provider, "api_key"))
+        if (
+            domain == "llm"
+            and isinstance(slot, dict)
+            and slot.get("moved_to") == label
+            and slot.get("api_key") == shared
+        ):
+            # The retired slot names the very key file just shredded (ADR-022). Left as it is,
+            # it points at nothing, and an endpoint added again under this label would store
+            # its key in that file, handing a new server's token to the slot's old address.
+            # `moved_to` stays, so the removal stays a removal.
+            slot["api_key"] = ""
         # Otherwise the domain goes on naming an endpoint that is gone. `active()` returns None,
         # so the hub falls back to a bare `openai_compatible` with no base URL and no key, and
         # every generation — plus language-detect, Auto-prompt and Improve — fails with
