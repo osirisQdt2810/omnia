@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pathlib
+
 from conftest import FakeHttpClient
 
 from omnia.core.config.models import (
@@ -277,6 +279,26 @@ class TestKeyCards:
         ]
         assert len(file_fields) == 1
         assert file_fields[0]["key"] == "credentials_path"
+
+    def test_every_link_into_this_repository_resolves(self):
+        """A self-hosted card's "How to connect one" opens a file of THIS repository on GitHub.
+
+        Moving that file breaks the link with nothing to say so, which is what moving the
+        guides into ``docs/`` would have done; so each link is checked against the tree.
+        """
+        llm = _llm()
+        llm.custom["gpu"] = OpenAICompatibleLLMSettings(
+            base_url="http://127.0.0.1:1/v1"
+        )
+        repo = pathlib.Path(__file__).resolve().parents[3]
+        prefix = "https://github.com/osirisQdt2810/omnia/blob/main/"
+        links = [c["console"][1] for c in key_cards(llm)]
+        ours = [link for link in links if link.startswith(prefix)]
+
+        assert len(ours) >= 2, "the self-hosted cards lost their guide link"
+        for link in ours:
+            target = repo / link[len(prefix) :].split("#")[0]
+            assert target.is_file(), f"{link} points at nothing in this repository"
 
 
 class TestFetchCredit:
