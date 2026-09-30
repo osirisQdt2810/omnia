@@ -6,7 +6,7 @@ looks like. One folder per large feature:
 
 | Feature | Guide | What you test |
 |---|---|---|
-| Self-hosted models | [`local-server/`](local-server/README.md) | Your own GPU box serving text + image models to Omnia over an SSH tunnel |
+| Self-hosted models | [`local-server/`](local-server/README.md) | Data flow, setup, and plugging in your own OpenAI-compatible server |
 | Smart Notes | [`smart-notes/`](smart-notes/README.md) | Generating fields: providers, tools, blocking, overwrite rules, batches |
 | Sync | [`sync/`](sync/README.md) | Pulling decks, note types and settings from another computer |
 | Typed Accuracy | [`typed-accuracy/`](typed-accuracy/README.md) | Grading typed answers into fail / pass / high-ease bands |
