@@ -412,7 +412,7 @@ class TestTheMoveItselfIsPure:
             _NEW_KEY_FILE,
             "tok-123",
         )
-        assert result.stale_secret == _OLD_KEY_FILE
+        assert result.stale_secrets == (_OLD_KEY_FILE,)
 
     def test_both_tables_already_name_the_key_it_hands_back(self):
         data = self._slot()
@@ -430,7 +430,14 @@ class TestTheMoveItselfIsPure:
     def test_a_reference_with_nothing_behind_it_hands_back_nothing(self):
         result = self._run(self._slot(), keys={})
 
-        assert (result.new_secret, result.stale_secret) == (None, "")
+        assert (result.new_secret, result.stale_secrets) == (None, ())
+
+    def test_a_later_run_still_names_the_old_key_nothing_reads(self):
+        """Every run, not just the one that moves: see `TestALeftoverOldKeyIsCleared`."""
+        data = self._slot()
+        self._run(data)
+
+        assert self._run(data).stale_secrets == (_OLD_KEY_FILE,)
 
 
 class TestTheOrderOfTheWrites:
@@ -484,6 +491,49 @@ class TestTheOrderOfTheWrites:
         repo.migrate_legacy_endpoint()
 
         assert seen == [True]
+
+
+class TestALeftoverOldKeyIsCleared:
+    """A crash after the TOML is written and before the old key is forgotten leaves that key
+    file behind. Every later start is at most a re-point, so without this nothing would ever
+    retry the forget, and a credential would outlive every reference to it."""
+
+    def test_the_next_start_forgets_it(self, config_dir, monkeypatch):
+        _write(config_dir)
+        repo = _repo(config_dir)
+        monkeypatch.setattr(repo._secrets, "forget", lambda _name: None)  # "the crash"
+        repo.migrate_legacy_endpoint()
+        assert _OLD_KEY_FILE in _secret_files(config_dir)
+
+        restarted = _repo(config_dir)
+
+        assert restarted.migrate_legacy_endpoint() == ""
+        assert _secret_files(config_dir) == [_NEW_KEY_FILE]
+        endpoint = restarted.llm_settings().subsection("custom:Self-hosted")
+        assert endpoint.api_key == "tok-123"
+
+    def test_it_is_not_a_reason_to_rewrite_the_file(self, config_dir, monkeypatch):
+        _write(config_dir)
+        repo = _repo(config_dir)
+        monkeypatch.setattr(repo._secrets, "forget", lambda _name: None)
+        repo.migrate_legacy_endpoint()
+        after_the_move = _bytes(config_dir)
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert _bytes(config_dir) == after_the_move
+
+    def test_a_file_reference_to_it_keeps_it(self, config_dir):
+        """A credential FILE imported without an extension carries the key file's own name,
+        and a `secret-file:` reference reads it as surely as a `secret:` one does."""
+        _write(
+            config_dir,
+            _SLOT.replace(f"secret:{_OLD_KEY_FILE}", f"secret-file:{_OLD_KEY_FILE}"),
+        )
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert _secret_files(config_dir) == [_OLD_KEY_FILE]
 
 
 class TestTheRetiredIdResolves:

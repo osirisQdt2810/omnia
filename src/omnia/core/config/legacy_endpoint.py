@@ -49,7 +49,7 @@ class LegacyEndpointResult:
     """What one :meth:`LegacyEndpointMigration.run` did, and the secret I/O it leaves over.
 
     The caller does that I/O in one order: store ``new_secret``, write the TOML, forget
-    ``stale_secret``. Any other order has a moment in which a reference on disk names a key
+    ``stale_secrets``. Any other order has a moment in which a reference on disk names a key
     file that is not there, and a failed write at that moment loses the only copy of the key.
 
     Attributes:
@@ -57,13 +57,14 @@ class LegacyEndpointResult:
         moved_to: The label THIS run moved the slot to; ``""`` when it had moved before (the
             run only pointed ``[llm].provider`` at it again) or nothing was done.
         new_secret: The key to store before the TOML naming it is written, if one moved.
-        stale_secret: A secret file nothing names any more, to forget once the TOML is on disk.
+        stale_secrets: Secret files nothing names any more, to forget once the TOML is on disk
+            — reported on every run, including one that changed nothing.
     """
 
     changed: bool = False
     moved_to: str = ""
     new_secret: SecretToStore | None = None
-    stale_secret: str = ""
+    stale_secrets: tuple[str, ...] = ()
 
 
 class LegacyEndpointMigration:
@@ -93,26 +94,47 @@ class LegacyEndpointMigration:
         provider would be a choice they did not make. A slot already moved is only re-pointed,
         which also corrects an older build on this machine writing the old id back.
         """
-        llm = _table(data, "llm", "[llm]")
-        legacy = _table(llm or {}, LEGACY_ENDPOINT_PROVIDER, "[llm.openai_compatible]")
-        if llm is None or legacy is None:
-            return LegacyEndpointResult()
-        if not isinstance(llm.get("custom", {}), dict):
-            _logger.warning("providers.toml: [llm.custom] is not a table; not moving")
-            return LegacyEndpointResult()
-        label, secret, stale = "", None, ""
-        if not str(legacy.get("moved_to") or ""):
-            if not str(legacy.get("base_url") or "").strip():
+        llm = data.get("llm", {})
+        legacy = llm.get(LEGACY_ENDPOINT_PROVIDER, {}) if isinstance(llm, dict) else {}
+        custom = llm.get("custom", {}) if isinstance(llm, dict) else {}
+        for where, table in (
+            ("[llm]", llm),
+            ("[llm.openai_compatible]", legacy),
+            ("[llm.custom]", custom),
+        ):
+            if not isinstance(table, dict):
+                _logger.warning("providers.toml: %s is not a table; not moving", where)
                 return LegacyEndpointResult()
-            label, secret, stale = self._move(llm, legacy)
+        label, secret, moved_from = "", None, ""
+        if (
+            not str(legacy.get("moved_to") or "")
+            and str(legacy.get("base_url") or "").strip()
+        ):
+            label, secret, moved_from = self._move(llm, legacy)
         repointed = self._repoint(llm, legacy)
-        if stale and _names(data, SecretsStore.value_ref(stale)):
-            stale = ""  # another table still reads that file
         return LegacyEndpointResult(
             changed=bool(label) or repointed,
             moved_to=label,
             new_secret=secret,
-            stale_secret=stale,
+            stale_secrets=self._stale(data, moved_from),
+        )
+
+    def _stale(self, data: dict[str, Any], moved_from: str) -> tuple[str, ...]:
+        """The key files nothing in ``data`` names: the one this run moved from, and the slot's.
+
+        The slot's own file is checked on EVERY run, not only the one that moves it. A crash
+        after the TOML is written and before the old key is forgotten would otherwise leave that
+        key on disk for good, since every later run is at most a re-point. A file that any
+        table still names — a hand-edited providers.toml reusing one key for two providers — is
+        never reported.
+        """
+        slots_own = self._secret_name("llm", LEGACY_ENDPOINT_PROVIDER, "api_key")
+        names = dict.fromkeys(name for name in (moved_from, slots_own) if name)
+        return tuple(
+            name
+            for name in names
+            if not _names(data, SecretsStore.value_ref(name))
+            and not _names(data, f"{SecretsStore.FILE_SCHEME}{name}")
         )
 
     def _move(
@@ -199,14 +221,6 @@ class LegacyEndpointMigration:
             return False
         llm["provider"] = custom_provider_name(label)
         return True
-
-
-def _table(parent: dict[str, Any], key: str, where: str) -> dict[str, Any] | None:
-    """``parent[key]`` when it is a table, else None — with a warning when it is not one."""
-    value = parent.get(key)
-    if value is not None and not isinstance(value, dict):
-        _logger.warning("providers.toml: %s is not a table; not moving", where)
-    return value if isinstance(value, dict) else None
 
 
 def _names(value: object, ref: str) -> bool:

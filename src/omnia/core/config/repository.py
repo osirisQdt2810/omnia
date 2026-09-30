@@ -425,17 +425,22 @@ class ConfigRepository:
         data = self._loader.read_file("providers.toml")
         migration = LegacyEndpointMigration(self._secrets.resolve, self._secret_name)
         result = migration.run(data)
+        # The new key, then the TOML naming it, then the old key — the one order in which a
+        # failure at any step leaves a key file behind every reference on disk.
+        if result.changed:
+            if result.new_secret is not None:
+                self._secrets.store_value(
+                    result.new_secret.name, result.new_secret.value
+                )
+            self._loader.write_file("providers.toml", data)
+        # On every run, even one that wrote nothing: nothing on disk names these, and a crash
+        # before this line on the run that moved the key is only cleaned up here.
+        for name in result.stale_secrets:
+            self._secrets.forget(name)
         if not result.changed:
             # Nothing written, and that matters: tomli_w drops every comment in the file, so
             # a write that changed nothing would still strip the user's notes on every start.
             return ""
-        # The new key, then the TOML naming it, then the old key — the one order in which a
-        # failure at any step leaves a key file behind every reference on disk.
-        if result.new_secret is not None:
-            self._secrets.store_value(result.new_secret.name, result.new_secret.value)
-        self._loader.write_file("providers.toml", data)
-        if result.stale_secret:
-            self._secrets.forget(result.stale_secret)
         self._reload()
         # The label only: never the key, and never the host it points at.
         if result.moved_to:
