@@ -122,13 +122,24 @@ class LegacyEndpointMigration:
     def _stale(self, data: dict[str, Any], moved_from: str) -> tuple[str, ...]:
         """The key files nothing in ``data`` names: the one this run moved from, and the slot's.
 
-        The slot's own file is checked on EVERY run, not only the one that moves it. A crash
-        after the TOML is written and before the old key is forgotten would otherwise leave that
-        key on disk for good, since every later run is at most a re-point. A file that any
-        table still names — a hand-edited providers.toml reusing one key for two providers — is
-        never reported.
+        The slot's own file is checked on every run once the slot HAS moved, not only on the run
+        that moves it. A crash after the TOML is written and before the old key is forgotten
+        would otherwise leave that key on disk for good, since every later run is at most a
+        re-point. Before a move it is never reported: a key file restored ahead of
+        providers.toml on a new computer, or left beside a file that was emptied, is still the
+        one thing that can bring the slot back. A file that any table still names — a
+        hand-edited providers.toml reusing one key for two providers — is never reported.
         """
-        slots_own = self._secret_name("llm", LEGACY_ENDPOINT_PROVIDER, "api_key")
+        llm = data.get("llm")
+        legacy = llm.get(LEGACY_ENDPOINT_PROVIDER) if isinstance(llm, dict) else None
+        moved = isinstance(legacy, dict) and bool(
+            str(legacy.get("moved_to") or "").strip()
+        )
+        slots_own = (
+            self._secret_name("llm", LEGACY_ENDPOINT_PROVIDER, "api_key")
+            if moved
+            else ""
+        )
         names = dict.fromkeys(name for name in (moved_from, slots_own) if name)
         return tuple(
             name

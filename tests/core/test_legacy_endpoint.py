@@ -326,6 +326,26 @@ class TestTheFileAsItWasIsKept:
         assert str(self._copy(config_dir)) in said
         assert "gpu.example" not in said and "tok-123" not in said
 
+    def test_a_copy_that_cannot_be_made_stops_the_move(self, config_dir, monkeypatch):
+        """Without the copy the move would destroy the user's comments for good, so it does not
+        happen: the file, its key and the endpoints stay as they were, and it is tried again
+        at the next start."""
+        _write(config_dir, self._COMMENTED)
+        before, keys = _bytes(config_dir), _secret_files(config_dir)
+        repo = _repo(config_dir)
+
+        def refuse(*_args, **_kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(repo._secrets, "import_file", refuse)
+
+        with pytest.raises(OSError):
+            repo.migrate_legacy_endpoint()
+
+        assert _bytes(config_dir) == before
+        assert _secret_files(config_dir) == keys
+        assert "custom" not in _raw(config_dir).get("llm", {})
+
 
 class TestRunningItAgain:
     def test_the_next_start_changes_nothing(self, config_dir):
@@ -648,6 +668,21 @@ class TestALeftoverOldKeyIsCleared:
         _repo(config_dir).migrate_legacy_endpoint()
 
         assert _secret_files(config_dir) == [_OLD_KEY_FILE]
+
+    @pytest.mark.parametrize(
+        "providers_toml", [_OLD_TEMPLATE, ""], ids=["fresh template", "emptied file"]
+    )
+    def test_the_key_of_a_slot_that_never_moved_is_kept(
+        self, config_dir, providers_toml
+    ):
+        """Restored ahead of providers.toml on a new computer, or left beside a file that was
+        emptied, the key is still the one thing that can bring the slot back. Only a slot that
+        has moved has had its key taken over."""
+        _write(config_dir, providers_toml)
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert _OLD_KEY_FILE in _secret_files(config_dir)
 
 
 class TestTheRetiredIdResolves:

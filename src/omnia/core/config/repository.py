@@ -496,7 +496,11 @@ class ConfigRepository:
         source = self._loader.config_dir / "providers.toml"
         self._secrets.import_file(self._PRE_MOVE_COPY, str(source))
         # The path only: the copy itself may hold a key.
-        _logger.info("kept providers.toml as it was before the move at %s", kept)
+        _logger.info(
+            "kept providers.toml as it was before the move at %s; copy the comments you want "
+            "out of it, as restoring the whole file needs the key entered again",
+            kept,
+        )
 
     @staticmethod
     def _default_provider(domain: str) -> str:

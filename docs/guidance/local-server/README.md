@@ -54,6 +54,10 @@ that name) with the same address, token and models. If the card was your default
 endpoint now is, and fields that used the card use the endpoint. Each computer converts its own
 card, because the address and token are kept on that computer.
 
+Converting rewrites `providers.toml` without its comments. Omnia first keeps the file as it was,
+as `providers.toml.pre-022` in the config folder's `.secrets`. Copy back the notes you want from
+it; putting the whole old file back means entering the endpoint's token again.
+
 A card that was never filled in is simply gone. A field that still names it tells you to add an
 endpoint: add one as above, then pick it for that field or as the default model.
 

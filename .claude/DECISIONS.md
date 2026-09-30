@@ -2215,7 +2215,8 @@ synced field pins, `.secrets/` file names — hold them.
    The key moves to one secret file named for the endpoint, which both tables then reference; an
    inline key moves out of the TOML. The new key is stored before the TOML naming it is written,
    and the old one forgotten only after; every start also forgets the slot's old key file once
-   nothing names it, which clears one left by a crash between those steps. The slot is marked `moved_to = "<label>"`, which is what
+   nothing names it after the slot has moved, which clears one left by a crash between
+   those steps. The slot is marked `moved_to = "<label>"`, which is what
    makes the move happen once. The raw `providers.toml` is edited in place, and written only
    when something changed, because tomli_w drops the user's comments; before the one write that
    moves the slot, the file is copied once to `.secrets/providers.toml.pre-022`. A slot with no
