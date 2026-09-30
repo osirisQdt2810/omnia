@@ -227,6 +227,11 @@ All documentation (README, `docs/`, `.md` describing a process/feature, code doc
 comments) **must be in English**, regardless of the conversation language. Exception: only
 when the user explicitly asks for Vietnamese in a specific file.
 
+**User guides (`docs/guidance/`) are usage only:** what the feature does, where it is, how to
+set it up and use it, and what to do when it looks wrong. No code, no scripts, no test
+commands; those belong in the code, its tests and `.claude/`. Never a real host, address, port
+of a private server, user name or token: placeholders only (this repository is public).
+
 ## Coding Conventions
 Standards live in **`.claude/CONVENTIONS.md`** — read it in full before non-trivial work.
 Part 1 = universal Python (PEP 8, Google style, type hints, Black/Ruff/isort/mypy).

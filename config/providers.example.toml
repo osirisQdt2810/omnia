@@ -76,15 +76,15 @@ json_output = false
 # and an unauthenticated llama.cpp accept anything, but this provider refuses to build without
 # a value, so put a placeholder like "local" there. (A real key, if your server asks for one.)
 #
-# Reach a remote one over an SSH tunnel rather than by opening a port:
+# For a server of your own, use the address (ending in /v1) and the token it gives you:
 #
-#     ssh -N -L 8721:127.0.0.1:8721 <your-host>
-#     base_url = "http://127.0.0.1:8721/v1"
-#     api_key  = "local"                      # or whatever your server expects
+#     base_url = "https://<your-server>/v1"
+#     api_key  = "<the token>"                # any text, if the server has no tokens
 #
-# base_url stays localhost that way, so this file never learns your server's address — which
-# matters because THIS repo is public and a real base_url in an example is an invitation.
-# Put the real values in config/providers.toml, which is gitignored.
+# docs/guidance/local-server/README.md walks through it, and Smart Notes' Options → Usage &
+# Keys → Keys does the same without editing this file. Never put a real base_url or key in
+# this example: THIS repo is public. Real values belong in config/providers.toml, which is
+# gitignored.
 [llm.openai_compatible]
 api_key = ""
 base_url = ""

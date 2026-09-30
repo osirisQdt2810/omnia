@@ -43,6 +43,9 @@ in `core/` and keeps each feature thin and isolated:
 | `note_maintenance` | Batch clean-up of notes you already have — deterministic, no AI. Configured per note type (fields picked from dropdowns, several note types in one run); preview the diff, then apply with full undo. |
 | `smart_notes` | Fills note fields (text, image, TTS audio) — see below. |
 
+Step-by-step guides for the larger features, including running your own models, are in
+[`docs/guidance/`](docs/guidance/README.md).
+
 ### Generating fields without paying for it
 
 `smart_notes` does not have to mean "call an LLM". Each generated field runs an **ordered chain
@@ -187,6 +190,9 @@ Configure everything **in the GUI**:
 > **Tools → Omnia**, open the **Smart Notes** plugin's **Configure**, go to the **Usage & Keys**
 > tab, pick your LLM/TTS provider + model and paste your API key. That's it — the dialog writes
 > `providers.toml` and stores the key under `user_files/config/.secrets/` for you.
+
+Models on a server of your own (a GPU box, or your Mac) connect the same way, with the
+server's address and a token: see [Self-hosted models](docs/guidance/local-server/README.md).
 
 Keys are the **one** thing kept in a local file rather than the synced collection, so they never
 sync to AnkiWeb or land in the DB. *Advanced:* you can edit `user_files/config/providers.toml`

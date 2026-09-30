@@ -80,6 +80,10 @@ you; you never create or edit a file by hand.
 
 Your keys stay on your machine and are sent only to the provider you chose.
 
+To use models you run yourself, on a GPU server or your own Mac, see
+[Self-hosted models](guidance/local-server/README.md). More step-by-step guides are in
+[`guidance/`](guidance/README.md).
+
 ### Trying it on Google's free credit
 
 Google Cloud gives new customers **$300 in credit, valid for 90 days**, and Gemini on Vertex AI

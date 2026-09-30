@@ -248,16 +248,16 @@ _KEY_CARD_SPECS: list[dict] = [
         # or a stale key is actually noticed.
         "id": "openai_compatible",
         "label": "Self-hosted / OpenAI-compatible",
-        # No console to send anyone to: it is their own server. The link goes to the thing
-        # that IS documented — how to point Omnia at one without exposing it.
+        # No console to send anyone to: it is their own server. The link goes to the guide
+        # for connecting one instead.
         "console": [
             "How to connect one",
-            "https://github.com/osirisQdt2810/omnia/blob/main/config/providers.example.toml",
+            "https://github.com/osirisQdt2810/omnia/blob/main/docs/guidance/local-server/README.md",
         ],
         "credit": "note",
         "note": (
-            "No balance to read — it is your own endpoint. Reach a remote one over an SSH "
-            "tunnel so the URL stays 127.0.0.1 and no port is exposed."
+            "No balance to read — it is your own endpoint. Use the address and token its "
+            "server gives you; ↻ Load models lists what it serves."
         ),
         "fields": [
             ("base_url", "Base URL", "text", "http://127.0.0.1:8721/v1"),
@@ -296,11 +296,11 @@ def _custom_key_card_specs(llm: LLMSettings) -> list[dict]:
             {
                 "id": custom_provider_name(label),
                 "label": label,
-                # Nowhere to send them: it is their own endpoint. The link goes to the thing
-                # that IS documented — how to point Omnia at one without exposing it.
+                # Nowhere to send them: it is their own endpoint. The link goes to the guide
+                # for connecting one instead.
                 "console": [
                     "How to connect one",
-                    "https://github.com/osirisQdt2810/omnia/blob/main/config/providers.example.toml",
+                    "https://github.com/osirisQdt2810/omnia/blob/main/docs/guidance/local-server/README.md",
                 ],
                 "credit": "note",
                 "note": "Your own endpoint — no balance to read.",
