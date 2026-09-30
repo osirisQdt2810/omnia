@@ -29,8 +29,8 @@ picker offers the bare `openai_compatible` id. At startup, once per machine, a c
 on a clash) with every key carried over, its secret moved to a file named for the endpoint, and
 `[llm].provider` re-pointed at it (ADR-022). `openai_compatible` stays registered and resolves as
 a read-only alias (`LLMSettings.canonical_provider`), so field pins in the synced collection keep
-working; the dialog shows them as the endpoint and writes the new id only when a note type is
-saved. The field Provider picker now keeps a saved provider it does not list as "(saved)"
+working; the dialog shows them as the endpoint, and a save gives each row its stored id back
+unless the user picks another provider for it. The field Provider picker now keeps a saved provider it does not list as "(saved)"
 instead of dropping it to "(inherit)". Named endpoints default to empty model ids, so a new
 endpoint's Image model box no longer says `gpt-image-1`.
 
@@ -43,7 +43,7 @@ working with nothing for the user to do.
 `LegacyEndpointMigration`), `core/config/repository.py` (`migrate_legacy_endpoint`),
 `core/providers/__init__.py` (`_llm_config`, `_RETIRED_SLOT`), `__init__.py` (`_bootstrap`),
 `core/providers/llm/__init__.py`, `core/providers/catalog.py`, `plugins/smart_notes/account.py`,
-`plugins/smart_notes/config.py` (`with_llm_providers`),
+`plugins/smart_notes/config.py` (`with_llm_providers`, `with_stored_aliases`),
 `gui/smart_notes/dialogs/controllers/config.py`, `gui/smart_notes/web/03-render.js`,
 `config/providers.example.toml`, `docs/guidance/local-server/README.md`, `docs/guide.md`.
 

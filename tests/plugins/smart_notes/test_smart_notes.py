@@ -219,6 +219,91 @@ class TestShowingAPinAsItResolves:
         assert config.dict() == before
 
 
+class TestSavingKeepsAStoredAlias:
+    """`with_stored_aliases` is the inverse, applied on save: a row still showing what its
+    stored pin resolves to gets the stored id back, so only a provider the user actually
+    picked is written (ADR-022)."""
+
+    _canonical = staticmethod(TestShowingAPinAsItResolves._canonical)
+
+    @staticmethod
+    def _config(**providers):
+        """Vocab with one row per ``field=(type, provider)``."""
+        return SmartNotesNoteTypeConfig(
+            note_type="Vocab",
+            base_field="Word",
+            fields=[
+                SmartNotesFieldConfig(field=name, type=kind, provider=provider)
+                for name, (kind, provider) in providers.items()
+            ],
+        )
+
+    def _saved(self, stored, posted):
+        restored = posted.with_stored_aliases(stored, self._canonical)
+        return {field.field: field.provider for field in restored.fields}
+
+    def test_a_row_still_showing_its_resolution_gets_the_stored_id(self):
+        stored = self._config(
+            Meaning=("text", "openai_compatible"),
+            Picture=("image", "openai_compatible"),
+        )
+        posted = self._config(
+            Meaning=("text", "custom:Self-hosted"),
+            Picture=("image", "custom:Self-hosted"),
+        )
+
+        assert self._saved(stored, posted) == {
+            "Meaning": "openai_compatible",
+            "Picture": "openai_compatible",
+        }
+
+    @pytest.mark.parametrize("chosen", ["gemini", ""], ids=["another", "inherit"])
+    def test_a_provider_the_user_picked_is_kept(self, chosen):
+        stored = self._config(Meaning=("text", "openai_compatible"))
+        posted = self._config(Meaning=("text", chosen))
+
+        assert self._saved(stored, posted) == {"Meaning": chosen}
+
+    def test_a_sound_row_is_left_alone(self):
+        """A TTS id is not an LLM alias, whatever it happens to be called."""
+        stored = self._config(Audio=("tts", "openai_compatible"))
+        posted = self._config(Audio=("tts", "custom:Self-hosted"))
+
+        assert self._saved(stored, posted) == {"Audio": "custom:Self-hosted"}
+
+    def test_a_row_that_was_a_sound_row_gets_no_llm_alias(self):
+        """Its stored provider was a TTS id, so there is no LLM pin to give back."""
+        stored = self._config(Meaning=("tts", "openai_compatible"))
+        posted = self._config(Meaning=("text", "custom:Self-hosted"))
+
+        assert self._saved(stored, posted) == {"Meaning": "custom:Self-hosted"}
+
+    def test_a_row_that_became_a_sound_row_gets_no_llm_alias(self):
+        """An LLM id written onto a sound row would name the TTS provider of that name."""
+        stored = self._config(Meaning=("text", "openai_compatible"))
+        posted = self._config(Meaning=("tts", "custom:Self-hosted"))
+
+        assert self._saved(stored, posted) == {"Meaning": "custom:Self-hosted"}
+
+    def test_a_new_row_is_written_as_posted(self):
+        stored = self._config(Meaning=("text", "openai_compatible"))
+        posted = self._config(
+            Meaning=("text", "custom:Self-hosted"),
+            Example=("text", "custom:Self-hosted"),
+        )
+
+        assert self._saved(stored, posted)["Example"] == "custom:Self-hosted"
+
+    def test_the_posted_config_is_untouched(self):
+        stored = self._config(Meaning=("text", "openai_compatible"))
+        posted = self._config(Meaning=("text", "custom:Self-hosted"))
+        before = posted.dict()
+
+        posted.with_stored_aliases(stored, self._canonical)
+
+        assert posted.dict() == before
+
+
 class TestFieldDepModel:
     def test_kind_defaults_to_hard(self):
         assert FieldDep(field="Word").kind == "hard"

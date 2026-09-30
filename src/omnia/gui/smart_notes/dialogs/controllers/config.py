@@ -115,9 +115,9 @@ class ConfigController:
         """``note_type``'s saved config as the table should SHOW it: each pin as it resolves.
 
         A field pinned to the retired ``openai_compatible`` slot is shown as the endpoint the
-        slot moved to (ADR-022), so its picker selects something it offers. Nothing is written:
-        ``on_save`` persists whatever the page posts back, so the new id reaches the synced
-        collection for exactly the note types the user saves, and for no other.
+        slot moved to (ADR-022), so its picker selects something it offers. Nothing is written,
+        and ``on_save`` gives such a row its stored id back unless the user picked another
+        provider for it, so the synced collection keeps the stored id.
         """
         config: SmartNotesNoteTypeConfig | None = self._ctx.settings().note_type_config(
             note_type
@@ -184,14 +184,21 @@ class ConfigController:
         # (a field's tool chain) is carried over instead of deleted.
         settings = self._ctx.store.load()
         note_type = str(data.get("note_type", ""))
+        stored = settings.note_type_config(note_type)
         config = note_type_config_from_payload(
             note_type,
             str(data.get("base_field", "")),
             list(data.get("rows", [])),
             list(data.get("decks", [])),
             positions=dict(data.get("positions", {})),
-            stored=settings.note_type_config(note_type),
+            stored=stored,
         )
+        if stored is not None:
+            # The rows were SHOWN through `_stored_config`; a row the user did not re-pin
+            # goes back to the id the collection holds, which every device can resolve.
+            config = config.with_stored_aliases(
+                stored, self._ctx.repo.llm_settings().canonical_provider
+            )
         if not config.note_type:
             return {"error": "Pick a note type first."}
         # Persistence backstop (W2): never save a config whose field dependencies form a cycle

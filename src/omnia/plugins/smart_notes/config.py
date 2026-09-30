@@ -339,9 +339,9 @@ class SmartNotesNoteTypeConfig(PersistedModel):
 
         For display only. The dialog shows a field pinned to the retired ``openai_compatible``
         slot as the endpoint it moved to (ADR-022), so its Provider picker selects a provider
-        it actually offers. The source is never mutated and nothing here is saved: the synced
-        collection keeps the stored id verbatim until the user saves this note type, so a
-        device on an older build goes on reading exactly the blob it wrote.
+        it actually offers. The source is never mutated, and the save undoes this for every
+        row the user left alone (:meth:`with_stored_aliases`), so the synced collection keeps
+        the stored id unless the user picks another provider for that row.
 
         A ``tts`` row is left alone — its provider is a TTS id, and TTS has an
         ``openai_compatible`` of its own that nothing retired — and so is a row of a type this
@@ -356,6 +356,47 @@ class SmartNotesNoteTypeConfig(PersistedModel):
             if field.type in _LLM_GENERATION_TYPES:
                 field.provider = canonical(field.provider)
         return shown
+
+    def with_stored_aliases(
+        self, stored: SmartNotesNoteTypeConfig, canonical: Callable[[str], str]
+    ) -> SmartNotesNoteTypeConfig:
+        """A copy in which each text/image row the user did not re-pin keeps its STORED id.
+
+        The inverse of :meth:`with_llm_providers`, applied when the dialog saves. A row that
+        still names what its stored pin resolves to gets the stored id back; one the user
+        switched to anything else — another provider, "(inherit)" — is written as chosen.
+
+        Why the save must not simply write what the picker showed: ``openai_compatible``
+        resolves on every device, while ``custom:<label>`` is a label THIS machine chose when
+        it moved its slot. Another device may have given its slot a different label, making
+        the same id someone else's server; the previous release does not list the id at all,
+        so its picker drops it to "(inherit)" and its next save un-pins the field everywhere.
+
+        Only rows that are LLM rows on both sides: a ``tts`` provider is a TTS id, and a row
+        whose type changed had no LLM pin to give back. Neither ``self`` nor ``stored`` is
+        mutated.
+
+        Args:
+            stored: The note type as the collection holds it, before this save.
+            canonical: The same resolver the display used, e.g.
+                :meth:`~omnia.core.config.models.LLMSettings.canonical_provider`.
+        """
+        pins = {
+            field.field: field.provider
+            for field in stored.fields
+            if field.type in _LLM_GENERATION_TYPES and field.provider
+        }
+        restored: SmartNotesNoteTypeConfig = self.copy(deep=True)
+        for field in restored.fields:
+            pin = pins.get(field.field, "")
+            if (
+                field.type in _LLM_GENERATION_TYPES
+                and pin
+                and pin != field.provider
+                and canonical(pin) == field.provider
+            ):
+                field.provider = pin
+        return restored
 
 
 class SmartNotesSettings(PersistedModel):
