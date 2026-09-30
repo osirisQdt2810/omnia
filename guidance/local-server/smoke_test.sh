@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Smoke-test a self-hosted OpenAI-compatible endpoint the way Omnia uses it.
 #
-#   OMNIA_LLM_SSH=<your-host> guidance/local-server/smoke_test.sh [--cold] [--stop] [--no-image]
+#   OMNIA_LLM_BASE=https://<your-domain> OMNIA_LLM_KEY=<token> guidance/local-server/smoke_test.sh [--cold] [--stop] [--no-image]
 #
 # Layers, in order, stopping at the first failure so it names where to look:
-#   1. /health answers        -> the tunnel and the gateway are up (no key needed)
+#   1. /health answers        -> the server is reachable (no key needed)
 #   2. /status refuses no key -> auth is enforced
 #   3. /status with the key   -> engine + GPU state
 #   4. a chat completion      -> the text engine starts (if cold) and answers
@@ -15,10 +15,10 @@
 # --no-image  skip step 5
 #
 # Environment (defaults in brackets):
-#   OMNIA_LLM_SSH          SSH alias of the GPU host, used only to read the key
-#   OMNIA_LLM_KEY          the key itself, instead of reading it over SSH
+#   OMNIA_LLM_KEY          the token
+#   OMNIA_LLM_SSH          or: SSH alias of the GPU host, to read the old key file instead
 #   OMNIA_LLM_KEY_PATH     [~/workspaces/omnia-llm/api-key.txt] where the key lives on the host
-#   OMNIA_LLM_BASE         [http://127.0.0.1:8721] the tunnel's local end
+#   OMNIA_LLM_BASE         [http://127.0.0.1:8721] the server (https://<your-domain>, or a local tunnel)
 #   OMNIA_LLM_TEXT_MODEL   [omnia-local]
 #   OMNIA_LLM_IMAGE_MODEL  [sdxl-turbo]
 #
@@ -70,8 +70,8 @@ echo "Endpoint: $BASE"
 
 # 1 ---------------------------------------------------------------------------------------------
 call GET /health
-[ "$CODE" = "200" ] || fail "health" "no answer on $BASE (HTTP $CODE). Is the tunnel up? launchctl list | grep omnia.llm"
-pass "health — the tunnel and the gateway are up"
+[ "$CODE" = "200" ] || fail "health" "no answer on $BASE (HTTP $CODE). Is the URL right, and the server up?"
+pass "health — the server is reachable"
 
 # 2 ---------------------------------------------------------------------------------------------
 call GET /status
@@ -86,7 +86,7 @@ elif [ -n "${OMNIA_LLM_SSH:-}" ]; then
   KEY="$(ssh -o ConnectTimeout=20 "$OMNIA_LLM_SSH" "cat $KEY_PATH")" \
     || fail "key" "could not read $KEY_PATH over ssh $OMNIA_LLM_SSH"
 else
-  fail "key" "set OMNIA_LLM_SSH=<your-host> (or OMNIA_LLM_KEY) so the script can authenticate"
+  fail "key" "set OMNIA_LLM_KEY=<token> (or OMNIA_LLM_SSH=<your-host>) so the script can authenticate"
 fi
 [ -n "$KEY" ] || fail "key" "the key came back empty"
 printf 'Authorization: Bearer %s\n' "$KEY" > "$HEADER"
