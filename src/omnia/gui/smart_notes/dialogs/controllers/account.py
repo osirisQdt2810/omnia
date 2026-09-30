@@ -404,11 +404,13 @@ class AccountController:
 
         auto = bool(data.get("auto"))
 
-        def fetch() -> list[Any]:
+        def fetch() -> tuple[list[Any], str]:
             from omnia.core.network.http import RetryPolicy, UrllibHttpClient
+            from omnia.core.providers.errors import ProviderError
             from omnia.core.providers.llm.openai_compatible import (
                 OpenAICompatibleProvider,
             )
+            from omnia.core.providers.openai_family import with_api_path
 
             # An automatic load (the card just rendered) gives up in seconds and does not
             # retry: opening a tab must never wait out a dead tunnel. A click is patient,
@@ -418,14 +420,30 @@ class AccountController:
                 if auto
                 else UrllibHttpClient(timeout=30, retry=RetryPolicy(max_attempts=2))
             )
-            return OpenAICompatibleProvider(
-                api_key=api_key, base_url=base_url, http=http
-            ).list_models()
+
+            def listing(url: str) -> list[Any]:
+                return OpenAICompatibleProvider(
+                    api_key=api_key, base_url=url, http=http
+                ).list_models()
+
+            try:
+                return listing(base_url), ""
+            except ProviderError as exc:
+                # "HTTP 404 from https://host/models" does not tell anyone that the API is one
+                # level down. Try that once; on success, hand the page the corrected address
+                # to put in the box, so the fix is visible and saved rather than guessed again.
+                corrected = with_api_path(base_url)
+                if exc.status_code != 404 or not corrected:
+                    raise
+                try:
+                    return listing(corrected), corrected
+                except ProviderError:
+                    raise exc from None  # the address the user typed is the one to explain
 
         anki_compat.run_in_background(
             fetch,
-            on_success=lambda models: self._push_endpoint_models(
-                provider, models=models
+            on_success=lambda result: self._push_endpoint_models(
+                provider, models=result[0], base_url=result[1]
             ),
             on_failure=lambda exc: self._push_endpoint_models(
                 provider, error=self._ctx.friendly(exc, "Could not list models")
@@ -436,9 +454,18 @@ class AccountController:
         )
 
     def _push_endpoint_models(
-        self, provider: str, *, models: Optional[list[Any]] = None, error: str = ""
+        self,
+        provider: str,
+        *,
+        models: Optional[list[Any]] = None,
+        base_url: str = "",
+        error: str = "",
     ) -> None:
-        """Send ``{text: [ids], image: [ids]}`` (or ``{error}``) to the Keys card."""
+        """Send ``{text: [ids], image: [ids]}`` (or ``{error}``) to the Keys card.
+
+        ``base_url`` rides along only when the listing worked at a corrected address, which
+        the card then writes into its Base URL box.
+        """
         if error:
             payload: dict[str, Any] = {"error": error}
         else:
@@ -446,6 +473,8 @@ class AccountController:
                 kind: [m.id for m in (models or []) if m.kind == kind]
                 for kind in ("text", "image")
             }
+            if base_url:
+                payload["base_url"] = base_url
         self._ctx.eval_js(
             f"window.__snEndpointModels({json.dumps(provider)}, {json.dumps(payload)});"
         )

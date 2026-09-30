@@ -1425,6 +1425,7 @@
       return;
     }
     const found = {text: (res && res.text) || [], image: (res && res.image) || []};
+    const unlisted = [];
     Array.prototype.forEach.call(el.querySelectorAll('.sn-key-input[data-ftype="model"]'),
       function (input) {
         const ids = found[input.dataset.kind] || [];
@@ -1437,14 +1438,50 @@
             list.appendChild(option);
           });
         }
+        const pick = el.querySelector('.sn-key-model-pick[data-kind="' + input.dataset.kind + '"]');
+        if (pick) {
+          pick.textContent = "";
+          const head = document.createElement("option");
+          head.value = "";
+          head.textContent = "Pick…";
+          pick.appendChild(head);
+          ids.forEach(function (id) {
+            const option = document.createElement("option");
+            option.value = id;
+            option.textContent = id;
+            pick.appendChild(option);
+          });
+          pick.selectedIndex = 0;
+          pick.hidden = !ids.length;
+          // Assigned, not added: a reload replaces the handler instead of stacking another.
+          pick.onchange = function () {
+            if (pick.value) {
+              input.value = pick.value;
+            }
+            pick.selectedIndex = 0;
+          };
+        }
         if (!input.value && ids.length) {
           input.value = ids[0];
+        } else if (input.value && ids.length && ids.indexOf(input.value) < 0) {
+          unlisted.push(input.value);
         }
       });
+    const baseInput = el.querySelector('.sn-key-input[data-key="base_url"]');
+    if (res && res.base_url && baseInput) {
+      baseInput.value = res.base_url;
+    }
     if (note) {
+      const parts = [found.text.length + " text · " + found.image.length + " image model(s)"];
+      if (res && res.base_url) {
+        parts.push("the Base URL now ends in /v1");
+      }
+      if (unlisted.length) {
+        parts.push(unlisted.join(", ") + (unlisted.length > 1 ? " are" : " is") +
+            " not on this server — pick one");
+      }
       note.className = "sn-key-models-note sn-key-ok";
-      note.textContent = found.text.length + " text · " + found.image.length +
-          " image model(s) — click a box to pick, then Save";
+      note.textContent = parts.join(" · ") + ". Then Save.";
     }
   };
 
@@ -1494,6 +1531,14 @@
       list.id = "sn-models-" + (++modelListSeq);
       input.setAttribute("list", list.id);
       controls.appendChild(list);
+      // A datalist only offers what matches the text already in its box, so a filled box
+      // hides every other model. This picker lists them all; __snEndpointModels fills it.
+      const pick = document.createElement("select");
+      pick.className = "sn-select sn-key-model-pick";
+      pick.dataset.kind = input.dataset.kind;
+      pick.title = "Models this endpoint lists";
+      pick.hidden = true;
+      controls.appendChild(pick);
     }
 
     if (f.type === "secret") {
