@@ -9,7 +9,7 @@
 # free defaults (google_translate / edge_tts) need no key.
 
 [llm]
-# provider: gemini_vertex | gemini | openai | openrouter | openai_compatible
+# provider: gemini_vertex | gemini | openai | openrouter | custom:<an endpoint's name> (below)
 provider = "gemini_vertex"
 
 # Gemini via Vertex AI (GCP project + a service account) — the provider used in production.
@@ -68,29 +68,28 @@ prompt_cache_control = false
 # call. Leaving this false is safe — the reply is parsed defensively regardless.
 json_output = false
 
-# Any other OpenAI-compatible endpoint (set base_url).
-# Any server that speaks the OpenAI API — including one you run yourself. There is no separate
-# "local model" provider to configure: vLLM, llama.cpp and Ollama all speak this one.
+# A server of your own — vLLM, llama.cpp, Ollama, LM Studio, or any other that speaks the
+# OpenAI API — is a NAMED endpoint, and you can have as many as you like. The easy way to add
+# one is Smart Notes → ⚙ Options → Usage & Keys → 🔑 Keys → Add endpoint: it writes a table
+# like the one below and keeps the token in .secrets/ rather than here. Each is chosen by name,
+# as `provider = "custom:<name>"` above or per field in Smart Notes.
 #
 # Fill in BOTH fields. api_key is required even when your server does not check one — Ollama
-# and an unauthenticated llama.cpp accept anything, but this provider refuses to build without
-# a value, so put a placeholder like "local" there. (A real key, if your server asks for one.)
+# and an unauthenticated llama.cpp accept anything, but the provider refuses to build without a
+# value, so put a placeholder like "local" there. (A real key, if your server asks for one.)
 #
-# For a server of your own, use the address (ending in /v1) and the token it gives you:
+# docs/guidance/local-server/README.md walks through it. Never put a real base_url or key in
+# this example: THIS repo is public. Real values belong in user_files/config/providers.toml,
+# which is gitignored.
 #
-#     base_url = "https://<your-server>/v1"
-#     api_key  = "<the token>"                # any text, if the server has no tokens
+# [llm.custom.my-gpu-box]
+# base_url = "https://<your-server>/v1"   # the address, ending in /v1
+# api_key = "<the token>"                 # any text, if the server has no tokens
+# text_model = ""                         # ↻ Load models on its card lists what it serves
+# image_model = ""                        # only if it serves /images/generations
 #
-# docs/guidance/local-server/README.md walks through it, and Smart Notes' Options → Usage &
-# Keys → Keys does the same without editing this file. Never put a real base_url or key in
-# this example: THIS repo is public. Real values belong in config/providers.toml, which is
-# gitignored.
-[llm.openai_compatible]
-api_key = ""
-base_url = ""
-text_model = ""
-image_model = ""
-embedding_model = ""
+# The single [llm.openai_compatible] slot this file used to carry is retired: one with an
+# address in it becomes the endpoint "Self-hosted" the first time this version starts.
 
 # TTS uses the SAME per-provider shape as [llm]: [tts].provider selects which subsection is
 # active, so you only fill in the fields for the provider you use.

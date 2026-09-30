@@ -12,9 +12,9 @@ the dropdowns from going stale:
   list (the dialog merges it in), so a missing entry never loses a configured value;
 * the LLM provider subset offered for generation is intentionally smaller than every registered
   provider — ``openrouter`` already fronts the hosted OpenAI-compatible family, so the raw
-  ``openai`` name is omitted from the *generation* picker. ``openai_compatible`` IS offered:
-  nothing proxies a server you run yourself, so leaving it out made the one supported way to use
-  your own model invisible in the UI.
+  ``openai`` name is omitted from the *generation* picker. A server you run yourself is offered
+  as the NAMED endpoint the user added for it, which :func:`providers_with_custom` appends; the
+  single ``openai_compatible`` slot that used to stand for one is retired (ADR-022).
 
 Imports nothing from ``aqt``/``anki`` (tests headless). It imports the provider PACKAGES (data
 + the voice aggregation) but never a concrete provider module, and the provider packages never
@@ -73,10 +73,9 @@ def providers_for(kind: str) -> list[str]:
     ``_IMAGE_MODELS`` — openrouter has no image endpoint, so it is excluded and never offered
     for an image field); tts → the TTS providers.
 
-    "Can" rather than "has curated ids": ``openai_compatible`` is a key with an EMPTY list,
-    because a server you run yourself may serve ``/images/generations`` and only its operator
-    knows what the model is called. Omitting the key would hide the field and make a working
-    setup unreachable; an empty list offers nothing and accepts what the user knows.
+    The SHIPPED providers only. A server you run yourself may serve ``/images/generations`` too,
+    and only its operator knows what the model is called — it is a named endpoint, which
+    :func:`providers_with_custom` appends to the text and the image list alike.
     """
     if kind == KIND_TTS:
         return list(TTS_PROVIDERS)

@@ -1161,11 +1161,11 @@ class TestTheCatalogActuallySeesTheUsersEndpoints:
         from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
 
         ctx = self._ctx(config_dir)
-        ctx.repo.set_active_llm("openai_compatible", text_model="some-local-build")
+        ctx.repo.set_active_llm("gemini", text_model="some-local-build")
 
         catalog = CatalogInputs.read(ctx).catalog()
 
-        assert "some-local-build" in catalog["text_models"]["openai_compatible"]
+        assert "some-local-build" in catalog["text_models"]["gemini"]
 
     def test_a_context_that_cannot_be_read_still_yields_a_catalog(self, config_dir):
         """A providers.toml that will not parse costs the endpoints, not the dialog."""
