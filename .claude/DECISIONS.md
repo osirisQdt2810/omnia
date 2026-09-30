@@ -2213,7 +2213,9 @@ synced field pins, `.secrets/` file names — hold them.
    carried verbatim, unknown ones included, and nothing is added: a model id the slot left to its
    default resolves the same on the endpoint, so the endpoint sends the requests the slot sent.
    The key moves to one secret file named for the endpoint, which both tables then reference; an
-   inline key moves out of the TOML. The slot is marked `moved_to = "<label>"`, which is what
+   inline key moves out of the TOML. The new key is stored before the TOML naming it is written,
+   and the old one forgotten only after; every start also forgets the slot's old key file once
+   nothing names it, which clears one left by a crash between those steps. The slot is marked `moved_to = "<label>"`, which is what
    makes the move happen once. The raw `providers.toml` is edited in place, and written only
    when something changed, because tomli_w drops the user's comments; before the one write that
    moves the slot, the file is copied once to `.secrets/providers.toml.pre-022`. A slot with no
@@ -2224,7 +2226,8 @@ synced field pins, `.secrets/` file names — hold them.
 3. **Keep the id as a read-only alias, resolved where it is consumed.**
    `LLMSettings.canonical_provider` maps `openai_compatible` to `custom:<moved_to>` once the slot
    has moved — even after that endpoint is removed, so a removal stays removed and a pin reports
-   the endpoint as unknown. `subsection()` and `ProviderHub._llm_config` resolve through it. An
+   the endpoint as unknown. `subsection()` and `ProviderHub._llm_config` resolve through it, and
+   so do writes (`_provider_table`), so a write through the old id lands where it is read. An
    unmoved slot with a URL still builds from the slot; one without a URL fails with a message
    pointing at Keys → Add endpoint.
 4. **No migration writes the synced collection, and neither does a save.** A field pinned to
