@@ -40,6 +40,14 @@ if TYPE_CHECKING:
     from omnia.core.config.models import LLMSettings, TTSSettings
     from omnia.core.network.http import HttpClient
 
+#: What a use of the retired ``openai_compatible`` slot is told when the slot had no address,
+#: so there was nothing to move into a named endpoint (ADR-022).
+_RETIRED_SLOT = (
+    "“Self-hosted / OpenAI-compatible” is now a named endpoint. Add your server under "
+    "Smart Notes → ⚙ Options → Usage & Keys → 🔑 Keys → Add endpoint, then choose it for "
+    "this field or as the Default model."
+)
+
 
 def split_provider_voice(value: str) -> tuple[str, str]:
     """Split a ``"provider:voice"`` Auto-detect mapping into its parts.
@@ -176,18 +184,31 @@ class ProviderHub:
         settings = self._llm_settings
         if settings is None:
             return {"provider": provider} if provider else {}
-        name = provider or settings.provider
         # Imported here, not at module scope: ``core.config.models`` imports from
         # ``core.providers.tts`` for its own defaults, so a top-level import the other way
         # closes the cycle and neither module loads.
-        from omnia.core.config.models import custom_provider_label
+        from omnia.core.config.models import (
+            LEGACY_ENDPOINT_PROVIDER,
+            custom_provider_label,
+        )
 
+        # The retired slot's id first becomes the endpoint it moved to (ADR-022), so a field
+        # that pinned it builds that endpoint — or, once it is removed, reports it unknown.
+        name = settings.canonical_provider(provider or settings.provider)
         # One of the user's own endpoints is a CONFIGURED INSTANCE of openai_compatible, not a
         # provider type of its own: the registry is asked for the class that speaks the
         # protocol, while the name only selects whose URL and key to speak it with. That is
         # what lets any number of them exist without a class, a registration or a code change.
         label = custom_provider_label(name)
         active = settings.subsection(name)
+        if (
+            name == LEGACY_ENDPOINT_PROVIDER
+            and not str(getattr(active, "base_url", "") or "").strip()
+        ):
+            # Never moved, because it never had an address: nothing is configured behind the
+            # id, and "requires an api_key" would send the user looking for a card that no
+            # longer exists.
+            raise ProviderError(_RETIRED_SLOT)
         # Only rewritten when the endpoint still EXISTS. A Smart Notes field can pin
         # `custom:gpu` in the collection, and deleting the endpoint cannot reach into every
         # note type that named it — so the name outlives the config. Rewritten unconditionally,

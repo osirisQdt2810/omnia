@@ -20,14 +20,20 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+from omnia.core.config.legacy_endpoint import LegacyEndpointMigration
 from omnia.core.config.loader import BaseConfigLoader
 from omnia.core.config.models import (
+    LEGACY_ENDPOINT_PROVIDER,
     LLMSettings,
     OmniaConfig,
     TTSSettings,
+    label_in_use,
 )
 from omnia.core.config.secrets import SecretsStore
+from omnia.core.logging import get_logger
 from omnia.core.registry import get_registered
+
+_logger = get_logger("config")
 
 
 def _require_custom_domain(domain: str) -> None:
@@ -270,6 +276,8 @@ class ConfigRepository:
         """
         if domain not in ("llm", "tts"):
             raise ValueError(f"unknown provider domain: {domain}")
+        # Resolved once, here, so the secret below is named for the table it lands in.
+        provider = self._write_target(domain, provider)
         data = self._loader.read_file("providers.toml")
         sub = self._provider_table(data, domain, provider)
         for field, kind, value in updates:
@@ -297,13 +305,24 @@ class ConfigRepository:
         ``secret-file:`` reference to the TOML, so the JSON itself never lives in the config
         dir and the stored value is portable (it follows the add-on, not the source path).
         """
+        provider = self._write_target(domain, provider)
         name = self._secret_name(domain, provider, field) + Path(src_path).suffix
         ref = self._secrets.import_file(name, src_path)
         self._write_provider_field(domain, provider, field, ref)
         return str(self._secrets.resolve(ref))
 
-    @staticmethod
-    def _provider_table(data: dict, domain: str, provider: str) -> dict:
+    def _write_target(self, domain: str, provider: str) -> str:
+        """The provider a write to ``provider`` lands on, the retired LLM slot resolved.
+
+        Reads of ``openai_compatible`` resolve to the endpoint the slot moved to
+        (:meth:`LLMSettings.subsection`), so a write must too, or it is accepted and then never
+        read. Only for ``llm``: TTS has an ``openai_compatible`` of its own that nothing retired.
+        """
+        if domain != "llm":
+            return provider
+        return self._config.llm.canonical_provider(provider)
+
+    def _provider_table(self, data: dict, domain: str, provider: str) -> dict:
         """The TOML table a provider's fields live in.
 
         A user's own endpoint lives one level deeper, under ``[llm.custom.<label>]``, so that
@@ -321,11 +340,16 @@ class ConfigRepository:
         an endpoint with no URL, no key, and a credential already shredded. Removal has to
         stay removed, so every writer but :meth:`add_custom_provider` must find it or fail.
 
+        The retired ``openai_compatible`` LLM slot is resolved first (:meth:`_write_target`),
+        so a write through it lands on its endpoint — and, once that endpoint is removed, is
+        refused like a write to any other removed endpoint.
+
         Raises:
             ValueError: for a custom endpoint that does not exist.
         """
         from omnia.core.config.models import custom_provider_label
 
+        provider = self._write_target(domain, provider)
         label = custom_provider_label(provider)
         if label:
             table = data.setdefault(domain, {}).setdefault("custom", {})
@@ -351,19 +375,8 @@ class ConfigRepository:
             raise ValueError("Give the endpoint a name.")
         data = self._loader.read_file("providers.toml")
         existing = data.setdefault(domain, {}).setdefault("custom", {})
-        # Case-INSENSITIVE, because the credential file is what has to stay distinct and the
-        # two filesystems this ships to — APFS and NTFS — are case-insensitive by default.
-        # TOML keys are not, so `gpu` and `GPU` are two endpoints in the config and one file
-        # on disk: the second key silently overwrites the first, and removing either one
-        # shreds the other's credential. Two endpoints that cannot hold separate keys on the
-        # user's own machine ARE one endpoint, so this is the honest reading of "already in
-        # use" rather than an extra restriction.
-        #
-        # Encoding the case into the filename instead would work, but it would keep a pair of
-        # near-identical cards in the UI that no one can tell apart. CI's Linux leg is
-        # case-sensitive, which is why this passed — the same blind spot that hid the colon.
-        folded = label.casefold()
-        if any(name.casefold() == folded for name in existing):
+        # Case-insensitive — see `label_in_use` for why `gpu` and `GPU` are one endpoint.
+        if label_in_use(existing, label):
             raise ValueError(f"There is already an endpoint called “{label}”.")
         existing[label] = {"base_url": "", "api_key": "", "text_model": ""}
         self._loader.write_file("providers.toml", data)
@@ -402,6 +415,19 @@ class ConfigRepository:
             # endpoint it did not find is the asymmetry that bites the next caller.
             raise ValueError(f"There is no endpoint called “{label}”.")
         table.pop(label)
+        slot = data.get(domain, {}).get(LEGACY_ENDPOINT_PROVIDER)
+        shared = SecretsStore.value_ref(self._secret_name(domain, provider, "api_key"))
+        if (
+            domain == "llm"
+            and isinstance(slot, dict)
+            and slot.get("moved_to") == label
+            and slot.get("api_key") == shared
+        ):
+            # The retired slot names the very key file just shredded (ADR-022). Left as it is,
+            # it points at nothing, and an endpoint added again under this label would store
+            # its key in that file, handing a new server's token to the slot's old address.
+            # `moved_to` stays, so the removal stays a removal.
+            slot["api_key"] = ""
         # Otherwise the domain goes on naming an endpoint that is gone. `active()` returns None,
         # so the hub falls back to a bare `openai_compatible` with no base URL and no key, and
         # every generation — plus language-detect, Auto-prompt and Improve — fails with
@@ -413,6 +439,82 @@ class ConfigRepository:
             section["provider"] = self._default_provider(domain)
         self._loader.write_file("providers.toml", data)
         self._reload()
+
+    def migrate_legacy_endpoint(self) -> str:
+        """Move a configured ``[llm.openai_compatible]`` into a named endpoint (ADR-022).
+
+        Once per machine, at startup: the move marks the slot, so every later call finds
+        nothing to do unless an older build wrote the slot's id back into ``[llm].provider``,
+        which it points at the endpoint again. Touches ``providers.toml`` and ``.secrets/``
+        only — both local files under either storage backend — and never the collection.
+
+        An explicit call rather than part of the constructor, so building a repository stays
+        free of side effects for the tests and tools that do it.
+
+        Returns:
+            The endpoint's label when this call moved the slot, else ``""``.
+        """
+        data = self._loader.read_file("providers.toml")
+        migration = LegacyEndpointMigration(self._secrets.resolve, self._secret_name)
+        result = migration.run(data)
+        # The new key, then the TOML naming it, then the old key — the one order in which a
+        # failure at any step leaves a key file behind every reference on disk.
+        if result.changed:
+            if result.moved_to:
+                self._keep_pre_move_copy()
+            if result.new_secret is not None:
+                self._secrets.store_value(
+                    result.new_secret.name, result.new_secret.value
+                )
+            self._loader.write_file("providers.toml", data)
+        # On every run, even one that wrote nothing: nothing on disk names these, and a crash
+        # before this line on the run that moved the key is only cleaned up here.
+        for name in result.stale_secrets:
+            self._secrets.forget(name)
+        if not result.changed:
+            # Nothing written, and that matters: tomli_w drops every comment in the file, so
+            # a write that changed nothing would still strip the user's notes on every start.
+            return ""
+        self._reload()
+        # The label only: never the key, and never the host it points at.
+        if result.moved_to:
+            _logger.info(
+                "moved [llm.openai_compatible] to endpoint '%s'", result.moved_to
+            )
+        else:
+            _logger.info(
+                "[llm].provider named [llm.openai_compatible] again; pointed it at the "
+                "endpoint the slot moved to"
+            )
+        return result.moved_to
+
+    #: Where :meth:`migrate_legacy_endpoint` keeps providers.toml as it was before the move.
+    _PRE_MOVE_COPY = "providers.toml.pre-022"
+
+    def _keep_pre_move_copy(self) -> None:
+        """Copy providers.toml, as it is before the move rewrites it, into ``.secrets/``.
+
+        tomli_w writes no comments, so the move's write drops every comment the user put in the
+        file, and it is the one write this build makes without being asked. The copy is how
+        they get them back. In ``.secrets/`` because the file may hold an inline key, and that
+        is the one place Omnia keeps files that must never leak.
+
+        Never overwritten: a second real move takes hand-editing ``moved_to`` away, and by then
+        the file has already lost its comments. A copy that cannot be made raises, so the move
+        does not happen without one; the slot then keeps resolving unmoved.
+        """
+        ref = SecretsStore.FILE_SCHEME + self._PRE_MOVE_COPY
+        kept = Path(str(self._secrets.resolve(ref)))
+        if kept.exists():
+            return
+        source = self._loader.config_dir / "providers.toml"
+        self._secrets.import_file(self._PRE_MOVE_COPY, str(source))
+        # The path only: the copy itself may hold a key.
+        _logger.info(
+            "kept providers.toml as it was before the move at %s; copy the comments you want "
+            "out of it, as restoring the whole file needs the key entered again",
+            kept,
+        )
 
     @staticmethod
     def _default_provider(domain: str) -> str:

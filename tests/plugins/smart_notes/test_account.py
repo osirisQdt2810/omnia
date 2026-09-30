@@ -241,8 +241,35 @@ class TestKeyCards:
             "gemini",
             "gemini_vertex",
             "openrouter",
-            "openai_compatible",
         ]
+
+    def test_there_is_no_card_for_the_retired_slot(self):
+        """Not even for a slot with an address in it: a server of your own is a named
+        endpoint now, and one card per way of doing a thing is the point (ADR-022)."""
+        llm = _llm()
+        llm.openai_compatible.base_url = "http://127.0.0.1:1/v1"
+
+        assert "openai_compatible" not in {c["id"] for c in key_cards(llm)}
+
+    def test_a_moved_slot_is_the_active_self_hosted_card(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        (config_dir / "providers.toml").write_text(
+            '[llm]\nprovider = "openai_compatible"\n\n'
+            '[llm.openai_compatible]\nbase_url = "http://127.0.0.1:1/v1"\n'
+            'api_key = "tok"\n',
+            encoding="utf-8",
+        )
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        repo.migrate_legacy_endpoint()
+
+        by_id = {c["id"]: c for c in key_cards(repo.llm_settings())}
+        card = by_id["custom:Self-hosted"]
+        values = {f["key"]: f["value"] for f in card["fields"]}
+
+        assert card["active"] is True
+        assert values["base_url"] == "http://127.0.0.1:1/v1"
 
     def test_only_openrouter_has_live_credit(self):
         by_id = {c["id"]: c for c in key_cards(_llm())}
@@ -295,7 +322,7 @@ class TestKeyCards:
         links = [c["console"][1] for c in key_cards(llm)]
         ours = [link for link in links if link.startswith(prefix)]
 
-        assert len(ours) >= 2, "the self-hosted cards lost their guide link"
+        assert len(ours) >= 1, "the self-hosted cards lost their guide link"
         for link in ours:
             target = repo / link[len(prefix) :].split("#")[0]
             assert target.is_file(), f"{link} points at nothing in this repository"
@@ -372,9 +399,8 @@ class TestASelfHostedModelIdCanBeEntered:
     def _card(self):
         from omnia.core.config.models import LLMSettings
 
-        return next(
-            c for c in key_cards(LLMSettings()) if c["id"] == "openai_compatible"
-        )
+        llm = LLMSettings.parse_obj({"custom": {"mine": {}}})
+        return next(c for c in key_cards(llm) if c["id"] == "custom:mine")
 
     def test_the_text_model_is_a_typed_field(self):
         fields = {f["key"]: f for f in self._card()["fields"]}

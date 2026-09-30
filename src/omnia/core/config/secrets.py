@@ -62,11 +62,16 @@ class SecretsStore:
             return str(self._dir / value[len(self.FILE_SCHEME) :])
         return value
 
+    @classmethod
+    def value_ref(cls, name: str) -> str:
+        """The ``secret:<name>`` reference a value stored under ``name`` is read back through."""
+        return f"{cls.VALUE_SCHEME}{name}"
+
     def store_value(self, name: str, value: str) -> str:
         """Write ``value`` to ``.secrets/<name>`` and return its ``secret:<name>`` reference."""
         self._dir.mkdir(parents=True, exist_ok=True)
         (self._dir / name).write_text(value, encoding="utf-8")
-        return f"{self.VALUE_SCHEME}{name}"
+        return self.value_ref(name)
 
     def import_file(self, name: str, src_path: str) -> str:
         """Copy the file at ``src_path`` to ``.secrets/<name>``; return its ``secret-file:`` ref.

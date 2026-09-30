@@ -836,3 +836,89 @@ class TestForgettingASecretDoesNotReachIntoAnother:
         repo.remove_custom_provider("llm", "custom:[bg]pu")
 
         assert not list((config_dir / ".secrets").glob("*.json"))
+
+
+class TestANewEndpointClaimsNoModel:
+    """A new endpoint's Image model box said `gpt-image-1`.
+
+    That is OpenAI's model, inherited as a default by a server that has never heard of it, and
+    nothing on the card said it came from a default rather than from the server. An endpoint's
+    model ids belong to whoever runs it, so until one is chosen the honest value is none.
+    """
+
+    @pytest.fixture
+    def repo(self, config_dir):
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+
+        return ConfigRepository(ConfigLoader(config_dir))
+
+    def test_a_new_endpoint_names_no_image_model(self, repo):
+        repo.add_custom_provider("llm", "gpu")
+
+        assert repo.llm_settings().subsection("custom:gpu").image_model == ""
+
+    def test_its_card_shows_empty_model_boxes(self, repo):
+        from omnia.plugins.smart_notes.account import key_cards
+
+        repo.add_custom_provider("llm", "gpu")
+        card = next(
+            c for c in key_cards(repo.llm_settings()) if c["id"] == "custom:gpu"
+        )
+        values = {field["key"]: field["value"] for field in card["fields"]}
+
+        assert (values["text_model"], values["image_model"]) == ("", "")
+
+    def test_an_endpoint_saved_by_the_previous_release_reads_empty_too(self):
+        """#111 wrote no `image_model` key at all, so the default is what every endpoint
+        that already exists shows."""
+        llm = LLMSettings.parse_obj(
+            {"custom": {"gpu": {"base_url": "", "api_key": "", "text_model": ""}}}
+        )
+
+        assert llm.subsection("custom:gpu").image_model == ""
+
+    def test_the_built_provider_still_sends_gpt_image_1(self):
+        """Nothing changes on the wire: with no model chosen, the provider sends its own
+        fallback exactly as before. Only the box stopped claiming it."""
+        import base64
+
+        from conftest import FakeHttpClient
+
+        from omnia.core.providers import ProviderHub
+
+        http = FakeHttpClient(
+            json={"data": [{"b64_json": base64.b64encode(b"png").decode()}]}
+        )
+        llm = LLMSettings.parse_obj(
+            {"custom": {"gpu": {"base_url": "http://x/v1", "api_key": "k"}}}
+        )
+
+        ProviderHub(llm, http=http).llm(provider="custom:gpu").generate_image("a cat")
+
+        _method, _url, payload, _headers = http.calls[0]
+        assert payload["model"] == "gpt-image-1"
+
+    def test_openais_own_section_keeps_its_default(self):
+        """OpenAI's ids ARE OpenAI's, so there the default is right and stays."""
+        assert LLMSettings().openai.image_model == "gpt-image-1"
+
+    def test_a_table_naming_no_text_model_still_sends_the_default(self):
+        """Unlike the image model, the text model reaches the wire as the setting's value:
+        the hub always passes it, so the provider's own fallback never applies. An endpoint
+        written by hand without a `text_model` sent gpt-4o-mini before this release, and an
+        empty default would have sent no model at all."""
+        from conftest import FakeHttpClient
+
+        from omnia.core.providers import ProviderHub
+
+        http = FakeHttpClient(json={"choices": [{"message": {"content": "hi"}}]})
+        llm = LLMSettings.parse_obj(
+            {"custom": {"gpu": {"base_url": "http://x/v1", "api_key": "k"}}}
+        )
+
+        ProviderHub(llm, http=http).llm(provider="custom:gpu").generate_text("hello")
+
+        _method, _url, payload, _headers = http.calls[0]
+        assert payload["model"] == "gpt-4o-mini"
+        assert llm.subsection("custom:gpu").text_model == "gpt-4o-mini"

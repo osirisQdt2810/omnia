@@ -11,8 +11,12 @@ symbols the controllers import at module load are stubbed here before importing 
 
 from __future__ import annotations
 
+import copy
+import json
 import types
 from typing import Any
+
+import pytest
 
 # --- stub the extra aqt symbols the dialogs package imports at module load ----------------
 # Importing any ``dialogs.controllers.*`` submodule first runs the ``dialogs`` package
@@ -422,12 +426,17 @@ class TestSaveCycleGuard:
 
     def _save(self, rows, stored: SmartNotesSettings | None = None, options=None):
         """Run ``on_save`` over a fake store holding ``stored``; return (result, saved)."""
+        from omnia.core.config.models import LLMSettings
+
         saved: list[SmartNotesSettings] = []
         settings = SmartNotesSettings() if stored is None else stored
         store = types.SimpleNamespace(
             load=lambda: settings, save=lambda updated: saved.append(updated)
         )
-        ctrl = ConfigController(_fake_ctx(store=store), reject=lambda: None)
+        # The save resolves stored pins through the provider settings, as the real context's
+        # repo provides them.
+        repo = types.SimpleNamespace(llm_settings=lambda: LLMSettings())
+        ctrl = ConfigController(_fake_ctx(store=store, repo=repo), reject=lambda: None)
         payload = {
             "note_type": "Vocab",
             "base_field": "Word",
@@ -1161,11 +1170,11 @@ class TestTheCatalogActuallySeesTheUsersEndpoints:
         from omnia.gui.smart_notes.catalog_inputs import CatalogInputs
 
         ctx = self._ctx(config_dir)
-        ctx.repo.set_active_llm("openai_compatible", text_model="some-local-build")
+        ctx.repo.set_active_llm("gemini", text_model="some-local-build")
 
         catalog = CatalogInputs.read(ctx).catalog()
 
-        assert "some-local-build" in catalog["text_models"]["openai_compatible"]
+        assert "some-local-build" in catalog["text_models"]["gemini"]
 
     def test_a_context_that_cannot_be_read_still_yields_a_catalog(self, config_dir):
         """A providers.toml that will not parse costs the endpoints, not the dialog."""
@@ -1256,3 +1265,217 @@ class TestSavingACardForAnEndpointThatIsGone:
         )
 
         assert res.get("ok")
+
+
+class _Col:
+    """A collection whose config is a dict, and which records every write."""
+
+    def __init__(self, conf: dict[str, Any]) -> None:
+        self.conf = conf
+        self.writes: list[str] = []
+
+    def get_config(self, key: str, default: Any = None) -> Any:
+        return copy.deepcopy(self.conf.get(key, default))
+
+    def set_config(self, key: str, value: Any) -> None:
+        self.writes.append(key)
+        self.conf[key] = value
+
+
+def _pinned_blob(*note_types: str) -> dict[str, Any]:
+    """A stored blob whose note types pin the retired slot, as an older build wrote it."""
+    return SmartNotesSettings(
+        note_types=[
+            SmartNotesNoteTypeConfig(
+                note_type=name,
+                base_field="Word",
+                fields=[
+                    SmartNotesFieldConfig(
+                        field="Meaning",
+                        enabled=True,
+                        type="text",
+                        provider="openai_compatible",
+                        model="omnia-local",
+                    ),
+                    SmartNotesFieldConfig(
+                        field="Audio",
+                        enabled=True,
+                        type="tts",
+                        provider="openai_compatible",
+                    ),
+                ],
+            )
+            for name in note_types
+        ]
+    ).dict()
+
+
+class TestAPinOnTheRetiredSlotIsShownAsItsEndpoint:
+    """The table shows a field pinned to `openai_compatible` as the endpoint the slot moved
+    to, and a save keeps the STORED id unless the user picks another provider for that row.
+
+    The collection is shared by every device, each with its own providers.toml (ADR-022).
+    `openai_compatible` resolves on all of them; `custom:Self-hosted` is a label THIS machine
+    chose. On a device whose slot got another label it is someone else's server, and on the
+    previous release it is not listed, so that device's picker shows "(inherit)" and its next
+    save un-pins the field everywhere.
+    """
+
+    def _controller(self, config_dir, monkeypatch, blob, *, moved=True):
+        from omnia.core import anki_compat
+        from omnia.core.config.loader import ConfigLoader
+        from omnia.core.config.repository import ConfigRepository
+        from omnia.plugins.smart_notes.integration.store import SmartNotesStore
+
+        (config_dir / "providers.toml").write_text(
+            '[llm.openai_compatible]\nbase_url = "https://gpu.example/v1"\n'
+            'api_key = "k"\n',
+            encoding="utf-8",
+        )
+        repo = ConfigRepository(ConfigLoader(config_dir))
+        if moved:
+            repo.migrate_legacy_endpoint()
+        monkeypatch.setattr(
+            anki_compat,
+            "note_type_field_names",
+            lambda _nt: ["Word", "Meaning", "Audio"],
+        )
+        monkeypatch.setattr(anki_compat, "find_note_ids", lambda _query: [])
+        col = _Col({"omnia:smart_notes": blob})
+        store = SmartNotesStore(col_provider=lambda: col)
+        ctx = _fake_ctx(
+            repo=repo, store=store, settings=store.load, all_decks=lambda: []
+        )
+        return ConfigController(ctx, reject=lambda: None), col
+
+    @staticmethod
+    def _providers(payload: dict[str, Any]) -> dict[str, str]:
+        return {row["field"]: row["provider"] for row in payload["rows"]}
+
+    @staticmethod
+    def _save_vocab(
+        controller: ConfigController, picks: dict[str, str] | None = None
+    ) -> None:
+        """Open Vocab, choose each ``picks`` provider in its row, and press Save."""
+        payload = controller.load_payload_for("Vocab")
+        for row in payload["rows"]:
+            row["provider"] = (picks or {}).get(row["field"], row["provider"])
+        result = controller.on_save(
+            {
+                "note_type": "Vocab",
+                "base_field": payload["base_field"],
+                "rows": payload["rows"],
+                "decks": payload["decks"],
+            }
+        )
+        assert result == {"ok": True}
+
+    def test_a_moved_slot_shows_as_its_endpoint(self, config_dir, monkeypatch):
+        controller, _col = self._controller(
+            config_dir, monkeypatch, _pinned_blob("Vocab")
+        )
+
+        shown = self._providers(controller.load_payload_for("Vocab"))
+
+        assert shown["Meaning"] == "custom:Self-hosted"
+        assert shown["Audio"] == "openai_compatible"  # a TTS id: nothing retired it
+
+    def test_switching_the_base_field_shows_it_the_same_way(
+        self, config_dir, monkeypatch
+    ):
+        controller, _col = self._controller(
+            config_dir, monkeypatch, _pinned_blob("Vocab")
+        )
+
+        shown = self._providers(
+            controller.on_set_base_field({"note_type": "Vocab", "base_field": "Word"})
+        )
+
+        assert shown["Meaning"] == "custom:Self-hosted"
+
+    def test_an_unmoved_slot_shows_as_it_is(self, config_dir, monkeypatch):
+        controller, _col = self._controller(
+            config_dir, monkeypatch, _pinned_blob("Vocab"), moved=False
+        )
+
+        shown = self._providers(controller.load_payload_for("Vocab"))
+
+        assert shown["Meaning"] == "openai_compatible"
+
+    def test_looking_writes_nothing(self, config_dir, monkeypatch):
+        controller, col = self._controller(
+            config_dir, monkeypatch, _pinned_blob("Vocab")
+        )
+
+        controller.load_payload_for("Vocab")
+        controller.on_set_base_field({"note_type": "Vocab", "base_field": "Word"})
+
+        assert col.writes == []
+
+    @staticmethod
+    def _saved_providers(col: _Col, note_type: str = "Vocab") -> dict[str, str]:
+        saved = {
+            nt["note_type"]: nt for nt in col.conf["omnia:smart_notes"]["note_types"]
+        }
+        return {f["field"]: f["provider"] for f in saved[note_type]["fields"]}
+
+    def test_an_untouched_save_keeps_the_stored_id(self, config_dir, monkeypatch):
+        """Editing another row and saving must not trade a pin every device resolves for a
+        label only this one has."""
+        controller, col = self._controller(
+            config_dir, monkeypatch, _pinned_blob("Vocab")
+        )
+
+        self._save_vocab(controller)
+
+        assert self._saved_providers(col) == {
+            "Meaning": "openai_compatible",
+            "Audio": "openai_compatible",
+        }
+
+    def test_an_untouched_save_leaves_the_note_type_as_it_was(
+        self, config_dir, monkeypatch
+    ):
+        blob = _pinned_blob("Vocab")
+        before = json.dumps(blob["note_types"][0])
+        controller, col = self._controller(config_dir, monkeypatch, blob)
+
+        self._save_vocab(controller)
+
+        assert json.dumps(col.conf["omnia:smart_notes"]["note_types"][0]) == before
+
+    @pytest.mark.parametrize("chosen", ["gemini", ""], ids=["another", "inherit"])
+    def test_a_row_the_user_repins_is_written_as_chosen(
+        self, config_dir, monkeypatch, chosen
+    ):
+        controller, col = self._controller(
+            config_dir, monkeypatch, _pinned_blob("Vocab")
+        )
+
+        self._save_vocab(controller, picks={"Meaning": chosen})
+
+        assert self._saved_providers(col)["Meaning"] == chosen
+
+    def test_every_other_note_type_is_left_byte_for_byte(self, config_dir, monkeypatch):
+        blob = _pinned_blob("Vocab", "Grammar")
+        stored = {nt["note_type"]: json.dumps(nt) for nt in blob["note_types"]}
+        controller, col = self._controller(config_dir, monkeypatch, blob)
+
+        self._save_vocab(controller)
+
+        saved = {
+            nt["note_type"]: json.dumps(nt)
+            for nt in col.conf["omnia:smart_notes"]["note_types"]
+        }
+        assert saved["Grammar"] == stored["Grammar"]
+
+    def test_the_saved_rows_carry_no_new_keys(self, config_dir, monkeypatch):
+        """An older build validating the blob sees the keys it always saw."""
+        blob = _pinned_blob("Vocab")
+        stored = {f["field"]: set(f) for f in blob["note_types"][0]["fields"]}
+        controller, col = self._controller(config_dir, monkeypatch, blob)
+
+        self._save_vocab(controller)
+
+        saved_fields = col.conf["omnia:smart_notes"]["note_types"][0]["fields"]
+        assert {f["field"]: set(f) for f in saved_fields} == stored

@@ -1444,13 +1444,14 @@ class TestTheConfiguredModelReachesTheCatalog:
     tell — so this one goes through the real object.
     """
 
-    def _context(self, config_dir, **openai_compatible):
+    def _context(self, config_dir, **endpoint):
         from omnia.core.config.loader import ConfigLoader
         from omnia.core.config.repository import ConfigRepository
 
         repo = ConfigRepository(ConfigLoader(config_dir))
-        for key, value in openai_compatible.items():
-            repo.set_provider_fields("llm", "openai_compatible", [(key, "text", value)])
+        repo.add_custom_provider("llm", "gpu")
+        for key, value in endpoint.items():
+            repo.set_provider_fields("llm", "custom:gpu", [(key, "text", value)])
 
         class _Ctx:
             pass
@@ -1474,7 +1475,7 @@ class TestTheConfiguredModelReachesTheCatalog:
         text, _image = self._models(ctx)
 
         assert (
-            text["openai_compatible"] == "omnia-local"
+            text["custom:gpu"] == "omnia-local"
         ), "the dialog read nothing, so the picker can offer nothing"
 
     def test_a_configured_image_model_is_read(self, config_dir):
@@ -1482,7 +1483,7 @@ class TestTheConfiguredModelReachesTheCatalog:
 
         _text, image = self._models(ctx)
 
-        assert image["openai_compatible"] == "my-sdxl"
+        assert image["custom:gpu"] == "my-sdxl"
 
     def test_it_reaches_the_catalog_the_page_receives(self, config_dir):
         ctx = self._context(config_dir, text_model="omnia-local")
@@ -1491,7 +1492,7 @@ class TestTheConfiguredModelReachesTheCatalog:
 
         payload = CatalogInputs.read(ctx).catalog()
 
-        assert "omnia-local" in payload["text_models"]["openai_compatible"]
+        assert "omnia-local" in payload["text_models"]["custom:gpu"]
 
     def test_a_broken_context_degrades_without_taking_the_dialog_down(self):
         class _Broken:

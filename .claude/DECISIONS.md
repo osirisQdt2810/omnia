@@ -2169,3 +2169,163 @@ it is logged with the peer and the size it produced.
   because the size is not known until the export finishes, which is exactly the number the progress
   display is built on, and because a failure half way would have already written a partial `.apkg` the
   target might keep.
+
+---
+
+## ADR-022: A retired provider slot is converted in place on each machine; its id stays a read-only alias; no migration writes the synced collection
+
+**Date**: 2026-09-30
+**Status**: Accepted — makes an exception to ADR-006/ADR-008's "migrate = start fresh" for a
+retired provider slot
+
+### Context
+Keys showed a built-in **Self-hosted / OpenAI-compatible** card, backed by the single
+`[llm.openai_compatible]` slot, beside the named endpoints #111 added (`[llm.custom.<label>]`, as
+many as needed). That was two ways to do one thing: the same server could be configured twice,
+and both provider pickers offered the bare `openai_compatible` id next to the endpoints. The card
+is being removed, so a named endpoint becomes the only way to connect a server of your own.
+
+One requirement shapes the rest: a user who filled the card in must keep working without doing
+anything.
+
+The slot is named in three places, and they are stored differently:
+
+1. `[llm.openai_compatible]` and its key under `.secrets/` — local files that never sync
+   (ADR-006).
+2. `[llm].provider`, the default model, in the same local `providers.toml`.
+3. `SmartNotesFieldConfig.provider` on each generated field — inside `omnia:smart_notes`, ONE key
+   in the synced collection, read and written by every device the user runs, each on whatever
+   build it has (ADR-010).
+
+ADR-006 and ADR-008 settled earlier storage moves with "no migration: start fresh". That was
+acceptable for settings a user re-enters once. Here it would drop a working server configuration
+and break every field pinned to the slot, which is what the requirement rules out.
+
+`openai_compatible` also cannot be unregistered: every named endpoint is built through the class
+registered under that name, and ADR-014 kept every registered name because persisted values —
+synced field pins, `.secrets/` file names — hold them.
+
+### Decision
+1. **Convert the local slot in place, once per machine.** At startup, before the
+   `PluginManager`, `ConfigRepository.migrate_legacy_endpoint()` moves a slot that has a base URL
+   into a new endpoint, `Self-hosted` (`Self-hosted 2`, … when the name is taken, compared
+   case-insensitively; an endpoint the user made is never edited or merged into). Every key is
+   carried verbatim, unknown ones included, and nothing is added: a model id the slot left to its
+   default resolves the same on the endpoint, so the endpoint sends the requests the slot sent.
+   The key moves to one secret file named for the endpoint, which both tables then reference; an
+   inline key moves out of the TOML. The new key is stored before the TOML naming it is written,
+   and the old one forgotten only after; every start also forgets the slot's old key file once
+   nothing names it after the slot has moved, which clears one left by a crash between
+   those steps. The slot is marked `moved_to = "<label>"`, which is what
+   makes the move happen once. The raw `providers.toml` is edited in place, and written only
+   when something changed, because tomli_w drops the user's comments; before the one write that
+   moves the slot, the file is copied once to `.secrets/providers.toml.pre-022`. A slot with no
+   base URL never worked and is left untouched.
+2. **Re-point the default on every start.** When `[llm].provider` is `openai_compatible` and the
+   endpoint the slot moved to exists, the provider becomes `custom:<label>`. Running this on
+   every start also corrects an older build on the same machine writing the old id back.
+3. **Keep the id as a read-only alias, resolved where it is consumed.**
+   `LLMSettings.canonical_provider` maps `openai_compatible` to `custom:<moved_to>` once the slot
+   has moved — even after that endpoint is removed, so a removal stays removed and a pin reports
+   the endpoint as unknown. `subsection()` and `ProviderHub._llm_config` resolve through it, and
+   so do writes (`_provider_table`), so a write through the old id lands where it is read. An
+   unmoved slot with a URL still builds from the slot; one without a URL fails with a message
+   pointing at Keys → Add endpoint.
+4. **No migration writes the synced collection, and neither does a save.** A field pinned to
+   the slot keeps `openai_compatible` in `omnia:smart_notes`. The dialog *shows* it as the
+   endpoint (`SmartNotesNoteTypeConfig.with_llm_providers`), and saving the note type gives every
+   row the user did not re-pin its stored id back (`with_stored_aliases`, the inverse). So the
+   collection keeps the stored id unless the user picks another provider for that row, and only
+   that choice is written. The Provider picker now keeps a saved id it does not list as
+   "<id> (saved)", so a save on this build cannot un-pin a field either.
+5. The registration, the `LLMSettings.openai_compatible` subsection (now
+   `LegacyEndpointLLMSettings`, which adds `moved_to`) and the TTS `openai_compatible` provider all
+   stay. Removing the slot and the alias is left to a future ADR.
+
+Named endpoints also stop inheriting OpenAI's image and embedding ids:
+`CustomEndpointLLMSettings` defaults them to empty, which is what put `gpt-image-1` in a new
+endpoint's Image model box. With no image model the provider sends its own fallback, the same
+`gpt-image-1`, so no request changes. The text model keeps the inherited `gpt-4o-mini`, because
+the hub always sends a table's text model: an empty default would have made a hand-written
+endpoint without one send no model at all.
+
+### Rationale
+- **Convert rather than start fresh**: the requirement is "keep working with no action", and the
+  data is small, local and fully understood — a table copy and one key file, with the old table
+  left readable for a downgrade.
+- **Per machine**: `providers.toml` and `.secrets/` never leave the machine, so nothing synced
+  could convert them; each device converts its own slot the first time this build starts there.
+- **Why not rewrite the collection automatically**:
+  - `omnia:smart_notes` is one synced key. A background write on this device competes with
+    edits another device has not synced yet; sync keeps one side, and the other side's edits to
+    every note type are lost.
+  - Older devices would lose every pinned field at once: they resolve `custom:Self-hosted` only
+    if they have an endpoint of that name, and they will not until they run this build.
+  - Older devices keep writing `openai_compatible` whenever they save a note type, so the alias
+    would still be needed. The rewrite would remove nothing.
+- **Why a save gives the stored id back**: `custom:<label>` is a label THIS machine chose when it
+  moved its slot, while `openai_compatible` resolves on every device through that device's own
+  slot or endpoint. A device whose slot took another label (`Self-hosted 2` after a clash) would
+  read the written id as someone else's server, and send its content and token there. The
+  previous release does not list the id, so its picker shows "(inherit)" and its next save
+  persists that — the field silently un-pinned on every device, falling to the default
+  provider, which may be a paid one.
+- **Why the alias outlives a removed endpoint**: falling back to the slot would bring back a
+  configuration the user deleted, with no card left to see it on.
+
+### Consequences
+**Positive**
+- A configured slot keeps working on each machine with no action; the default model and every
+  pinned field follow it.
+- The synced blob keeps `openai_compatible` on every row pinned to it, through saves too,
+  unless the user picks another provider for that row; every device goes on resolving the pin
+  with its own slot or endpoint, and no new keys appear.
+- A downgrade to the previous release (#111 or later) keeps working: the old table is intact,
+  `moved_to` rides along as an unknown key (`PersistedModel`), its key reference resolves, and
+  the default builds the endpoint.
+
+**Negative**
+- The move's write drops every comment in `providers.toml`: tomli_w writes none. The file as it
+  was is copied once, first, to `.secrets/providers.toml.pre-022`, and the path is logged. The
+  copy lives in `.secrets/` because it may hold an inline key — which it then keeps until the
+  user deletes it, even after the endpoint and its key file are removed.
+- The alias is permanent until a later ADR removes it, and so are the registration and the
+  settings subsection that serve it.
+- Changes made to the old card on a downgraded build are not carried over again: `moved_to`
+  makes the move happen once.
+- On the previous release a migrated file shows two cards for one server, "Self-hosted /
+  OpenAI-compatible" and "Self-hosted". Both tables name one key file, so removing "Self-hosted"
+  there also shreds the old card's key and resets the default provider; the old card then fails
+  with "requires an api_key".
+- Older builds fare worse, as checked against their code. A build from before #111 cannot
+  resolve `[llm].provider = "custom:Self-hosted"`: every field left on "(inherit)" fails with
+  "Unknown LLM provider" until the default is picked again, though fields pinned to
+  `openai_compatible` still work. A build from before ADR-010 (2026-08-14) refuses the file
+  outright, because `moved_to` and `[llm.custom]` are unknown keys to its strict models, so the
+  add-on does not load until `providers.toml` is restored from `.secrets/providers.toml.pre-022`
+  and the key entered again.
+- On a machine whose slot never had an address, a field still pinned to the old id fails with a
+  message until the user picks an endpoint for it.
+- The alias cannot fade out on its own: a row keeps `openai_compatible` until the user re-pins
+  it, so retiring the alias later needs its own answer for those rows. Re-selecting the endpoint
+  a row already resolves to looks the same as leaving the row alone, so it keeps the stored id
+  too — the same server on this machine.
+- One endpoint can be named two ways in the collection: `openai_compatible` on a row pinned
+  before the move, `custom:Self-hosted` on a row the user pins to the endpoint afterwards.
+
+### Alternatives considered
+- **Start fresh (ADR-006/ADR-008's rule).** Rejected: it discards a working server configuration
+  and breaks every pinned field, the opposite of the requirement.
+- **Rewrite `omnia:smart_notes` automatically at startup.** Rejected: see Rationale — edits lost
+  between devices, every pin broken on older builds, and the alias still needed.
+- **Write the endpoint's id when the user saves the note type** (this ADR's first version).
+  Rejected: see Rationale — a pin every device resolves is replaced by a label only some
+  devices have, and the previous release's picker then un-pins the field everywhere.
+- **Keep the card beside the endpoints.** Rejected: two ways to configure one server, and the
+  slot's OpenAI defaults kept leaking into what an endpoint showed.
+- **Merge the slot into an existing endpoint of the same name.** Rejected: it would overwrite
+  the address and key of an endpoint the user made.
+- **Unregister or rename `openai_compatible`.** Rejected: every named endpoint is built through
+  it, and persisted values name it (ADR-014).
+- **Migrate inside the `ConfigRepository` constructor.** Rejected: building a repository would
+  then write files as a side effect, in every test and tool that builds one, not just in Anki.

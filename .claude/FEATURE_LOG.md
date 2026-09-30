@@ -21,6 +21,57 @@ Format for each entry:
 
 ---
 
+## 2026-09-30 — Named endpoints are the only way to connect your own server
+
+**What:** The built-in "Self-hosted / OpenAI-compatible" Keys card is gone, and neither provider
+picker offers the bare `openai_compatible` id. At startup, once per machine, a configured
+`[llm.openai_compatible]` is moved into a named endpoint **Self-hosted** (**Self-hosted 2**, …
+on a clash) with every key carried over, its secret moved to a file named for the endpoint, and
+`[llm].provider` re-pointed at it (ADR-022). `openai_compatible` stays registered and resolves as
+a read-only alias (`LLMSettings.canonical_provider`), so field pins in the synced collection keep
+working; the dialog shows them as the endpoint, and a save gives each row its stored id back
+unless the user picks another provider for it. The field Provider picker now keeps a saved
+provider it does not list as "(saved)" instead of dropping it to "(inherit)". Named endpoints no
+longer inherit OpenAI's image and embedding ids, so a new endpoint's Image model box no longer
+says `gpt-image-1`; the text model keeps its `gpt-4o-mini` default, which is what gets sent.
+
+**Why:** Two ways to connect one server — the single card and the named endpoints — with the
+card's OpenAI defaults leaking into the endpoints. The requirement was that a filled-in card keeps
+working with nothing for the user to do.
+
+**Files:** `core/config/models.py` (`CustomEndpointLLMSettings`, `LegacyEndpointLLMSettings`,
+`label_in_use`, `canonical_provider`), `core/config/legacy_endpoint.py` (new —
+`LegacyEndpointMigration`), `core/config/repository.py` (`migrate_legacy_endpoint`,
+`_provider_table`), `core/config/loader.py` (`write_toml`, now all-or-nothing),
+`core/config/secrets.py` (`value_ref`), `core/providers/__init__.py` (`_llm_config`,
+`_RETIRED_SLOT`), `__init__.py` (`_bootstrap`),
+`core/providers/llm/__init__.py`, `core/providers/catalog.py`, `plugins/smart_notes/account.py`,
+`plugins/smart_notes/config.py` (`with_llm_providers`, `with_stored_aliases`),
+`gui/smart_notes/dialogs/controllers/config.py`, `gui/smart_notes/web/03-render.js`,
+`config/providers.example.toml`, `docs/guidance/local-server/README.md`, `docs/guide.md`.
+
+**How to verify:**
+```bash
+pytest tests/core/test_legacy_endpoint.py tests/core/test_custom_endpoints.py -q
+pytest tests/core/test_write_toml.py tests/plugins/smart_notes/test_smart_notes.py -q
+pytest tests/gui/test_provider_picker.py tests/gui/test_smart_notes_dialog_deps.py -q
+```
+By hand: with a filled-in card from an older build, start Anki once — Keys shows a
+**Self-hosted** card holding the same address and token, and, if the old card was the default
+model, it is the active default.
+
+**Notes / rollback:** The move writes `providers.toml` only when something changed and never
+writes the collection. Its one write drops the file's comments (tomli_w writes none), so the file
+as it was is copied first to `.secrets/providers.toml.pre-022`. Downgrading to the previous
+release keeps working: `[llm.openai_compatible]` is intact, its `moved_to` key is tolerated and
+its key reference resolves. But that release shows both the old card and **Self-hosted**, and
+removing **Self-hosted** there also shreds the old card's key (both name one file) and resets the
+default. Builds before #111 cannot resolve `[llm].provider = "custom:Self-hosted"`, and builds
+before ADR-010 refuse the file outright. Edits made to the old card on a downgraded build are not
+moved again.
+
+---
+
 ## 2026-09-30 — An endpoint lists its own models, and the contract for your own server
 
 **What:** The Text model / Image model boxes on an OpenAI-compatible endpoint's Keys card now

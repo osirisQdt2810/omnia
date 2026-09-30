@@ -152,6 +152,12 @@ def _bootstrap() -> None:
     except Exception:
         logger.exception("Failed to load Omnia config")
         raise
+    # Before any plugin reads the config: the retired single self-hosted slot becomes a named
+    # endpoint, once per machine (ADR-022). Never fatal — a slot left unmoved still resolves.
+    try:
+        repository.migrate_legacy_endpoint()
+    except Exception:
+        logger.exception("Could not move [llm.openai_compatible] to a named endpoint")
     _manager = PluginManager(repository, paths)
     _manager.setup()
     _restore_sharing(repository)

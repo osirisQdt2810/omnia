@@ -17,12 +17,14 @@ from omnia.core.providers.catalog import (
     voice_options_for_language,
     voices_for,
 )
+from omnia.core.providers.llm import _IMAGE_MODELS, _TEXT_MODELS
 from omnia.core.providers.tts.base import TTSVoice
 
 
 class TestProviderSubsets:
     def test_llm_subset_is_a_subset_of_registered_providers(self):
-        # The generation picker omits raw openai/openai_compatible (openrouter fronts them).
+        # The generation picker omits raw openai (openrouter fronts it) and the retired
+        # openai_compatible slot (a server of your own is a named endpoint, appended later).
         assert set(LLM_PROVIDERS).issubset(set(available_llm_providers()))
         assert "openai" not in LLM_PROVIDERS
         assert "gemini" in LLM_PROVIDERS and "openrouter" in LLM_PROVIDERS
@@ -44,10 +46,6 @@ class TestProviderSubsets:
 
 
 class TestModels:
-    #: The provider whose model ids belong to its operator rather than to a vendor, so no
-    #: curated list here could be right for anybody.
-    OPERATOR_NAMED = {"openai_compatible"}
-
     def test_every_provider_answers_with_a_list(self):
         # Never a KeyError: the picker calls this for whatever provider is selected.
         for provider in LLM_PROVIDERS:
@@ -56,19 +54,17 @@ class TestModels:
     def test_a_vendor_provider_offers_curated_ids(self):
         """A vendor's ids are knowable, so an empty list there means a provider was added to
         the picker and its models forgotten — which shows up as a dropdown with nothing in
-        it."""
+        it. Every provider the picker ships is a vendor's now: a server of your own is a
+        named endpoint, and is not in this list."""
         for provider in LLM_PROVIDERS:
-            if provider in self.OPERATOR_NAMED:
-                continue
             assert text_models(provider), f"{provider} has no text models"
 
-    def test_a_self_hosted_endpoint_offers_none_and_that_is_correct(self):
-        """Its ids are whatever its operator named them — "omnia-local", a HuggingFace path.
-
-        The user's own configured id is merged in by `catalog_payload`, which is the only list
-        that can honestly be offered for such a provider.
-        """
-        assert text_models("openai_compatible") == []
+    def test_the_retired_slot_has_no_entry_of_its_own(self):
+        """A server of your own is a named endpoint now; its ids are whatever its operator
+        named them, and `catalog_payload` merges the configured one in. The retired slot's
+        empty entry must not come back into the data the pickers read (ADR-022)."""
+        assert "openai_compatible" not in LLM_PROVIDERS
+        assert "openai_compatible" not in _TEXT_MODELS
 
     def test_models_for_image_kind_uses_image_list(self):
         assert models_for("gemini", "image") == image_models("gemini")
@@ -336,12 +332,12 @@ class TestAConfiguredModelIsOfferedPerField:
     def _payload(self, text=None, image=None):
         from omnia.core.providers.catalog import catalog_payload
 
-        return catalog_payload(None, text, image)
+        return catalog_payload(None, text, image, ["custom:gpu"])
 
     def test_the_configured_id_appears(self):
-        payload = self._payload({"openai_compatible": "omnia-local"})
+        payload = self._payload({"custom:gpu": "omnia-local"})
 
-        assert payload["text_models"]["openai_compatible"] == ["omnia-local"]
+        assert payload["text_models"]["custom:gpu"] == ["omnia-local"]
 
     def test_a_curated_list_keeps_its_order_and_gains_the_extra(self):
         """Curated order is a recommendation; the configured id is appended, not prepended."""
@@ -364,36 +360,42 @@ class TestAConfiguredModelIsOfferedPerField:
 
     def test_an_unset_model_adds_nothing(self):
         for value in ("", "   ", None):
-            payload = self._payload({"openai_compatible": value})
+            payload = self._payload({"custom:gpu": value})
 
-            assert payload["text_models"]["openai_compatible"] == []
+            assert payload["text_models"]["custom:gpu"] == []
 
     def test_image_models_merge_the_same_way(self):
-        payload = self._payload(None, {"openai_compatible": "my-sdxl"})
+        payload = self._payload(None, {"custom:gpu": "my-sdxl"})
 
-        assert payload["image_models"]["openai_compatible"] == ["my-sdxl"]
+        assert payload["image_models"]["custom:gpu"] == ["my-sdxl"]
 
     def test_no_configuration_at_all_is_the_curated_lists(self):
         payload = self._payload()
 
         assert payload["text_models"]["gemini"] == text_models("gemini")
-        assert payload["text_models"]["openai_compatible"] == []
+        assert payload["text_models"]["custom:gpu"] == []
 
 
 class TestWhatTheImageKindOffers:
-    """`_IMAGE_MODELS`' keys mean "can generate images", not "has ids we curated".
+    """A server you run yourself may serve `/images/generations`, and only its operator knows
+    the model's name — so it has to be pickable for an image field with no curated ids.
 
-    `openai_compatible` is a key with an empty list on purpose: a server you run yourself may
-    serve `/images/generations` and only its operator knows the model's name. Pinned because
-    the distinction is invisible from the dict alone — a reader tidying up "the empty one"
-    would remove a working setup's only route.
+    That used to be the retired `openai_compatible` slot, kept in `_IMAGE_MODELS` with an empty
+    list. It is a named endpoint now, appended to the image list by `providers_with_custom`,
+    and the retired id must not come back into the picker (ADR-022).
     """
 
-    def test_a_self_hosted_endpoint_may_be_picked_for_images(self):
-        assert "openai_compatible" in providers_for("image")
+    def test_the_retired_slot_is_not_offered(self):
+        assert "openai_compatible" not in providers_for("image")
+        assert "openai_compatible" not in catalog_payload()["image_providers"]
 
-    def test_it_offers_no_curated_image_ids(self):
-        assert image_models("openai_compatible") == []
+    def test_a_named_endpoint_may_be_picked_for_images(self):
+        payload = catalog_payload(custom_providers=["custom:gpu"])
+
+        assert "custom:gpu" in payload["image_providers"]
+
+    def test_the_retired_slot_has_no_image_entry_either(self):
+        assert "openai_compatible" not in _IMAGE_MODELS
 
     def test_a_provider_with_no_image_endpoint_is_still_excluded(self):
         # OpenRouter's image output is via chat modalities, not /images/generations.
