@@ -105,6 +105,22 @@ class OpenAICompatibleLLMSettings(LLMModelSettings):
     json_output: bool = False
 
 
+class CustomEndpointLLMSettings(OpenAICompatibleLLMSettings):
+    """One of the user's own endpoints (``[llm.custom.<label>]``): it claims no model ids.
+
+    The inherited defaults are OpenAI's own ids, which is right for ``[llm.openai]`` and wrong
+    for a server whose ids belong to whoever runs it. A new endpoint's Image model box showed
+    ``gpt-image-1`` — a model no self-hosted server serves — and nothing on the card said the
+    value came from a default rather than from the server. Empty says "not chosen yet", which
+    is the truth. The provider still falls back to its own ids when a box is left empty, so
+    nothing changes on the wire.
+    """
+
+    text_model: str = ""
+    image_model: str = ""
+    embedding_model: str = ""
+
+
 #: Prefix marking a provider name as one of the user's own endpoints rather than a built-in.
 #:
 #: A prefix rather than a bare name so a custom endpoint can never shadow — or be shadowed by —
@@ -157,7 +173,7 @@ class LLMSettings(PersistedModel):
     )
     #: The user's own endpoints, ``{label: settings}``. Lives in ``providers.toml``, which does
     #: NOT sync — so adding one cannot reach another device and cannot break an older build.
-    custom: dict[str, OpenAICompatibleLLMSettings] = Field(default_factory=dict)
+    custom: dict[str, CustomEndpointLLMSettings] = Field(default_factory=dict)
 
     def subsection(self, provider: str) -> Optional[BaseModel]:
         """The settings for ``provider``, shipped or custom, or None when there are none.
