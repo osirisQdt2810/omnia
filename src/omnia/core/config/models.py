@@ -107,17 +107,22 @@ class OpenAICompatibleLLMSettings(LLMModelSettings):
 
 
 class CustomEndpointLLMSettings(OpenAICompatibleLLMSettings):
-    """One of the user's own endpoints (``[llm.custom.<label>]``): it claims no model ids.
+    """One of the user's own endpoints (``[llm.custom.<label>]``): no image or embedding id.
 
     The inherited defaults are OpenAI's own ids, which is right for ``[llm.openai]`` and wrong
     for a server whose ids belong to whoever runs it. A new endpoint's Image model box showed
     ``gpt-image-1`` — a model no self-hosted server serves — and nothing on the card said the
     value came from a default rather than from the server. Empty says "not chosen yet", which
-    is the truth. The provider still falls back to its own ids when a box is left empty, so
-    nothing changes on the wire.
+    is the truth, and nothing changes on the wire: with no image model the provider sends its
+    own fallback, the same ``gpt-image-1``, and nothing consumes the embedding model yet.
+
+    ``text_model`` keeps the inherited ``gpt-4o-mini``, deliberately. The hub always passes a
+    table's text model to the provider, so an empty default would REACH the wire: an endpoint
+    written by hand without one would stop sending the model it sent before and send none. A
+    new endpoint is unaffected, because :meth:`ConfigRepository.add_custom_provider` writes an
+    empty ``text_model`` of its own.
     """
 
-    text_model: str = ""
     image_model: str = ""
     embedding_model: str = ""
 

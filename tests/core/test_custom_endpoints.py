@@ -902,3 +902,23 @@ class TestANewEndpointClaimsNoModel:
     def test_openais_own_section_keeps_its_default(self):
         """OpenAI's ids ARE OpenAI's, so there the default is right and stays."""
         assert LLMSettings().openai.image_model == "gpt-image-1"
+
+    def test_a_table_naming_no_text_model_still_sends_the_default(self):
+        """Unlike the image model, the text model reaches the wire as the setting's value:
+        the hub always passes it, so the provider's own fallback never applies. An endpoint
+        written by hand without a `text_model` sent gpt-4o-mini before this release, and an
+        empty default would have sent no model at all."""
+        from conftest import FakeHttpClient
+
+        from omnia.core.providers import ProviderHub
+
+        http = FakeHttpClient(json={"choices": [{"message": {"content": "hi"}}]})
+        llm = LLMSettings.parse_obj(
+            {"custom": {"gpu": {"base_url": "http://x/v1", "api_key": "k"}}}
+        )
+
+        ProviderHub(llm, http=http).llm(provider="custom:gpu").generate_text("hello")
+
+        _method, _url, payload, _headers = http.calls[0]
+        assert payload["model"] == "gpt-4o-mini"
+        assert llm.subsection("custom:gpu").text_model == "gpt-4o-mini"
