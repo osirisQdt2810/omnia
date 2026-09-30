@@ -402,13 +402,24 @@ class AccountController:
             )
             return
 
+        auto = bool(data.get("auto"))
+
         def fetch() -> list[Any]:
+            from omnia.core.network.http import RetryPolicy, UrllibHttpClient
             from omnia.core.providers.llm.openai_compatible import (
                 OpenAICompatibleProvider,
             )
 
+            # An automatic load (the card just rendered) gives up in seconds and does not
+            # retry: opening a tab must never wait out a dead tunnel. A click is patient,
+            # because the user asked and the server may be waking up.
+            http = (
+                UrllibHttpClient(timeout=8, retry=RetryPolicy(max_attempts=1))
+                if auto
+                else UrllibHttpClient(timeout=30, retry=RetryPolicy(max_attempts=2))
+            )
             return OpenAICompatibleProvider(
-                api_key=api_key, base_url=base_url
+                api_key=api_key, base_url=base_url, http=http
             ).list_models()
 
         anki_compat.run_in_background(
@@ -420,6 +431,8 @@ class AccountController:
                 provider, error=self._ctx.friendly(exc, "Could not list models")
             ),
             label="Omnia: listing the endpoint's models…",
+            # Network only: off the single collection thread every review and sync queues on.
+            uses_collection=False,
         )
 
     def _push_endpoint_models(

@@ -16,12 +16,16 @@ import types
 from pathlib import Path
 
 import pytest
+from aqt_stubs import install_gui_stubs
 
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.llm.openai_compatible import (
     ListedModel,
     OpenAICompatibleProvider,
 )
+
+# The Account controller's module imports Qt widgets; there is no display here.
+install_gui_stubs()
 
 
 class TestReadingAModelList:
@@ -93,7 +97,10 @@ class TestTheKeysCardOp:
         from omnia.core.config.repository import ConfigRepository
         from omnia.gui.smart_notes.dialogs.controllers.account import AccountController
 
-        def run_now(fn, on_success=None, on_failure=None, label=""):
+        def run_now(
+            fn, on_success=None, on_failure=None, label="", uses_collection=True
+        ):
+            calls.append({"uses_collection": uses_collection})
             try:
                 result = fn()
             except Exception as exc:
@@ -101,11 +108,14 @@ class TestTheKeysCardOp:
             else:
                 on_success(result)
 
+        calls = []
+        self.calls = calls
         monkeypatch.setattr(anki_compat, "run_in_background", run_now)
         seen = {}
 
         def list_models(self):
             seen["base_url"], seen["api_key"] = self._base_url, self._api_key
+            seen["http"] = self._http
             if isinstance(provider_answer, Exception):
                 raise provider_answer
             return provider_answer
@@ -146,7 +156,37 @@ class TestTheKeysCardOp:
                 "api_key": "typed",
             }
         )
-        assert seen == {"base_url": "https://typed/v1", "api_key": "typed"}
+        assert (seen["base_url"], seen["api_key"]) == ("https://typed/v1", "typed")
+
+    def test_it_never_runs_on_the_collection_thread(self, config_dir, monkeypatch):
+        """A GET that can hang to a socket timeout must not queue reviewing and syncing behind
+        it, nor put Anki's modal progress over the whole app."""
+        controller, _evals, _ = self._controller(config_dir, monkeypatch, [])
+
+        controller.on_list_endpoint_models(
+            {"provider": "p", "base_url": "https://h/v1", "api_key": "k"}
+        )
+
+        assert self.calls == [{"uses_collection": False}]
+
+    def test_an_automatic_load_gives_up_fast_and_a_click_is_patient(
+        self, config_dir, monkeypatch
+    ):
+        """Opening a tab must not wait out a dead tunnel; pressing the button may wait for a
+        server that is waking up."""
+        controller, _evals, seen = self._controller(config_dir, monkeypatch, [])
+
+        controller.on_list_endpoint_models(
+            {"provider": "p", "base_url": "https://h/v1", "api_key": "k", "auto": True}
+        )
+        quick = seen["http"]
+        controller.on_list_endpoint_models(
+            {"provider": "p", "base_url": "https://h/v1", "api_key": "k"}
+        )
+        patient = seen["http"]
+
+        assert quick._timeout <= 10 and quick._retry.max_attempts == 1
+        assert patient._timeout > quick._timeout
 
     def test_a_missing_url_is_said_plainly_and_nothing_is_asked(
         self, config_dir, monkeypatch

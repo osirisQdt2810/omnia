@@ -1333,7 +1333,7 @@
       el.appendChild(modelsRow(card, el));
       const url = (card.fields || []).filter(function (f) { return f.key === "base_url"; })[0];
       if (url && url.value) {
-        loadEndpointModels(card.id, el);
+        loadEndpointModels(card.id, el, true);
       }
     }
 
@@ -1352,6 +1352,7 @@
     row.className = "sn-key-field sn-key-models";
     const label = document.createElement("div");
     label.className = "sn-key-label";
+    label.textContent = "Models";
     row.appendChild(label);
     const controls = document.createElement("div");
     controls.className = "sn-key-controls";
@@ -1375,19 +1376,27 @@
    * Ask the endpoint for its models, using what is in the card now (saved or not).
    * @param {string} provider The card's provider id.
    * @param {!HTMLElement} el The card element.
+   * @param {boolean=} auto True when nobody clicked: the add-on then gives up in seconds.
    */
-  function loadEndpointModels(provider, el) {
+  function loadEndpointModels(provider, el, auto) {
     const value = function (key) {
       const input = el.querySelector('.sn-key-input[data-key="' + key + '"]');
       return input ? input.value.trim() : "";
     };
     const note = el.querySelector(".sn-key-models-note");
+    const button = el.querySelector(".sn-key-load-models");
+    if (button && button.disabled) {
+      return;  // one load at a time per card
+    }
+    if (button) {
+      button.disabled = true;
+    }
     if (note) {
       note.className = "sn-key-models-note";
       note.textContent = "Loading models…";
     }
-    send("list_endpoint_models",
-         {provider: provider, base_url: value("base_url"), api_key: value("api_key")}, null);
+    send("list_endpoint_models", {provider: provider, base_url: value("base_url"),
+                                  api_key: value("api_key"), auto: !!auto}, null);
   }
 
   /**
@@ -1404,6 +1413,10 @@
       return;
     }
     const note = el.querySelector(".sn-key-models-note");
+    const button = el.querySelector(".sn-key-load-models");
+    if (button) {
+      button.disabled = false;
+    }
     if (res && res.error) {
       if (note) {
         note.className = "sn-key-models-note sn-err";
@@ -1435,6 +1448,9 @@
     }
   };
 
+  /** Makes each model box's suggestion list id unique on the page. */
+  let modelListSeq = 0;
+
   /**
    * Build one credential field row: a masked/text/file input + an eye reveal (secret) or a
    * Browse button (file). The field's key + kind ride on the input's dataset so the card's
@@ -1443,8 +1459,6 @@
    * @param {!Object} f {key, label, type, value}.
    * @return {!HTMLElement}
    */
-  let modelListSeq = 0;
-
   function keyField(provider, f) {
     const row = document.createElement("div");
     row.className = "sn-key-field";
