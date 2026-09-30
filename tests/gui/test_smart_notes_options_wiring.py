@@ -107,3 +107,36 @@ class TestTheOverwriteScopeControl:
         handlers = _text("web", "05-handlers.js")
 
         assert 'opts.overwrite_scope || "always"' in handlers
+
+    def test_its_box_is_ticked_for_good(self):
+        """The row carries a ticked box like the switches around it, and nothing unticks it.
+
+        The markup and the sheet are both checked because each fails on its own: a box that
+        keeps pointer events is unticked by a click on it, and a label without `for` hands a
+        click on its text to its first control, which is this box.
+        """
+        page = _text("web", "page.html")
+        opening = page.rindex("<label", 0, page.index('id="sn-opt-overwrite-scope"'))
+        row = page[opening : page.index("</label>", opening)]
+        box = re.search(r"<input[^>]*>", row)
+
+        assert box, "the overwrite row lost its box"
+        assert 'type="checkbox"' in box.group(0) and " checked" in box.group(0)
+        assert 'tabindex="-1"' in box.group(
+            0
+        ), "Tab would reach it, and Space untick it"
+        assert "sn-check-locked" in box.group(0)
+        assert 'for="sn-opt-overwrite-scope"' in row[: row.index(">")]
+        locked = re.search(r"\.sn-check-locked\s*\{([^}]*)\}", _text("web", "page.css"))
+        assert locked and "pointer-events: none" in locked.group(1)
+
+
+class TestTheOptionRows:
+    def test_no_box_is_squeezed_by_a_long_label(self):
+        """A flex item may shrink, and a box beside a long label did: 13px next to its 17px
+        neighbours, in the same dialog."""
+        rule = re.search(
+            r"\.sn-opt-row \.sn-check\s*\{([^}]*)\}", _text("web", "page.css")
+        )
+
+        assert rule and "flex: none" in rule.group(1)

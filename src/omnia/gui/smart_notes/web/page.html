@@ -306,8 +306,14 @@
         <input type="checkbox" id="sn-opt-regen-batch" class="sn-check">
         <span><b>Regenerate when batching</b> — during a batch, re-generate fields that already have content.</span>
       </label>
-      <label class="sn-opt-row sn-opt-choice" title="Overwrite says filled fields should be refreshed. This says WHOSE work may be thrown away doing it — a different question.&#10;&#10;Anything: what Overwrite has always done.&#10;Only fields Omnia generated: protects sentences you typed yourself. A field Omnia wrote and you then edited counts as yours again.&#10;Only fields Omnia did NOT generate: protects audio and images you already paid a provider to make.&#10;&#10;Fields filled before this setting existed carry no mark, so they count as not Omnia&#39;s.">
-        <span><b>When overwriting, replace</b> — which existing content a regeneration may destroy.</span>
+      <label class="sn-opt-row sn-opt-choice" for="sn-opt-overwrite-scope" title="Overwrite says filled fields should be refreshed. This says WHOSE work may be thrown away doing it — a different question.&#10;&#10;Anything: what Overwrite has always done.&#10;Only fields Omnia generated: protects sentences you typed yourself. A field Omnia wrote and you then edited counts as yours again.&#10;Only fields Omnia did NOT generate: protects audio and images you already paid a provider to make.&#10;&#10;Fields filled before this setting existed carry no mark, so they count as not Omnia&#39;s.&#10;&#10;The box stays ticked: every regeneration replaces something, and the picker says what.">
+        <!-- Ticked for good, so the row lines up with the switches around it. `for` points the
+             label at the picker: a label's control is otherwise its FIRST control, this box,
+             and a click on the text would untick it. -->
+        <span class="sn-opt-choice-label">
+          <input type="checkbox" class="sn-check sn-check-locked" checked tabindex="-1" aria-hidden="true">
+          <span><b>When overwriting, replace</b> — which existing content a regeneration may destroy.</span>
+        </span>
         <select id="sn-opt-overwrite-scope" class="sn-select">
           <option value="always">Anything</option>
           <option value="ours_only">Only what Omnia generated (and you have not edited)</option>
