@@ -428,6 +428,8 @@ class ConfigRepository:
         # The new key, then the TOML naming it, then the old key — the one order in which a
         # failure at any step leaves a key file behind every reference on disk.
         if result.changed:
+            if result.moved_to:
+                self._keep_pre_move_copy()
             if result.new_secret is not None:
                 self._secrets.store_value(
                     result.new_secret.name, result.new_secret.value
@@ -453,6 +455,30 @@ class ConfigRepository:
                 "endpoint the slot moved to"
             )
         return result.moved_to
+
+    #: Where :meth:`migrate_legacy_endpoint` keeps providers.toml as it was before the move.
+    _PRE_MOVE_COPY = "providers.toml.pre-022"
+
+    def _keep_pre_move_copy(self) -> None:
+        """Copy providers.toml, as it is before the move rewrites it, into ``.secrets/``.
+
+        tomli_w writes no comments, so the move's write drops every comment the user put in the
+        file, and it is the one write this build makes without being asked. The copy is how
+        they get them back. In ``.secrets/`` because the file may hold an inline key, and that
+        is the one place Omnia keeps files that must never leak.
+
+        Never overwritten: a second real move takes hand-editing ``moved_to`` away, and by then
+        the file has already lost its comments. A copy that cannot be made raises, so the move
+        does not happen without one; the slot then keeps resolving unmoved.
+        """
+        ref = SecretsStore.FILE_SCHEME + self._PRE_MOVE_COPY
+        kept = Path(str(self._secrets.resolve(ref)))
+        if kept.exists():
+            return
+        source = self._loader.config_dir / "providers.toml"
+        self._secrets.import_file(self._PRE_MOVE_COPY, str(source))
+        # The path only: the copy itself may hold a key.
+        _logger.info("kept providers.toml as it was before the move at %s", kept)
 
     @staticmethod
     def _default_provider(domain: str) -> str:

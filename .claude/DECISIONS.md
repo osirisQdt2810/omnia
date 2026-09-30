@@ -2215,8 +2215,9 @@ synced field pins, `.secrets/` file names — hold them.
    The key moves to one secret file named for the endpoint, which both tables then reference; an
    inline key moves out of the TOML. The slot is marked `moved_to = "<label>"`, which is what
    makes the move happen once. The raw `providers.toml` is edited in place, and written only
-   when something changed, because tomli_w drops the user's comments. A slot with no base URL
-   never worked and is left untouched.
+   when something changed, because tomli_w drops the user's comments; before the one write that
+   moves the slot, the file is copied once to `.secrets/providers.toml.pre-022`. A slot with no
+   base URL never worked and is left untouched.
 2. **Re-point the default on every start.** When `[llm].provider` is `openai_compatible` and the
    endpoint the slot moved to exists, the provider becomes `custom:<label>`. Running this on
    every start also corrects an older build on the same machine writing the old id back.
@@ -2279,6 +2280,10 @@ endpoint without one send no model at all.
   (`PersistedModel`), and its key reference still resolves.
 
 **Negative**
+- The move's write drops every comment in `providers.toml`: tomli_w writes none. The file as it
+  was is copied once, first, to `.secrets/providers.toml.pre-022`, and the path is logged. The
+  copy lives in `.secrets/` because it may hold an inline key — which it then keeps until the
+  user deletes it, even after the endpoint and its key file are removed.
 - The alias is permanent until a later ADR removes it, and so are the registration and the
   settings subsection that serve it.
 - Changes made to the old card on a downgraded build are not carried over again: `moved_to`

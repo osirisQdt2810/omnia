@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
+import logging
 
 import pytest
 
@@ -31,6 +32,8 @@ from omnia.core.providers import ProviderError, ProviderHub
 
 _OLD_KEY_FILE = "llm.openai_compatible.api_key"
 _NEW_KEY_FILE = "llm.custom%3ASelf-hosted.api_key"
+#: Where the move keeps providers.toml as it was, since rewriting it drops every comment.
+_PRE_MOVE_COPY = "providers.toml.pre-022"
 
 #: The slot as a user of the old card left it: every field filled in, a setting this release has
 #: never heard of, and a comment of their own.
@@ -90,8 +93,29 @@ def _bytes(config_dir):
 
 
 def _secret_files(config_dir):
+    """The key files in ``.secrets/`` — the pre-move copy of providers.toml is not one."""
     secrets = config_dir / ".secrets"
-    return sorted(p.name for p in secrets.iterdir()) if secrets.exists() else []
+    if not secrets.exists():
+        return []
+    return sorted(p.name for p in secrets.iterdir() if p.name != _PRE_MOVE_COPY)
+
+
+@pytest.fixture
+def config_log():
+    """What the config logger says while a test runs, as formatted messages."""
+    records = []
+
+    class _Keep(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    logger = logging.getLogger("omnia.config")
+    handler, level = _Keep(), logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    yield records
+    logger.removeHandler(handler)
+    logger.setLevel(level)
 
 
 def _built(settings, provider):
@@ -242,6 +266,65 @@ class TestNothingToMove:
 
         assert repo.migrate_legacy_endpoint() == ""
         assert _bytes(config_dir) == before
+
+
+class TestTheFileAsItWasIsKept:
+    """Rewriting providers.toml drops every comment the user put in it — tomli_w writes none.
+    The move is the one write this build makes on its own, so before it the file is copied,
+    once, into `.secrets/`: the one place Omnia keeps files that must not leak, which matters
+    because the file may hold an inline key."""
+
+    _COMMENTED = "# the office GPU box; the token rotates monthly\n" + _SLOT
+
+    def _copy(self, config_dir):
+        return config_dir / ".secrets" / _PRE_MOVE_COPY
+
+    def test_a_real_move_keeps_it_byte_for_byte(self, config_dir):
+        _write(config_dir, self._COMMENTED)
+        before = _bytes(config_dir)
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert self._copy(config_dir).read_bytes() == before
+
+    def test_nothing_is_copied_when_nothing_moves(self, config_dir):
+        _write(config_dir, _SLOT.replace("https://gpu.example/v1", ""))
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert not self._copy(config_dir).exists()
+
+    def test_a_re_point_alone_copies_nothing(self, config_dir):
+        _write(config_dir)
+        _repo(config_dir).migrate_legacy_endpoint()
+        self._copy(config_dir).unlink()
+        data = _raw(config_dir)
+        data["llm"]["provider"] = "openai_compatible"
+        write_toml(config_dir / "providers.toml", data)
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert not self._copy(config_dir).exists()
+
+    def test_an_earlier_copy_is_never_overwritten(self, config_dir):
+        """A second real move takes hand-editing `moved_to` away, and by then the file has
+        already lost its comments: copying it again would lose the only copy that has them.
+        """
+        _write(config_dir, self._COMMENTED)
+        self._copy(config_dir).write_text("the first copy", encoding="utf-8")
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        assert self._copy(config_dir).read_text(encoding="utf-8") == "the first copy"
+
+    def test_the_log_names_where_it_is_and_nothing_secret(self, config_dir, config_log):
+        _write(config_dir)
+
+        _repo(config_dir).migrate_legacy_endpoint()
+
+        said = "\n".join(config_log)
+        assert str(self._copy(config_dir)) in said
+        assert "gpu.example" not in said and "tok-123" not in said
 
 
 class TestRunningItAgain:

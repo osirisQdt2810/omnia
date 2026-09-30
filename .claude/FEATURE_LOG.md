@@ -56,8 +56,9 @@ pytest tests/gui/test_provider_picker.py tests/gui/test_smart_notes_dialog_deps.
 By hand: with a filled-in card from an older build, start Anki once — Keys shows a
 **Self-hosted** card holding the same address and token, and it is the active default.
 
-**Notes / rollback:** The move writes `providers.toml` only when something changed (tomli_w
-drops comments) and never writes the collection. Reverting the code leaves a working older-build
+**Notes / rollback:** The move writes `providers.toml` only when something changed and never
+writes the collection. Its one write drops the file's comments (tomli_w writes none), so the file
+as it was is copied first to `.secrets/providers.toml.pre-022`. Reverting the code leaves a working older-build
 setup: `[llm.openai_compatible]` is intact, its `moved_to` key is tolerated and its key reference
 resolves. Edits made to the old card on a downgraded build are not moved again.
 
