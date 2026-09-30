@@ -667,18 +667,32 @@ class TestTheRetiredIdResolves:
 
         assert _built(llm, "openai_compatible")._base_url == "http://x/v1"
 
+    @pytest.mark.parametrize("base_url", ["", "   "], ids=["empty", "whitespace"])
     @pytest.mark.parametrize(
         "pinned", ["openai_compatible", ""], ids=["a field's pin", "the default model"]
     )
-    def test_an_unmoved_slot_with_no_address_says_where_it_went(self, pinned):
+    def test_an_unmoved_slot_with_no_address_says_where_it_went(self, pinned, base_url):
+        """Whitespace is no address either: the move skips such a slot, so it has to meet
+        the same message rather than a key error from a provider built on "   "."""
         from omnia.core.providers import _RETIRED_SLOT
 
-        hub = ProviderHub(llm_settings=LLMSettings(provider="openai_compatible"))
+        llm = LLMSettings.parse_obj(
+            {
+                "provider": "openai_compatible",
+                "openai_compatible": {"base_url": base_url, "api_key": "k"},
+            }
+        )
 
         with pytest.raises(ProviderError) as caught:
-            hub.llm(provider=pinned)
+            ProviderHub(llm_settings=llm).llm(provider=pinned)
 
         assert str(caught.value) == _RETIRED_SLOT
+
+    def test_the_message_names_the_real_way_to_the_keys(self):
+        """Keys sits behind a modal: the words "Usage & keys → Keys" alone find nothing."""
+        from omnia.core.providers import _RETIRED_SLOT
+
+        assert "⚙ Options → Usage & Keys → 🔑 Keys → Add endpoint" in _RETIRED_SLOT
 
 
 class TestAWriteThroughTheRetiredIdFollowsIt:

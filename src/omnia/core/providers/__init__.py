@@ -44,8 +44,8 @@ if TYPE_CHECKING:
 #: so there was nothing to move into a named endpoint (ADR-022).
 _RETIRED_SLOT = (
     "“Self-hosted / OpenAI-compatible” is now a named endpoint. Add your server under "
-    "Usage & keys → Keys → Add endpoint, then choose it for this field or as the Default "
-    "model."
+    "Smart Notes → ⚙ Options → Usage & Keys → 🔑 Keys → Add endpoint, then choose it for "
+    "this field or as the Default model."
 )
 
 
