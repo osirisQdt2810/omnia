@@ -93,3 +93,58 @@ class TestAWriteIsAllOrNothing:
         write_toml(path, {"llm": {"provider": "gemini"}})
 
         assert read_toml(path) == {"llm": {"provider": "gemini"}}
+
+
+class TestWhereTheWriteLands:
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
+    def test_a_link_the_user_made_keeps_pointing_where_it_did(self, tmp_path):
+        """Replaced by path, a symlinked providers.toml became a plain file and the file it
+        named went stale; the file it names is the one written."""
+        real = tmp_path / "elsewhere.toml"
+        real.write_text(_BEFORE, encoding="utf-8")
+        link = tmp_path / "providers.toml"
+        link.symlink_to(real)
+
+        write_toml(link, {"llm": {"provider": "custom:gpu"}})
+
+        assert link.is_symlink()
+        assert read_toml(real) == {"llm": {"provider": "custom:gpu"}}
+
+
+class TestAWindowsSharingRefusal:
+    """On Windows an antivirus scan or the indexer holding a file for a moment refuses the
+    replace with PermissionError, where an in-place write would have gone through."""
+
+    def _flaky_replace(self, monkeypatch, refusals):
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(target)
+            if len(calls) <= refusals:
+                raise PermissionError(32, "The process cannot access the file")
+            real(source, target)
+
+        monkeypatch.setattr(loader.os, "replace", replace)
+        monkeypatch.setattr(loader.time, "sleep", lambda _s: None)
+        return calls
+
+    def test_it_is_retried_where_it_happens(self, existing, monkeypatch):
+        calls = self._flaky_replace(monkeypatch, refusals=2)
+        monkeypatch.setattr(loader, "_REPLACE_ATTEMPTS", 5)
+
+        write_toml(existing, {"llm": {"provider": "custom:gpu"}})
+
+        assert len(calls) == 3
+        assert read_toml(existing) == {"llm": {"provider": "custom:gpu"}}
+
+    def test_a_refusal_that_lasts_leaves_the_old_file_and_no_temp(
+        self, existing, monkeypatch
+    ):
+        self._flaky_replace(monkeypatch, refusals=99)
+        monkeypatch.setattr(loader, "_REPLACE_ATTEMPTS", 3)
+
+        with pytest.raises(PermissionError):
+            write_toml(existing, {"llm": {"provider": "custom:gpu"}})
+
+        assert existing.read_text(encoding="utf-8") == _BEFORE
+        assert [p.name for p in existing.parent.iterdir()] == ["providers.toml"]
