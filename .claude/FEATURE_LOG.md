@@ -41,8 +41,10 @@ working with nothing for the user to do.
 
 **Files:** `core/config/models.py` (`CustomEndpointLLMSettings`, `LegacyEndpointLLMSettings`,
 `label_in_use`, `canonical_provider`), `core/config/legacy_endpoint.py` (new —
-`LegacyEndpointMigration`), `core/config/repository.py` (`migrate_legacy_endpoint`),
-`core/providers/__init__.py` (`_llm_config`, `_RETIRED_SLOT`), `__init__.py` (`_bootstrap`),
+`LegacyEndpointMigration`), `core/config/repository.py` (`migrate_legacy_endpoint`,
+`_provider_table`), `core/config/loader.py` (`write_toml`, now all-or-nothing),
+`core/config/secrets.py` (`value_ref`), `core/providers/__init__.py` (`_llm_config`,
+`_RETIRED_SLOT`), `__init__.py` (`_bootstrap`),
 `core/providers/llm/__init__.py`, `core/providers/catalog.py`, `plugins/smart_notes/account.py`,
 `plugins/smart_notes/config.py` (`with_llm_providers`, `with_stored_aliases`),
 `gui/smart_notes/dialogs/controllers/config.py`, `gui/smart_notes/web/03-render.js`,
@@ -51,6 +53,7 @@ working with nothing for the user to do.
 **How to verify:**
 ```bash
 pytest tests/core/test_legacy_endpoint.py tests/core/test_custom_endpoints.py -q
+pytest tests/core/test_write_toml.py tests/plugins/smart_notes/test_smart_notes.py -q
 pytest tests/gui/test_provider_picker.py tests/gui/test_smart_notes_dialog_deps.py -q
 ```
 By hand: with a filled-in card from an older build, start Anki once — Keys shows a
