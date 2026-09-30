@@ -423,13 +423,16 @@ class ConfigRepository:
             The endpoint's label when this call moved the slot, else ``""``.
         """
         data = self._loader.read_file("providers.toml")
-        result = LegacyEndpointMigration(self._secrets, self._secret_name).run(data)
+        migration = LegacyEndpointMigration(self._secrets.resolve, self._secret_name)
+        result = migration.run(data)
         if not result.changed:
             # Nothing written, and that matters: tomli_w drops every comment in the file, so
             # a write that changed nothing would still strip the user's notes on every start.
             return ""
-        # New secret (already stored by the move), then the TOML naming it, then the old
-        # secret: a failed write at any point leaves a key the file on disk still names.
+        # The new key, then the TOML naming it, then the old key — the one order in which a
+        # failure at any step leaves a key file behind every reference on disk.
+        if result.new_secret is not None:
+            self._secrets.store_value(result.new_secret.name, result.new_secret.value)
         self._loader.write_file("providers.toml", data)
         if result.stale_secret:
             self._secrets.forget(result.stale_secret)

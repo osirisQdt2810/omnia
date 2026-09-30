@@ -11,16 +11,17 @@ pinned to ``openai_compatible`` keeps that value and is resolved where it is con
 (:meth:`~omnia.core.config.models.LLMSettings.canonical_provider`).
 
 Works on the RAW providers.toml dict, edited in place: rebuilding ``[llm]`` from this build's
-models would drop whatever it cannot parse (ADR-010). No ``aqt``/``anki`` imports, so it tests
-headless; the repository owns the file and the write.
+models would drop whatever it cannot parse (ADR-010). The move itself is pure — it touches no
+file, and hands back the secret to store and the one to forget — so the repository does every
+write in one place and one order. No ``aqt``/``anki`` imports, so it tests headless.
 """
 
 from __future__ import annotations
 
 import copy
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import Any
 
 from omnia.core.config.models import (
     LEGACY_ENDPOINT_LABEL,
@@ -35,19 +36,33 @@ _logger = get_logger("config")
 
 
 @dataclass(frozen=True)
+class SecretToStore:
+    """A key the move carries over, and the file it is to be stored under."""
+
+    name: str
+    #: The key itself: kept out of the repr, so a result that reaches a log never carries it.
+    value: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class LegacyEndpointResult:
-    """What one :meth:`LegacyEndpointMigration.run` did to the data it was handed.
+    """What one :meth:`LegacyEndpointMigration.run` did, and the secret I/O it leaves over.
+
+    The caller does that I/O in one order: store ``new_secret``, write the TOML, forget
+    ``stale_secret``. Any other order has a moment in which a reference on disk names a key
+    file that is not there, and a failed write at that moment loses the only copy of the key.
 
     Attributes:
         changed: The data was modified and has to be written back.
         moved_to: The label THIS run moved the slot to; ``""`` when it had moved before (the
             run only pointed ``[llm].provider`` at it again) or nothing was done.
-        stale_secret: A secret file nothing names any more. Forget it only AFTER the TOML that
-            names its replacement is on disk, or a failed write loses the only copy of the key.
+        new_secret: The key to store before the TOML naming it is written, if one moved.
+        stale_secret: A secret file nothing names any more, to forget once the TOML is on disk.
     """
 
     changed: bool = False
     moved_to: str = ""
+    new_secret: SecretToStore | None = None
     stale_secret: str = ""
 
 
@@ -55,16 +70,19 @@ class LegacyEndpointMigration:
     """Moves a configured slot into a named endpoint, once; re-points the active provider.
 
     Args:
-        secrets: The store the slot's key is read from and the endpoint's key is written to.
+        resolve: Maps a ``secret:`` reference to the key behind it, ``""`` when there is none —
+            :meth:`SecretsStore.resolve`. A reader only: the move writes nothing itself.
         secret_name: Maps ``(domain, provider, field)`` to a secret file name — the
             repository's own, so the endpoint's key lands exactly where removing the endpoint
             later looks for it.
     """
 
     def __init__(
-        self, secrets: SecretsStore, secret_name: Callable[[str, str, str], str]
+        self,
+        resolve: Callable[[str], object],
+        secret_name: Callable[[str, str, str], str],
     ) -> None:
-        self._secrets = secrets
+        self._resolve = resolve
         self._secret_name = secret_name
 
     def run(self, data: dict[str, Any]) -> LegacyEndpointResult:
@@ -82,20 +100,27 @@ class LegacyEndpointMigration:
         if not isinstance(llm.get("custom", {}), dict):
             _logger.warning("providers.toml: [llm.custom] is not a table; not moving")
             return LegacyEndpointResult()
-        label, stale = "", ""
+        label, secret, stale = "", None, ""
         if not str(legacy.get("moved_to") or ""):
             if not str(legacy.get("base_url") or "").strip():
                 return LegacyEndpointResult()
-            label, stale = self._move(llm, legacy)
+            label, secret, stale = self._move(llm, legacy)
         repointed = self._repoint(llm, legacy)
-        if stale and _names(data, f"{SecretsStore.VALUE_SCHEME}{stale}"):
+        if stale and _names(data, SecretsStore.value_ref(stale)):
             stale = ""  # another table still reads that file
         return LegacyEndpointResult(
-            changed=bool(label) or repointed, moved_to=label, stale_secret=stale
+            changed=bool(label) or repointed,
+            moved_to=label,
+            new_secret=secret,
+            stale_secret=stale,
         )
 
-    def _move(self, llm: dict[str, Any], legacy: dict[str, Any]) -> tuple[str, str]:
-        """Copy the slot into a new endpoint and mark it moved; return (label, stale secret).
+    def _move(
+        self, llm: dict[str, Any], legacy: dict[str, Any]
+    ) -> tuple[str, SecretToStore | None, str]:
+        """Copy the slot into a new endpoint and mark it moved.
+
+        Returns ``(label, the key to store, the file it came from)``.
 
         Every key is carried verbatim, unknown ones included, except the bookkeeping
         ``moved_to``, which belongs to the slot. Nothing is added: a model id the slot left to
@@ -110,39 +135,42 @@ class LegacyEndpointMigration:
             for key, value in legacy.items()
             if key != "moved_to"
         }
-        ref, stale = self._move_key(legacy.get("api_key"), custom_provider_name(label))
-        if ref:
+        secret, stale = self._move_key(
+            legacy.get("api_key"), custom_provider_name(label)
+        )
+        if secret is not None:
             # One file, named for its owner, and both tables name it: removing the endpoint
             # later shreds the key, while a downgraded build reading the slot still finds one.
-            endpoint["api_key"] = ref
-            legacy["api_key"] = ref
+            endpoint["api_key"] = legacy["api_key"] = SecretsStore.value_ref(
+                secret.name
+            )
         custom[label] = endpoint
         legacy["moved_to"] = label
-        return label, stale
+        return label, secret, stale
 
-    def _move_key(self, raw: object, provider: str) -> tuple[str, str]:
-        """Store the slot's key under ``provider``'s name; return (new ref, stale file).
+    def _move_key(self, raw: object, provider: str) -> tuple[SecretToStore | None, str]:
+        """The slot's key, bound for a file named for ``provider``; and the file it came from.
 
-        A ``secret:`` reference is read and its old file reported stale; an inline key is
-        moved into the secrets store, so the plaintext leaves the TOML. Anything else — no
-        key, a ``secret-file:`` path, a reference with nothing behind it — has no key to move,
-        and the caller copies it verbatim: ``("", "")``.
+        A ``secret:`` reference is read and its old file reported stale; an inline key moves
+        into the secrets store, so the plaintext leaves the TOML. Anything else — no key, a
+        ``secret-file:`` path, a reference with nothing behind it — has no key to move, and the
+        caller copies it verbatim: ``(None, "")``.
         """
         if (
             not isinstance(raw, str)
             or not raw
             or raw.startswith(SecretsStore.FILE_SCHEME)
         ):
-            return "", ""
+            return None, ""
         stale = ""
         value = raw
         if raw.startswith(SecretsStore.VALUE_SCHEME):
             stale = raw[len(SecretsStore.VALUE_SCHEME) :]
-            value = str(self._secrets.resolve(raw))
+            value = str(self._resolve(raw) or "")
         if not value:
-            return "", ""
+            return None, ""
         name = self._secret_name("llm", provider, "api_key")
-        return self._secrets.store_value(name, value), stale
+        return SecretToStore(name, value), stale
 
     @staticmethod
     def _free_label(existing: dict[str, Any]) -> str:
@@ -173,7 +201,7 @@ class LegacyEndpointMigration:
         return True
 
 
-def _table(parent: dict[str, Any], key: str, where: str) -> Optional[dict[str, Any]]:
+def _table(parent: dict[str, Any], key: str, where: str) -> dict[str, Any] | None:
     """``parent[key]`` when it is a table, else None — with a warning when it is not one."""
     value = parent.get(key)
     if value is not None and not isinstance(value, dict):

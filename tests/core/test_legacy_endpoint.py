@@ -379,6 +379,113 @@ class TestTheKeyMoves:
         assert repo.llm_settings().openrouter.api_key == "tok-123"
 
 
+class TestTheMoveItselfIsPure:
+    """`run()` edits the dict it is handed and says which secret to store and which to forget;
+    it touches no file. That keeps the I/O in one place, in one order (below), and lets the
+    move be tested with nothing on disk at all."""
+
+    @staticmethod
+    def _run(data, keys=None):
+        from omnia.core.config.legacy_endpoint import LegacyEndpointMigration
+
+        stored = keys if keys is not None else {f"secret:{_OLD_KEY_FILE}": "tok-123"}
+        return LegacyEndpointMigration(
+            lambda ref: stored.get(ref, ""), ConfigRepository._secret_name
+        ).run(data)
+
+    @staticmethod
+    def _slot():
+        return {
+            "llm": {
+                "provider": "openai_compatible",
+                "openai_compatible": {
+                    "base_url": "https://gpu.example/v1",
+                    "api_key": f"secret:{_OLD_KEY_FILE}",
+                },
+            }
+        }
+
+    def test_it_hands_back_the_key_to_store_and_the_file_to_forget(self):
+        result = self._run(self._slot())
+
+        assert (result.new_secret.name, result.new_secret.value) == (
+            _NEW_KEY_FILE,
+            "tok-123",
+        )
+        assert result.stale_secret == _OLD_KEY_FILE
+
+    def test_both_tables_already_name_the_key_it_hands_back(self):
+        data = self._slot()
+
+        self._run(data)
+
+        llm = data["llm"]
+        assert llm["custom"]["Self-hosted"]["api_key"] == f"secret:{_NEW_KEY_FILE}"
+        assert llm["openai_compatible"]["api_key"] == f"secret:{_NEW_KEY_FILE}"
+
+    def test_the_key_never_shows_in_the_result(self):
+        """A result that reaches a log line must not carry the key with it."""
+        assert "tok-123" not in repr(self._run(self._slot()))
+
+    def test_a_reference_with_nothing_behind_it_hands_back_nothing(self):
+        result = self._run(self._slot(), keys={})
+
+        assert (result.new_secret, result.stale_secret) == (None, "")
+
+
+class TestTheOrderOfTheWrites:
+    """New key, then the TOML naming it, then the old key: a failure at any step leaves a key
+    file behind every reference on disk."""
+
+    @staticmethod
+    def _fail_the_write(config_dir, monkeypatch):
+        repo = _repo(config_dir)
+
+        def disk_full(_name, _data):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(repo._loader, "write_file", disk_full)
+        with pytest.raises(OSError):
+            repo.migrate_legacy_endpoint()
+
+    def test_a_failed_write_keeps_the_old_key_and_the_file(
+        self, config_dir, monkeypatch
+    ):
+        _write(config_dir)
+        before = _bytes(config_dir)
+
+        self._fail_the_write(config_dir, monkeypatch)
+
+        assert _bytes(config_dir) == before
+        assert (config_dir / ".secrets" / _OLD_KEY_FILE).read_text() == "tok-123"
+
+    def test_the_next_start_then_moves_the_key_intact(self, config_dir, monkeypatch):
+        _write(config_dir)
+        self._fail_the_write(config_dir, monkeypatch)
+
+        restarted = _repo(config_dir)
+        restarted.migrate_legacy_endpoint()
+
+        endpoint = restarted.llm_settings().subsection("custom:Self-hosted")
+        assert endpoint.api_key == "tok-123"
+        assert _secret_files(config_dir) == [_NEW_KEY_FILE]
+
+    def test_the_new_key_is_on_disk_before_the_toml_names_it(self, config_dir):
+        _write(config_dir)
+        repo = _repo(config_dir)
+        seen = []
+        write = repo._loader.write_file
+
+        def watching(name, data):
+            seen.append((config_dir / ".secrets" / _NEW_KEY_FILE).exists())
+            return write(name, data)
+
+        repo._loader.write_file = watching
+        repo.migrate_legacy_endpoint()
+
+        assert seen == [True]
+
+
 class TestTheRetiredIdResolves:
     """A Smart Notes field pinned to `openai_compatible` lives in the synced collection, which
     nothing here writes — so the id has to go on meaning something."""
