@@ -25,7 +25,10 @@ with ``tomli_w``.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
@@ -49,12 +52,34 @@ def read_toml(path: Path) -> dict[str, Any]:
 
 
 def write_toml(path: Path, data: dict[str, Any]) -> None:
-    """Serialise ``data`` to the TOML file at ``path`` (creating parents as needed)."""
+    """Serialise ``data`` to the TOML file at ``path`` (creating parents as needed).
+
+    All or nothing. Writing in place truncated the file first, so a crash, a full disk or a
+    value tomli_w refuses left a torn providers.toml, and the next start raised
+    ``TOMLDecodeError`` before any of the add-on loaded. The TOML is now serialised in memory,
+    written to a temporary file beside ``path`` — ``os.replace`` is atomic only within one
+    filesystem — flushed to disk, and moved over ``path``. The old file's permission bits are
+    kept, so a file the user narrowed is not widened by a rewrite.
+    """
     import tomli_w
 
+    payload = tomli_w.dumps(data).encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "wb") as handle:
-        tomli_w.dump(data, handle)
+    handle, temp = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "wb") as file:
+            file.write(payload)
+            file.flush()
+            os.fsync(file.fileno())
+        if path.exists():
+            shutil.copymode(path, temp)
+        os.replace(temp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
