@@ -222,7 +222,7 @@ class TestTheCardOffersWhatWasListed:
         source = (
             Path(__file__).resolve().parents[2]
             / "src/omnia/gui/smart_notes/web/05-handlers.js"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         receiver = re.search(
             r"  window\.__snEndpointModels = function.*?\n  \};", source, re.S
         )
@@ -250,7 +250,11 @@ console.log(JSON.stringify({{
   text: text.value, image: image.value, note: note.textContent, noteClass: note.className }}));
 """
         out = subprocess.run(
-            ["node", "-e", script], capture_output=True, text=True, timeout=60
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
         )
         assert out.returncode == 0, out.stderr
         return json.loads(out.stdout)
