@@ -25,7 +25,8 @@ Options:
     --dev        also create ``.venv`` and install the test tooling (pytest/ruff/black/mypy)
                  plus the pre-commit hooks — only needed to run the suite or to commit.
     --copy       copy instead of linking (a snapshot; re-run this script after every edit).
-    --submodules fetch the companion clippers under ``3rdparty/`` (not needed by the add-on).
+    --submodules fetch the companion clippers and the reference model gateway under
+                 ``3rdparty/`` (none of them needed by the add-on).
 """
 
 from __future__ import annotations
@@ -172,7 +173,7 @@ def install_dev_tooling() -> bool:
 def fetch_submodules() -> bool:
     return _run(
         ["git", "submodule", "update", "--init", "--recursive"],
-        why="the companion clippers under 3rdparty/",
+        why="the companion clippers and the model gateway under 3rdparty/",
     )
 
 

@@ -4,3 +4,6 @@
 [submodule "3rdparty/omnia-desktop-clipper"]
 	path = 3rdparty/omnia-desktop-clipper
 	url = https://github.com/osirisQdt2810/omnia-desktop-clipper.git
+[submodule "3rdparty/omnia-llm"]
+	path = 3rdparty/omnia-llm
+	url = https://github.com/osirisQdt2810/omnia-llm.git

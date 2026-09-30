@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from omnia.core.network.http import DEFAULT_HTTP_CLIENT, HttpClient
@@ -13,6 +14,47 @@ from omnia.core.providers.openai_family import (
     openai_family_base_url,
     require_base_url,
 )
+
+#: The kinds a listed model can be for. A model with no ``kind`` is a text model: that is what
+#: every stock OpenAI-compatible server (vLLM, Ollama, LM Studio, llama.cpp) lists, and none of
+#: them says so.
+MODEL_KINDS = ("text", "image")
+
+
+@dataclass(frozen=True)
+class ListedModel:
+    """One model an endpoint says it serves, and what it is for."""
+
+    id: str
+    kind: str = "text"
+
+    @classmethod
+    def from_listing(cls, payload: Any) -> list[ListedModel]:
+        """Read ``GET /models`` — the OpenAI shape, plus Omnia's optional ``kind`` per entry.
+
+        ``{"object": "list", "data": [{"id": "...", "kind": "text" | "image"}, ...]}``. An entry
+        without a usable id is skipped; an unknown ``kind`` falls back to text rather than
+        hiding the model, since a server from the future should not lose its models here.
+
+        Raises:
+            ProviderError: when the answer is not a model list at all.
+        """
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise ProviderError(f"Not a model list: {str(payload)[:200]}")
+        models: list[ListedModel] = []
+        seen: set[str] = set()
+        for entry in data:
+            model_id = (
+                str(entry.get("id") or "").strip() if isinstance(entry, dict) else ""
+            )
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            kind = str(entry.get("kind") or "text").strip().lower()
+            models.append(cls(model_id, kind if kind in MODEL_KINDS else "text"))
+        return models
+
 
 # Default base URL per config name — the openai family is ONE class under three names that
 # differ only by where they point. ``from_config`` picks the URL by ``config['provider']``.
@@ -255,6 +297,20 @@ class OpenAICompatibleProvider(LLMProvider):
                 "json_schema": {"name": "omnia_items", "schema": schema},
             },
         )
+
+    def list_models(self) -> list[ListedModel]:
+        """The models this endpoint serves: ``GET <base_url>/models``, with the api key.
+
+        What lets a user pick a model instead of typing one. Asks the endpoint rather than a
+        curated list because a self-hosted server's ids belong to its operator.
+
+        Raises:
+            ProviderError: unreachable, refused, or not a model list — with the reason.
+        """
+        resp = self._http.get_json(
+            f"{require_base_url(self._base_url)}/models", headers=self._headers()
+        )
+        return ListedModel.from_listing(resp)
 
     def fetch_credit(self) -> Optional[dict]:
         """Return OpenRouter credit ``{total, used, remaining}``, else None (best-effort).

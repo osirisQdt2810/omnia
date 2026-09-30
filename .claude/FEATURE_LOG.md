@@ -21,6 +21,35 @@ Format for each entry:
 
 ---
 
+## 2026-09-30 — An endpoint lists its own models, and the contract for your own server
+
+**What:** The Text model / Image model boxes on an OpenAI-compatible endpoint's Keys card now
+offer what the endpoint serves: **↻ Load models** (also automatic when the card has a URL, and
+after Save) calls `GET <base>/models` with the card's current URL and key — saved or not — and
+fills each box's suggestions with the models of its kind. The boxes stay free text. `/models` is
+the OpenAI shape plus an optional `kind: "text" | "image"` per model; a model without one is text,
+so vLLM, Ollama, LM Studio and llama.cpp work unchanged. The reference gateway is now its own
+public repo, added as the `3rdparty/omnia-llm` submodule.
+
+**Why:** A self-hosted endpoint's ids belong to its operator; the user had to know and type them.
+
+**Files:** `core/providers/llm/openai_compatible.py` (`ListedModel`, `list_models`),
+`gui/smart_notes/dialogs/controllers/account.py` (`on_list_endpoint_models`),
+`plugins/smart_notes/account.py` (the `model` field type), `gui/smart_notes/web/05-handlers.js`,
+`page.css`, `.gitmodules`.
+
+**How to verify:**
+```bash
+pytest tests/gui/test_endpoint_models.py -q
+```
+By hand: Keys → an endpoint card → **↻ Load models** → click the Text model box.
+
+**Notes / rollback:** The fetch runs off the Qt thread and never blocks the dialog. Omnia waits
+60 s per attempt and retries timeouts up to three times, which is what carries a sleeping
+server's first request through its ~90 s wake-up — a server must answer that retry.
+
+---
+
 ## 2026-09-25 — A field waits only for what its tools actually read
 
 **What:** The Smart Notes blocking gate holds a field back only on hard prerequisites its tool
