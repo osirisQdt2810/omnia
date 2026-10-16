@@ -104,6 +104,8 @@ class TestOpRegistryCompleteness:
         "account_keys",
         "account_keys_credit",
         "list_endpoint_models",
+        "endpoint_server_settings",
+        "endpoint_stop_gpu",
         "add_endpoint",
         "remove_endpoint",
         "set_default_model",

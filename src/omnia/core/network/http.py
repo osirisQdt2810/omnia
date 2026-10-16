@@ -85,6 +85,20 @@ class HttpClient(ABC):
         """POST ``payload`` as JSON; return the parsed JSON object response."""
 
     @abstractmethod
+    def put_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        """PUT ``payload`` as JSON; return the parsed JSON object response.
+
+        Retried like a POST (429 and network errors only), not like a GET: the one PUT caller
+        changes a server setting, and a 5xx may mean it already did.
+        """
+
+    @abstractmethod
     def post_form(
         self,
         url: str,
@@ -148,6 +162,17 @@ class UrllibHttpClient(HttpClient):
             self._request(self._build_post(url, payload, headers)), url
         )
 
+    def put_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        return self._parse_json_object(
+            self._request(self._build_post(url, payload, headers, method="PUT")), url
+        )
+
     def post_form(
         self,
         url: str,
@@ -196,12 +221,15 @@ class UrllibHttpClient(HttpClient):
 
     @staticmethod
     def _build_post(
-        url: str, payload: dict[str, Any], headers: Optional[dict[str, str]]
+        url: str,
+        payload: dict[str, Any],
+        headers: Optional[dict[str, str]],
+        method: str = "POST",
     ) -> urllib.request.Request:
         body = json.dumps(payload).encode("utf-8")
         all_headers = {"Content-Type": "application/json", **(headers or {})}
         return urllib.request.Request(
-            url, data=body, headers=all_headers, method="POST"
+            url, data=body, headers=all_headers, method=method
         )
 
     @staticmethod
@@ -315,6 +343,16 @@ class ThrottledHttpClient(HttpClient):
     ) -> dict[str, Any]:
         with self._limiter.permit():
             return self._inner.post_json(url, payload, headers=headers)
+
+    def put_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        *,
+        headers: Optional[dict[str, str]] = None,
+    ) -> dict[str, Any]:
+        with self._limiter.permit():
+            return self._inner.put_json(url, payload, headers=headers)
 
     def post_form(
         self,

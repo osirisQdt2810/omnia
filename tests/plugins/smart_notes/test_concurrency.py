@@ -98,6 +98,9 @@ class _CountingTransport(HttpClient):
     def post_json(self, url, payload, *, headers=None):
         return self._send()
 
+    def put_json(self, url, payload, *, headers=None):
+        return self._send()
+
     def post_form(self, url, fields, *, headers=None):
         return self._send()
 

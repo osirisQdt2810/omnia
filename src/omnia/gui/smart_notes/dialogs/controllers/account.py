@@ -22,6 +22,8 @@ from omnia.core.logging import get_logger
 from omnia.gui.smart_notes.dialogs.context import SmartNotesContext
 
 if TYPE_CHECKING:
+    from omnia.core.network.http import HttpClient
+    from omnia.core.providers.server_control import ServerControl
     from omnia.plugins.smart_notes.engine import GenerationResult
 
 logger = get_logger("smart_notes")
@@ -44,6 +46,8 @@ class AccountController:
             "remove_endpoint": self.on_remove_endpoint,
             "account_keys_credit": self.on_account_keys_credit,
             "list_endpoint_models": self.on_list_endpoint_models,
+            "endpoint_server_settings": self.on_endpoint_server_settings,
+            "endpoint_stop_gpu": self.on_endpoint_stop_gpu,
             "set_default_model": self.on_set_default_model,
             "set_auto_voice": self.on_set_auto_voice,
             "refresh_voices": self.on_refresh_voices,
@@ -387,39 +391,21 @@ class AccountController:
         list can be checked before pressing Save. Pushed via ``window.__snEndpointModels``.
         """
         provider = str(data.get("provider", ""))
-        sub = self._ctx.repo.llm_settings().subsection(provider)
-        base_url = str(
-            data.get("base_url") or getattr(sub, "base_url", "") or ""
-        ).strip()
-        api_key = str(data.get("api_key") or getattr(sub, "api_key", "") or "").strip()
-        if not base_url:
-            self._push_endpoint_models(provider, error="Fill in the Base URL first.")
-            return
-        if not api_key:
-            self._push_endpoint_models(
-                provider,
-                error="Fill in the API key (any text, if your server needs none).",
-            )
+        base_url, api_key, missing = self._endpoint_address(provider, data)
+        if missing:
+            self._push_endpoint_models(provider, error=missing)
             return
 
         auto = bool(data.get("auto"))
 
         def fetch() -> tuple[list[Any], str]:
-            from omnia.core.network.http import RetryPolicy, UrllibHttpClient
             from omnia.core.providers.errors import ProviderError
             from omnia.core.providers.llm.openai_compatible import (
                 OpenAICompatibleProvider,
             )
             from omnia.core.providers.openai_family import with_api_path
 
-            # An automatic load (the card just rendered) gives up in seconds and does not
-            # retry: opening a tab must never wait out a dead tunnel. A click is patient,
-            # because the user asked and the server may be waking up.
-            http = (
-                UrllibHttpClient(timeout=8, retry=RetryPolicy(max_attempts=1))
-                if auto
-                else UrllibHttpClient(timeout=30, retry=RetryPolicy(max_attempts=2))
-            )
+            http = self._endpoint_http(auto)
 
             def listing(url: str) -> list[Any]:
                 return OpenAICompatibleProvider(
@@ -451,6 +437,147 @@ class AccountController:
             label="Omnia: listing the endpoint's models…",
             # Network only: off the single collection thread every review and sync queues on.
             uses_collection=False,
+        )
+
+    def _endpoint_address(
+        self, provider: str, data: dict[str, Any]
+    ) -> tuple[str, str, str]:
+        """``(base_url, api_key, missing)`` for an endpoint card's op.
+
+        What is IN the card wins — a URL and key typed a moment ago, not yet saved — and the
+        saved subsection fills what is blank. ``missing`` is the plain sentence to show when
+        either is still empty, else ``""``.
+        """
+        sub = self._ctx.repo.llm_settings().subsection(provider)
+        base_url = str(
+            data.get("base_url") or getattr(sub, "base_url", "") or ""
+        ).strip()
+        api_key = str(data.get("api_key") or getattr(sub, "api_key", "") or "").strip()
+        if not base_url:
+            return base_url, api_key, "Fill in the Base URL first."
+        if not api_key:
+            return (
+                base_url,
+                api_key,
+                "Fill in the API key (any text, if your server needs none).",
+            )
+        return base_url, api_key, ""
+
+    @staticmethod
+    def _endpoint_http(auto: bool) -> HttpClient:
+        """The HTTP client for an endpoint card's request (built off-thread, in the op).
+
+        An automatic load (the card just rendered) gives up in seconds and does not retry:
+        opening a tab must never wait out a dead tunnel. A click is patient, because the user
+        asked and the server may be waking up.
+        """
+        from omnia.core.network.http import RetryPolicy, UrllibHttpClient
+
+        if auto:
+            return UrllibHttpClient(timeout=8, retry=RetryPolicy(max_attempts=1))
+        return UrllibHttpClient(timeout=30, retry=RetryPolicy(max_attempts=2))
+
+    def on_endpoint_server_settings(self, data: dict[str, Any]) -> None:
+        """Read the server's idle timeout, or set it when ``minutes`` is given (off-thread).
+
+        For a self-hosted server that frees its GPU after a model sits idle (omnia-llm). Read
+        automatically when the card renders; set by its Apply button. Pushed via
+        ``window.__snEndpointServer`` — the settings (with ``saved`` after a set),
+        ``{unsupported}`` for a server without remote control, or ``{error}``.
+        """
+        provider = str(data.get("provider", ""))
+        minutes: Optional[int] = None
+        if "minutes" in data:
+            try:
+                minutes = int(str(data["minutes"]).strip())
+            except ValueError:
+                self._push_endpoint_server(
+                    provider, {"error": "Enter the minutes as a whole number."}
+                )
+                return
+
+        def apply(control: ServerControl) -> dict[str, Any]:
+            if minutes is None:
+                return control.settings().to_payload()
+            return {**control.set_idle_timeout(minutes).to_payload(), "saved": True}
+
+        self._run_server_control(
+            provider,
+            data,
+            apply,
+            failed=(
+                "Could not read the server's settings"
+                if minutes is None
+                else "Could not change the idle timeout"
+            ),
+            label="Omnia: asking the endpoint for its settings…",
+        )
+
+    def on_endpoint_stop_gpu(self, data: dict[str, Any]) -> None:
+        """Stop the server's running models now, freeing its GPU (off-thread; pushed back)."""
+
+        def stop(control: ServerControl) -> dict[str, Any]:
+            control.stop()
+            return {"stopped": True}
+
+        self._run_server_control(
+            str(data.get("provider", "")),
+            data,
+            stop,
+            failed="Could not stop the server's models",
+            label="Omnia: stopping the endpoint's models…",
+        )
+
+    def _run_server_control(
+        self,
+        provider: str,
+        data: dict[str, Any],
+        action: Callable[[ServerControl], dict[str, Any]],
+        *,
+        failed: str,
+        label: str,
+    ) -> None:
+        """Run ``action(ServerControl)`` off the collection thread and push its payload.
+
+        A 404 is ``{unsupported: true}`` — a server without remote control, not a failure.
+        Never logs the address or key: both belong to the user's own server.
+        """
+        base_url, api_key, missing = self._endpoint_address(provider, data)
+        if missing:
+            self._push_endpoint_server(provider, {"error": missing})
+            return
+        auto = bool(data.get("auto"))
+
+        def work() -> dict[str, Any]:
+            from omnia.core.providers.server_control import ServerControl
+
+            return action(ServerControl(base_url, api_key, self._endpoint_http(auto)))
+
+        def on_failure(exc: Exception) -> None:
+            from omnia.core.providers.server_control import (
+                RemoteControlUnsupportedError,
+            )
+
+            if isinstance(exc, RemoteControlUnsupportedError):
+                self._push_endpoint_server(provider, {"unsupported": True})
+            else:
+                self._push_endpoint_server(
+                    provider, {"error": self._ctx.friendly(exc, failed)}
+                )
+
+        anki_compat.run_in_background(
+            work,
+            on_success=lambda payload: self._push_endpoint_server(provider, payload),
+            on_failure=on_failure,
+            label=label,
+            # Network only: off the single collection thread every review and sync queues on.
+            uses_collection=False,
+        )
+
+    def _push_endpoint_server(self, provider: str, payload: dict[str, Any]) -> None:
+        """Send a remote-control result to the endpoint's Keys card."""
+        self._ctx.eval_js(
+            f"window.__snEndpointServer({json.dumps(provider)}, {json.dumps(payload)});"
         )
 
     def _push_endpoint_models(

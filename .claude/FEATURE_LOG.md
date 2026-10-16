@@ -21,6 +21,32 @@ Format for each entry:
 
 ---
 
+## 2026-10-16 — GPU controls on endpoint cards (stop now, idle timeout)
+
+**What:** Each endpoint card that has the Models row now has a **GPU** row: **■ Stop GPU now**
+(`POST {root}/stop`) and **Auto-stop after [N] min** + Apply (`GET`/`PUT {root}/settings`), where
+root is the Base URL without a trailing `/v1`. The HTTP lives in a new pure
+`core/providers/server_control.py` (`ServerControl`, `ServerSettings`,
+`RemoteControlUnsupportedError` for a 404); two controller ops (`endpoint_server_settings`,
+`endpoint_stop_gpu`) run it off the collection thread and push to `window.__snEndpointServer`.
+`HttpClient` gained `put_json` (abstract; urllib + throttled implementations).
+
+**Why:** A self-hosted omnia-llm server keeps an idle model on the GPU for 30 minutes; the user
+wanted to free it at once from Anki, and to change that wait, without SSH.
+
+**Files:** `src/omnia/core/providers/server_control.py`, `src/omnia/core/network/http.py`,
+`src/omnia/gui/smart_notes/dialogs/controllers/account.py`,
+`src/omnia/gui/smart_notes/web/05-handlers.js`, `src/omnia/gui/smart_notes/web/page.css`,
+`docs/guidance/local-server/{README,server-contract}.md`, tests in
+`tests/providers/test_server_control.py` and `tests/gui/test_endpoint_server.py`.
+
+**How to verify:** `pytest tests/providers/test_server_control.py tests/gui/test_endpoint_server.py -vv`;
+manually, open a `custom:` card pointed at omnia-llm — the minutes box fills on render.
+
+**Notes / rollback:** A stock OpenAI server answers 404, shown as a quiet "does not support remote
+GPU control" with the buttons hidden. The listing op now shares `_endpoint_address` /
+`_endpoint_http` with the new ops. Revert the commit to undo; no config is written.
+
 ## 2026-09-30 — Named endpoints are the only way to connect your own server
 
 **What:** The built-in "Self-hosted / OpenAI-compatible" Keys card is gone, and neither provider

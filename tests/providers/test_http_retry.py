@@ -159,6 +159,25 @@ class TestUrllibHttpClientRetry:
             b"&assertion=JWT"
         )
 
+    def test_put_json_sends_a_json_body_with_the_put_method(self, monkeypatch):
+        captured = {}
+
+        def fake(req, timeout=None):
+            captured["method"] = req.get_method()
+            captured["ctype"] = req.get_header("Content-type")
+            captured["body"] = req.data
+            return _Resp(b'{"idle_timeout_minutes": 5}')
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+        out = _client().put_json("https://h/settings", {"idle_timeout_minutes": 5})
+
+        assert out == {"idle_timeout_minutes": 5}
+        assert captured == {
+            "method": "PUT",
+            "ctype": "application/json",
+            "body": b'{"idle_timeout_minutes": 5}',
+        }
+
     def test_network_error_is_retried(self, monkeypatch):
         calls = {"n": 0}
 
