@@ -43,6 +43,20 @@ in those rows of the Fields table instead.
 The token is what grants access, so keep it to yourself. If someone else needs access, they
 should get their own token, which can then be revoked without affecting yours.
 
+### Free the GPU, or keep a model longer
+
+Below the model boxes, the **GPU** row talks to the server itself:
+
+- **■ Stop GPU now** stops every model running on the server at once and gives its GPU back,
+  for example when you have finished studying and want the GPU for something else. The next
+  request starts the model again, which takes a minute or two.
+- **Auto-stop after [N] min** sets how long an unused model keeps the GPU before the server
+  stops it (the server's default is usually 30 minutes; at most a day). Type the minutes and press
+  **Apply**. The card shows the value in force each time it opens.
+
+These need a server that supports them; omnia-llm does. With any other server the row says it
+does not support remote GPU control, and everything else on the card works as before.
+
 ## Coming from the single Self-hosted card
 
 Earlier versions had one built-in card for this, **Self-hosted / OpenAI-compatible**. It is

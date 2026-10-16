@@ -246,6 +246,13 @@ select:disabled { opacity: 0.7; }
 .sn-key-model-pick { flex: 0 0 110px; width: 110px; }
 .sn-key-models-note { font-size: 12px; color: var(--muted); margin-left: 10px; }
 .sn-key-models-note.sn-key-ok { color: var(--accent); }
+/* The GPU row: stop now, and the idle timeout. Hidden whole for a server without remote
+   control, which the note beside it then says. */
+.sn-key-server-actions { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sn-key-server-actions[hidden] { display: none; }
+.sn-key-stop-gpu, .sn-key-idle-apply { padding: 5px 12px; }
+.sn-key-server-text { font-size: 12px; color: var(--muted); }
+.sn-key-models-note.sn-err { color: var(--fail); }
 .sn-key-credit { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .sn-key-note { color: var(--muted); font-size: 12px; line-height: 1.4; }
 .sn-quota { display: flex; flex-direction: column; gap: 5px; }

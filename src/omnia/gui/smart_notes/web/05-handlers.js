@@ -1331,9 +1331,15 @@
     // cannot list is still usable, and so is a model it does not list.
     if ((card.fields || []).some(function (f) { return f.type === "model"; })) {
       el.appendChild(modelsRow(card, el));
+      // The same server may free its GPU on request (omnia-llm does): the row asks it.
+      el.appendChild(serverRow(card, el));
       const url = (card.fields || []).filter(function (f) { return f.key === "base_url"; })[0];
+      const key = (card.fields || []).filter(function (f) { return f.key === "api_key"; })[0];
       if (url && url.value) {
         loadEndpointModels(card.id, el, true);
+        if (key && key.value) {
+          sendEndpointServer("endpoint_server_settings", card.id, el, {auto: true});
+        }
       }
     }
 
@@ -1371,6 +1377,141 @@
     row.appendChild(controls);
     return row;
   }
+
+  /**
+   * The GPU row: "■ Stop GPU now", and "Auto-stop after [N] min" with Apply. Both talk to the
+   * server's own remote control, which a stock OpenAI-compatible server does not have; the
+   * receiver then hides them and says so.
+   * @param {!Object} card The provider card payload.
+   * @param {!HTMLElement} el The card element.
+   * @return {!HTMLElement}
+   */
+  function serverRow(card, el) {
+    const row = document.createElement("div");
+    row.className = "sn-key-field sn-key-server";
+    const label = document.createElement("div");
+    label.className = "sn-key-label";
+    label.textContent = "GPU";
+    row.appendChild(label);
+    const controls = document.createElement("div");
+    controls.className = "sn-key-controls";
+    const actions = document.createElement("span");
+    actions.className = "sn-key-server-actions";
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "sn-btn sn-key-stop-gpu";
+    stop.textContent = "■ Stop GPU now";
+    stop.title = "Stop the models running on this server now, freeing its GPU";
+    stop.addEventListener("click", function () {
+      stop.disabled = true;
+      sendEndpointServer("endpoint_stop_gpu", card.id, el, {}, "Stopping…");
+    });
+    const after = document.createElement("span");
+    after.className = "sn-key-server-text";
+    after.textContent = "Auto-stop after";
+    const idle = document.createElement("input");
+    idle.type = "number";
+    idle.className = "sn-input-num sn-key-idle";
+    idle.min = "1";
+    idle.max = "1440";
+    idle.step = "1";
+    idle.title = "Minutes an unused model keeps the GPU before the server stops it";
+    const unit = document.createElement("span");
+    unit.className = "sn-key-server-text";
+    unit.textContent = "min";
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.className = "sn-btn sn-key-idle-apply";
+    apply.textContent = "Apply";
+    apply.addEventListener("click", function () {
+      apply.disabled = true;
+      sendEndpointServer("endpoint_server_settings", card.id, el,
+                         {minutes: idle.value.trim()}, "Saving…");
+    });
+    [stop, after, idle, unit, apply].forEach(function (part) {
+      actions.appendChild(part);
+    });
+    const note = document.createElement("span");
+    note.className = "sn-key-models-note sn-key-server-note";
+    controls.appendChild(actions);
+    controls.appendChild(note);
+    row.appendChild(controls);
+    return row;
+  }
+
+  /**
+   * Send a remote-control op for the card's server, with the Base URL + key in the card now.
+   * @param {string} op endpoint_server_settings or endpoint_stop_gpu.
+   * @param {string} provider The card's provider id.
+   * @param {!HTMLElement} el The card element.
+   * @param {!Object} extra More payload ({auto} or {minutes}).
+   * @param {string=} pending The note to show while it runs.
+   */
+  function sendEndpointServer(op, provider, el, extra, pending) {
+    const value = function (key) {
+      const input = el.querySelector('.sn-key-input[data-key="' + key + '"]');
+      return input ? input.value.trim() : "";
+    };
+    const note = el.querySelector(".sn-key-server-note");
+    if (note && pending) {
+      note.className = "sn-key-models-note sn-key-server-note";
+      note.textContent = pending;
+    }
+    send(op, Object.assign({provider: provider, base_url: value("base_url"),
+                            api_key: value("api_key")}, extra), null);
+  }
+
+  /**
+   * Receive a remote-control result: the idle timeout, a save, a stop, no support, or an error.
+   * @param {string} provider The card's provider id.
+   * @param {!Object} res {idle_timeout_minutes, default_idle_timeout_minutes, saved?} |
+   *     {stopped} | {unsupported} | {error}.
+   */
+  window.__snEndpointServer = function (provider, res) {
+    const el = Array.prototype.filter.call(
+      document.querySelectorAll(".sn-key-card"),
+      function (card) { return card.dataset.provider === provider; })[0];
+    if (!el) {
+      return;
+    }
+    const note = el.querySelector(".sn-key-server-note");
+    const actions = el.querySelector(".sn-key-server-actions");
+    const idle = el.querySelector(".sn-key-idle");
+    ["sn-key-stop-gpu", "sn-key-idle-apply"].forEach(function (cls) {
+      const button = el.querySelector("." + cls);
+      if (button) {
+        button.disabled = false;
+      }
+    });
+    const say = function (text, state) {
+      if (note) {
+        note.className = "sn-key-models-note sn-key-server-note" + (state ? " " + state : "");
+        note.textContent = text;
+      }
+    };
+    res = res || {};
+    if (actions) {
+      // Shown again on any other answer: the Base URL may have been fixed and saved since.
+      actions.hidden = !!res.unsupported;
+    }
+    if (res.unsupported) {
+      say("This server does not support remote GPU control.", "");
+    } else if (res.error) {
+      say(res.error, "sn-err");
+    } else if (res.stopped) {
+      say("Stopped — the GPU is free", "sn-key-ok");
+    } else if (typeof res.idle_timeout_minutes === "number") {
+      if (idle) {
+        idle.value = String(res.idle_timeout_minutes);
+      }
+      if (res.saved) {
+        say("Saved: models stop after " + res.idle_timeout_minutes + " min idle", "sn-key-ok");
+      } else {
+        say("Idle models stop after " + res.idle_timeout_minutes + " min (server default " +
+            res.default_idle_timeout_minutes + ").", "");
+      }
+    }
+  };
 
   /**
    * Ask the endpoint for its models, using what is in the card now (saved or not).
@@ -1599,6 +1740,9 @@
         }
         if (el.querySelector(".sn-key-models")) {
           loadEndpointModels(card.id, el);
+        }
+        if (el.querySelector(".sn-key-server")) {
+          sendEndpointServer("endpoint_server_settings", card.id, el, {});
         }
       } else {
         status.className = "sn-key-status sn-err";

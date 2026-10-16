@@ -85,15 +85,21 @@ A server without this endpoint should list no image models.
 
 ### Lifecycle, at the server root (`BASE` without `/v1`)
 
-For servers that start models on demand. Omnia does not call these: they are for whoever runs
-the server, for example to warm a model up before a study session.
+For servers that start models on demand. Omnia calls `/settings` and `/stop` from the GPU row
+of an endpoint's Keys card; the rest are for whoever runs the server, for example to warm a
+model up before a study session.
 
 | Request | Token | Answer |
 |---|---|---|
 | `GET /health` | not needed | `200 {"ok": true}`, and nothing else |
 | `GET /status` | needed | `{"models": {…}, "devices": […], "time": "…"}`. Each entry of `models` is keyed by model id and holds `kind`, `engine`, `running`, `starting`, `device`, `idle_seconds` and `uptime_seconds` |
 | `POST /warm` | needed | Optional body `{"kinds": ["text", "image"]}`, both by default. Answers `202 {"warming": [ids], "models": {…}}` at once, and starts those models in the background |
-| `POST /stop` | needed | `200 {"stopped": true}` once every model is stopped |
+| `POST /stop` | needed | `200 {"stopped": true}` once every model is stopped. Omnia sends it for **■ Stop GPU now** |
+| `GET /settings` | needed | `{"idle_timeout_minutes": 30, "default_idle_timeout_minutes": 30}`: how long an unused model keeps its GPU now, and the server's own default. Omnia reads it when the card opens, and gives up after 8 seconds |
+| `PUT /settings` | needed | Body `{"idle_timeout_minutes": N}`, a whole number from 1 to 1440. Answers the same shape as `GET /settings`. Refuse anything else with `400 {"error": {"message": "…", "type": "bad_request"}}`; Omnia shows the message. Omnia sends it for **Apply** beside **Auto-stop after** |
+
+A server that answers `404` to `/settings` or `/stop` has no remote control. Omnia then hides the
+GPU row's buttons and says so, without treating it as an error.
 
 ## Errors and timing
 
