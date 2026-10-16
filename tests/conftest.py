@@ -633,10 +633,12 @@ def llm_provider_params():
 
 
 def tts_provider_params():
-    """Parametrize cases per TTS provider; mark ``tts`` only those needing an API/creds.
+    """Parametrize cases per TTS provider; mark ``tts`` those needing an API/creds.
 
-    Keyless/offline providers (google_translate, edge_tts, piper) stay UNMARKED so they run
-    in the default bucket; keyed/cloud ones carry ``@pytest.mark.tts``.
+    Keyed/cloud providers carry ``@pytest.mark.tts``. The keyless ones that still call a
+    third-party service (google_translate, edge_tts) carry ``live_endpoint``: CI runners get
+    403s from them (Edge TTS refuses every datacenter connection), and that marker is how CI
+    leaves such tests out. Offline ones (piper) stay unmarked and always run.
     """
     from omnia.core.providers import (
         available_tts_providers,
@@ -644,10 +646,19 @@ def tts_provider_params():
     )
 
     requiring = set(available_tts_providers_requiring_api())
-    return [
-        pytest.param(name, marks=(pytest.mark.tts,) if name in requiring else ())
-        for name in available_tts_providers()
-    ]
+
+    def marks(name: str) -> tuple:
+        if name in requiring:
+            return (pytest.mark.tts,)
+        if name in _KEYLESS_NETWORK_TTS:
+            return (pytest.mark.live_endpoint,)
+        return ()
+
+    return [pytest.param(name, marks=marks(name)) for name in available_tts_providers()]
+
+
+#: Keyless TTS providers that reach a third-party service rather than synthesising locally.
+_KEYLESS_NETWORK_TTS = frozenset({"edge_tts", "google_translate"})
 
 
 def assert_valid_audio(audio, ext: str) -> None:
