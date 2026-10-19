@@ -165,8 +165,11 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
             or _respace(f.after) == _respace(rewritten)
         ]
         why = next((f.why for f in same if f.why), "")
+        translation = Fix(before=original, after=rewritten, why=why, kind=TRANSLATION)
+        # A "translation" that echoes the phrase (a name, a loanword) changes nothing, and a
+        # nothing-to-nothing card is the one this module drops for every surface.
         fixes = (
-            Fix(before=original, after=rewritten, why=why, kind=TRANSLATION),
+            *((translation,) if translation.changes_anything else ()),
             *(f for f in fixes if f not in same),
         )
     return Correction(

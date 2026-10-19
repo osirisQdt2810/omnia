@@ -375,6 +375,16 @@ class TestATranslation:
         payload.update(over)
         return payload
 
+    def test_a_translation_that_echoes_the_phrase_lists_no_fix(self):
+        """A name comes back unchanged: still not 'already good', but no nothing-to-nothing card."""
+        name = "San Francisco Bay Area"
+        correction = parse(
+            {"translated": True, "rewritten": name, "fixes": []}, original=name
+        )
+
+        assert correction.translated and not correction.already_good
+        assert correction.fixes == ()
+
     def test_a_translation_labelled_with_another_kind_is_still_one_fix(self):
         """The model flags the phrase as translated but files the fix as 'naturalness'."""
         mislabelled = [
