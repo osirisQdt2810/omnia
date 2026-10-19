@@ -159,7 +159,8 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
         why = next((f.why for f in fixes if f.kind == TRANSLATION and f.why), "")
         fixes = (
             Fix(before=original, after=rewritten, why=why, kind=TRANSLATION),
-        ) + tuple(f for f in fixes if f.kind != TRANSLATION)
+            *(f for f in fixes if f.kind != TRANSLATION),
+        )
     return Correction(
         original=original,
         rewritten=rewritten,
