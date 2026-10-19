@@ -21,6 +21,33 @@ Format for each entry:
 
 ---
 
+## 2026-10-19 — Phrase Check: configurable target language, translate instead of fail
+
+**What:** `PhraseCheckSettings.target_language` (free text, default English, first language
+control in the form, label "Correct into (language)") sets the language the corrected phrase
+comes back in; the existing `language` key is relabelled "Explain in (language)" and only sets the
+language of the reasons. The prompt names the target everywhere it used to say English, says the
+phrase may be in any language, and tells the model to translate a phrase not in the target:
+`"translated": true` plus exactly one fix of the new kind `translation`. `Correction.translated`
+(only a real `True` counts) forces `already_good` False and travels in `as_payload`. The target is
+passed per request and is part of the cache key.
+
+**Why:** A Vietnamese phrase met a prompt that said "keep the phrase in English"; the model
+answered with an empty `rewritten` and the user got "the model answered without a corrected
+version". The user also expected the language selector to choose the target.
+
+**Files:** `src/omnia/plugins/phrase_check/{config,prompt,correction,service,cache,__init__}.py`,
+`config/features.example.toml`, tests in `tests/plugins/phrase_check/`.
+
+**How to verify:** `pytest tests/plugins/phrase_check -q`; in Anki set "Correct into (language)"
+and check a phrase written in another language from a clipper.
+
+**Notes / rollback:** Old cache entries miss once (the key changed) and age out on their own. A
+config without `target_language` loads as English (ADR-010). Clippers are unchanged: a
+translation renders as one fix whose kind is "translation".
+
+---
+
 ## 2026-10-16 — GPU controls on endpoint cards (stop now, idle timeout)
 
 **What:** Each endpoint card that has the Models row now has a **GPU** row: **■ Stop GPU now**

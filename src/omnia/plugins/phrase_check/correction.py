@@ -57,6 +57,9 @@ WORD_CHOICE = "word choice"
 NATURALNESS = "naturalness"
 SPELLING = "spelling"
 PUNCTUATION = "punctuation"
+#: The phrase was not in the target language, so the answer is a translation of it — one fix
+#: covering the whole phrase, rather than a refusal with nothing to show.
+TRANSLATION = "translation"
 
 
 class CorrectionError(ValueError):
@@ -108,6 +111,8 @@ class Correction:
     #: Set when the model found nothing worth changing. Not the same as an empty fix list after
     #: filtering: one means "this is fine", the other means "it answered with nothing usable".
     already_good: bool = False
+    #: Set when the phrase was not in the target language and the rewrite is a translation.
+    translated: bool = False
 
     @property
     def changed(self) -> bool:
@@ -144,6 +149,26 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
         # No sentence to show. Distinct from "nothing to fix", which arrives WITH the original
         # echoed back, and is a legitimate, useful answer.
         raise CorrectionError("the model answered without a corrected version")
+    # Only a real ``True``: a model writing ``"false"`` as a string would otherwise read as yes.
+    translated = payload.get("translated") is True
+    if translated:
+        # One translation, one card. Asked for exactly one fix, a model handed a long phrase
+        # still splits it into several "translation" entries, or labels the translation with
+        # another kind; the reader needs the whole phrase against the whole translation once.
+        # Matched on the text as well as the label, so a mislabelled copy is folded in rather
+        # than printed twice. Its reason is kept, and so is any ordinary fix beside it.
+        same = [
+            f
+            for f in fixes
+            if f.kind == TRANSLATION
+            or _respace(f.before) == _respace(original)
+            or _respace(f.after) == _respace(rewritten)
+        ]
+        why = next((f.why for f in same if f.why), "")
+        fixes = (
+            Fix(before=original, after=rewritten, why=why, kind=TRANSLATION),
+            *(f for f in fixes if f not in same),
+        )
     return Correction(
         original=original,
         rewritten=rewritten,
@@ -156,7 +181,12 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
         # Derived, never taken on the model's word. A payload claiming ``already_good`` beside
         # a rewrite that differs is a reassurance contradicted by the sentence printed under it,
         # and the panel renders the two together — so the sentences decide.
-        already_good=not fixes and _respace(original) == _respace(rewritten),
+        # A translation is never "this is fine", even when the rewrite happens to echo the
+        # phrase (a name, a loanword): the phrase was not in the language asked for.
+        already_good=not translated
+        and not fixes
+        and _respace(original) == _respace(rewritten),
+        translated=translated,
     )
 
 

@@ -262,11 +262,12 @@ class PhraseCheckPlugin(FeaturePlugin):
             ctx.providers,
             CorrectionCache(read, write),
             language=language_name(getattr(settings, "language", "")),
+            target_language=language_name(getattr(settings, "target_language", "")),
             model=str(getattr(settings, "model", "") or ""),
         )
 
     def _settings(self) -> PhraseCheckSettings:
-        """Read settings PER REQUEST, so changing the language takes effect on the next check."""
+        """Read settings PER REQUEST, so changing a language takes effect on the next check."""
         ctx = self._ctx
         if ctx is None:
             raise PhraseCheckError("Phrase Check is not running.")
@@ -328,6 +329,8 @@ def as_payload(
         "rewritten": correction.rewritten,
         "mode": correction.mode,
         "already_good": correction.already_good,
+        # The phrase was in another language and `rewritten` is its translation.
+        "translated": correction.translated,
         "changed": correction.changed,
         # How many of `fixes` a panel should list. A clipper slices; nothing is dropped here.
         "shown": max(1, int(shown)),

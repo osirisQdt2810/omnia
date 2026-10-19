@@ -18,6 +18,7 @@ import pytest
 
 from omnia.plugins.phrase_check.correction import (
     SPOKEN,
+    TRANSLATION,
     WRITTEN,
     Correction,
     CorrectionError,
@@ -350,3 +351,116 @@ class TestACapitalIsACorrection:
             "I " in "".join(marked) or "I" in marked
         ), f"the capital was not marked: {marked}"
         assert "gone" in "".join(marked)
+
+
+class TestATranslation:
+    """A phrase not in the target language comes back translated, as one 'translation' fix."""
+
+    ORIGINAL = "Tôi đã đi đến cửa hàng."
+
+    def _payload(self, **over):
+        payload = {
+            "already_good": False,
+            "translated": True,
+            "rewritten": "I went to the shop.",
+            "fixes": [
+                {
+                    "before": self.ORIGINAL,
+                    "after": "I went to the shop.",
+                    "kind": "translation",
+                    "why": "Translated from Vietnamese.",
+                }
+            ],
+        }
+        payload.update(over)
+        return payload
+
+    def test_a_translation_labelled_with_another_kind_is_still_one_fix(self):
+        """The model flags the phrase as translated but files the fix as 'naturalness'."""
+        mislabelled = [
+            {
+                "before": self.ORIGINAL,
+                "after": "I went to the shop.",
+                "kind": "naturalness",
+                "why": "Dịch từ tiếng Việt.",
+            }
+        ]
+        correction = parse(self._payload(fixes=mislabelled), original=self.ORIGINAL)
+
+        assert [(f.kind, f.why) for f in correction.fixes] == [
+            ("translation", "Dịch từ tiếng Việt.")
+        ]
+
+    def test_an_ordinary_fix_beside_a_translation_is_kept(self):
+        extra = {
+            "before": "shop",
+            "after": "store",
+            "kind": "word choice",
+            "why": "US usage.",
+        }
+        fixes = [self._payload()["fixes"][0], extra]
+        correction = parse(self._payload(fixes=fixes), original=self.ORIGINAL)
+
+        assert [f.kind for f in correction.fixes] == ["translation", "word choice"]
+
+    def test_a_translation_split_into_pieces_is_one_fix(self):
+        """A long phrase came back as four 'translation' entries with the same reason."""
+        pieces = [
+            {
+                "before": "Tôi đã đi",
+                "after": "I went",
+                "kind": "translation",
+                "why": "Dịch từ tiếng Việt.",
+            },
+            {
+                "before": "đến cửa hàng.",
+                "after": "to the shop.",
+                "kind": "translation",
+                "why": "Dịch từ tiếng Việt.",
+            },
+        ]
+        correction = parse(self._payload(fixes=pieces), original=self.ORIGINAL)
+
+        assert len(correction.fixes) == 1
+        only = correction.fixes[0]
+        assert (only.before, only.after, only.kind) == (
+            self.ORIGINAL,
+            "I went to the shop.",
+            "translation",
+        )
+        assert only.why == "Dịch từ tiếng Việt."
+
+    def test_it_is_read_as_a_translation(self):
+        correction = parse(self._payload(), original=self.ORIGINAL)
+
+        assert correction.translated is True
+        assert correction.already_good is False
+        assert correction.rewritten == "I went to the shop."
+        assert [fix.kind for fix in correction.fixes] == [TRANSLATION]
+        assert correction.fixes[0].before == self.ORIGINAL
+
+    def test_a_translation_is_never_already_good(self):
+        # Even if the model echoed the phrase (a name, a loanword), a translated answer is
+        # not "this is fine" — the panel would otherwise reassure beside a translation.
+        correction = parse(
+            self._payload(rewritten=self.ORIGINAL, fixes=[]), original=self.ORIGINAL
+        )
+
+        assert correction.translated is True
+        assert correction.already_good is False
+
+    @pytest.mark.parametrize("flag", ["true", 1, "yes", None])
+    def test_only_a_real_true_counts(self, flag):
+        correction = parse(self._payload(translated=flag), original=self.ORIGINAL)
+
+        assert correction.translated is False
+
+    def test_an_answer_without_the_flag_is_not_a_translation(self):
+        payload = self._payload()
+        del payload["translated"]
+
+        assert parse(payload, original=self.ORIGINAL).translated is False
+
+    def test_an_empty_translation_is_still_refused(self):
+        with pytest.raises(CorrectionError, match="without a corrected version"):
+            parse(self._payload(rewritten=""), original=self.ORIGINAL)

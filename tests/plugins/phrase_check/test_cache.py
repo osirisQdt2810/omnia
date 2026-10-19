@@ -73,6 +73,29 @@ class TestWhatCountsAsTheSameQuestion:
         # An explanation in English is not one in Vietnamese.
         assert _key(language="en").digest() != _key(language="vi").digest()
 
+    def test_the_target_language_is_part_of_it(self):
+        # The same phrase corrected into English and into French are different answers.
+        english = CacheKey(
+            text="x", mode="written", language="en", target_language="English"
+        )
+        french = CacheKey(
+            text="x", mode="written", language="en", target_language="French"
+        )
+
+        assert english.digest() != french.digest()
+
+    def test_two_targets_miss_each_other(self, cache):
+        english = CacheKey(
+            text="x", mode="written", language="en", target_language="English"
+        )
+        french = CacheKey(
+            text="x", mode="written", language="en", target_language="French"
+        )
+        cache.put(english, {"rewritten": "x"})
+
+        assert cache.get(french) is None
+        assert cache.get(english) is not None
+
     def test_the_pinned_model_is_part_of_it(self):
         # A stronger model is pinned precisely when the current answers are not good enough.
         # Leaving it out of the key means every phrase already asked keeps returning the cheap

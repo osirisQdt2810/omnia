@@ -2,7 +2,8 @@
 
 Deliberately small. Almost everything about a correction is decided by the phrase and the register
 the user picked at the moment they asked; what is left here is what they would not want to answer
-twice — which language the explanations come back in, and which model to spend.
+twice — which language the phrase is corrected into, which language the explanations come back
+in, and which model to spend.
 """
 
 from __future__ import annotations
@@ -28,12 +29,29 @@ class PhraseCheckSettings(PersistedModel):
     ``user_files/`` rather than here — it is per-machine scratch, and this domain syncs.
     """
 
+    # First, because it is the language control people come here for. Free text rather than a
+    # ``Literal``: ADR-010 keeps persisted values that are read per request open, and a model
+    # understands "Bahasa Indonesia" without this add-on having to list it. Empty means English.
+    target_language: str = Field(
+        default="English",
+        title="Correct into (language)",
+        description=(
+            "The language your corrected phrase comes back in. Write the phrase in any "
+            "language; one in another language is translated into this one.\n"
+            "\n"
+            "A name rather than a code (``French``, not ``fr``) works best; the common codes "
+            "are accepted. Empty means English."
+        ),
+    )
+    # The key stays ``language`` (ADR-010: a synced blob from another device must keep meaning
+    # the same thing). Only its label changed — "Explain in" alone read like the target.
     language: str = Field(
         default="English",
-        title="Explain in",
+        title="Explain in (language)",
         description=(
-            "The language the reasons are written in. The phrase itself is always corrected as "
-            "English — this is the language you think in, not the one being checked.\n"
+            "Only sets the language the reasons for each fix are written in — the language "
+            "you think in. It does not change the language of the corrected phrase; that is "
+            '"Correct into (language)".\n'
             "\n"
             "A name rather than a code (``Vietnamese``, not ``vi``), because it goes into the "
             "prompt as-is and a model asked to write in ``vi-VN`` guesses at what that means. "

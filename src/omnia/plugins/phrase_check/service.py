@@ -65,6 +65,8 @@ class PhraseChecker:
             instead of on the next restart.
         cache: Where answers are remembered. ``None`` disables it, which is what a test wants.
         language: What to write the explanations in.
+        target_language: What to correct the phrase into; a phrase in another language is
+            translated into it.
         model: Pin a specific model, or "" for the configured one.
     """
 
@@ -74,11 +76,13 @@ class PhraseChecker:
         cache: Optional[CorrectionCache] = None,
         *,
         language: str = "English",
+        target_language: str = "English",
         model: str = "",
     ) -> None:
         self._providers = providers
         self._cache = cache
         self._language = language
+        self._target_language = target_language
         self._model = model
 
     def check(
@@ -109,7 +113,11 @@ class PhraseChecker:
             )
 
         key = CacheKey(
-            text=phrase, mode=mode, language=self._language, model=self._model
+            text=phrase,
+            mode=mode,
+            language=self._language,
+            model=self._model,
+            target_language=self._target_language,
         )
         if self._cache is not None and not refresh:
             remembered = self._cache.get(key)
@@ -141,7 +149,12 @@ class PhraseChecker:
             raise PhraseCheckError(_provider_failure(exc)) from exc
         try:
             answer = provider.generate_text(
-                prompt_module.build(phrase, mode=mode, language=self._language),
+                prompt_module.build(
+                    phrase,
+                    mode=mode,
+                    language=self._language,
+                    target_language=self._target_language,
+                ),
                 temperature=TEMPERATURE,
             )
         except ProviderError as exc:

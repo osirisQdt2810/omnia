@@ -21,6 +21,10 @@ Four things it insists on, each because the obvious prompt gets them wrong:
   so the ORDER decides what a reader in a hurry sees. A model left to its own devices returns
   them in the order they appear in the sentence, which puts a stray comma above a wrong tense
   whenever the comma came first.
+* **A phrase in another language is translated, not refused.** The phrase may be written in any
+  language. One that is not in the target language comes back as a natural translation, marked
+  ``translated``, with one ``translation`` fix — told only "keep it in English", a model handed a
+  Vietnamese paragraph answered with an empty rewrite, which reached the user as an error.
 
 Pure string building: no provider, no HTTP, no ``aqt``. What comes back is parsed by
 :mod:`omnia.plugins.phrase_check.correction`.
@@ -37,20 +41,22 @@ from omnia.plugins.phrase_check.correction import (
     PUNCTUATION,
     SPELLING,
     SPOKEN,
+    TRANSLATION,
     WORD_CHOICE,
     WRITTEN,
 )
 
 #: What each register means, in the model's own terms. Spelled out rather than named, because
-#: "informal" alone gets slang and "formal" alone gets legalese.
+#: "informal" alone gets slang and "formal" alone gets legalese. ``{target}`` is the language
+#: the phrase is corrected into.
 _REGISTER = {
     SPOKEN: (
-        "SPOKEN English — how a fluent person would actually say this out loud in conversation. "
+        "SPOKEN {target} — how a fluent person would actually say this out loud in conversation. "
         "Contractions, short sentences and everyday word choice are correct here, not errors. "
         "Do not make it more formal than a native speaker would be."
     ),
     WRITTEN: (
-        "WRITTEN English — how a fluent person would write this in an essay, an email or a "
+        "WRITTEN {target} — how a fluent person would write this in an essay, an email or a "
         "report. Prefer full forms over contractions and complete sentences over fragments, but "
         "do not make it ornate or academic unless the original already is."
     ),
@@ -62,34 +68,47 @@ _KINDS = (GRAMMAR, WORD_CHOICE, NATURALNESS, SPELLING, PUNCTUATION)
 #: model handed a filled-in example matches it far more reliably than one handed a schema.
 _SHAPE = {
     "already_good": False,
+    "translated": False,
     "rewritten": "the whole phrase with every fix applied",
     "fixes": [
         {
             "before": "the exact words from the original that are wrong",
             "after": 'what they should be, or "" to delete them',
-            "kind": "one of: " + ", ".join(_KINDS),
+            # The translation kind is listed here, in the shape the model copies, but not among
+            # the errors to look for: a model told it may not use it labels a translation
+            # "naturalness" instead.
+            "kind": "one of: " + ", ".join((*_KINDS, TRANSLATION)),
             "why": "one or two sentences saying why, naming the rule where there is one",
         }
     ],
 }
 
 
-def build(text: str, *, mode: str = WRITTEN, language: str = "English") -> str:
+def build(
+    text: str,
+    *,
+    mode: str = WRITTEN,
+    language: str = "English",
+    target_language: str = "English",
+) -> str:
     """The prompt for one correction.
 
     Args:
-        text: Exactly what the user selected.
+        text: Exactly what the user selected, in any language.
         mode: :data:`~omnia.plugins.phrase_check.correction.SPOKEN` or ``WRITTEN``.
-        language: What to write the EXPLANATIONS in. Not what to correct — the phrase is
-            corrected as English either way; this is the language the reader thinks in.
+        language: What to write the EXPLANATIONS in — the language the reader thinks in.
+        target_language: What the phrase is corrected INTO. A phrase written in another
+            language is translated into it.
 
     Returns:
         The prompt.
     """
-    register = _REGISTER.get(mode, _REGISTER[WRITTEN])
+    target = target_language.strip() or "English"
+    register = _REGISTER.get(mode, _REGISTER[WRITTEN]).format(target=target)
     return "\n".join(
         [
-            "You are checking one phrase a language learner wrote.",
+            "You are checking one phrase a language learner wrote. The phrase may be written "
+            f"in any language; the corrected phrase is always in {target}.",
             "",
             f"Judge it as {register}",
             "",
@@ -97,7 +116,7 @@ def build(text: str, *, mode: str = WRITTEN, language: str = "English") -> str:
             f"  - {GRAMMAR}: tense, agreement, articles, prepositions, word order",
             f"  - {WORD_CHOICE}: a real word used where a different one is meant",
             f"  - {SPELLING} and {PUNCTUATION}",
-            f"  - {NATURALNESS}: correct English that no fluent speaker would actually say. "
+            f"  - {NATURALNESS}: correct {target} that no fluent speaker would actually say. "
             "This one matters. Say what they would say instead.",
             "",
             "Rules:",
@@ -112,7 +131,14 @@ def build(text: str, *, mode: str = WRITTEN, language: str = "English") -> str:
             "already_good: true, echo it back unchanged in 'rewritten', and return no fixes. "
             "Inventing changes to look useful is worse than finding nothing.",
             "  - Do not add information the writer did not put there.",
-            f"  - Write every 'why' in {language}. Keep the phrase itself in English.",
+            f"  - Write every 'why' in {language}. 'rewritten' is always written in {target}.",
+            f"  - If the phrase is not written in {target}, or is mostly in another language, "
+            f"translate it: put a natural, fluent {target} version in 'rewritten', keeping "
+            "proper nouns, technical terms and parenthesised glosses as a fluent writer would. "
+            f'Then set "translated": true and return exactly ONE fix with kind '
+            f"'{TRANSLATION}': 'before' is the whole phrase, 'after' is the translation, and "
+            f"'why' says which language it was translated from (written in {language}). Never "
+            "leave 'rewritten' empty.",
             "",
             "Answer with JSON in exactly this shape and nothing else:",
             json.dumps(_SHAPE, indent=2, ensure_ascii=False),
