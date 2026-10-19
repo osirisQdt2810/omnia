@@ -375,6 +375,34 @@ class TestATranslation:
         payload.update(over)
         return payload
 
+    def test_a_translation_labelled_with_another_kind_is_still_one_fix(self):
+        """The model flags the phrase as translated but files the fix as 'naturalness'."""
+        mislabelled = [
+            {
+                "before": self.ORIGINAL,
+                "after": "I went to the shop.",
+                "kind": "naturalness",
+                "why": "Dịch từ tiếng Việt.",
+            }
+        ]
+        correction = parse(self._payload(fixes=mislabelled), original=self.ORIGINAL)
+
+        assert [(f.kind, f.why) for f in correction.fixes] == [
+            ("translation", "Dịch từ tiếng Việt.")
+        ]
+
+    def test_an_ordinary_fix_beside_a_translation_is_kept(self):
+        extra = {
+            "before": "shop",
+            "after": "store",
+            "kind": "word choice",
+            "why": "US usage.",
+        }
+        fixes = [self._payload()["fixes"][0], extra]
+        correction = parse(self._payload(fixes=fixes), original=self.ORIGINAL)
+
+        assert [f.kind for f in correction.fixes] == ["translation", "word choice"]
+
     def test_a_translation_split_into_pieces_is_one_fix(self):
         """A long phrase came back as four 'translation' entries with the same reason."""
         pieces = [

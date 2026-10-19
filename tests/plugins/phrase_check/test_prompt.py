@@ -209,3 +209,11 @@ class TestTheTargetLanguage:
         shape = json.loads(prompt[prompt.index("{") : prompt.rindex("}") + 1])
 
         assert shape["translated"] is False
+
+
+def test_the_shape_lets_the_model_label_a_translation():
+    """The rule asks for kind 'translation'; the shape the model copies must allow it."""
+    from omnia.plugins.phrase_check import prompt as prompt_module
+
+    shape_kinds = prompt_module._SHAPE["fixes"][0]["kind"]
+    assert "translation" in shape_kinds

@@ -74,7 +74,10 @@ _SHAPE = {
         {
             "before": "the exact words from the original that are wrong",
             "after": 'what they should be, or "" to delete them',
-            "kind": "one of: " + ", ".join(_KINDS),
+            # The translation kind is listed here, in the shape the model copies, but not among
+            # the errors to look for: a model told it may not use it labels a translation
+            # "naturalness" instead.
+            "kind": "one of: " + ", ".join((*_KINDS, TRANSLATION)),
             "why": "one or two sentences saying why, naming the rule where there is one",
         }
     ],
