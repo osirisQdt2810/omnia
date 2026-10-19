@@ -610,7 +610,7 @@ class TestTheTargetLanguageSetting:
         fields = {field.key: field for field in schema_from_model(PhraseCheckSettings)}
 
         target, explain = fields["target_language"], fields["language"]
-        assert target.kind == "text"
+        assert target.kind == "choice"
         assert target.label == "Correct into (language)"
         assert "any language" in target.help
         assert explain.label == "Explain in (language)"
@@ -680,3 +680,17 @@ class TestTheTargetLanguageSetting:
         assert payload["translated"] is True
         assert payload["already_good"] is False
         assert payload["fixes"][0]["kind"] == "translation"
+
+
+def test_both_language_settings_are_dropdowns_of_the_prompt_languages():
+    from omnia.core.config.schema import schema_from_model
+    from omnia.plugins.phrase_check.config import PhraseCheckSettings
+    from omnia.plugins.phrase_check.prompt import LANGUAGE_CHOICES, language_name
+
+    fields = {f.key: f for f in schema_from_model(PhraseCheckSettings)}
+    for key in ("target_language", "language"):
+        assert fields[key].kind == "choice"
+        assert fields[key].choices == LANGUAGE_CHOICES
+    assert LANGUAGE_CHOICES[0] == "English"
+    # Every offered name passes through the prompt unchanged.
+    assert all(language_name(name) == name for name in LANGUAGE_CHOICES)

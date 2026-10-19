@@ -20,6 +20,7 @@ from omnia.plugins.phrase_check.correction import (
     WRITTEN,
 )
 from omnia.plugins.phrase_check.library import DEFAULT_DECK
+from omnia.plugins.phrase_check.prompt import LANGUAGE_CHOICES
 
 
 class PhraseCheckSettings(PersistedModel):
@@ -29,18 +30,17 @@ class PhraseCheckSettings(PersistedModel):
     ``user_files/`` rather than here — it is per-machine scratch, and this domain syncs.
     """
 
-    # First, because it is the language control people come here for. Free text rather than a
-    # ``Literal``: ADR-010 keeps persisted values that are read per request open, and a model
-    # understands "Bahasa Indonesia" without this add-on having to list it. Empty means English.
+    # First, because it is the language control people come here for. A dropdown, but stored
+    # as ``str`` with ``choices`` rather than a ``Literal``: ADR-010 keeps persisted values read
+    # per request open, so a value another build saved ("vi", "Bahasa Indonesia") still loads
+    # and still reaches the prompt. Empty means English.
     target_language: str = Field(
         default="English",
         title="Correct into (language)",
+        choices=LANGUAGE_CHOICES,
         description=(
             "The language your corrected phrase comes back in. Write the phrase in any "
-            "language; one in another language is translated into this one.\n"
-            "\n"
-            "A name rather than a code (``French``, not ``fr``) works best; the common codes "
-            "are accepted. Empty means English."
+            "language; one in another language is translated into this one."
         ),
     )
     # The key stays ``language`` (ADR-010: a synced blob from another device must keep meaning
@@ -48,14 +48,11 @@ class PhraseCheckSettings(PersistedModel):
     language: str = Field(
         default="English",
         title="Explain in (language)",
+        choices=LANGUAGE_CHOICES,
         description=(
             "Only sets the language the reasons for each fix are written in — the language "
             "you think in. It does not change the language of the corrected phrase; that is "
-            '"Correct into (language)".\n'
-            "\n"
-            "A name rather than a code (``Vietnamese``, not ``vi``), because it goes into the "
-            "prompt as-is and a model asked to write in ``vi-VN`` guesses at what that means. "
-            "Codes are accepted and translated for the common ones."
+            '"Correct into (language)".'
         ),
     )
     # ``Literal``, not ``str`` + a choices hint. It both validates the value and drives the
