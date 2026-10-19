@@ -93,6 +93,7 @@ class TestTheWireContract:
             "rewritten",
             "mode",
             "already_good",
+            "translated",
             "changed",
             "fixes",
             "highlight",
@@ -572,3 +573,110 @@ class TestTheTooltipDescribesWhatItActuallyDoes:
     def test_it_still_says_a_check_alone_changes_nothing(self):
         # The distinction is the useful part: reading is free, keeping is not.
         assert "changes nothing" in self._tooltip().lower()
+
+
+class TestTheTargetLanguageSetting:
+    """What the corrected phrase comes back in, kept apart from what the reasons are written in.
+
+    The explanation-language field used to be the only language control, and it read like the
+    target — so a user set it to their own language and expected corrections back in it.
+    """
+
+    def test_it_defaults_to_english(self):
+        assert PhraseCheckSettings().target_language == "English"
+
+    def test_a_config_saved_before_the_field_existed_loads(self):
+        # ADR-010: an older Omnia's blob has no such key, and must load rather than fail.
+        settings = PhraseCheckSettings.parse_obj(
+            {"language": "Vietnamese", "default_mode": "written", "model": ""}
+        )
+
+        assert settings.target_language == "English"
+        assert settings.language == "Vietnamese"
+
+    def test_it_is_free_text_not_a_fixed_list(self):
+        # ADR-010: no Literal on a persisted field read per request.
+        assert PhraseCheckSettings(
+            target_language="Bahasa Indonesia"
+        ).target_language == ("Bahasa Indonesia")
+
+    def test_it_is_the_first_language_control_in_the_form(self):
+        fields = schema_from_model(PhraseCheckSettings)
+        keys = [field.key for field in fields]
+
+        assert keys.index("target_language") < keys.index("language")
+
+    def test_the_two_language_fields_say_which_is_which(self):
+        fields = {field.key: field for field in schema_from_model(PhraseCheckSettings)}
+
+        target, explain = fields["target_language"], fields["language"]
+        assert target.kind == "text"
+        assert target.label == "Correct into (language)"
+        assert "any language" in target.help
+        assert explain.label == "Explain in (language)"
+        assert explain.help.startswith("Only sets the language the reasons")
+        assert "always corrected as English" not in explain.help
+
+    def test_the_setting_reaches_the_prompt(self):
+        import json
+
+        prompts: list[str] = []
+
+        class _Provider:
+            def generate_text(self, prompt, **_kw):
+                prompts.append(prompt)
+                return json.dumps({"rewritten": "Je suis allé.", "fixes": []})
+
+        class _Hub:
+            def llm(self, **_kw):
+                return _Provider()
+
+        class _Config:
+            def feature_settings(self, _plugin_id):
+                return PhraseCheckSettings(target_language="fr", language="vi")
+
+        class _Paths:
+            user_files_dir = pathlib.Path(tempfile.mkdtemp())
+
+        class _Ctx:
+            providers = _Hub()
+            config = _Config()
+            paths = _Paths()
+
+        plugin = PhraseCheckPlugin()
+        plugin._ctx = _Ctx()
+
+        plugin._check("I has gone.")
+
+        assert "'rewritten' is always written in French" in prompts[0]
+        assert "Write every 'why' in Vietnamese" in prompts[0]
+
+    def test_an_empty_target_means_english(self):
+        from omnia.plugins.phrase_check.prompt import language_name
+
+        assert language_name(
+            PhraseCheckSettings(target_language="").target_language
+        ) == ("English")
+
+    def test_a_translation_travels_to_the_clipper(self):
+        correction = parse(
+            {
+                "translated": True,
+                "rewritten": "I went to the shop.",
+                "fixes": [
+                    {
+                        "before": "Tôi đi chợ.",
+                        "after": "I went to the shop.",
+                        "kind": "translation",
+                        "why": "Translated from Vietnamese.",
+                    }
+                ],
+            },
+            original="Tôi đi chợ.",
+        )
+
+        payload = as_payload(correction)
+
+        assert payload["translated"] is True
+        assert payload["already_good"] is False
+        assert payload["fixes"][0]["kind"] == "translation"

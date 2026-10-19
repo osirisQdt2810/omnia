@@ -87,9 +87,12 @@ replace = ""
 
 # Phrase Check — "what is wrong with this sentence?" for a phrase a clipper sent.
 [phrase_check]
-# The language the REASONS come back in. The phrase itself is always corrected as English; this
-# is the language you think in. A name rather than a code, because it goes into the prompt as-is
-# and a model asked to write in "vi-VN" guesses at what that means.
+# The language the corrected phrase comes back in. Write the phrase in any language; one in
+# another language is translated into this one. Empty means English.
+target_language = "English"
+# Only the language the REASONS come back in — the language you think in, not the one the phrase
+# is corrected into. A name rather than a code, because it goes into the prompt as-is and a model
+# asked to write in "vi-VN" guesses at what that means.
 language = "English"
 # Which register the panel opens in: "written" (essays, email) or "spoken" (conversation). It
 # matters more than it sounds — "I ain't got none" is a mistake in writing and ordinary in

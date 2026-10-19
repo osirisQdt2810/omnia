@@ -105,6 +105,30 @@ class TestAStraightCheck:
 
         assert "Write every 'why' in Vietnamese" in hub.provider.prompts[0]
 
+    def test_the_target_language_reaches_the_prompt(self):
+        hub = _Hub()
+
+        PhraseChecker(hub, target_language="French").check(PHRASE)
+
+        assert "'rewritten' is always written in French" in hub.provider.prompts[0]
+
+    def test_the_target_language_is_english_unless_told_otherwise(self):
+        hub = _Hub()
+
+        PhraseChecker(hub).check(PHRASE)
+
+        assert "'rewritten' is always written in English" in hub.provider.prompts[0]
+
+    def test_a_different_target_is_a_different_question(self):
+        # A phrase answered for English must not be handed back when French is asked for.
+        hub, cache = _Hub(), _cache()
+
+        PhraseChecker(hub, cache, target_language="English").check(PHRASE)
+        PhraseChecker(hub, cache, target_language="French").check(PHRASE)
+        PhraseChecker(hub, cache, target_language="French").check(PHRASE)
+
+        assert hub.built == 2
+
     def test_it_asks_for_a_low_temperature(self):
         # The same sentence should get the same correction on Tuesday as on Monday, and a model
         # asked to be inventive about grammar invents grammar.

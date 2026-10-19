@@ -5,10 +5,11 @@ to the same phrase costs another request, another wait, and another few cents. W
 back DIFFERENT: models are not deterministic, so a second look at an identical sentence can
 disagree with the first, which reads as the tool being unreliable rather than as sampling.
 
-So a correction is stored against exactly what produced it: the phrase, the mode, and the
-language the explanations were asked in. Change any of those and it is a different question with a
-different right answer — the same sentence corrected for speech is not the one corrected for
-writing, and an explanation in English is not one in Vietnamese.
+So a correction is stored against exactly what produced it: the phrase, the mode, the language
+the explanations were asked in, and the language it was corrected into. Change any of those and it
+is a different question with a different right answer — the same sentence corrected for speech is
+not the one corrected for writing, an explanation in English is not one in Vietnamese, and a phrase
+corrected into English is not one translated into French.
 
 Kept on the Anki side rather than in each clipper (the owner's decision): a phrase corrected in
 the web clipper is already there when the desktop one asks, and there is one thing to clear rather
@@ -97,6 +98,8 @@ class CacheKey:
     #: switching to one keeps handing back the cheap model's work for up to a month, with
     #: nothing on screen to say why and no way past it but the per-phrase refresh.
     model: str = ""
+    #: What the phrase is corrected INTO. The same phrase gives a different answer per target.
+    target_language: str = "English"
 
     def digest(self) -> str:
         """A stable, short id for this question.
@@ -108,7 +111,10 @@ class CacheKey:
         the ENDS. Case and inner punctuation stay: they are part of what is being corrected, so
         "i went" and "I went", or "lets go" and "let\'s go", are genuinely different questions.
         """
-        raw = f"{self.mode} {self.language} {self.model} {_normalise(self.text)}"
+        raw = (
+            f"{self.mode} {self.language} {self.target_language} {self.model} "
+            f"{_normalise(self.text)}"
+        )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 

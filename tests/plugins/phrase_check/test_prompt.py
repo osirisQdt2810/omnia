@@ -78,7 +78,7 @@ class TestTheAnswerShape:
         end = prompt.rindex("}") + 1
 
         shape = json.loads(prompt[start:end])
-        assert set(shape) == {"already_good", "rewritten", "fixes"}
+        assert set(shape) == {"already_good", "translated", "rewritten", "fixes"}
         assert set(shape["fixes"][0]) == {"before", "after", "kind", "why"}
 
     def test_it_names_the_kinds_the_parser_understands(self):
@@ -102,9 +102,12 @@ class TestTheExplanationLanguage:
     def test_it_asks_for_the_explanations_in_the_chosen_language(self):
         assert "Write every 'why' in Vietnamese" in build("x", language="Vietnamese")
 
-    def test_the_phrase_itself_stays_english(self):
-        # The language setting is about the reader, not about what is being corrected.
-        assert "Keep the phrase itself in English" in build("x", language="Vietnamese")
+    def test_the_explanation_language_is_not_the_target(self):
+        # The language setting is about the reader, not about what the phrase comes back in.
+        prompt = build("x", language="Vietnamese")
+
+        assert "Write every 'why' in Vietnamese" in prompt
+        assert "'rewritten' is always written in English" in prompt
 
     @pytest.mark.parametrize(
         "code,expected",
@@ -167,3 +170,42 @@ class TestTheOrderIsAskedFor:
     def test_both_registers_carry_it(self):
         for mode in (SPOKEN, WRITTEN):
             assert "Order 'fixes'" in build("x", mode=mode), mode
+
+
+class TestTheTargetLanguage:
+    """What the corrected phrase comes back in — the user's choice, not always English."""
+
+    def test_it_defaults_to_english(self):
+        assert "'rewritten' is always written in English" in build("x")
+
+    def test_the_configured_target_is_named(self):
+        prompt = build("x", target_language="French")
+
+        assert "'rewritten' is always written in French" in prompt
+        assert "WRITTEN French" in prompt
+        assert "correct French that no fluent speaker would actually say" in prompt
+
+    def test_nothing_about_the_phrase_still_says_english(self):
+        # The bug: a Vietnamese phrase met a prompt that said "keep the phrase in English", and
+        # the model answered with an empty rewrite. With another target, English must be gone.
+        prompt = build("x", mode=SPOKEN, language="French", target_language="French")
+
+        assert "English" not in prompt
+
+    def test_it_says_the_phrase_may_be_in_any_language(self):
+        # The input is never restricted: a phrase in another language is translated.
+        assert "may be written in any language" in build("x", target_language="German")
+
+    def test_a_phrase_in_another_language_is_translated_not_refused(self):
+        prompt = build("x", language="Vietnamese", target_language="German")
+
+        assert "is not written in German" in prompt
+        assert '"translated": true' in prompt
+        assert "exactly ONE fix with kind 'translation'" in prompt
+        assert "Never leave 'rewritten' empty" in prompt
+
+    def test_the_shape_carries_the_translated_flag(self):
+        prompt = build("x")
+        shape = json.loads(prompt[prompt.index("{") : prompt.rindex("}") + 1])
+
+        assert shape["translated"] is False
