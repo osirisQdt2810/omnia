@@ -156,3 +156,20 @@ class TestSchemaAgainstPluginModels:
         keys = set(_by_key(AutoFlipSettings))
         assert "per_deck" not in keys
         assert {"delay_question_seconds", "wait_for_audio"} <= keys
+
+
+class _Offered(BaseModel):
+    language: str = Field("English", choices=("English", "French"))
+    free: str = ""
+
+
+def test_str_field_with_choices_renders_as_a_dropdown():
+    fields = {f.key: f for f in schema_from_model(_Offered)}
+    assert fields["language"].kind == "choice"
+    assert fields["language"].choices == ("English", "French")
+    assert fields["free"].kind == "text"
+
+
+def test_str_field_with_choices_still_loads_a_value_outside_them():
+    # ADR-010: the dropdown is presentation only; a value another build saved still loads.
+    assert _Offered(language="vi").language == "vi"

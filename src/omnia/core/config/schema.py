@@ -99,6 +99,12 @@ def _kind_and_choices(
     field_type = model_field.type_
     if isinstance(field_type, type) and issubclass(field_type, enum.Enum):
         return "choice", tuple(str(member.value) for member in field_type)
+    # ``Field(..., choices=(...))`` on a plain ``str``: a dropdown in the form while the stored
+    # value stays free text. ADR-010 keeps ``Literal`` off persisted fields read per request, so
+    # this is how such a field gets a picker without refusing a value another build saved.
+    offered = model_field.field_info.extra.get("choices")
+    if isinstance(field_type, type) and issubclass(field_type, str) and offered:
+        return "choice", tuple(str(value) for value in offered)
     # bool must be checked before int: ``bool`` is a subclass of ``int``.
     if isinstance(field_type, type) and issubclass(field_type, bool):
         return "bool", ()

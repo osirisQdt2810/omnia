@@ -174,4 +174,12 @@ _LANGUAGES = {
     "fr": "French",
     "de": "German",
     "es": "Spanish",
+    "pt": "Portuguese",
+    "it": "Italian",
+    "ru": "Russian",
+    "th": "Thai",
+    "id": "Indonesian",
 }
+
+#: What the settings dropdowns offer, in this order: the map's names, English first.
+LANGUAGE_CHOICES = tuple(dict.fromkeys(_LANGUAGES.values()))
