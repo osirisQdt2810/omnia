@@ -375,6 +375,33 @@ class TestATranslation:
         payload.update(over)
         return payload
 
+    def test_a_translation_split_into_pieces_is_one_fix(self):
+        """A long phrase came back as four 'translation' entries with the same reason."""
+        pieces = [
+            {
+                "before": "Tôi đã đi",
+                "after": "I went",
+                "kind": "translation",
+                "why": "Dịch từ tiếng Việt.",
+            },
+            {
+                "before": "đến cửa hàng.",
+                "after": "to the shop.",
+                "kind": "translation",
+                "why": "Dịch từ tiếng Việt.",
+            },
+        ]
+        correction = parse(self._payload(fixes=pieces), original=self.ORIGINAL)
+
+        assert len(correction.fixes) == 1
+        only = correction.fixes[0]
+        assert (only.before, only.after, only.kind) == (
+            self.ORIGINAL,
+            "I went to the shop.",
+            "translation",
+        )
+        assert only.why == "Dịch từ tiếng Việt."
+
     def test_it_is_read_as_a_translation(self):
         correction = parse(self._payload(), original=self.ORIGINAL)
 

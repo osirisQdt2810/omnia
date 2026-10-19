@@ -151,6 +151,15 @@ def parse(payload: Any, *, original: str, mode: str = WRITTEN) -> Correction:
         raise CorrectionError("the model answered without a corrected version")
     # Only a real ``True``: a model writing ``"false"`` as a string would otherwise read as yes.
     translated = payload.get("translated") is True
+    if translated:
+        # One translation, one card. Asked for exactly one fix, a model handed a long phrase
+        # still splits it into several "translation" entries with the same reason; the reader
+        # needs the whole phrase against the whole translation once. Its own reason is kept,
+        # and so is any ordinary fix it listed beside it.
+        why = next((f.why for f in fixes if f.kind == TRANSLATION and f.why), "")
+        fixes = (
+            Fix(before=original, after=rewritten, why=why, kind=TRANSLATION),
+        ) + tuple(f for f in fixes if f.kind != TRANSLATION)
     return Correction(
         original=original,
         rewritten=rewritten,
