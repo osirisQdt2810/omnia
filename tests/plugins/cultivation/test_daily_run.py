@@ -13,8 +13,8 @@ from types import SimpleNamespace
 import pytest
 
 from omnia.plugins.cultivation.config import CultivationSettings
-from omnia.plugins.cultivation.service import CultivationService, TrialError
-from omnia.plugins.cultivation.store import ANKI, DSA, CultivationStore
+from omnia.plugins.cultivation.service import CultivationService
+from omnia.plugins.cultivation.store import ANKI, CultivationStore
 
 DAY = 86400
 TODAY = date(2026, 11, 4)
@@ -110,101 +110,84 @@ def collection(n_words=3, reviewed_days_ago=3.0, stability=10.0):
 
 @pytest.fixture
 def service(tmp_path):
-    def make(**settings):
+    def make(start=TODAY - timedelta(days=60), **settings):
         s = CultivationSettings(dsa_feed_path=str(tmp_path / "feed.json"), **settings)
-        return CultivationService(s, CultivationStore(tmp_path / "state.db"))
+        return CultivationService(s, CultivationStore(tmp_path / "state.db"), start)
 
     return make
 
 
-class TestAnkiRefresh:
-    def test_power_is_the_sum_of_the_best_card_per_word(self, service):
+class TestEnglish:
+    def test_score_is_the_sum_of_the_best_card_per_word(self, service):
         card = service().refresh_anki(
             collection(3, reviewed_days_ago=10, stability=10), NOW
         )
         # The typed card (μ 1.0) beats recognition (μ 0.8); R(S, S) = 0.9.
-        assert card["power"] == pytest.approx(3 * 0.9)
-        assert card["words"] == 3 and card["realm"] == 1
+        assert card["score"] == pytest.approx(3 * 0.9)
+        assert (card["label"], card["realm"], card["level"]) == ("A1", "Luyện Khí", 1)
         assert card["setup"]["templates"][1]["suggested"] == "active_recall_typed"
 
-    def test_first_run_has_no_gain_then_a_later_day_measures_it(self, service):
+    def test_a_fresh_start_scores_zero_until_words_are_reviewed(self, service):
+        card = service(start=TODAY).refresh_anki(
+            collection(3, reviewed_days_ago=3), NOW
+        )
+        assert (
+            card["score"] == 0.0 and card["counted_words"] == 0 and card["words"] == 3
+        )
+        assert card["start"] == TODAY.isoformat()
+
+    def test_words_reviewed_on_the_start_day_count_and_are_todays_gain(self, service):
+        card = service(start=TODAY).refresh_anki(
+            collection(2, reviewed_days_ago=0.1), NOW
+        )
+        assert card["score"] > 0 and card["counted_words"] == 2
+        assert card["gain"] == pytest.approx(card["score"])
+        assert card["lifetime"] == pytest.approx(card["score"])
+
+    def test_first_run_after_the_start_has_no_gain_then_measures_it(self, service):
         svc = service()
         assert svc.refresh_anki(collection(), NOW)["gain"] is None
         assert svc.refresh_anki(collection(), NOW)["gain"] == pytest.approx(0.0)
 
-    def test_today_is_recorded_once_per_day(self, service, tmp_path):
+    def test_today_is_recorded_once_per_day(self, service):
         svc = service()
         svc.refresh_anki(collection(), NOW)
         svc.refresh_anki(collection(), NOW)
         assert len(svc.store.history(ANKI)) == 1
 
     def test_health_counts_today_and_retention(self, service):
-        col = collection(2, reviewed_days_ago=0.1)
-        card = service().refresh_anki(col, NOW)
+        card = service().refresh_anki(collection(2, reviewed_days_ago=0.1), NOW)
         assert card["health"]["reviews_today"] == 4
         assert card["health"]["new_today"] == 4
         assert card["health"]["retention"] == 1.0
         assert card["streak"]["active_today"] is True
 
     def test_decks_outside_the_selection_do_not_count(self, service):
-        card = service(decks=["Japanese"]).refresh_anki(collection(), NOW)
-        assert card["words"] == 0
+        assert service(decks=["Japanese"]).refresh_anki(collection(), NOW)["words"] == 0
 
     def test_confirmed_modality_overrides_the_suggestion(self, service):
         svc = service(modality={"Vocab EN/Production": "recognition"})
         card = svc.refresh_anki(collection(1, reviewed_days_ago=10), NOW)
-        assert card["power"] == pytest.approx(
+        assert card["score"] == pytest.approx(
             0.8 * 0.9
         )  # recognition 0.6 < passive 0.8
 
-
-class TestAnkiTrialFlow:
-    def test_eligibility_then_a_passed_trial_promotes(self, service):
+    def test_the_level_follows_the_score_both_ways(self, service):
         svc = service()
-        svc.store.save_realm_state(ANKI, svc.anki_machine.seed(0, TODAY))
-        # Make 1,000 words strong enough to reach Trúc Cơ.
-        col = collection(1200, reviewed_days_ago=2, stability=400)
-        card = svc.refresh_anki(col, NOW)
-        assert card["status"] == "eligible" and card["trial"]["can_start"]
-        trial = svc.start_anki_trial(TODAY)
-        assert trial["mode"] == "typed" and len(trial["prompts"]) == 50
-        stored = svc.store.running_trial(ANKI)
-        for i, item in enumerate(stored.items):
-            res = svc.answer_anki_trial(trial["id"], i, item["word"], None)
-            assert res["correct"]
-        result = svc.finish_anki_trial(trial["id"], TODAY)
-        assert result == {"passed": True, "score": 50, "total": 50, "search": ""}
-        assert svc.store.realm_state(ANKI).realm == 2
-
-    def test_a_failed_trial_gives_a_search_and_a_cooldown(self, service):
-        svc = service()
-        svc.store.save_realm_state(ANKI, svc.anki_machine.seed(0, TODAY))
-        svc.refresh_anki(collection(1200, reviewed_days_ago=2, stability=400), NOW)
-        trial = svc.start_anki_trial(TODAY)
-        for i in range(50):
-            svc.answer_anki_trial(trial["id"], i, "nope", None)
-        result = svc.finish_anki_trial(trial["id"], TODAY)
-        assert result["passed"] is False and result["search"].startswith("cid:")
-        card = svc.refresh_anki(
-            collection(1200, reviewed_days_ago=2, stability=400), NOW
+        strong = svc.refresh_anki(
+            collection(1600, reviewed_days_ago=1, stability=400), NOW
         )
-        assert card["status"] == "cooldown"
-        with pytest.raises(TrialError):
-            svc.start_anki_trial(TODAY)
+        assert strong["label"] == "A2"
+        weak = svc.refresh_anki(
+            collection(1600, reviewed_days_ago=50, stability=3), NOW
+        )
+        assert weak["label"] == "A1"
 
-    def test_answers_must_come_in_order(self, service):
-        svc = service()
-        svc.store.save_realm_state(ANKI, svc.anki_machine.seed(0, TODAY))
-        svc.refresh_anki(collection(1200, reviewed_days_ago=2, stability=400), NOW)
-        trial = svc.start_anki_trial(TODAY)
-        with pytest.raises(TrialError):
-            svc.answer_anki_trial(trial["id"], 3, "x", None)
-
-    def test_not_eligible_refuses_to_start(self, service):
+    def test_reset_forgets_the_recorded_days(self, service):
         svc = service()
         svc.refresh_anki(collection(), NOW)
-        with pytest.raises(TrialError):
-            svc.start_anki_trial(TODAY)
+        svc.reset()
+        assert svc.store.history(ANKI) == [] and not svc.store.has_snapshot()
 
 
 def write_feed(path, attempts, problems=()):
@@ -222,7 +205,30 @@ def write_feed(path, attempts, problems=()):
     )
 
 
-class TestDsaRefresh:
+def attempt(lc_id, day, status="self", minutes=10):
+    return {
+        "lc_id": lc_id,
+        "date": day.isoformat(),
+        "status": status,
+        "minutes": minutes,
+        "wa": 0,
+        "path": f"{lc_id}-{day}",
+    }
+
+
+PROBLEMS = [
+    {
+        "id": i,
+        "title": f"P{i}",
+        "slug": f"p{i}",
+        "rating": 1700,
+        "contest": "weekly-contest-1",
+    }
+    for i in range(1, 10)
+]
+
+
+class TestDsa:
     def test_missing_feed_is_reported_not_raised(self, service):
         card = service().refresh_dsa(TODAY)
         assert card["missing"] is True and card["feed_path"].endswith("feed.json")
@@ -232,73 +238,30 @@ class TestDsaRefresh:
         card = service().refresh_dsa(TODAY)
         assert card["missing"] is True and "JSON" in card["error"]
 
-    def test_feed_is_replayed_into_a_card(self, service, tmp_path):
-        problems = [
-            {
-                "id": i,
-                "title": f"P{i}",
-                "slug": f"p{i}",
-                "rating": 1500 + i,
-                "contest": f"weekly-contest-{i % 3}",
-            }
-            for i in range(1, 80)
-        ]
+    def test_feed_is_replayed_into_a_rating(self, service, tmp_path):
         attempts = [
-            {
-                "lc_id": 1,
-                "date": (TODAY - timedelta(days=1)).isoformat(),
-                "status": "self",
-                "minutes": 10,
-                "wa": 0,
-                "path": "a",
-            },
-            {"lc_id": 2, "date": TODAY.isoformat(), "status": "copied", "path": "b"},
+            attempt(1, TODAY - timedelta(days=1)),
+            attempt(2, TODAY, status="copied"),
         ]
-        write_feed(tmp_path / "feed.json", attempts, problems)
+        write_feed(tmp_path / "feed.json", attempts, PROBLEMS)
         card = service().refresh_dsa(TODAY)
         assert card["missing"] is False and card["attempts"] == 2
-        assert card["realm_name"] == "Kim Đan"  # 1500 holds 1400
+        assert card["label"] == "Specialist"  # ~1500 sits in 1400-1599
         assert [d["lc_id"] for d in card["debts"]] == [2]
         assert card["streak"]["days"] == 2
-        assert len(card["history"]) == 2
 
-    def test_a_dsa_trial_is_picked_and_judged_from_later_feeds(self, service, tmp_path):
-        problems = [
-            {
-                "id": i,
-                "title": f"P{i}",
-                "slug": f"p{i}",
-                "rating": 1600,
-                "contest": f"weekly-contest-{i % 3}",
-            }
-            for i in range(1, 40)
-        ]
-        base = [
-            {"lc_id": 900, "date": TODAY.isoformat(), "status": "self", "path": "x"}
-        ]
-        write_feed(tmp_path / "feed.json", base, problems)
-        svc = service(dsa={"initial_rating": 1610})
-        svc.store.save_realm_state(
-            DSA, svc.dsa_machine.seed(1500, TODAY)
-        )  # realm 3, peak 3
-        assert svc.refresh_dsa(TODAY)["status"] == "eligible"
-        card = svc.start_dsa_trial(TODAY)
-        picked = [p["id"] for p in card["trial"]["running"]["items"]]
-        assert len(picked) == 5
-        later = TODAY + timedelta(days=2)
-        solved = [
-            {
-                "lc_id": pid,
-                "date": later.isoformat(),
-                "status": "self",
-                "minutes": 30,
-                "path": f"s{pid}",
-            }
-            for pid in picked[:3]
-        ]
-        write_feed(tmp_path / "feed.json", base + solved, problems)
-        card = svc.refresh_dsa(later)
-        assert (
-            card["trial"]["running"] is None and card["trial"]["last"]["passed"] is True
+    def test_a_fresh_start_ignores_older_solutions(self, service, tmp_path):
+        attempts = [attempt(1, TODAY - timedelta(days=30)), attempt(2, TODAY)]
+        write_feed(tmp_path / "feed.json", attempts, PROBLEMS)
+        card = service(start=TODAY).refresh_dsa(TODAY)
+        assert card["attempts"] == 1 and len(card["history"]) == 1
+        # Day one's change is measured from the initial rating.
+        assert card["gain"] == pytest.approx(card["score"] - 1500)
+        assert card["lifetime"] == pytest.approx(max(0.0, card["score"] - 1500))
+
+    def test_no_attempts_since_the_start(self, service, tmp_path):
+        write_feed(
+            tmp_path / "feed.json", [attempt(1, TODAY - timedelta(days=30))], PROBLEMS
         )
-        assert svc.store.realm_state(DSA).realm == 4
+        card = service(start=TODAY).refresh_dsa(TODAY)
+        assert card["score"] == 1500 and card["attempts"] == 0 and card["gain"] == 0.0

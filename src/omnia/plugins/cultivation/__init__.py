@@ -1,26 +1,25 @@
-"""Cultivation feature: an honest, cultivation-novel style level for Anki vocabulary and DSA.
+"""Cultivation feature: a daily level for your English vocabulary and your DSA practice.
 
-Two long-running learning streams get a daily *power* (Tu vi), a *realm* 1–9 (Cảnh giới) that
-only rises through a trial (Thiên kiếp) and slowly falls with neglect, a lifetime total, and a
-streak. The model and every constant come from the cultivation spec (CONTEXT.md; see the
-guidance doc): power measures ability rather than effort, so it depends on difficulty, quality
-and retention instead of review counts.
+Each domain gets a score that rises with real ability and falls with neglect, and a level that
+simply follows the score — named twice, as a cultivation realm (Luyện Khí … Chân Tiên) and on the
+scale people already know: CEFR (A1 … C2) for English, the Codeforces tiers for DSA. Only what
+happens from the start day on counts; "Start over" moves the start day to today.
 
-* **Anki** (priority 1) — computed from the open collection, strictly read-only: FSRS
-  retrievability per card, weighted by how strong the card's evidence is (typed recall > recall >
-  recognition), maximised per word and summed. Unit: word-equivalents.
-* **DSA** (priority 2) — an Elo ability θ replayed from dsa-journey's attempts. The repo's
-  ``/commit-progress`` command runs ``scripts/cultivation_feed.py`` as its last step, which writes
-  the feed this plugin reads; the window notices the file change by itself.
+* **English** — computed from the open collection, strictly read-only: FSRS recall probability
+  per card, weighted by how strong the card's evidence is (typed recall > recall > recognition),
+  best card per word, summed. Unit: word-equivalents, which is what the CEFR bands are in.
+* **DSA** — an Elo rating replayed from dsa-journey's attempts. The repo's ``/commit-progress``
+  command runs ``scripts/cultivation_feed.py`` as its last step, which writes the feed this plugin
+  reads; the window notices the file change by itself.
 
 Layout:
 
-* pure logic — :mod:`.realms`, :mod:`.memory`, :mod:`.vocab`, :mod:`.dsa`, :mod:`.trials`,
+* pure logic — :mod:`.realms` (ladders), :mod:`.memory`, :mod:`.vocab`, :mod:`.dsa`,
   :mod:`.streak` (unit-tested headless);
 * :mod:`.store` — the plugin's own SQLite file in ``user_files/cultivation/``;
-* :mod:`.reader` + :mod:`.service` — the daily run and the trial flows (collection passed in);
-* this module — the only part that touches Anki: the Tools menu entry, the refresh triggers and
-  the window (:mod:`omnia.gui.cultivation`).
+* :mod:`.reader` + :mod:`.service` — the daily run (collection passed in);
+* this module — the only part that touches Anki: the Tools menu entry, the start day, the
+  refresh triggers and the window (:mod:`omnia.gui.cultivation`).
 """
 
 from __future__ import annotations
@@ -52,11 +51,11 @@ class CultivationPlugin(FeaturePlugin):
     """Tools → Cultivation: realms, power and trials for vocabulary and DSA."""
 
     name = "Cultivation"
-    description = "Level up your vocabulary and DSA, cultivation-novel style."
+    description = "Your English (CEFR) and DSA (Elo) level, cultivation-novel style."
     tooltip = (
-        "A daily, honest level for two learning streams: English vocabulary from your Anki "
-        "collection (read-only) and DSA from the dsa-journey repo. Power rises with real "
-        "ability, fades with neglect, and a new realm must be earned by passing a trial. "
+        "A daily level for two learning streams: English vocabulary from your Anki collection "
+        "(read-only), shown as CEFR, and DSA from the dsa-journey repo, shown as an Elo rating. "
+        "Both rise with real practice and fall with neglect, each named as a cultivation realm. "
         "Open it from Tools → Cultivation."
     )
     group = "Progress"
@@ -82,6 +81,9 @@ class CultivationPlugin(FeaturePlugin):
             else CultivationSettings()
         )
         self._service = None
+        if self._settings.start() is None:
+            # The first enable is day one: nothing before it counts until the user says so.
+            self._write({"start_date": date.today().isoformat()})
         self._action = anki_compat.add_tools_menu_action(
             _MENU_LABEL, lambda _checked: self.open_window()
         )
@@ -115,7 +117,11 @@ class CultivationPlugin(FeaturePlugin):
             if self._ctx is None:
                 raise RuntimeError("Cultivation is not enabled")
             path = self._ctx.paths.user_files_dir.joinpath(*_STATE_FILE)
-            self._service = CultivationService(self.settings, CultivationStore(path))
+            self._service = CultivationService(
+                self.settings,
+                CultivationStore(path),
+                self.settings.start() or date.today(),
+            )
         return self._service
 
     def save_setup(self, values: dict[str, Any]) -> None:
@@ -124,6 +130,15 @@ class CultivationPlugin(FeaturePlugin):
         Rebuilt in place rather than via ``reload_self``: a reload disables the plugin, and
         disabling closes this very window while the user is still in it.
         """
+        self._write(values)
+
+    def start_over(self) -> None:
+        """Forget the recorded history and count from today."""
+        self.service().reset()
+        self._write({"start_date": date.today().isoformat()})
+
+    def _write(self, values: dict[str, Any]) -> None:
+        """Merge ``values`` into this plugin's config and rebuild the service with them."""
         if self._ctx is None:
             return
         self._ctx.config.update_section(self.id, values)

@@ -19,10 +19,8 @@ from omnia.plugins.cultivation.config import CultivationSettings
 from omnia.plugins.cultivation.memory import CardMemory, parse_card_data
 from omnia.plugins.cultivation.vocab import (
     VocabCard,
-    clean_field,
     is_typed_template,
     normalize_word,
-    suggest_meaning_field,
     suggest_modality,
     suggest_word_field,
     template_key,
@@ -48,12 +46,11 @@ class TemplateInfo:
 
 @dataclass(frozen=True)
 class NoteTypeInfo:
-    """A note type's fields and the word/meaning picks for it."""
+    """A note type's fields and the word-field pick for it."""
 
     name: str
     fields: tuple[str, ...]
     word_field: Optional[str]
-    meaning_field: Optional[str]
     confirmed: bool
 
 
@@ -164,13 +161,6 @@ class CollectionReader:
         chosen = self.s.word_fields.get(model["name"])
         return chosen if chosen in fields else suggest_word_field(fields)
 
-    def _meaning_field(self, model: Mapping[str, Any]) -> Optional[str]:
-        fields = self._field_names(model)
-        chosen = self.s.meaning_fields.get(model["name"])
-        if chosen in fields:
-            return chosen
-        return suggest_meaning_field(fields, self._word_field(model))
-
     def _template(self, model: Mapping[str, Any], tord: int) -> Mapping[str, Any]:
         tmpls = model.get("tmpls", [])
         return next(
@@ -208,15 +198,11 @@ class CollectionReader:
             last_review_s=bounds[1] / 1000 if bounds else None,
         )
         word_field = self._word_field(model)
-        meaning_field = self._meaning_field(model)
         return VocabCard(
             cid=int(cid),
             word=normalize_word(values.get(word_field or "", "")),
             modality=modality,
             memory=memory,
-            typed=is_typed_template(tmpl.get("qfmt", ""), tmpl.get("afmt", "")),
-            meaning=clean_field(values.get(meaning_field or "", "")),
-            first_review_ms=bounds[0] if bounds else None,
         )
 
     def _inventory(
@@ -248,7 +234,6 @@ class CollectionReader:
                     name=model["name"],
                     fields=tuple(self._field_names(model)),
                     word_field=self._word_field(model),
-                    meaning_field=self._meaning_field(model),
                     confirmed=model["name"] in self.s.word_fields,
                 )
         return templates, sorted(note_types.values(), key=lambda n: n.name)

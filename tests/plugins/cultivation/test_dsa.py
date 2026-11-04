@@ -207,6 +207,25 @@ class TestDecay:
         assert len(out.history) == 10 and out.history[-1][0] == D0 + timedelta(days=9)
 
 
+class TestStartDay:
+    def test_attempts_before_the_start_are_ignored(self):
+        f = feed(
+            [row(1, D0), row(2, D0 + timedelta(days=5))], [prob(1, 1700), prob(2, 1700)]
+        )
+        out = engine(f).replay(
+            f.attempts, D0 + timedelta(days=5), start=D0 + timedelta(days=3)
+        )
+        assert [s.attempt.lc_id for s in out.scored] == [2]
+        assert out.history[0][0] == D0 + timedelta(days=3)
+
+    def test_no_attempts_since_the_start_keeps_the_initial_rating(self):
+        f = feed([row(1, D0)], [prob(1, 1700)])
+        out = engine(f).replay(
+            f.attempts, D0 + timedelta(days=12), start=D0 + timedelta(days=10)
+        )
+        assert out.theta == 1500 and len(out.history) == 3 and out.scored == []
+
+
 class TestDebts:
     def test_copied_opens_a_debt(self):
         f = feed([row(1, D0, status="copied")], [prob(1, 1600)])

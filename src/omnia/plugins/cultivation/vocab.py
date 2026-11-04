@@ -34,15 +34,6 @@ _FIELD_REF_RE = re.compile(r"{{([^{}]+)}}")
 
 # Field-name hints for the Setup tab's suggestions only; the user confirms every pick.
 _WORD_HINTS = ("word", "front", "term", "expression", "vocab", "headword", "english")
-_MEANING_HINTS = (
-    "meaning",
-    "back",
-    "definition",
-    "translation",
-    "vietnamese",
-    "nghĩa",
-    "gloss",
-)
 
 
 def clean_field(raw: str) -> str:
@@ -105,17 +96,6 @@ def suggest_word_field(fields: Sequence[str]) -> Optional[str]:
     return _suggest(fields, _WORD_HINTS, None) or (fields[0] if fields else None)
 
 
-def suggest_meaning_field(
-    fields: Sequence[str], word_field: Optional[str]
-) -> Optional[str]:
-    """The field most likely to hold the meaning (falls back to the first other field)."""
-    found = _suggest(fields, _MEANING_HINTS, word_field)
-    if found:
-        return found
-    others = [f for f in fields if f != word_field]
-    return others[0] if others else None
-
-
 @dataclass(frozen=True)
 class VocabCard:
     """One card of a vocabulary note, already mapped to its word and modality."""
@@ -124,9 +104,6 @@ class VocabCard:
     word: str
     modality: str
     memory: CardMemory
-    typed: bool = False
-    meaning: str = ""
-    first_review_ms: Optional[int] = None
 
 
 @dataclass
@@ -136,27 +113,9 @@ class Word:
     word: str
     cards: list[VocabCard] = field(default_factory=list)
 
-    @property
-    def reviewed(self) -> bool:
-        return any(c.memory.reviewed for c in self.cards)
-
-    @property
-    def has_typed(self) -> bool:
-        return any(c.typed for c in self.cards)
-
-    @property
-    def meaning(self) -> str:
-        return next((c.meaning for c in self.cards if c.meaning), "")
-
-    @property
-    def first_review_ms(self) -> Optional[int]:
-        stamps = [c.first_review_ms for c in self.cards if c.first_review_ms]
-        return min(stamps) if stamps else None
-
-    @property
-    def last_review_s(self) -> Optional[float]:
-        stamps = [c.memory.last_review_s for c in self.cards if c.memory.last_review_s]
-        return max(stamps) if stamps else None
+    def counted(self, since_s: float) -> bool:
+        """Whether any card of the word was reviewed at or after ``since_s``."""
+        return any((c.memory.last_review_s or -1) >= since_s for c in self.cards)
 
 
 def group_words(cards: Iterable[VocabCard]) -> dict[str, Word]:
@@ -173,12 +132,18 @@ class VocabularyPower:
 
     Args:
         weights: μ per modality.
-        baseline: Σ_b B_b — words known outside Anki (VST, milestone M3). 0 until a VST is taken;
-            the window says so.
+        since_s: Only cards whose last review is at or after this moment count — the "counting
+            since" start day. A card reviewed before it and not since adds nothing until it is
+            reviewed again, which is what makes a fresh start begin at zero.
+        baseline: Σ_b B_b — words known outside Anki (a vocabulary-size test). 0 until one is
+            taken; the window says so.
     """
 
-    def __init__(self, weights: Mapping[str, float], baseline: float = 0.0) -> None:
+    def __init__(
+        self, weights: Mapping[str, float], since_s: float = 0.0, baseline: float = 0.0
+    ) -> None:
         self.weights = dict(weights)
+        self.since_s = since_s
         self.baseline = baseline
 
     def strength(
@@ -193,6 +158,8 @@ class VocabularyPower:
             memory = (
                 states.get(card.cid, card.memory) if states is not None else card.memory
             )
+            if (memory.last_review_s or -1) < self.since_s:
+                continue
             mu = self.weights.get(card.modality, 0.0)
             best = max(best, mu * memory.r(now_s))
         return best

@@ -21,39 +21,41 @@ Format for each entry:
 
 ---
 
-## 2026-11-04 — Cultivation: a daily realm/level for Anki vocabulary and DSA
+## 2026-11-04 — Cultivation: English (CEFR) and DSA (Elo) levels named as realms
 
-**What:** New `cultivation` plugin (group "Progress", Tools → Cultivation) implementing the
-cultivation spec (CONTEXT.md) inside Anki. Anki: FSRS retrievability per card × modality weight μ,
-max per normalised word, summed into "word-equivalents" power, with the §4.8 gain against a
-start-of-day card snapshot, 30-day retention health, streak with a weekly freeze. DSA: an Elo θ
-replayed from dsa-journey's attempt feed (zerotrac ratings, s by status/time/wa, FIDE K rules,
-post-break boost, re-solve weights, debts, neglect decay to a floor). Both share one realm state
-machine (eligible → trial → promote, re-entry without trial, 14-day hysteresis demotion, 7-day
-cooldown) and have trials: a 50-word in-window quiz (seeded, typed or self-graded) and a 5-problem
-DSA trial judged from later feeds. The window has Overview / DSA / Setup tabs; Setup writes the
-deck selection, word/meaning fields and template modalities into the plugin's config.
+**What:** New `cultivation` plugin (group "Progress", Tools → Cultivation). English: FSRS
+retrievability per card × card-type weight μ, best card per word, summed into word-equivalents,
+counting only cards reviewed since the start day; levels at Milton's CEFR vocabulary bands
+(A1 < 1,500 … C2 ≥ 4,500) then 8k/14k/17k. DSA: an Elo rating replayed from dsa-journey's
+attempt feed since the start day (zerotrac ratings, s by status/time/wa, FIDE K rules, post-break
+boost, re-solve weights, debts, neglect decay to a floor); levels at the Codeforces tiers. Each of
+the nine levels is also a cultivation realm name. The level is a pure function of today's score
+(no trials, no hysteresis). Today's gain (against a start-of-day card snapshot), lifetime, streak
+with a weekly freeze, 30-day retention health, a history chart; Setup tab for decks, word field,
+template modality and "Start over from today".
 
-**Why:** A visible, honest level for two long-running learning streams that measures ability
-(difficulty, quality, retention) rather than effort, and gates level-ups behind a test.
+**Why:** A readable, daily measure of two learning streams on scales people already know, that
+reflects ability (difficulty, quality, retention) rather than volume. The first design (realms
+gated by trials, history seeded as provisional) was dropped after review: a pure rating that moves
+both ways, counted from a start day, is simpler and was what the user wanted to look at.
 
-**Files:** `src/omnia/plugins/cultivation/` (pure: `realms`, `memory`, `vocab`, `dsa`, `trials`,
+**Files:** `src/omnia/plugins/cultivation/` (pure: `realms` = ladders, `memory`, `vocab`, `dsa`,
 `streak`; `store` = own SQLite in `user_files/cultivation/state.db`; `reader` + `service` =
-daily run, collection passed in; `__init__` = menu/hooks/window), `src/omnia/gui/cultivation/`,
-`config/{omnia,features}.example.toml`, `gui/settings_categories.py` ("Progress"),
-`docs/guidance/cultivation/`, `docs/{guide,ankiweb}.md`, `tests/plugins/cultivation/`. The feed
-is produced by dsa-journey's `scripts/cultivation_feed.py`, run as the last step of its
-`/commit-progress` (dsa-journey branch `phuc-nguyen/cultivation-feed`).
+daily run, collection passed in; `__init__` = start day, menu, hooks, window),
+`src/omnia/gui/cultivation/`, `config/{omnia,features}.example.toml`,
+`gui/settings_categories.py` ("Progress"), `docs/guidance/cultivation/`, `docs/{guide,ankiweb}.md`,
+`tests/plugins/cultivation/`. The feed comes from dsa-journey's `scripts/cultivation_feed.py`,
+run as the last step of its `/commit-progress`.
 
-**How to verify:** `pytest tests/plugins/cultivation -q` (spec acceptance checks: R(S,S)=0.9,
-hand-computed power, 43/50 operating characteristic, state machine, Elo K/re-solve/decay/debts,
-end-to-end service on a fake collection). In Anki: enable Cultivation, open Tools → Cultivation.
+**How to verify:** `pytest tests/plugins/cultivation -q` (R(S,S)=0.9, hand-computed score, CEFR
+and tier boundaries, start-day filtering for both domains, Elo K/re-solve/decay/debts, an
+end-to-end run on a fake collection asserting every statement is a SELECT). In Anki: enable
+Cultivation, open Tools → Cultivation.
 
-**Notes / rollback:** Strictly read-only on the collection (the fake collection in
-`test_daily_run.py` asserts every statement is a SELECT). The page must wait for `pycmd` before
-its first request (Anki injects the bridge after page scripts run). Not done yet: §4.9 py-fsrs
-backfill and the VST baseline (B_b = 0, the card says so), Codeforces θ. Rollback = disable the
-plugin; delete `user_files/cultivation/` to forget its history.
+**Notes / rollback:** Strictly read-only on the collection. The page must wait for `pycmd`
+before its first request (Anki injects the bridge after page scripts run). CEFR here is the
+vocabulary dimension only. Not done: a vocabulary-size-test baseline and Codeforces ratings.
+Rollback = disable the plugin; delete `user_files/cultivation/` to forget its history.
 
 ---
 

@@ -9,15 +9,12 @@ a ``/commit-progress`` run in dsa-journey shows up without touching the window.
 from __future__ import annotations
 
 import json
-from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.gui.cultivation.html import build_cultivation_html
 from omnia.gui.web_dialog import WebDialog
-from omnia.plugins.cultivation.service import TrialError
 
 if TYPE_CHECKING:
     from omnia.plugins.cultivation import CultivationPlugin
@@ -41,13 +38,7 @@ class CultivationWindow(WebDialog):
                 "refresh": self._refresh,
                 "poll": self._poll,
                 "save_setup": self._save_setup,
-                "anki_trial_start": self._guarded(self._anki_trial_start),
-                "anki_trial_answer": self._guarded(self._anki_trial_answer),
-                "anki_trial_finish": self._guarded(self._anki_trial_finish),
-                "dsa_trial_start": self._guarded(self._dsa_trial_start),
-                "trial_abandon": self._guarded(self._trial_abandon),
-                "copy": self._copy,
-                "open_url": self._open_url,
+                "start_over": self._start_over,
             },
             width=900,
             height=720,
@@ -70,18 +61,6 @@ class CultivationWindow(WebDialog):
             "window.cultivation && window.cultivation.update("
             f"{json.dumps(domain)}, {json.dumps(card, default=str)})"
         )
-
-    @staticmethod
-    def _guarded(handler: Any) -> Any:
-        """Turn a refused trial action into ``{"error": ...}`` for the page to show."""
-
-        def run(data: dict[str, Any]) -> Any:
-            try:
-                return handler(data)
-            except TrialError as exc:
-                return {"error": str(exc)}
-
-        return run
 
     # -- ops ------------------------------------------------------------------------------
 
@@ -115,9 +94,6 @@ class CultivationWindow(WebDialog):
             "word_fields": {
                 str(k): str(v) for k, v in data.get("word_fields", {}).items()
             },
-            "meaning_fields": {
-                str(k): str(v) for k, v in data.get("meaning_fields", {}).items()
-            },
             "modality": {str(k): str(v) for k, v in data.get("modality", {}).items()},
         }
         self._plugin.save_setup(values)
@@ -125,49 +101,9 @@ class CultivationWindow(WebDialog):
         self._plugin.refresh_dsa()
         return True
 
-    def _anki_trial_start(self, _data: dict[str, Any]) -> dict[str, Any]:
-        return self._plugin.service().start_anki_trial(date.today())
-
-    def _anki_trial_answer(self, data: dict[str, Any]) -> dict[str, Any]:
-        grade = data.get("self_grade")
-        return self._plugin.service().answer_anki_trial(
-            int(data.get("id", 0)),
-            int(data.get("index", -1)),
-            str(data.get("response", "")),
-            None if grade is None else bool(grade),
-        )
-
-    def _anki_trial_finish(self, data: dict[str, Any]) -> dict[str, Any]:
-        result = self._plugin.service().finish_anki_trial(
-            int(data.get("id", 0)), date.today()
-        )
+    def _start_over(self, _data: dict[str, Any]) -> bool:
+        """Forget the history and count from today, then redraw both cards."""
+        self._plugin.start_over()
         self._plugin.refresh_anki()
-        return result
-
-    def _dsa_trial_start(self, _data: dict[str, Any]) -> dict[str, Any]:
-        card = self._plugin.service().start_dsa_trial(date.today())
-        self._push("dsa", card)
-        return {"ok": True}
-
-    def _trial_abandon(self, data: dict[str, Any]) -> dict[str, Any]:
-        domain = str(data.get("domain", ""))
-        self._plugin.service().abandon_trial(
-            domain, int(data.get("id", 0)), date.today()
-        )
-        if domain == "dsa":
-            self._plugin.refresh_dsa()
-        else:
-            self._plugin.refresh_anki()
-        return {"ok": True}
-
-    def _copy(self, data: dict[str, Any]) -> bool:
-        from aqt.qt import QApplication
-
-        QApplication.clipboard().setText(str(data.get("text", "")))
-        return True
-
-    def _open_url(self, data: dict[str, Any]) -> bool:
-        url = str(data.get("url", ""))
-        if url.startswith("https://leetcode.com/"):
-            anki_compat.open_external_url(url)
+        self._plugin.refresh_dsa()
         return True

@@ -22,7 +22,6 @@ from omnia.plugins.cultivation.vocab import (
     group_words,
     normalize_word,
     start_of_day_states,
-    suggest_meaning_field,
     suggest_modality,
     suggest_word_field,
 )
@@ -103,10 +102,7 @@ class TestWords:
     def test_field_suggestions(self):
         fields = ["Front", "Back", "Audio"]
         assert suggest_word_field(fields) == "Front"
-        assert suggest_meaning_field(fields, "Front") == "Back"
         assert suggest_word_field(["Vocab EN", "Nghĩa"]) == "Vocab EN"
-        assert suggest_meaning_field(["Vocab EN", "Nghĩa"], "Vocab EN") == "Nghĩa"
-        assert suggest_meaning_field(["A", "B"], "A") == "B"
 
 
 def card(cid, word, modality, s=10.0, days_ago=10.0, **kw) -> VocabCard:
@@ -141,6 +137,20 @@ class TestPower:
     def test_a_weight_above_nothing_never_exceeds_one_word(self):
         words = group_words([card(1, "x", ACTIVE_RECALL_TYPED, days_ago=0)])
         assert VocabularyPower(WEIGHTS).power(words, NOW) == pytest.approx(1.0)
+
+    def test_only_cards_reviewed_since_the_start_count(self):
+        """A fresh start begins at zero: old reviews add nothing until the word is reviewed."""
+        old = card(1, "old", PASSIVE_RECALL, days_ago=30)
+        new = card(2, "new", PASSIVE_RECALL, days_ago=1)
+        words = group_words([old, new])
+        since = NOW - 2 * DAY
+        power = VocabularyPower(WEIGHTS, since_s=since).power(words, NOW)
+        assert power == pytest.approx(0.8 * new.memory.r(NOW))
+        assert not words["old"].counted(since) and words["new"].counted(since)
+
+    def test_a_start_after_every_review_scores_zero(self):
+        words = group_words([card(1, "a", PASSIVE_RECALL, days_ago=3)])
+        assert VocabularyPower(WEIGHTS, since_s=NOW).power(words, NOW) == 0.0
 
     def test_baseline_is_added(self):
         assert VocabularyPower(WEIGHTS, baseline=250).power({}, NOW) == 250

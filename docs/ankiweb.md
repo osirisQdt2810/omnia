@@ -18,7 +18,7 @@ Open it from **Tools → Omnia**.
 | **Smart Notes** | Fills note fields with an LLM or TTS — definitions, examples, cloze, images, audio — with a dependency graph so each field waits for what it reads. |
 | **Word Lookup** | Answers "is this word already in my collection?" for the companion web and desktop clippers. |
 | **Phrase Check** | Corrects a phrase you select in a clipper: every mistake as its own card with its own reason, then the sentence rewritten with the changes marked. |
-| **Cultivation** | A daily, honest level for your vocabulary and your DSA practice: FSRS recall weighted by card type for Anki (read-only), an Elo rating for LeetCode solutions, realms you enter by passing a trial, and slow decay when you stop. |
+| **Cultivation** | Your English level as CEFR (A1–C2) from what your Anki cards show you can recall, and your DSA level as an Elo rating from your LeetCode solutions — both named as cultivation realms, rising with practice and falling with neglect. Read-only on your collection. |
 
 ## Sync — two computers, a few decks, no export files
 

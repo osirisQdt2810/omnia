@@ -257,13 +257,22 @@ class EloEngine:
             return theta
         return floor + (theta - floor) * math.pow(2.0, -1.0 / t.decay_half_life_days)
 
-    def replay(self, attempts: Iterable[Attempt], today: date) -> DsaReplay:
-        """Run every attempt in order and decay across gaps up to ``today``."""
+    def replay(
+        self, attempts: Iterable[Attempt], today: date, start: Optional[date] = None
+    ) -> DsaReplay:
+        """Run the attempts from ``start`` on, in order, decaying across gaps up to ``today``.
+
+        θ begins at the initial rating on ``start`` (or on the first attempt when ``start`` is
+        None), and the history has one point per day from there to ``today``.
+        """
         t = self.t
-        attempts = sorted(attempts, key=lambda a: (a.day, a.path))
+        attempts = sorted(
+            (a for a in attempts if start is None or a.day >= start),
+            key=lambda a: (a.day, a.path),
+        )
         theta = t.initial_rating
         out = DsaReplay(theta=theta, theta_peak=theta)
-        if not attempts:
+        if not attempts and start is None:
             return out
         by_day: dict[date, list[Attempt]] = {}
         for attempt in attempts:
@@ -274,8 +283,8 @@ class EloEngine:
         last_seen: dict[int, date] = {}
         open_debts: dict[int, Debt] = {}
         last_attempt: Optional[date] = None
-        day = attempts[0].day
-        end = max(today, attempts[-1].day)
+        day = start if start is not None else attempts[0].day
+        end = max([today, *(a.day for a in attempts[-1:])])
         while day <= end:
             todays = by_day.get(day, [])
             gap = (day - last_attempt).days if last_attempt is not None else 0

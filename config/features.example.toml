@@ -103,26 +103,26 @@ default_mode = "written"
 # trade-off from generating a whole card.
 model = ""
 
-# Cultivation — a daily level for Anki vocabulary and DSA (Tools → Cultivation).
-# Every number is from the cultivation spec; those tagged [HEURISTIC] are yours to calibrate.
-# Decks, word/meaning fields and template modalities are picked in the window's Setup tab.
+# Cultivation — your English (CEFR) and DSA (Elo) level, named as cultivation realms (Tools → Cultivation).
+# The level follows the score both ways. Decks, word fields and template modalities are picked in
+# the window's Setup tab; tags marked [HEURISTIC] are judgement calls to calibrate.
 [cultivation]
+start_date = ""                # YYYY-MM-DD; empty = set to the day you first switch it on
 dsa_feed_path = ""             # empty = ~/.omnia/cultivation/dsa_feed.json (dsa-journey writes it)
 include_suspended = true       # suspended/buried cards still decay, so they still count
-demotion_buffer_days = 14      # [HEURISTIC] days below a realm before it drops
-trial_cooldown_days = 7        # [HEURISTIC] wait after a failed trial
 
 [cultivation.anki]
-weight_recognition = 0.6       # μ per modality: ordering from the literature, magnitudes [HEURISTIC]
+weight_recognition = 0.6       # μ per card type: ordering from the literature, magnitudes [HEURISTIC]
 weight_passive_recall = 0.8
 weight_active_recall = 0.9
 weight_active_recall_typed = 1.0
-trial_size = 50                # trial: 50 words, pass at 43 (≈86%)
-trial_pass = 43
-typo_min_length = 7            # [HEURISTIC] one typo forgiven from this word length up
+# Words per level: A1, A2, B1, B2, C1, C2 (Milton 2009, X_Lex bands), then 8k / 14k / 17k.
+level_thresholds = [0, 1500, 2500, 3250, 3750, 4500, 8000, 14000, 17000]
 
 [cultivation.dsa]
 initial_rating = 1500.0        # your LeetCode contest rating if you have one
 decay_grace_days = 7           # [HEURISTIC] no decay for this many idle days
 decay_half_life_days = 90.0    # [HEURISTIC] calibrate after a long break
 decay_floor_keep = 0.5         # [HEURISTIC] share of all gains neglect never takes
+# Rating per level: the Codeforces tiers (Newbie … Legendary Grandmaster).
+level_thresholds = [0, 1200, 1400, 1600, 1900, 2100, 2400, 2600, 3000]

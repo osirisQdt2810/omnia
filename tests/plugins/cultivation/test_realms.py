@@ -1,135 +1,83 @@
-"""The realm ladder and state machine (spec §2). No Anki anywhere."""
+"""The level ladders: realm names on CEFR / Elo thresholds. No Anki anywhere."""
 
 from __future__ import annotations
 
-import math
-from datetime import date, timedelta
-
 import pytest
 
+from omnia.plugins.cultivation.config import AnkiTuning, DsaTuning
 from omnia.plugins.cultivation.realms import (
-    ANKI_LADDER,
-    COOLDOWN,
-    DSA_LADDER,
-    ELIGIBLE,
-    PEAK,
-    STABLE,
-    UNSTABLE,
-    RealmLadder,
-    RealmMachine,
-    RealmState,
+    DSA_LABELS,
+    ENGLISH_LABELS,
+    Ladder,
     realm_name,
 )
 
-D0 = date(2026, 11, 4)
+ENGLISH = AnkiTuning().ladder()
+DSA = DsaTuning().ladder()
 
 
-def machine(buffer: int = 14) -> RealmMachine:
-    return RealmMachine(ANKI_LADDER, buffer)
-
-
-class TestLadder:
-    def test_held_by_finds_the_highest_threshold_reached(self):
-        assert ANKI_LADDER.held_by(0) == 1
-        assert ANKI_LADDER.held_by(999.9) == 1
-        assert ANKI_LADDER.held_by(1000) == 2
-        assert ANKI_LADDER.held_by(2431) == 3
-        assert ANKI_LADDER.held_by(99999) == 9
-
-    def test_dsa_l1_has_no_floor(self):
-        assert math.isinf(DSA_LADDER.threshold(1))
-        assert DSA_LADDER.held_by(-500) == 1
-        assert DSA_LADDER.held_by(1500) == 3
-
-    def test_progress_is_the_share_of_the_way_to_the_next_realm(self):
-        # Spec mock: 2,431 in Kim Đan (2,000 → 3,000) is 43% of this realm.
-        assert ANKI_LADDER.progress(3, 2431) == pytest.approx(0.431)
-        assert ANKI_LADDER.progress(9, 20000) == 1.0
-
-    def test_a_ladder_must_increase(self):
-        with pytest.raises(ValueError):
-            RealmLadder((0, 1, 1, 2, 3, 4, 5, 6, 7))
-
-    def test_names_follow_the_spec(self):
-        assert realm_name(1) == "Luyện Khí"
-        assert realm_name(3) == "Kim Đan"
-        assert realm_name(9) == "Chân Tiên"
-
-
-class TestPromotion:
-    def test_reaching_a_new_realm_only_makes_it_eligible(self):
-        view = machine().step(RealmState(realm=2, peak_realm=2), 2100, D0)
-        assert view.state.realm == 2
-        assert view.status == ELIGIBLE
-
-    def test_a_realm_held_before_is_reentered_without_a_trial(self):
-        view = machine().step(RealmState(realm=2, peak_realm=4), 3100, D0)
-        assert view.state.realm == 4
-        assert view.status == STABLE
-
-    def test_reentry_stops_at_the_peak(self):
-        view = machine().step(RealmState(realm=1, peak_realm=3), 9000, D0)
-        assert view.state.realm == 3
-        assert view.status == ELIGIBLE
-
-    def test_a_passed_trial_enters_the_next_realm_and_raises_the_peak(self):
-        state = machine().pass_trial(
-            RealmState(realm=2, peak_realm=2, provisional=True), 2100, D0
-        )
-        assert (state.realm, state.peak_realm, state.promoted_at) == (3, 3, D0)
-        assert state.provisional is False
-
-    def test_a_passed_trial_needs_the_power_at_that_moment(self):
-        state = RealmState(realm=2, peak_realm=2)
-        assert machine().pass_trial(state, 1999, D0) == state
-
-    def test_cooldown_replaces_eligible_until_it_ends(self):
-        state = RealmState(realm=2, peak_realm=2)
-        until = D0 + timedelta(days=3)
-        assert machine().step(state, 2100, D0, cooldown_until=until).status == COOLDOWN
-        assert (
-            machine().step(state, 2100, until, cooldown_until=until).status == ELIGIBLE
-        )
-
-    def test_the_top_realm_is_peak(self):
-        assert machine().step(RealmState(9, 9), 20000, D0).status == PEAK
-
-
-class TestDemotion:
-    def test_falling_below_marks_unstable_but_keeps_the_realm(self):
-        view = machine().step(RealmState(realm=3, peak_realm=3), 1990, D0)
-        assert view.state.realm == 3
-        assert view.status == UNSTABLE
-        assert view.state.unstable_since == D0
-        assert view.days_until_demotion == 14
-
-    def test_the_realm_drops_after_fourteen_days_below(self):
-        state = RealmState(realm=3, peak_realm=3, unstable_since=D0)
-        assert machine().step(state, 1990, D0 + timedelta(days=13)).state.realm == 3
-        dropped = machine().step(state, 1990, D0 + timedelta(days=14)).state
-        assert dropped.realm == 2
-        assert dropped.unstable_since is None
-        assert dropped.peak_realm == 3
-
-    def test_recovering_clears_unstable(self):
-        state = RealmState(realm=3, peak_realm=3, unstable_since=D0)
-        view = machine().step(state, 2005, D0 + timedelta(days=10))
-        assert view.state.unstable_since is None
-        assert view.status == STABLE
-
-    def test_after_a_drop_the_lost_realm_comes_back_without_a_trial(self):
-        state = RealmState(realm=2, peak_realm=3)
-        assert machine().step(state, 2001, D0).state.realm == 3
-
-    def test_step_is_idempotent_within_a_day(self):
-        m = machine()
-        first = m.step(RealmState(realm=3, peak_realm=3), 1990, D0)
-        again = m.step(first.state, 1990, D0)
-        assert again.state == first.state
-
-
-def test_seed_is_provisional_above_l1():
-    assert machine().seed(2431, D0) == RealmState(
-        realm=3, peak_realm=3, provisional=True
+class TestEnglish:
+    @pytest.mark.parametrize(
+        "words,label,realm",
+        [
+            (0, "A1", "Luyện Khí"),
+            (1499.9, "A1", "Luyện Khí"),
+            (1500, "A2", "Trúc Cơ"),
+            (2731, "B1", "Kim Đan"),
+            (3250, "B2", "Nguyên Anh"),
+            (3800, "C1", "Hóa Thần"),
+            (4500, "C2", "Luyện Hư"),
+            (9000, "C2+", "Hợp Thể"),
+            (20000, "C2+", "Chân Tiên"),
+        ],
     )
-    assert machine().seed(10, D0).provisional is False
+    def test_cefr_bands_follow_milton(self, words, label, realm):
+        level = ENGLISH.locate(words)
+        assert (level.label, level.realm) == (label, realm)
+
+    def test_progress_toward_the_next_level(self):
+        # B1 runs 2,500 → 3,250, so 2,875 is half way to B2.
+        level = ENGLISH.locate(2875)
+        assert level.progress == pytest.approx(0.5)
+        assert (level.next_label, level.next_threshold) == ("B2", 3250)
+
+    def test_the_level_falls_with_the_score(self):
+        assert ENGLISH.held_by(2600) == 3
+        assert ENGLISH.held_by(2400) == 2
+
+
+class TestDsa:
+    @pytest.mark.parametrize(
+        "rating,label",
+        [
+            (800, "Newbie"),
+            (1200, "Pupil"),
+            (1500, "Specialist"),
+            (1640, "Expert"),
+            (1950, "Candidate Master"),
+            (2200, "Master"),
+            (3100, "Legendary Grandmaster"),
+        ],
+    )
+    def test_codeforces_tiers(self, rating, label):
+        assert DSA.locate(rating).label == label
+
+    def test_a_score_below_the_first_threshold_is_still_level_one(self):
+        level = DSA.locate(-50)
+        assert level.level == 1 and level.progress == 0.0
+
+    def test_the_top_level_has_nothing_above(self):
+        level = DSA.locate(3500)
+        assert level.next_threshold is None and level.progress == 1.0
+
+
+def test_a_ladder_must_increase():
+    with pytest.raises(ValueError):
+        Ladder.build([0, 1, 1, 2, 3, 4, 5, 6, 7], ENGLISH_LABELS)
+    with pytest.raises(ValueError):
+        Ladder.build([0, 1, 2], DSA_LABELS)
+
+
+def test_names():
+    assert realm_name(1) == "Luyện Khí"
+    assert realm_name(9) == "Chân Tiên"

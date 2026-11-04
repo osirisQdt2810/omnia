@@ -4,7 +4,7 @@ How to use Omnia's larger features, step by step.
 
 | Feature | Guide | What it covers |
 |---|---|---|
-| Cultivation | [cultivation](cultivation/README.md) | A daily level for your Anki vocabulary and your DSA practice: realms, trials, setup |
+| Cultivation | [cultivation](cultivation/README.md) | Your English (CEFR) and DSA (Elo) level, named as cultivation realms: what it measures, setup |
 | Self-hosted models | [local-server](local-server/README.md) | Connecting Omnia to your own model server, running one, and building your own |
 | Smart Notes | [smart-notes](smart-notes/README.md) | Generating a note's fields: providers, tools, batches, and what a regeneration may replace |
 | Sync | [sync](sync/README.md) | Copying decks, note types and settings from another computer |

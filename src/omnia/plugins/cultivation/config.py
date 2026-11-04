@@ -1,27 +1,35 @@
 """Cultivation settings (the plugin's own Pydantic v1 config).
 
-The spec's rule is that no number is invented in code: every constant is either backed by a
-reference or tagged [HEURISTIC] and kept here, where the user can calibrate it. The defaults are
-the spec's values (CONTEXT.md §3); the guidance doc lists which ones are heuristics.
+No number is invented in code: every constant is either backed by a reference or tagged
+[HEURISTIC] and kept here, where it can be calibrated. The guidance doc lists which is which.
 
 Layout:
 
-* Flat scalars — rendered by the generic settings form (feed path, buffers, cooldowns).
+* Flat scalars — rendered by the generic settings form (start date, feed path, suspended cards).
 * ``anki`` / ``dsa`` — nested tuning tables, edited in ``features.toml``; the generic form skips
-  nested models on purpose (a 30-slider form is not a settings page anyone reads).
-* ``decks`` / ``word_fields`` / ``meaning_fields`` / ``modality`` — written by the Cultivation
-  window's *Setup* tab, which lists the real decks, note types and templates to pick from.
+  nested models on purpose.
+* ``decks`` / ``word_fields`` / ``modality`` — written by the Cultivation window's *Setup* tab,
+  which lists the real decks, note types and templates to pick from.
 """
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
+from typing import Optional
 
 from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
+from omnia.plugins.cultivation.realms import (
+    DSA_LABELS,
+    DSA_THRESHOLDS,
+    ENGLISH_LABELS,
+    ENGLISH_THRESHOLDS,
+    Ladder,
+)
 
-#: Modalities in increasing strength of evidence (spec §4.3; Laufer & Goldstein 2004).
+#: Modalities in increasing strength of evidence (Laufer & Goldstein 2004).
 RECOGNITION = "recognition"
 PASSIVE_RECALL = "passive_recall"
 ACTIVE_RECALL = "active_recall"
@@ -37,29 +45,21 @@ DEFAULT_FEED = Path.home() / ".omnia" / "cultivation" / "dsa_feed.json"
 
 
 class AnkiTuning(PersistedModel):
-    """Anki-domain constants (spec §4)."""
+    """English-domain constants."""
 
     # μ per modality — ordering from the literature, magnitudes [HEURISTIC].
     weight_recognition: float = 0.6
     weight_passive_recall: float = 0.8
     weight_active_recall: float = 0.9
     weight_active_recall_typed: float = 1.0
-    # Trial (§4.6): n = 50, pass ≥ 43 (binomial operating characteristic around 85% mastery).
-    trial_size: int = 50
-    trial_pass: int = 43
-    trial_recent_hours: int = (
-        24  # words reviewed this recently are excluded (short-term memory)
-    )
-    trial_new_share: float = (
-        0.5  # share sampled from words first reviewed since the last promotion
-    )
-    typo_min_length: int = (
-        7  # [HEURISTIC] Damerau–Levenshtein 1 accepted from this length up
-    )
-    # Health band (§4.7): FSRS DR 0.9; ~85% optimal accuracy (Wilson et al. 2019).
+    # Health band: FSRS desired retention 0.9; ~85% optimal accuracy (Wilson et al. 2019).
     retention_low: float = 0.80
     retention_high: float = 0.95
     retention_window_days: int = 30
+    # Level thresholds in word-equivalents: CEFR bands (Milton 2009) then coverage milestones.
+    level_thresholds: list[float] = Field(
+        default_factory=lambda: list(ENGLISH_THRESHOLDS)
+    )
 
     def weights(self) -> dict[str, float]:
         """μ keyed by modality."""
@@ -70,12 +70,15 @@ class AnkiTuning(PersistedModel):
             ACTIVE_RECALL_TYPED: self.weight_active_recall_typed,
         }
 
+    def ladder(self) -> Ladder:
+        return Ladder.build(self.level_thresholds, ENGLISH_LABELS)
+
 
 class DsaTuning(PersistedModel):
-    """DSA-domain constants (spec §5)."""
+    """DSA-domain constants."""
 
     initial_rating: float = 1500.0  # LeetCode's starting rating, or your contest rating
-    # Quality score s by status (§5.3) — values [HEURISTIC].
+    # Quality score s by status — values [HEURISTIC].
     s_self_fast: float = 1.0
     s_self: float = 0.8
     s_hint: float = 0.5
@@ -109,22 +112,30 @@ class DsaTuning(PersistedModel):
     resolve_gap_days: int = 7
     resolve_weight: float = 0.5
     debt_warn_days: int = 30
-    # Neglect decay (§5.4) [HEURISTIC, calibrate].
+    # Neglect decay [HEURISTIC, calibrate].
     decay_grace_days: int = 7
     decay_half_life_days: float = 90.0
     decay_floor_keep: float = 0.5
     decay_floor_base: float = 1200.0
-    # Trial (§5.6).
-    trial_size: int = 5
-    trial_pass: int = 3
-    trial_window: float = 100.0  # problems rated within ±window of the target threshold
-    trial_min_contests: int = 2
-    trial_days: int = 14
+    # Level thresholds on the Elo scale (Codeforces tiers).
+    level_thresholds: list[float] = Field(default_factory=lambda: list(DSA_THRESHOLDS))
+
+    def ladder(self) -> Ladder:
+        return Ladder.build(self.level_thresholds, DSA_LABELS)
 
 
 class CultivationSettings(PersistedModel):
     """Settings for the Cultivation feature."""
 
+    start_date: str = Field(
+        "",
+        title="Counting since (YYYY-MM-DD)",
+        description=(
+            "Only words reviewed and problems solved from this day on count.\n"
+            "• Set to the day you switch Cultivation on; 'Start over' in the window resets it.\n"
+            "• Move it back to count older history too."
+        ),
+    )
     dsa_feed_path: str = Field(
         "",
         title="DSA feed file",
@@ -139,20 +150,6 @@ class CultivationSettings(PersistedModel):
         title="Count suspended and buried cards",
         description="They still decay, so they still count — unless you untick this.",
     )
-    demotion_buffer_days: int = Field(
-        14,
-        ge=1,
-        le=90,
-        title="Days below a realm before dropping",
-        description="[HEURISTIC] A realm only drops after this many days below its threshold.",
-    )
-    trial_cooldown_days: int = Field(
-        7,
-        ge=0,
-        le=60,
-        title="Cooldown after a failed trial (days)",
-        description="[HEURISTIC] Time for the corrective practice before the next attempt.",
-    )
     decks: list[str] = Field(
         default_factory=list,
         description="Deck names (and their subdecks) holding vocabulary; empty = all decks.",
@@ -160,10 +157,6 @@ class CultivationSettings(PersistedModel):
     word_fields: dict[str, str] = Field(
         default_factory=dict,
         description="Note type -> the field holding the English word.",
-    )
-    meaning_fields: dict[str, str] = Field(
-        default_factory=dict,
-        description="Note type -> the field holding its meaning (used by the trial).",
     )
     modality: dict[str, str] = Field(
         default_factory=dict,
@@ -176,3 +169,10 @@ class CultivationSettings(PersistedModel):
         """The DSA feed file to read."""
         raw = (self.dsa_feed_path or "").strip()
         return Path(raw).expanduser() if raw else DEFAULT_FEED
+
+    def start(self) -> Optional[date]:
+        """The counting start day, or None when unset or unreadable."""
+        try:
+            return date.fromisoformat(self.start_date.strip())
+        except ValueError:
+            return None
