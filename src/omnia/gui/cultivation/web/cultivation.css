@@ -1,0 +1,123 @@
+/* Cultivation. Two status cards are the point of the window, so they get the room and the
+   colour; everything else (the DSA detail, the setup) is quieter and one tab away. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--fg);
+}
+body.omnia-light {
+  --bg: #f6f7f9; --fg: #1c1e21; --card: #ffffff; --line: #dfe3e8; --muted: #5b6470;
+  --accent: #2563eb; --accent-soft: rgba(37, 99, 235, .10); --track: #e6e9ee;
+  --gold: #b7791f; --ok: #167a45; --warn: #b45309; --bad: #c0392b;
+  --anki-from: #5b6ef5; --anki-to: #8a5cf6; --dsa-from: #10b981; --dsa-to: #0ea5e9;
+}
+body.omnia-dark {
+  --bg: #1b1d21; --fg: #e8eaed; --card: #24272c; --line: #383c42; --muted: #a0a7b0;
+  --accent: #7aa2f7; --accent-soft: rgba(122, 162, 247, .16); --track: #33373e;
+  --gold: #f6c453; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  --anki-from: #7c8cff; --anki-to: #b48cff; --dsa-from: #34d399; --dsa-to: #38bdf8;
+}
+.cv-page { padding: 16px; display: flex; flex-direction: column; gap: 14px; min-height: 100vh; }
+.cv-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.cv-head h1 { margin: 0; font-size: 18px; }
+.cv-sub { margin: 4px 0 0; color: var(--muted); }
+.cv-head-actions { display: flex; gap: 8px; align-items: center; }
+.cv-tabs { display: flex; background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+.cv-tab { border: 0; background: none; color: var(--muted); padding: 5px 12px; border-radius: 7px; cursor: pointer; font: inherit; }
+.cv-tab-on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.cv-hidden { display: none !important; }
+.cv-loading { color: var(--muted); padding: 24px; text-align: center; }
+
+.cv-btn {
+  border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 8px;
+  padding: 6px 12px; cursor: pointer; font: inherit; font-weight: 600;
+}
+.cv-btn:disabled { opacity: .45; cursor: default; }
+.cv-btn-quiet { background: transparent; color: var(--accent); }
+.cv-btn-small { padding: 3px 8px; font-size: 12px; }
+
+.cv-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 14px; }
+.cv-card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.cv-card-top { padding: 14px 16px 12px; color: #fff; }
+.cv-anki .cv-card-top { background: linear-gradient(135deg, var(--anki-from), var(--anki-to)); }
+.cv-dsa .cv-card-top { background: linear-gradient(135deg, var(--dsa-from), var(--dsa-to)); }
+.cv-domain { text-transform: uppercase; letter-spacing: .08em; font-size: 11px; opacity: .9; }
+.cv-realm { font-size: 22px; font-weight: 700; margin-top: 2px; }
+.cv-realm small { font-size: 13px; font-weight: 600; opacity: .85; margin-left: 4px; }
+.cv-power { margin-top: 6px; font-size: 13px; opacity: .95; }
+.cv-power b { font-size: 15px; }
+.cv-bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,.28); margin-top: 8px; overflow: hidden; }
+.cv-bar > span { display: block; height: 100%; background: #fff; border-radius: 4px; transition: width .4s ease; }
+.cv-bar-label { display: flex; justify-content: space-between; font-size: 11px; opacity: .9; margin-top: 4px; }
+
+.cv-card-body { padding: 12px 16px 14px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+.cv-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cv-stat { background: var(--bg); border-radius: 9px; padding: 7px 9px; }
+.cv-stat-label { color: var(--muted); font-size: 11px; }
+.cv-stat-value { font-size: 15px; font-weight: 650; margin-top: 2px; }
+.cv-stat-note { color: var(--muted); font-size: 11px; margin-top: 1px; }
+.cv-pos { color: var(--ok); }
+.cv-neg { color: var(--bad); }
+.cv-line { color: var(--muted); line-height: 1.5; }
+.cv-line b { color: var(--fg); font-weight: 600; }
+.cv-pill { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.cv-pill-ok { background: rgba(22,122,69,.14); color: var(--ok); }
+.cv-pill-warn { background: rgba(180,83,9,.14); color: var(--warn); }
+.cv-pill-bad { background: rgba(192,57,43,.14); color: var(--bad); }
+.cv-pill-gold { background: rgba(183,121,31,.16); color: var(--gold); }
+
+.cv-trial-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px dashed var(--line); border-radius: 10px; padding: 8px 10px;
+}
+.cv-trial-row.cv-eligible { border-style: solid; border-color: var(--gold); background: rgba(183,121,31,.07); }
+.cv-warn-box { border-left: 3px solid var(--warn); padding: 6px 10px; background: rgba(180,83,9,.07); border-radius: 0 8px 8px 0; color: var(--fg); }
+
+.cv-chart { width: 100%; height: 70px; display: block; }
+.cv-chart path.cv-area { opacity: .16; }
+.cv-chart path.cv-stroke { fill: none; stroke-width: 1.6; }
+.cv-chart line { stroke: var(--line); stroke-dasharray: 3 3; }
+.cv-chart text { fill: var(--muted); font-size: 9px; }
+
+.cv-box { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.cv-box h2 { margin: 0 0 8px; font-size: 14px; }
+.cv-box + .cv-box { margin-top: 12px; }
+.cv-table { width: 100%; border-collapse: collapse; }
+.cv-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+.cv-table td { padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.cv-table tr:last-child td { border-bottom: 0; }
+.cv-num { text-align: right; font-variant-numeric: tabular-nums; }
+.cv-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.cv-muted { color: var(--muted); }
+.cv-mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+
+.cv-setup-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+/* Grid and flex children default to min-width:auto, so one long field name widened the whole
+   column past the window; let them shrink and give wide tables their own scroll instead. */
+.cv-setup-grid > *, .cv-box { min-width: 0; }
+.cv-box { overflow-x: auto; }
+.cv-table select { max-width: 220px; }
+@media (max-width: 760px) { .cv-setup-grid { grid-template-columns: 1fr; } }
+.cv-deck-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.cv-deck-list label { display: flex; gap: 6px; align-items: center; }
+select, input[type=text] {
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 6px;
+}
+.cv-setup-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; align-items: center; }
+
+.cv-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.cv-modal-box { background: var(--card); border-radius: 14px; width: min(560px, 100%); padding: 18px 20px; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+.cv-modal-box h2 { margin: 0 0 4px; font-size: 16px; }
+.cv-q { font-size: 20px; font-weight: 650; margin: 18px 0 12px; text-align: center; line-height: 1.35; }
+.cv-q-input { width: 100%; font-size: 16px; padding: 8px 10px; }
+.cv-q-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; gap: 8px; }
+.cv-feedback { min-height: 22px; margin-top: 10px; text-align: center; }
+.cv-progress { height: 4px; background: var(--track); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+.cv-progress > span { display: block; height: 100%; background: var(--gold); }
+
+.cv-toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 7px 14px; border-radius: 8px; }

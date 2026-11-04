@@ -21,6 +21,42 @@ Format for each entry:
 
 ---
 
+## 2026-11-04 — Cultivation: a daily realm/level for Anki vocabulary and DSA
+
+**What:** New `cultivation` plugin (group "Progress", Tools → Cultivation) implementing the
+cultivation spec (CONTEXT.md) inside Anki. Anki: FSRS retrievability per card × modality weight μ,
+max per normalised word, summed into "word-equivalents" power, with the §4.8 gain against a
+start-of-day card snapshot, 30-day retention health, streak with a weekly freeze. DSA: an Elo θ
+replayed from dsa-journey's attempt feed (zerotrac ratings, s by status/time/wa, FIDE K rules,
+post-break boost, re-solve weights, debts, neglect decay to a floor). Both share one realm state
+machine (eligible → trial → promote, re-entry without trial, 14-day hysteresis demotion, 7-day
+cooldown) and have trials: a 50-word in-window quiz (seeded, typed or self-graded) and a 5-problem
+DSA trial judged from later feeds. The window has Overview / DSA / Setup tabs; Setup writes the
+deck selection, word/meaning fields and template modalities into the plugin's config.
+
+**Why:** A visible, honest level for two long-running learning streams that measures ability
+(difficulty, quality, retention) rather than effort, and gates level-ups behind a test.
+
+**Files:** `src/omnia/plugins/cultivation/` (pure: `realms`, `memory`, `vocab`, `dsa`, `trials`,
+`streak`; `store` = own SQLite in `user_files/cultivation/state.db`; `reader` + `service` =
+daily run, collection passed in; `__init__` = menu/hooks/window), `src/omnia/gui/cultivation/`,
+`config/{omnia,features}.example.toml`, `gui/settings_categories.py` ("Progress"),
+`docs/guidance/cultivation/`, `docs/{guide,ankiweb}.md`, `tests/plugins/cultivation/`. The feed
+is produced by dsa-journey's `scripts/cultivation_feed.py`, run as the last step of its
+`/commit-progress` (dsa-journey branch `phuc-nguyen/cultivation-feed`).
+
+**How to verify:** `pytest tests/plugins/cultivation -q` (spec acceptance checks: R(S,S)=0.9,
+hand-computed power, 43/50 operating characteristic, state machine, Elo K/re-solve/decay/debts,
+end-to-end service on a fake collection). In Anki: enable Cultivation, open Tools → Cultivation.
+
+**Notes / rollback:** Strictly read-only on the collection (the fake collection in
+`test_daily_run.py` asserts every statement is a SELECT). The page must wait for `pycmd` before
+its first request (Anki injects the bridge after page scripts run). Not done yet: §4.9 py-fsrs
+backfill and the VST baseline (B_b = 0, the card says so), Codeforces θ. Rollback = disable the
+plugin; delete `user_files/cultivation/` to forget its history.
+
+---
+
 ## 2026-10-19 — Phrase Check: configurable target language, translate instead of fail
 
 **What:** `PhraseCheckSettings.target_language` (free text, default English, first language

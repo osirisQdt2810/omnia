@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+{css}
+</style>
+</head>
+<body class="{theme_class}">
+<div class="cv-page">
+  <header class="cv-head">
+    <div>
+      <h1>Cultivation</h1>
+      <p class="cv-sub">Tu vi rises with real ability, fades with neglect; a new realm is earned by a trial.</p>
+    </div>
+    <div class="cv-head-actions">
+      <nav class="cv-tabs" id="cv-tabs">
+        <button class="cv-tab cv-tab-on" data-tab="overview">Overview</button>
+        <button class="cv-tab" data-tab="dsa">DSA</button>
+        <button class="cv-tab" data-tab="setup">Setup</button>
+      </nav>
+      <button class="cv-btn cv-btn-quiet" id="cv-refresh" title="Recompute both domains">Refresh</button>
+    </div>
+  </header>
+
+  <section class="cv-panel" data-panel="overview">
+    <div class="cv-cards">
+      <article class="cv-card" id="cv-anki"><div class="cv-loading">Reading your collection…</div></article>
+      <article class="cv-card" id="cv-dsa"><div class="cv-loading">Reading the DSA feed…</div></article>
+    </div>
+  </section>
+
+  <section class="cv-panel cv-hidden" data-panel="dsa" id="cv-dsa-detail"></section>
+
+  <section class="cv-panel cv-hidden" data-panel="setup" id="cv-setup">
+    <div class="cv-loading">Waiting for the collection…</div>
+  </section>
+
+  <div class="cv-modal cv-hidden" id="cv-trial">
+    <div class="cv-modal-box" id="cv-trial-box"></div>
+  </div>
+  <div class="cv-toast cv-hidden" id="cv-toast"></div>
+</div>
+<script>
+window.CV_REALMS = {realms};
+</script>
+<script>
+{js}
+</script>
+</body>
+</html>

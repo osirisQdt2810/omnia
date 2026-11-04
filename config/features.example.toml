@@ -102,3 +102,27 @@ default_mode = "written"
 # stronger model than the rest: corrections are short and frequent, which is a different
 # trade-off from generating a whole card.
 model = ""
+
+# Cultivation — a daily level for Anki vocabulary and DSA (Tools → Cultivation).
+# Every number is from the cultivation spec; those tagged [HEURISTIC] are yours to calibrate.
+# Decks, word/meaning fields and template modalities are picked in the window's Setup tab.
+[cultivation]
+dsa_feed_path = ""             # empty = ~/.omnia/cultivation/dsa_feed.json (dsa-journey writes it)
+include_suspended = true       # suspended/buried cards still decay, so they still count
+demotion_buffer_days = 14      # [HEURISTIC] days below a realm before it drops
+trial_cooldown_days = 7        # [HEURISTIC] wait after a failed trial
+
+[cultivation.anki]
+weight_recognition = 0.6       # μ per modality: ordering from the literature, magnitudes [HEURISTIC]
+weight_passive_recall = 0.8
+weight_active_recall = 0.9
+weight_active_recall_typed = 1.0
+trial_size = 50                # trial: 50 words, pass at 43 (≈86%)
+trial_pass = 43
+typo_min_length = 7            # [HEURISTIC] one typo forgiven from this word length up
+
+[cultivation.dsa]
+initial_rating = 1500.0        # your LeetCode contest rating if you have one
+decay_grace_days = 7           # [HEURISTIC] no decay for this many idle days
+decay_half_life_days = 90.0    # [HEURISTIC] calibrate after a long break
+decay_floor_keep = 0.5         # [HEURISTIC] share of all gains neglect never takes

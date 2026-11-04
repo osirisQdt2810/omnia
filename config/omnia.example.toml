@@ -31,3 +31,6 @@ enabled = false
 
 [plugins.note_maintenance]
 enabled = false
+
+[plugins.cultivation]
+enabled = false
