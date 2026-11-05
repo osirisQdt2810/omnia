@@ -31,6 +31,12 @@ from omnia.plugins.cultivation.memory import CardMemory
 ANKI = "anki"
 DSA = "dsa"
 
+#: Bumped whenever a table's shape changes. The state is disposable (see the module docstring),
+#: so an older file is dropped and recreated rather than migrated: version 1 kept realm/trial
+#: tables and a different ``daily`` row, and writing today's row into it would fail.
+_SCHEMA_VERSION = 2
+_OLD_TABLES = ("daily", "card_state", "realm_state", "trials")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily (
     domain TEXT NOT NULL, day TEXT NOT NULL, power REAL NOT NULL, gain REAL,
@@ -60,7 +66,12 @@ class CultivationStore:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            if version < _SCHEMA_VERSION:
+                for table in _OLD_TABLES:
+                    db.execute(f"DROP TABLE IF EXISTS {table}")
             db.executescript(_SCHEMA)
+            db.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:

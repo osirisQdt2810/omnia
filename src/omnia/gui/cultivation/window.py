@@ -37,7 +37,6 @@ class CultivationWindow(WebDialog):
             handlers={
                 "refresh": self._refresh,
                 "poll": self._poll,
-                "save_setup": self._save_setup,
                 "start_over": self._start_over,
             },
             width=900,
@@ -87,19 +86,6 @@ class CultivationWindow(WebDialog):
             self._plugin.refresh_dsa()
             return True
         return False
-
-    def _save_setup(self, data: dict[str, Any]) -> bool:
-        values = {
-            "decks": [str(d) for d in data.get("decks", [])],
-            "word_fields": {
-                str(k): str(v) for k, v in data.get("word_fields", {}).items()
-            },
-            "modality": {str(k): str(v) for k, v in data.get("modality", {}).items()},
-        }
-        self._plugin.save_setup(values)
-        self._plugin.refresh_anki()
-        self._plugin.refresh_dsa()
-        return True
 
     def _start_over(self, _data: dict[str, Any]) -> bool:
         """Forget the history and count from today, then redraw both cards."""

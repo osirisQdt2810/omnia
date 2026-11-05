@@ -1,8 +1,11 @@
-"""Read the collection into the shapes the Anki domain computes on — strictly READ-ONLY.
+"""Read the collection into the shapes the vocabulary score computes on — strictly READ-ONLY.
 
-Every statement here is a SELECT (spec §1: never modify the Anki collection). Note types and
-templates come from ``col.models`` rather than the protobuf blobs the spec's §4.1 describes for
-an external reader — inside Anki the API already decodes them.
+Every statement here is a SELECT: the plugin never modifies the Anki collection.
+
+There is nothing to configure. Every deck counts, so whatever you study moves the score. The
+plugin decides for itself which field holds a note's word (the first field whose name looks like
+one, else the first field) and how much a card type proves (typing the word > recalling it >
+recognising it, read off the template).
 
 Takes the collection as an argument and imports nothing from ``aqt``, so it runs on the
 collection thread inside a ``QueryOp`` and against a fake collection in tests.
@@ -15,48 +18,23 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
-from omnia.plugins.cultivation.config import CultivationSettings
+from omnia.plugins.cultivation.config import PASSIVE_RECALL, CultivationSettings
 from omnia.plugins.cultivation.memory import CardMemory, parse_card_data
 from omnia.plugins.cultivation.vocab import (
     VocabCard,
-    is_typed_template,
     normalize_word,
     suggest_modality,
     suggest_word_field,
-    template_key,
 )
 
 _CLOZE = 1
 _SUSPENDED_OR_BURIED = (-1, -2, -3)
-
-
-@dataclass(frozen=True)
-class TemplateInfo:
-    """One (note type, template) pair in the selected decks — a row of the Setup tab."""
-
-    key: str
-    note_type: str
-    template: str
-    cards: int
-    typed: bool
-    suggested: str
-    modality: str
-    confirmed: bool
-
-
-@dataclass(frozen=True)
-class NoteTypeInfo:
-    """A note type's fields and the word-field pick for it."""
-
-    name: str
-    fields: tuple[str, ...]
-    word_field: Optional[str]
-    confirmed: bool
+_DAY = 86400
 
 
 @dataclass(frozen=True)
 class Health:
-    """The daily health line (spec §4.7) — shown, never part of power."""
+    """The daily health line — shown, never part of the score."""
 
     retention: Optional[float]
     retention_reviews: int
@@ -74,73 +52,58 @@ class AnkiSnapshot:
     day_start_s: float
     now_s: float
     cards: list[VocabCard] = field(default_factory=list)
-    templates: list[TemplateInfo] = field(default_factory=list)
-    note_types: list[NoteTypeInfo] = field(default_factory=list)
-    decks: list[str] = field(default_factory=list)
     health: Optional[Health] = None
     active_days: set[date] = field(default_factory=set)
     without_fsrs: int = 0
 
 
 class CollectionReader:
-    """Builds an :class:`AnkiSnapshot` for the configured decks."""
+    """Builds an :class:`AnkiSnapshot` of the whole collection."""
 
     def __init__(self, settings: CultivationSettings) -> None:
         self.s = settings
 
     def read(self, col: Any, now_s: float) -> AnkiSnapshot:
-        cutoff = float(col.sched.day_cutoff)
-        day_start = cutoff - 86400
+        day_start = float(col.sched.day_cutoff) - _DAY
         today = datetime.fromtimestamp(day_start).date()
         snap = AnkiSnapshot(today=today, day_start_s=day_start, now_s=now_s)
-        deck_names = {int(d.id): d.name for d in col.decks.all_names_and_ids()}
-        snap.decks = sorted(deck_names.values())
-        deck_ids = self._selected_decks(deck_names)
-
-        models = {int(m["id"]): m for m in col.models.all()}
+        models = {int(m["id"]): _NoteType(m) for m in col.models.all()}
         reviews = self._review_bounds(col)
-        counts: dict[tuple[int, int], int] = {}
         card_ids: set[int] = set()
-        rows = col.db.all(
-            "SELECT c.id, c.did, c.odid, c.ord, c.queue, c.type, c.due, c.ivl, c.data, "
-            "n.mid, n.flds FROM cards c JOIN notes n ON n.id = c.nid"
-        )
         overdue = 0
-        for cid, did, odid, ord_, queue, ctype, due, ivl, data, mid, flds in rows:
-            if deck_ids is not None and did not in deck_ids and odid not in deck_ids:
-                continue
-            model = models.get(int(mid))
-            if model is None:
+        rows = col.db.all(
+            "SELECT c.id, c.ord, c.queue, c.type, c.due, c.ivl, c.data, n.mid, n.flds "
+            "FROM cards c JOIN notes n ON n.id = c.nid"
+        )
+        for cid, ord_, queue, ctype, due, ivl, data, mid, flds in rows:
+            note_type = models.get(int(mid))
+            if note_type is None:
                 continue
             if queue in _SUSPENDED_OR_BURIED and not self.s.include_suspended:
                 continue
-            tord = 0 if model.get("type") == _CLOZE else int(ord_)
-            counts[(int(mid), tord)] = counts.get((int(mid), tord), 0) + 1
             card_ids.add(int(cid))
             if ctype == 2 and queue == 2 and due < col.sched.today:
                 overdue += 1
-            snap.cards.append(self._card(model, tord, cid, ivl, data, flds, reviews))
+            bounds = reviews.get(int(cid))
+            snap.cards.append(
+                VocabCard(
+                    cid=int(cid),
+                    word=note_type.word(flds),
+                    modality=note_type.modality(int(ord_)),
+                    memory=CardMemory.from_card(
+                        parse_card_data(data),
+                        ivl=int(ivl or 0),
+                        last_review_s=bounds[1] / 1000 if bounds else None,
+                    ),
+                )
+            )
         snap.without_fsrs = sum(
             1 for c in snap.cards if c.memory.reviewed and not c.memory.from_fsrs
         )
-        snap.templates, snap.note_types = self._inventory(models, counts)
         snap.health, snap.active_days = self._health(
             col, card_ids, reviews, day_start, now_s, overdue
         )
         return snap
-
-    # -- pieces --------------------------------------------------------------------------
-
-    def _selected_decks(self, names: Mapping[int, str]) -> Optional[set[int]]:
-        """Deck ids under the configured prefixes; None = every deck."""
-        prefixes = [p.strip() for p in self.s.decks if p.strip()]
-        if not prefixes:
-            return None
-        return {
-            did
-            for did, name in names.items()
-            if any(name == p or name.startswith(p + "::") for p in prefixes)
-        }
 
     @staticmethod
     def _review_bounds(col: Any) -> dict[int, tuple[int, int]]:
@@ -150,93 +113,6 @@ class CollectionReader:
             "GROUP BY cid"
         )
         return {int(cid): (int(first), int(last)) for cid, first, last in rows}
-
-    def _field_names(self, model: Mapping[str, Any]) -> list[str]:
-        return [
-            f["name"] for f in sorted(model.get("flds", []), key=lambda f: f["ord"])
-        ]
-
-    def _word_field(self, model: Mapping[str, Any]) -> Optional[str]:
-        fields = self._field_names(model)
-        chosen = self.s.word_fields.get(model["name"])
-        return chosen if chosen in fields else suggest_word_field(fields)
-
-    def _template(self, model: Mapping[str, Any], tord: int) -> Mapping[str, Any]:
-        tmpls = model.get("tmpls", [])
-        return next(
-            (t for t in tmpls if int(t["ord"]) == tord), tmpls[0] if tmpls else {}
-        )
-
-    def _modality(
-        self, model: Mapping[str, Any], tmpl: Mapping[str, Any]
-    ) -> tuple[str, str]:
-        """(modality in force, suggestion) — the confirmed pick wins over the suggestion."""
-        suggested = suggest_modality(
-            tmpl.get("qfmt", ""), tmpl.get("afmt", ""), self._word_field(model)
-        )
-        key = template_key(model["name"], tmpl.get("name", ""))
-        return self.s.modality.get(key, suggested), suggested
-
-    def _card(
-        self,
-        model: Mapping[str, Any],
-        tord: int,
-        cid: int,
-        ivl: int,
-        data: Any,
-        flds: str,
-        reviews: Mapping[int, tuple[int, int]],
-    ) -> VocabCard:
-        fields = self._field_names(model)
-        values = dict(zip(fields, (flds or "").split("\x1f"), strict=False))
-        tmpl = self._template(model, tord)
-        modality, _ = self._modality(model, tmpl)
-        bounds = reviews.get(int(cid))
-        memory = CardMemory.from_card(
-            parse_card_data(data),
-            ivl=int(ivl or 0),
-            last_review_s=bounds[1] / 1000 if bounds else None,
-        )
-        word_field = self._word_field(model)
-        return VocabCard(
-            cid=int(cid),
-            word=normalize_word(values.get(word_field or "", "")),
-            modality=modality,
-            memory=memory,
-        )
-
-    def _inventory(
-        self,
-        models: Mapping[int, Mapping[str, Any]],
-        counts: Mapping[tuple[int, int], int],
-    ) -> tuple[list[TemplateInfo], list[NoteTypeInfo]]:
-        templates: list[TemplateInfo] = []
-        note_types: dict[int, NoteTypeInfo] = {}
-        for (mid, tord), n in sorted(counts.items()):
-            model = models[mid]
-            tmpl = self._template(model, tord)
-            modality, suggested = self._modality(model, tmpl)
-            key = template_key(model["name"], tmpl.get("name", ""))
-            templates.append(
-                TemplateInfo(
-                    key=key,
-                    note_type=model["name"],
-                    template=tmpl.get("name", ""),
-                    cards=n,
-                    typed=is_typed_template(tmpl.get("qfmt", ""), tmpl.get("afmt", "")),
-                    suggested=suggested,
-                    modality=modality,
-                    confirmed=key in self.s.modality,
-                )
-            )
-            if mid not in note_types:
-                note_types[mid] = NoteTypeInfo(
-                    name=model["name"],
-                    fields=tuple(self._field_names(model)),
-                    word_field=self._word_field(model),
-                    confirmed=model["name"] in self.s.word_fields,
-                )
-        return templates, sorted(note_types.values(), key=lambda n: n.name)
 
     def _health(
         self,
@@ -248,7 +124,7 @@ class CollectionReader:
         overdue: int,
     ) -> tuple[Health, set[date]]:
         """Retention, today's activity and the active days for the streak."""
-        window_ms = int((now_s - self.s.anki.retention_window_days * 86400) * 1000)
+        window_ms = int((now_s - self.s.anki.retention_window_days * _DAY) * 1000)
         start_ms = int(day_start * 1000)
         passed = total = reviews_today = 0
         minutes = 0.0
@@ -260,7 +136,7 @@ class CollectionReader:
             if int(cid) not in card_ids:
                 continue
             # Anki's day boundary is the rollover hour, so days are counted from today's start.
-            offset = int((rid / 1000 - day_start) // 86400)
+            offset = int((rid / 1000 - day_start) // _DAY)
             active.add(first_day + timedelta(days=offset))
             if rid >= window_ms and rtype == 1:
                 total += 1
@@ -280,3 +156,32 @@ class CollectionReader:
             overdue=overdue,
         )
         return health, active
+
+
+class _NoteType:
+    """One note type, with its word field and per-template card type worked out once."""
+
+    def __init__(self, model: Mapping[str, Any]) -> None:
+        fields = [
+            f["name"] for f in sorted(model.get("flds", []), key=lambda f: f["ord"])
+        ]
+        word_field = suggest_word_field(fields)
+        self._word_index = fields.index(word_field) if word_field in fields else 0
+        self._cloze = model.get("type") == _CLOZE
+        self._modality = {
+            int(t["ord"]): suggest_modality(
+                t.get("qfmt", ""), t.get("afmt", ""), word_field
+            )
+            for t in model.get("tmpls", [])
+        }
+
+    def word(self, flds: str) -> str:
+        values = (flds or "").split("\x1f")
+        return normalize_word(
+            values[self._word_index] if self._word_index < len(values) else ""
+        )
+
+    def modality(self, ord_: int) -> str:
+        """Cloze cards all share template 0; an unknown ordinal falls back to it as well."""
+        tord = 0 if self._cloze else ord_
+        return self._modality.get(tord) or self._modality.get(0) or PASSIVE_RECALL

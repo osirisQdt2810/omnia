@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from omnia.plugins.cultivation.config import CultivationSettings
 from omnia.plugins.cultivation.dsa import DsaFeed, EloEngine, FeedError, RatingBook
-from omnia.plugins.cultivation.reader import AnkiSnapshot, CollectionReader
+from omnia.plugins.cultivation.reader import CollectionReader
 from omnia.plugins.cultivation.realms import Level
 from omnia.plugins.cultivation.store import ANKI, DSA, CultivationStore, DailyRow
 from omnia.plugins.cultivation.streak import Streak, compute_streak
@@ -102,7 +102,6 @@ class CultivationService:
             counted_words=sum(1 for w in words.values() if w.counted(since_s)),
             words=len(words),
             without_fsrs=snap.without_fsrs,
-            setup=self._setup_view(snap),
         )
         return card
 
@@ -114,16 +113,6 @@ class CultivationService:
         if retention > self.settings.anki.retention_high:
             return "high"
         return "ok"
-
-    def _setup_view(self, snap: AnkiSnapshot) -> dict[str, Any]:
-        return {
-            "decks": snap.decks,
-            "selected_decks": list(self.settings.decks),
-            "templates": [asdict(t) for t in snap.templates],
-            "note_types": [
-                {**asdict(n), "fields": list(n.fields)} for n in snap.note_types
-            ],
-        }
 
     # -- DSA ---------------------------------------------------------------------------------
 

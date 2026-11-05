@@ -83,7 +83,8 @@ body.omnia-dark {
 
 .cv-box { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
 .cv-box h2 { margin: 0 0 8px; font-size: 14px; }
-.cv-box + .cv-box { margin-top: 12px; }
+.cv-box + .cv-box, .cv-box + .cv-setup-grid { margin-top: 12px; }
+.cv-setup-grid > .cv-box { margin-top: 0; }
 .cv-table { width: 100%; border-collapse: collapse; }
 .cv-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 11px; padding: 4px 6px; border-bottom: 1px solid var(--line); }
 .cv-table td { padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }

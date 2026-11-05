@@ -124,14 +124,6 @@ class CultivationPlugin(FeaturePlugin):
             )
         return self._service
 
-    def save_setup(self, values: dict[str, Any]) -> None:
-        """Persist the Setup tab's picks and rebuild the service with them.
-
-        Rebuilt in place rather than via ``reload_self``: a reload disables the plugin, and
-        disabling closes this very window while the user is still in it.
-        """
-        self._write(values)
-
     def start_over(self) -> None:
         """Forget the recorded history and count from today."""
         self.service().reset()

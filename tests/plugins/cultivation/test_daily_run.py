@@ -36,8 +36,6 @@ class FakeDb:
             return [
                 (
                     c["id"],
-                    c["did"],
-                    0,
                     c["ord"],
                     c.get("queue", 2),
                     2,
@@ -125,7 +123,6 @@ class TestEnglish:
         # The typed card (μ 1.0) beats recognition (μ 0.8); R(S, S) = 0.9.
         assert card["score"] == pytest.approx(3 * 0.9)
         assert (card["label"], card["realm"], card["level"]) == ("A1", "Luyện Khí", 1)
-        assert card["setup"]["templates"][1]["suggested"] == "active_recall_typed"
 
     def test_a_fresh_start_scores_zero_until_words_are_reviewed(self, service):
         card = service(start=TODAY).refresh_anki(
@@ -162,16 +159,6 @@ class TestEnglish:
         assert card["health"]["retention"] == 1.0
         assert card["streak"]["active_today"] is True
 
-    def test_decks_outside_the_selection_do_not_count(self, service):
-        assert service(decks=["Japanese"]).refresh_anki(collection(), NOW)["words"] == 0
-
-    def test_confirmed_modality_overrides_the_suggestion(self, service):
-        svc = service(modality={"Vocab EN/Production": "recognition"})
-        card = svc.refresh_anki(collection(1, reviewed_days_ago=10), NOW)
-        assert card["score"] == pytest.approx(
-            0.8 * 0.9
-        )  # recognition 0.6 < passive 0.8
-
     def test_the_level_follows_the_score_both_ways(self, service):
         svc = service()
         strong = svc.refresh_anki(
@@ -182,6 +169,12 @@ class TestEnglish:
             collection(1600, reviewed_days_ago=50, stability=3), NOW
         )
         assert weak["label"] == "A1"
+
+    def test_every_deck_counts(self, service):
+        col = collection(2, reviewed_days_ago=10, stability=10)
+        for i, c in enumerate(col.db.cards):
+            c["did"] = 100 + i  # a different deck for every card
+        assert service().refresh_anki(col, NOW)["counted_words"] == 2
 
     def test_reset_forgets_the_recorded_days(self, service):
         svc = service()
@@ -265,3 +258,27 @@ class TestDsa:
         )
         card = service(start=TODAY).refresh_dsa(TODAY)
         assert card["score"] == 1500 and card["attempts"] == 0 and card["gain"] == 0.0
+
+
+def test_an_old_state_file_is_recreated_not_crashed_on(tmp_path):
+    """Version 1 had realm/trial tables and an extra ``status`` column in ``daily``."""
+    import sqlite3
+
+    path = tmp_path / "state.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        "CREATE TABLE daily (domain TEXT, day TEXT, power REAL, gain REAL, lifetime REAL,"
+        " realm INTEGER, status TEXT, details_json TEXT, PRIMARY KEY (domain, day));"
+        "CREATE TABLE realm_state (domain TEXT PRIMARY KEY, realm INTEGER);"
+        "INSERT INTO daily VALUES ('anki', '2026-11-04', 1982, 0, 0, 2, 'stable', '{}');"
+    )
+    old.commit()
+    old.close()
+    svc = CultivationService(CultivationSettings(), CultivationStore(path), TODAY)
+    card = svc.refresh_anki(collection(), NOW)
+    assert [r.day for r in svc.store.history(ANKI)] == [TODAY]
+    assert card["lifetime"] >= 0
+    tables = {
+        r[0] for r in sqlite3.connect(path).execute("SELECT name FROM sqlite_master")
+    }
+    assert "realm_state" not in tables

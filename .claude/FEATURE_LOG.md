@@ -31,8 +31,9 @@ attempt feed since the start day (zerotrac ratings, s by status/time/wa, FIDE K 
 boost, re-solve weights, debts, neglect decay to a floor); levels at the Codeforces tiers. Each of
 the nine levels is also a cultivation realm name. The level is a pure function of today's score
 (no trials, no hysteresis). Today's gain (against a start-of-day card snapshot), lifetime, streak
-with a weekly freeze, 30-day retention health, a history chart; Setup tab for decks, word field,
-template modality and "Start over from today".
+with a weekly freeze, 30-day retention health, a history chart; a "How it counts" tab with
+"Start over from today". Nothing to configure: every deck counts, word field and card type are
+detected.
 
 **Why:** A readable, daily measure of two learning streams on scales people already know, that
 reflects ability (difficulty, quality, retention) rather than volume. The first design (realms

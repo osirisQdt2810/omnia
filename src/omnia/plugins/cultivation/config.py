@@ -8,8 +8,9 @@ Layout:
 * Flat scalars — rendered by the generic settings form (start date, feed path, suspended cards).
 * ``anki`` / ``dsa`` — nested tuning tables, edited in ``features.toml``; the generic form skips
   nested models on purpose.
-* ``decks`` / ``word_fields`` / ``modality`` — written by the Cultivation window's *Setup* tab,
-  which lists the real decks, note types and templates to pick from.
+
+There is no deck, field or card-type setting on purpose: every deck counts, and the plugin works
+out each note's word field and each card type's weight by itself (see :mod:`.reader`).
 """
 
 from __future__ import annotations
@@ -149,18 +150,6 @@ class CultivationSettings(PersistedModel):
         True,
         title="Count suspended and buried cards",
         description="They still decay, so they still count — unless you untick this.",
-    )
-    decks: list[str] = Field(
-        default_factory=list,
-        description="Deck names (and their subdecks) holding vocabulary; empty = all decks.",
-    )
-    word_fields: dict[str, str] = Field(
-        default_factory=dict,
-        description="Note type -> the field holding the English word.",
-    )
-    modality: dict[str, str] = Field(
-        default_factory=dict,
-        description='"Note type/Template" -> modality, confirmed in the Setup tab.',
     )
     anki: AnkiTuning = Field(default_factory=AnkiTuning)
     dsa: DsaTuning = Field(default_factory=DsaTuning)

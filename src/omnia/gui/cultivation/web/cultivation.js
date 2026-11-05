@@ -121,18 +121,17 @@
       warnings.push(num(card.without_fsrs) + " reviewed cards have no FSRS memory state, so their interval stands in for stability. " +
         "Deck options → FSRS → enable, then Optimize.");
     }
-    el.innerHTML = header(card, "📘 English · vocabulary", "words") + '<div class="cv-card-body">' +
+    el.innerHTML = header(card, "📘 Vocabulary · CEFR", "words") + '<div class="cv-card-body">' +
       '<div class="cv-stats">' +
       stat("Today", signed(card.gain, 1), num(h.new_today) + " new · " + num(h.reviews_today) + " reviews · " + num(h.minutes_today) + " min") +
       stat("Retention 30d", retention, bandNote) +
       streakStat(card) +
       stat("Lifetime", num(card.lifetime), "words gained, never decreases") +
-      stat("Words", num(card.counted_words), "reviewed since the start, of " + num(card.words)) +
+      stat("Words", num(card.counted_words), "reviewed since the start") +
       stat("Overdue", num(h.overdue), "review cards") +
       "</div>" +
       chart(card.history, "var(--anki-from)", card.next_threshold) +
-      '<div class="cv-line">A word counts once you review it on or after the start day. CEFR here is the ' +
-      "vocabulary side of the scale only.</div>" +
+      '<div class="cv-line">CEFR from vocabulary size only — grammar and skills are not measured.</div>' +
       warnings.map((w) => '<div class="cv-warn-box">' + esc(w) + "</div>").join("") +
       "</div>";
   }
@@ -184,60 +183,32 @@
   }
 
   // ---------------------------------------------------------------------------------------
-  // Setup tab (start day, decks, word fields, template modalities)
+  // "How it counts" tab: the start day, Start over, and what moves each score. Nothing to set up.
   // ---------------------------------------------------------------------------------------
-  const MODALITIES = [
-    ["recognition", "Recognition (choose among options)"],
-    ["passive_recall", "Passive recall (word → meaning)"],
-    ["active_recall", "Active recall (meaning → word)"],
-    ["active_recall_typed", "Typed active recall"],
-  ];
-
-  function renderSetup(card) {
-    const setup = card.setup;
-    if (!setup) return;
-    const chosen = new Set(setup.selected_decks || []);
-    const decks = setup.decks.map((d) => '<label><input type="checkbox" class="cv-deck" value="' + esc(d) + '"' +
-      (chosen.has(d) ? " checked" : "") + "> " + esc(d) + "</label>").join("");
-    const options = (fields, value) => fields.map((f) => '<option value="' + esc(f) + '"' + (f === value ? " selected" : "") + ">" + esc(f) + "</option>").join("");
-    const types = setup.note_types.map((n) => "<tr><td>" + esc(n.name) + (n.confirmed ? "" : ' <span class="cv-pill cv-pill-warn">suggested</span>') +
-      '</td><td><select class="cv-word" data-nt="' + esc(n.name) + '">' + options(n.fields, n.word_field) + "</select></td></tr>").join("");
-    const tmpls = setup.templates.map((t) => "<tr><td>" + esc(t.note_type) + "</td><td>" + esc(t.template) +
-      (t.typed ? ' <span class="cv-pill cv-pill-gold">typed</span>' : "") + '</td><td class="cv-num">' + num(t.cards) +
-      '</td><td><select class="cv-mod" data-key="' + esc(t.key) + '">' +
-      MODALITIES.map((m) => '<option value="' + m[0] + '"' + (m[0] === t.modality ? " selected" : "") + ">" + m[1] +
-        (m[0] === t.suggested ? " ★" : "") + "</option>").join("") + "</select>" +
-      (t.confirmed ? "" : ' <span class="cv-pill cv-pill-warn">suggested</span>') + "</td></tr>").join("");
+  function renderAbout(card) {
     $("cv-setup").innerHTML =
       '<div class="cv-box"><h2>Counting since ' + esc(card.start) + "</h2>" +
-      '<div class="cv-line">Only words reviewed and problems solved from this day on count. Starting over forgets the ' +
+      '<div class="cv-line">Only reviews and solutions from this day on count. Starting over forgets the ' +
       "recorded days and counts from today; your cards and solutions are not touched.</div>" +
       '<div class="cv-setup-foot"><button class="cv-btn cv-btn-quiet" id="cv-start-over">Start over from today</button></div></div>' +
-      '<div class="cv-setup-grid"><div class="cv-box"><h2>Vocabulary decks</h2>' +
-      '<div class="cv-line">Only cards in these decks (and their subdecks) count. None ticked = every deck.</div>' +
-      '<div class="cv-deck-list">' + decks + "</div></div>" +
-      '<div class="cv-box"><h2>Word field</h2><div class="cv-line">One note = one word. ' +
-      "Notes with the same word are merged.</div>" +
-      '<table class="cv-table"><tr><th>Note type</th><th>Word</th></tr>' + types + "</table></div></div>" +
-      '<div class="cv-box"><h2>Card templates</h2><div class="cv-line">How strong a card\'s evidence is: typing the word ' +
-      "beats recalling it, which beats recognising it. ★ marks the suggestion.</div>" +
-      '<table class="cv-table"><tr><th>Note type</th><th>Template</th><th class="cv-num">Cards</th><th>Modality</th></tr>' + tmpls +
-      '</table></div><div class="cv-setup-foot"><span class="cv-muted" id="cv-setup-msg"></span>' +
-      '<button class="cv-btn" id="cv-setup-save">Save and recompute</button></div>';
-    $("cv-setup-save").addEventListener("click", saveSetup);
+      '<div class="cv-setup-grid"><div class="cv-box"><h2>📘 Vocabulary — what raises it</h2>' +
+      '<table class="cv-table"><tr><th>You do</th><th>Effect</th></tr>' +
+      "<tr><td>Learn a new card</td><td>+ up to 1 word, right away</td></tr>" +
+      "<tr><td>Review a card</td><td>its word counts again and fades slower</td></tr>" +
+      "<tr><td>Press Again</td><td>that word drops back a little</td></tr>" +
+      "<tr><td>Skip a few days</td><td>words slowly fade</td></tr>" +
+      "</table><div class=\"cv-line\">Every deck counts. A card where you type the word counts fully (1.0), " +
+      "recalling the word 0.9, recalling the meaning 0.8, picking among options 0.6.</div></div>" +
+      '<div class="cv-box"><h2>🧗 DSA — what raises it</h2>' +
+      '<table class="cv-table"><tr><th>You do</th><th>Effect</th></tr>' +
+      "<tr><td>Solve a hard problem alone, fast</td><td>big rise</td></tr>" +
+      "<tr><td>Solve an easy one alone</td><td>small rise</td></tr>" +
+      "<tr><td>Need a hint / the editorial</td><td>smaller, or a small drop on easy ones</td></tr>" +
+      "<tr><td>Copy a solution</td><td>drop, and a debt until you redo it</td></tr>" +
+      "<tr><td>No problem for over a week</td><td>slow drift down</td></tr>" +
+      "</table><div class=\"cv-line\">Like a LeetCode rating: you start at 1500 and each solution is a game " +
+      "against the problem's own rating.</div></div></div>";
     $("cv-start-over").addEventListener("click", startOver);
-  }
-
-  function saveSetup() {
-    const values = {decks: [], word_fields: {}, modality: {}};
-    document.querySelectorAll(".cv-deck").forEach((c) => { if (c.checked) values.decks.push(c.value); });
-    document.querySelectorAll(".cv-word").forEach((s) => { values.word_fields[s.dataset.nt] = s.value; });
-    document.querySelectorAll(".cv-mod").forEach((s) => { values.modality[s.dataset.key] = s.value; });
-    $("cv-setup-save").disabled = true;
-    send("save_setup", values, () => {
-      $("cv-setup-msg").textContent = "Saved — recomputing…";
-      setTimeout(() => { const b = $("cv-setup-save"); if (b) b.disabled = false; }, 1200);
-    });
   }
 
   function startOver() {
@@ -258,7 +229,8 @@
   // ---------------------------------------------------------------------------------------
   window.cultivation = {
     update: function (domain, card) {
-      if (domain === "anki") { renderAnki(card); renderSetup(card); } else { renderDsa(card); }
+      if (domain === "anki") { renderAnki(card); } else { renderDsa(card); }
+      if (card.start) renderAbout(card);
     },
   };
 

@@ -104,8 +104,8 @@ default_mode = "written"
 model = ""
 
 # Cultivation — your English (CEFR) and DSA (Elo) level, named as cultivation realms (Tools → Cultivation).
-# The level follows the score both ways. Decks, word fields and template modalities are picked in
-# the window's Setup tab; tags marked [HEURISTIC] are judgement calls to calibrate.
+# The level follows the score both ways. Every deck counts; word fields and card types are detected.
+# Tags marked [HEURISTIC] are judgement calls to calibrate.
 [cultivation]
 start_date = ""                # YYYY-MM-DD; empty = set to the day you first switch it on
 dsa_feed_path = ""             # empty = ~/.omnia/cultivation/dsa_feed.json (dsa-journey writes it)

@@ -5,7 +5,7 @@ Anki vocabulary, and your **DSA** level from your `dsa-journey` repository. Each
 that rises with real practice and falls when you stop. It is also named twice, once on a scale you
 already know and once as a cultivation realm.
 
-- **English** reads your collection. Cultivation only reads it; it never changes a card, a note
+- **Vocabulary** reads your whole collection. Cultivation only reads it; it never changes a card, a note
   or a deck.
 - **DSA** reads a small file that `dsa-journey` writes every time you run its `/commit-progress`
   command.
@@ -68,18 +68,11 @@ least a week later.
 
 ## Set it up
 
-1. *Tools → Omnia* → the **Progress** tile → switch **Cultivation** on. That day becomes your
-   start day.
-2. Open *Tools → Cultivation*, then the **Setup** tab.
-3. **Vocabulary decks**: tick the decks that hold your English words. With nothing ticked,
-   every deck counts.
-4. **Word field**: for each note type, pick the field that holds the English word. Notes with
-   the same word are merged into one word.
-5. **Card templates**: confirm what each card type asks of you. ★ marks the suggestion, and
-   templates with a typing box are labelled *typed*.
-6. Press **Save and recompute**.
+*Tools → Omnia* → the **Progress** tile → switch **Cultivation** on. That day becomes your start
+day. There is nothing else to set: every deck counts, and Cultivation works out by itself which
+field holds each note's word and how much each card type proves.
 
-If the English card warns that some cards have no FSRS memory state, turn FSRS on in *Deck
+If the vocabulary card warns that some cards have no FSRS memory state, turn FSRS on in *Deck
 options → FSRS* and press *Optimize*. Without it, Cultivation can only estimate memory from the
 card's interval, which is much rougher.
 
@@ -106,7 +99,7 @@ picks up the change within a few seconds.
   - **Overview**: both levels, today's change, streak, lifetime and the history chart.
   - **DSA**: open debts and your latest solutions, each with the problem's rating and how much it
     moved yours.
-  - **Setup**: the start day with **Start over**, decks, word fields and card types.
+  - **How it counts**: the start day with **Start over**, and what raises or lowers each score.
 
 ## Tune it
 
@@ -126,6 +119,6 @@ The DSA file lives in a `.omnia/cultivation` folder in your home folder. If you 
 | English is 0 right after switching on | Expected: nothing is counted before your first review on the start day. Review some cards. |
 | DSA says **No feed yet** | Run `/commit-progress` in dsa-journey once. Check that **DSA feed file** points where the repository writes. |
 | DSA rating barely moves | Your solutions have no `status`, so each counts at half weight. Answer the three questions at commit time. |
-| English is much higher than you expected | Check the decks in **Setup**. With no deck ticked, every deck counts, Japanese or medical cards included. |
-| A word is counted twice | The two notes spell it differently (case and spaces are already ignored). Pick the right word field in **Setup**. |
+| Vocabulary moves when you study a non-English deck | Expected: every deck counts, so any study moves it. |
+| The window shows "undefined" right after an update | Restart Anki: it loads the add-on's code only at startup. |
 | Today shows a dash | This is the first day recorded since the start. It fills in tomorrow. |
