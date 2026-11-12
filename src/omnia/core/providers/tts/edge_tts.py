@@ -17,7 +17,6 @@ the endpoint — that is the only maintenance cost of shipping it pure-Python.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 import uuid
@@ -36,6 +35,7 @@ from omnia.core.network.websocket import (
 from omnia.core.providers.errors import ProviderError
 from omnia.core.providers.tts import speed as tts_speed
 from omnia.core.providers.tts.base import TTSProvider, TTSVoice
+from omnia.core.providers.tts.edge_drm import SecMsGecToken
 from omnia.core.providers.tts.registry import register_tts
 from omnia.core.providers.tts.speed import NORMAL
 
@@ -146,9 +146,10 @@ class EdgeSynthesizer(ABC):
 class EdgeProtocolSynthesizer(EdgeSynthesizer):
     """Default transport: speaks the Edge WebSocket protocol over pure stdlib (no deps).
 
-    Self-contained — all the Edge-specific protocol (endpoint constants, the ``Sec-MS-GEC``
-    DRM token, the two request messages, binary audio extraction, and long-text splitting)
-    lives here; only the generic WebSocket transport is shared via the core client.
+    Self-contained — the Edge-specific protocol (endpoint constants, the two request messages,
+    binary audio extraction, and long-text splitting) lives here, the ``Sec-MS-GEC`` DRM token
+    in its sibling :mod:`~omnia.core.providers.tts.edge_drm`; only the generic WebSocket
+    transport is shared via the core client.
     """
 
     # Microsoft Edge endpoint constants (kept in sync with the edge-tts package).
@@ -158,9 +159,8 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
     _CHROMIUM_FULL_VERSION = "143.0.3650.75"
     _OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
     _ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
+    _TOKEN = SecMsGecToken(_TRUSTED_CLIENT_TOKEN, _CHROMIUM_FULL_VERSION)
 
-    _WIN_EPOCH = 11644473600  # seconds between 1601-01-01 and the Unix epoch
-    _S_TO_NS = 1e9
     # Keep each SSML request well under the service size limit; longer text is split on
     # whitespace into requests whose MP3 outputs concatenate cleanly.
     _MAX_CHUNK_BYTES = 3000
@@ -209,14 +209,7 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
     def _synthesize_one_session(
         self, text: str, voice: str, rate: str = "+0%"
     ) -> bytes:
-        connection_id = uuid.uuid4().hex
-        url = (
-            f"wss://{self._BASE_HOST}{self._BASE_PATH}"
-            f"?TrustedClientToken={self._TRUSTED_CLIENT_TOKEN}"
-            f"&ConnectionId={connection_id}"
-            f"&Sec-MS-GEC={self._sec_ms_gec()}"
-            f"&Sec-MS-GEC-Version=1-{self._CHROMIUM_FULL_VERSION}"
-        )
+        url = self._url(uuid.uuid4().hex)
         major = self._CHROMIUM_FULL_VERSION.split(".", 1)[0]
         headers = {
             "Pragma": "no-cache",
@@ -251,17 +244,19 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
             ws.close()
         return bytes(audio)
 
-    def _sec_ms_gec(self) -> str:
-        """The ``Sec-MS-GEC`` DRM token for the current 5-minute window.
+    def _url(self, connection_id: str, unix_time: Optional[float] = None) -> str:
+        """The WebSocket URL, carrying the (v2) ``Sec-MS-GEC`` token and its version tag.
 
-        SHA-256 of ``"{windows_filetime_ticks}{trusted_client_token}"``, ticks = current UTC
-        time pushed to the Windows file-time epoch, floored to 5 minutes, in 100-ns units.
+        The service answers the upgrade with ``403 Forbidden`` when the token or its version
+        is stale, so both come from :class:`SecMsGecToken` together.
         """
-        ticks = time.time() + self._WIN_EPOCH
-        ticks -= ticks % 300  # floor to the nearest 5 minutes
-        ticks *= self._S_TO_NS / 100  # seconds -> 100-nanosecond intervals
-        raw = f"{ticks:.0f}{self._TRUSTED_CLIENT_TOKEN}".encode("ascii")
-        return hashlib.sha256(raw).hexdigest().upper()
+        return (
+            f"wss://{self._BASE_HOST}{self._BASE_PATH}"
+            f"?TrustedClientToken={self._TRUSTED_CLIENT_TOKEN}"
+            f"&ConnectionId={connection_id}"
+            f"&Sec-MS-GEC={self._TOKEN.value(unix_time)}"
+            f"&Sec-MS-GEC-Version={self._TOKEN.version}"
+        )
 
     def _speech_config_message(self) -> str:
         return (
