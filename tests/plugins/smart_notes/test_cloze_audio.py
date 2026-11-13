@@ -108,6 +108,15 @@ class _ExplodingTTS(_FakeWavTTS):
         raise ProviderError("HTTP 401")
 
 
+class _EdgeLikeTTS(_FakeWavTTS):
+    """A voice that, like Edge, returns no audio for text with nothing speakable in it."""
+
+    def synthesize(self, text, *, lang=None, voice=None, speed=1.0):
+        if not any(char.isalnum() for char in text):
+            raise ProviderError("edge_tts returned no audio (voice=fake-voice)")
+        return super().synthesize(text, lang=lang, voice=voice, speed=speed)
+
+
 class _FakeSidecar:
     """A stand-in codec: 'MP3' here is just the WAV bytes wrapped in a marker."""
 
@@ -563,6 +572,59 @@ class TestNeverSpeaksTheAnswer:
                 tts=_ExplodingTTS(),
                 params={"source_field": "Sentence"},
             )
+
+    def test_a_hidden_last_word_does_not_send_its_trailing_period_to_the_voice(self):
+        # The reported failure: the run after the hole is just ".", Edge answers it with no
+        # audio, and that used to fail the whole field.
+        voice = _EdgeLikeTTS()
+        clip = _produced_clip(
+            {
+                "Word": "intact",
+                "Sentence": "Despite the car accident, the driver's phone remained "
+                "completely i____t.",
+            },
+            tts=voice,
+            params={"source_field": "Sentence"},
+        )
+
+        assert voice.spoken == [
+            "Despite the car accident, the driver's phone remained completely",
+            "intact",
+        ]
+        assert "intact" not in _decoded_text(clip)
+
+    @pytest.mark.parametrize("tail", ["!", "?!", '."', ")", "…", " - "])
+    def test_any_punctuation_only_run_is_skipped(self, tail):
+        voice = _EdgeLikeTTS()
+        _produced_clip(
+            {"Word": "sat", "Sentence": f"The cat {{{{c1::sat}}}}{tail}"},
+            tts=voice,
+            params={"source_field": "Sentence"},
+        )
+
+        assert voice.spoken == ["The cat", "sat"]
+
+    def test_a_run_in_another_script_is_still_spoken(self):
+        voice = _EdgeLikeTTS()
+        _produced_clip(
+            {"Word": "ăn", "Sentence": "Tôi {{c1::ăn}} cơm."},
+            tts=voice,
+            params={"source_field": "Sentence"},
+        )
+
+        assert voice.spoken == ["Tôi", "ăn", "cơm."]
+
+    def test_a_sentence_that_is_only_the_hidden_word_is_still_its_gap(self):
+        voice = _EdgeLikeTTS()
+        clip = _produced_clip(
+            {"Word": "intact", "Sentence": "{{c1::intact}}."},
+            tts=voice,
+            params={"source_field": "Sentence"},
+        )
+
+        assert voice.spoken == ["intact"]
+        assert clip.frame_count == len("intact") * _FRAMES_PER_CHAR
+        assert set(clip.samples()) == {0}
 
     def test_an_unconfigured_voice_is_terminal_too(self):
         # Voice resolution lives in shared code and raises an ordinary ProviderError; without
