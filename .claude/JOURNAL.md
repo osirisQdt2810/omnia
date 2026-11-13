@@ -24,6 +24,32 @@ Format for each entry:
 
 ---
 
+## 2026-11-13 (Thursday)
+
+### Done today
+- **Collection recovery after the user's `Anki2` folder was deleted.** No AnkiWeb copy or local
+  backup survived, so the vocabulary decks were rebuilt from an old `.apkg`, a tab-separated
+  export and the AnkiVocabulary template + CSS the user had saved in Apple Notes. The
+  smart-notes configuration was reconstructed from this repo's own session logs and re-run over
+  ~4,200 notes on a one-off self-hosted model; nothing of that run lives in the repo.
+- **Edge TTS works again** (PR #131): the service now requires the v2 `Sec-MS-GEC` token; it is
+  ported in `core/providers/tts/edge_drm.py` and pinned against upstream's output.
+- **Bulk cloze audio no longer fails** (PR #132): `cloze_audio` stops sending punctuation-only
+  segments (a trailing ".") to the voice, and Edge retries transient timeouts / 429 / 5xx.
+- **Phrase Check languages are dropdowns** (PR #129): a `str` field may declare `choices=` and
+  the generic settings form renders it as a dropdown while the stored value stays free text.
+
+### Decisions made
+- Bulk re-generation went through Omnia's own `/generate` endpoint (the clippers' path), so every
+  field was produced by the same rules a clip uses; the model was reached only over a loopback
+  tunnel and torn down afterwards.
+
+### Next up
+- Live UI test of every plugin and clipper button on an isolated Anki instance (in progress).
+- Backups: the user keeps none outside `Anki2`; the recovery left copies in a folder outside it.
+
+---
+
 ## 2026-08-25 (Monday)
 
 ### Done today

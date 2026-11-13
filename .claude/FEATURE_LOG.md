@@ -21,6 +21,34 @@ Format for each entry:
 
 ---
 
+## 2026-11-13 — Edge TTS: v2 DRM token and transient-failure retry; cloze audio skips punctuation
+
+**What:** Edge TTS sends the v2 `Sec-MS-GEC` token (`<16 hex>-<64 hex>`, version `2-<chromium>`)
+computed by `SecMsGecToken` (a faithful port of upstream's keyed SHA-256 variant). Each chunk is
+retried on transient transport failures (timeouts, resets, a dropped connection, a 429/5xx
+upgrade) through the shared `RetryPolicy`; a 403, a certificate error and "no audio" are never
+retried. `WebSocketError` now carries the upgrade's HTTP status. `cloze_audio` sends a segment to
+the voice only if it contains a letter or digit, so a sentence whose hidden word is last no
+longer fails on the trailing ".".
+
+**Why:** Every Edge request returned 403 after the service moved to the v2 token, and a bulk
+smart-notes run then failed hundreds of cloze-audio fields on punctuation-only segments and on
+read timeouts under load.
+
+**Files:** `src/omnia/core/providers/tts/{edge_drm,edge_tts}.py`, `src/omnia/core/network/websocket.py`,
+`src/omnia/plugins/smart_notes/engine/tools/cloze_audio.py`, tests in
+`tests/providers/test_edge_{drm,retry}.py` and `tests/plugins/smart_notes/test_cloze_audio.py`.
+PRs #131, #132.
+
+**How to verify:** `pytest tests/providers/test_edge_drm.py tests/providers/test_edge_retry.py
+tests/plugins/smart_notes/test_cloze_audio.py -q`; live: `pytest -m live_endpoint -k edge`.
+
+**Notes / rollback:** The token pins upstream edge-tts 7.3.1; if Edge changes the scheme again,
+diff against upstream's `drm.py`. Offline (DNS failure) now takes ~2–3 s longer per chunk before
+failing, because an `OSError` is retried.
+
+---
+
 ## 2026-10-19 — Phrase Check: configurable target language, translate instead of fail
 
 **What:** `PhraseCheckSettings.target_language` (free text, default English, first language
