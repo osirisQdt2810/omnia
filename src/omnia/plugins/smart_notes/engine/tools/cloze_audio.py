@@ -523,7 +523,7 @@ class MaskedAudioBuilder:
         """
         pieces: list[WavClip] = []
         for index, segment in enumerate(speech.segments):
-            if segment:
+            if self._speakable(segment):
                 pieces.append(self._speak(segment).fade_edges(_FADE_MS))
             if index < len(speech.hidden):
                 # Measure the answer by synthesizing it, then throw the audio away and keep
@@ -537,6 +537,16 @@ class MaskedAudioBuilder:
             )
         self._verify_params(pieces)
         return self._codec.encode(WavClip.concat(pieces))
+
+    @staticmethod
+    def _speakable(segment: str) -> bool:
+        """Whether ``segment`` holds anything a voice can say: a letter or digit, any script.
+
+        The run after a hidden LAST word is often only its punctuation ("." "?!" ")"), and
+        Edge answers such text with no audio at all — which used to fail the whole field.
+        It carries no sound, so it is skipped rather than sent.
+        """
+        return any(char.isalnum() for char in segment)
 
     def _speak(self, text: str) -> WavClip:
         """Synthesize one fragment and decode it to PCM."""

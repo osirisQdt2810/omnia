@@ -18,18 +18,21 @@ the endpoint — that is the only maintenance cost of shipping it pure-Python.
 from __future__ import annotations
 
 import json
+import ssl
 import time
 import uuid
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from xml.sax.saxutils import escape
 
+from omnia.core.network.http import RetryPolicy
 from omnia.core.network.limiter import PROVIDER_LIMITER
 from omnia.core.network.websocket import (
     OPCODE_BINARY,
     OPCODE_CLOSE,
     OPCODE_TEXT,
     WebSocketClient,
+    WebSocketClosedError,
     WebSocketError,
 )
 from omnia.core.providers.errors import ProviderError
@@ -165,8 +168,18 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
     # whitespace into requests whose MP3 outputs concatenate cleanly.
     _MAX_CHUNK_BYTES = 3000
 
-    def __init__(self, timeout: float = 30.0) -> None:
+    def __init__(
+        self, timeout: float = 30.0, retry: Optional[RetryPolicy] = None
+    ) -> None:
+        """Initialise the transport.
+
+        Args:
+            timeout: Socket timeout (seconds) for one Edge session.
+            retry: Backoff for transient transport failures (inject one with a no-op
+                ``sleep`` in tests). Defaults to three attempts, ~0.5 s then ~1 s apart.
+        """
         self._timeout = timeout
+        self._retry = retry or RetryPolicy()
 
     # --- public transport ---------------------------------------------------------------
     def synthesize(self, text: str, voice: str, rate: str = "+0%") -> bytes:
@@ -176,7 +189,7 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
         audio = bytearray()
         try:
             for chunk in self._split_on_whitespace(cleaned):
-                audio += self._synthesize_chunk(chunk, voice, rate)
+                audio += self._synthesize_chunk_with_retry(chunk, voice, rate)
         except WebSocketError as exc:
             raise ProviderError(
                 f"edge_tts synthesis failed (voice={voice}): {exc}"
@@ -188,6 +201,35 @@ class EdgeProtocolSynthesizer(EdgeSynthesizer):
         if not audio:
             raise ProviderError(f"edge_tts returned no audio (voice={voice})")
         return bytes(audio)
+
+    # --- retry ---------------------------------------------------------------------------
+    def _synthesize_chunk_with_retry(self, text: str, voice: str, rate: str) -> bytes:
+        """One chunk, retried on a transient transport failure (bounded by the policy).
+
+        Retried per chunk, and a chunk's audio is only kept once its session completes, so a
+        retry never appends audio twice. The permit is released while backing off.
+        """
+        attempt = 0
+        while True:
+            try:
+                return self._synthesize_chunk(text, voice, rate)
+            except (WebSocketError, OSError) as exc:
+                if attempt + 1 >= self._retry.max_attempts or not self._transient(exc):
+                    raise
+                self._retry.sleep(self._retry.delay_for(attempt))
+                attempt += 1
+
+    def _transient(self, exc: BaseException) -> bool:
+        """Whether ``exc`` is worth another try: a timeout, a dropped connection, a 429/5xx.
+
+        A refused upgrade (403) means the ``Sec-MS-GEC`` token is wrong — retrying would only
+        hide that — and a certificate failure will not fix itself either.
+        """
+        if isinstance(exc, WebSocketClosedError):
+            return True
+        if isinstance(exc, WebSocketError):
+            return exc.status in self._retry.retriable_statuses
+        return not isinstance(exc, ssl.SSLCertVerificationError)
 
     # --- protocol details ---------------------------------------------------------------
     def _synthesize_chunk(self, text: str, voice: str, rate: str = "+0%") -> bytes:
