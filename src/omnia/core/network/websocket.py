@@ -19,6 +19,7 @@ import os
 import socket
 import ssl
 import struct
+from typing import Optional
 from urllib.parse import urlsplit
 
 # Frame opcodes (RFC 6455 §5.2) callers match against the first element of recv_message().
@@ -34,7 +35,19 @@ _MAX_HANDSHAKE_BYTES = 1 << 16
 
 
 class WebSocketError(Exception):
-    """A handshake, transport, or framing failure."""
+    """A handshake, transport, or framing failure.
+
+    ``status`` is the HTTP status the server answered the upgrade with, when that is what
+    failed (e.g. ``403`` for a refused token, ``503`` for an overloaded service), else None.
+    """
+
+    def __init__(self, message: str, status: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class WebSocketClosedError(WebSocketError):
+    """The server dropped the connection before the handshake or a frame completed."""
 
 
 class WebSocketClient:
@@ -78,7 +91,10 @@ class WebSocketClient:
         response = self._read_until(b"\r\n\r\n")
         status_line = response.split(b"\r\n", 1)[0].decode("latin-1", "replace")
         if "101" not in status_line:
-            raise WebSocketError(f"WebSocket upgrade failed: {status_line!r}")
+            raise WebSocketError(
+                f"WebSocket upgrade failed: {status_line!r}",
+                status=self._status_code(status_line),
+            )
         expected = base64.b64encode(
             hashlib.sha1((key + _WS_GUID).encode("ascii")).digest()
         ).decode("ascii")
@@ -90,11 +106,19 @@ class WebSocketClient:
         while marker not in buf:
             chunk = self._sock.recv(4096)
             if not chunk:
-                raise WebSocketError("connection closed during handshake")
+                raise WebSocketClosedError("connection closed during handshake")
             buf += chunk
             if len(buf) > _MAX_HANDSHAKE_BYTES:
                 raise WebSocketError("handshake response too large")
         return buf
+
+    @staticmethod
+    def _status_code(status_line: str) -> Optional[int]:
+        """The numeric code of an ``HTTP/1.1 503 Service Unavailable`` line, or None."""
+        parts = status_line.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            return int(parts[1])
+        return None
 
     # --- frame I/O ----------------------------------------------------------------------
     def _recv_exactly(self, count: int) -> bytes:
@@ -102,7 +126,7 @@ class WebSocketClient:
         while len(buf) < count:
             chunk = self._sock.recv(count - len(buf))
             if not chunk:
-                raise WebSocketError("connection closed mid-frame")
+                raise WebSocketClosedError("connection closed mid-frame")
             buf += chunk
         return buf
 
