@@ -21,6 +21,45 @@ Format for each entry:
 
 ---
 
+## 2026-11-04 — Cultivation: English (CEFR) and DSA (Elo) levels named as realms
+
+**What:** New `cultivation` plugin (group "Progress", Tools → Cultivation). English: FSRS
+retrievability per card × card-type weight μ, best card per word, summed into word-equivalents,
+counting only cards reviewed since the start day; levels at Milton's CEFR vocabulary bands
+(A1 < 1,500 … C2 ≥ 4,500) then 8k/14k/17k. DSA: an Elo rating replayed from dsa-journey's
+attempt feed since the start day (zerotrac ratings, s by status/time/wa, FIDE K rules, post-break
+boost, re-solve weights, debts, neglect decay to a floor); levels at the Codeforces tiers. Each of
+the nine levels is also a cultivation realm name. The level is a pure function of today's score
+(no trials, no hysteresis). Today's gain (against a start-of-day card snapshot), lifetime, streak
+with a weekly freeze, 30-day retention health, a history chart; a "How it counts" tab with
+"Start over from today". Nothing to configure: every deck counts, word field and card type are
+detected.
+
+**Why:** A readable, daily measure of two learning streams on scales people already know, that
+reflects ability (difficulty, quality, retention) rather than volume. The first design (realms
+gated by trials, history seeded as provisional) was dropped after review: a pure rating that moves
+both ways, counted from a start day, is simpler and was what the user wanted to look at.
+
+**Files:** `src/omnia/plugins/cultivation/` (pure: `realms` = ladders, `memory`, `vocab`, `dsa`,
+`streak`; `store` = own SQLite in `user_files/cultivation/state.db`; `reader` + `service` =
+daily run, collection passed in; `__init__` = start day, menu, hooks, window),
+`src/omnia/gui/cultivation/`, `config/{omnia,features}.example.toml`,
+`gui/settings_categories.py` ("Progress"), `docs/guidance/cultivation/`, `docs/{guide,ankiweb}.md`,
+`tests/plugins/cultivation/`. The feed comes from dsa-journey's `scripts/cultivation_feed.py`,
+run as the last step of its `/commit-progress`.
+
+**How to verify:** `pytest tests/plugins/cultivation -q` (R(S,S)=0.9, hand-computed score, CEFR
+and tier boundaries, start-day filtering for both domains, Elo K/re-solve/decay/debts, an
+end-to-end run on a fake collection asserting every statement is a SELECT). In Anki: enable
+Cultivation, open Tools → Cultivation.
+
+**Notes / rollback:** Strictly read-only on the collection. The page must wait for `pycmd`
+before its first request (Anki injects the bridge after page scripts run). CEFR here is the
+vocabulary dimension only. Not done: a vocabulary-size-test baseline and Codeforces ratings.
+Rollback = disable the plugin; delete `user_files/cultivation/` to forget its history.
+
+---
+
 ## 2026-10-19 — Phrase Check: configurable target language, translate instead of fail
 
 **What:** `PhraseCheckSettings.target_language` (free text, default English, first language
