@@ -2,8 +2,9 @@
 
 Anki marks a typed answer with ``.typeGood`` / ``.typeBad`` / ``.typeMissed`` spans; the
 accuracy ratio is correct characters over total. The ratio maps to an ease by falling into one
-of up to three bands: below the pass cutoff (including an empty / no-markup answer), between
-the two cutoffs, and at or above the optional second one. Each band has its own configured
+of up to four bands: under the optional Again cutoff, below the pass cutoff (including an
+empty / no-markup answer), between the pass cutoff and the optional high one, and at or above
+that. Each band has its own configured
 ease — except ``"no"``, which stages nothing so the user's own press stands while the result is
 still logged.
 
@@ -59,6 +60,7 @@ def decide_ease(
     fail_ease: str = "hard",
     high_threshold: float = 0.0,
     high_ease: str = "easy",
+    again_threshold: float = 0.0,
 ) -> Optional[int]:
     """Map an accuracy ``ratio`` to an Anki ease (or None to stage nothing).
 
@@ -88,12 +90,17 @@ def decide_ease(
             cutoff. Both settings are synced, so an impossible pair can arrive from another
             device; degrading to the old behaviour beats refusing to grade.
         high_ease: ``"good"``, ``"easy"`` or ``"no"`` — the ease for the top band.
+        again_threshold: optional cutoff inside the fail band: a ratio under it is graded
+            Again whatever ``fail_ease`` says. ``0`` means off; a value above ``threshold`` is
+            read as ``threshold`` (the whole fail band is then Again).
 
     Returns:
         The ease to stage, or ``None`` to stage nothing (the user's own press stands). An
         unrecognised name falls back to the default for its band rather than staging nothing:
         a grader that quietly stops grading is harder to notice than one that grades plainly.
     """
+    if ratio < min(again_threshold, threshold):
+        return EASE_AGAIN
     if ratio < threshold:
         return FAIL_EASES.get(fail_ease, EASE_HARD)
     if high_threshold > threshold and ratio >= high_threshold:

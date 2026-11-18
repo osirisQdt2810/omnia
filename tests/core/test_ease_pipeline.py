@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from omnia.core.reviewer.ease_pipeline import EasePipeline, _Entry, fold_ease
+from omnia.core.reviewer.ease_pipeline import (
+    EasePipeline,
+    MeasuredEase,
+    _Entry,
+    fold_ease,
+)
 
 
 class TestFoldEase:
@@ -39,6 +44,62 @@ class TestFoldEase:
         # must clamp to the card's actual button count so it doesn't mis-schedule.
         entries = [_Entry(100, "x", lambda c, e: 4)]
         assert fold_ease(object(), 1, entries, ease_max=3) == 3
+
+
+class TestMeasuredGrades:
+    """A grade read off the answer is not overridden by a rule of thumb."""
+
+    def _guard(self, ease=2):
+        return _Entry(200, "guard", lambda c, e: ease, yields_to_measured=True)
+
+    def test_a_rule_of_thumb_leaves_a_measured_grade_alone(self):
+        entries = sorted(
+            [_Entry(100, "typed", lambda c, e: MeasuredEase(4)), self._guard()]
+        )
+        assert fold_ease(object(), 3, entries) == 4
+
+    def test_it_still_applies_to_a_grade_nothing_measured(self):
+        # A button press, or Auto Flip's Good on a card with no typing box.
+        entries = sorted([_Entry(100, "typed", lambda c, e: None), self._guard()])
+        assert fold_ease(object(), 3, entries) == 2
+
+    def test_a_plain_int_is_not_a_measurement(self):
+        entries = sorted([_Entry(100, "typed", lambda c, e: 4), self._guard()])
+        assert fold_ease(object(), 3, entries) == 2
+
+    def test_a_transformer_that_does_not_yield_still_runs(self):
+        entries = sorted(
+            [
+                _Entry(100, "typed", lambda c, e: MeasuredEase(4)),
+                _Entry(200, "other", lambda c, e: 3),
+            ]
+        )
+        assert fold_ease(object(), 1, entries) == 3
+
+    def test_the_measurement_holds_for_every_later_rule(self):
+        # Overridden by a non-yielding transformer, the answer was still measured.
+        entries = sorted(
+            [
+                _Entry(100, "typed", lambda c, e: MeasuredEase(4)),
+                _Entry(150, "other", lambda c, e: 3),
+                self._guard(),
+            ]
+        )
+        assert fold_ease(object(), 1, entries) == 3
+
+    def test_a_measured_grade_is_still_clamped(self):
+        entries = [_Entry(100, "typed", lambda c, e: MeasuredEase(4))]
+        assert fold_ease(object(), 1, entries, ease_max=3) == 3
+
+    def test_registration_marks_the_rule_and_defaults_to_not_yielding(self):
+        p = EasePipeline()
+        p.add_transformer("typed", lambda c, e: MeasuredEase(4), priority=100)
+        p.add_transformer(
+            "guard", lambda c, e: 2, priority=200, yields_to_measured=True
+        )
+        assert p.compute_ease(object(), 3) == 4
+        p.add_transformer("guard", lambda c, e: 2, priority=200)
+        assert p.compute_ease(object(), 3) == 2
 
 
 class TestEasePipeline:

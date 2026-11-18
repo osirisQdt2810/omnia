@@ -21,6 +21,32 @@ Format for each entry:
 
 ---
 
+## 2026-11-18 — Automatic grading that FSRS can trust: measured grades, an Again cutoff
+
+**What:** The ease pipeline tells a measured grade from a rule of thumb (ADR-023):
+typed_accuracy returns a `MeasuredEase`, and overdue_guard, registered with
+`yields_to_measured=True`, no longer overrides it — it caps only grades nothing measured (a
+button press, Auto Flip's Good on an untyped card). Typing Accuracy gains an optional
+`again_threshold`: below it an answer is graded Again (forgotten), so a fully automatic setup can
+record a forgotten card while near misses keep the fail ease (Hard). Overdue Guard's
+`force_again_after_days` help now says what Again means to FSRS.
+
+**Why:** Grading is automatic (Auto Flip + Typing Accuracy + Overdue Guard), and FSRS learns from
+the grades it is given. A failed typed answer was recorded as Hard (remembered), and a perfect one
+on an overdue card was capped to Hard or forced to Again — false history for the scheduler.
+
+**Files:** `src/omnia/core/reviewer/ease_pipeline.py`, `src/omnia/plugins/typed_accuracy/{__init__,config,logic}.py`,
+`src/omnia/plugins/overdue_guard/{__init__,config}.py`, `docs/guide.md`,
+`config/features.example.toml`, tests in `tests/core/test_ease_pipeline.py` and
+`tests/plugins/typed_accuracy/test_typed_accuracy.py`.
+
+**How to verify:** `pytest tests/core/test_ease_pipeline.py tests/plugins/typed_accuracy
+tests/plugins/overdue_guard -q`. In Anki: both plugins on, `again_threshold = 0.4`; type a
+perfect answer on an overdue card (Easy stands), a mostly wrong one (Again), a near miss (Hard).
+
+**Notes / rollback:** `again_threshold` is pruned from the synced blob until set (ADR-010), so
+older builds see nothing new. Rollback = revert; no stored data changes shape.
+
 ## 2026-11-13 — Edge TTS: v2 DRM token and transient-failure retry; cloze audio skips punctuation
 
 **What:** Edge TTS sends the v2 `Sec-MS-GEC` token (`<16 hex>-<64 hex>`, version `2-<chromium>`)

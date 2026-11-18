@@ -2329,3 +2329,56 @@ endpoint without one send no model at all.
   it, and persisted values name it (ADR-014).
 - **Migrate inside the `ConfigRepository` constructor.** Rejected: building a repository would
   then write files as a side effect, in every test and tool that builds one, not just in Anki.
+
+---
+
+## ADR-023: A measured grade outranks a rule of thumb in the ease pipeline
+
+**Date**: 2026-11-18
+**Status**: Accepted — extends ADR-003
+
+### Context
+ADR-003 folds the requested ease through every transformer in priority order, and each may
+override the last. typed_accuracy (100) reads the grade off how much of the typed answer was
+right; overdue_guard (200) then capped any overdue card to Hard, or forced Again past
+`force_again_after_days`. So a perfect typed answer on a late card was recorded as Hard, and
+with the escalation as a lapse.
+
+With FSRS that is not a harmless nudge. FSRS learns from the grades it is given: Hard means
+"recalled, with difficulty", Again means "forgotten", and a successful recall at low
+retrievability is exactly what should raise stability most — FSRS already accounts for
+lateness. A rule overriding a measurement writes false history that shapes the card's memory
+state and the optimiser's parameters. The user grades almost everything automatically (Auto
+Flip, Typing Accuracy), so "press the right button yourself" is not the remedy.
+
+### Decision
+Transformers come in two kinds. One that measured this answer's recall returns a
+`MeasuredEase` (an `int` subclass, so nothing else needs to know). One that applies a rule of
+thumb registers with `add_transformer(..., yields_to_measured=True)` and is skipped for the rest
+of the fold once a measured grade exists. typed_accuracy returns `MeasuredEase`; overdue_guard
+yields. Unmeasured grades — a button press, Auto Flip's Good on a card with no typing box — are
+capped as before.
+
+### Rationale
+The distinction is about evidence, not priority: reordering cannot express "cap a guess, keep a
+measurement", and having overdue_guard ask whether typed_accuracy ran would couple two plugins
+`core` must keep apart. The marker travels with the value, so the seam stays unaware of which
+plugins exist, and the `int` subclass keeps every existing transformer and caller unchanged.
+
+### Consequences
+- (+) A typed grade reaches FSRS as measured; a lateness guess no longer overwrites it.
+- (+) Default `yields_to_measured=False`: every transformer registered before this behaves as
+  before.
+- (−) Behaviour change for anyone running both plugins: overdue typed cards are no longer
+  capped. A user who wants that cap back has no switch (none was asked for).
+- (−) "Measured" is sticky for the fold: a later non-yielding transformer may change the ease,
+  and yielding rules after it still step aside.
+
+### Alternatives considered
+- **Swap priorities (overdue_guard first)**: rejected — typed_accuracy would replace the cap
+  outright, but only when it staged a grade; the order already does that, and the cap still had
+  to know not to undo a measurement.
+- **overdue_guard checks the template for `{{type:}}`**: rejected — a typing box with Typing
+  Accuracy off measures nothing, and the guard would skip cards it should cap.
+- **Disable Overdue Guard under FSRS**: rejected — it still has a job for unmeasured grades.
+

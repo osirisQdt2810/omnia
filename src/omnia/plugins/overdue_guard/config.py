@@ -55,6 +55,8 @@ class OverdueGuardSettings(PersistedModel):
             "than this many days out, press Again instead.\n"
             "• A long-forgotten card fully resets into relearning instead of keeping a "
             "multi-day interval.\n"
-            "• 0 = never escalate (always cap to Hard, never force Again)."
+            "• 0 = never escalate (always cap to Hard, never force Again).\n"
+            "• With FSRS, Again records the card as forgotten; nothing here measured that, "
+            "so 0 keeps a guess from wiping the card's memory state."
         ),
     )

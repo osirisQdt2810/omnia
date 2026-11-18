@@ -700,3 +700,129 @@ class TestTheSecondCutoffReachesTheGrader:
         )
 
         assert graded == EASE_GOOD
+
+
+class TestTheAgainCutoff:
+    """A mostly wrong answer is graded Again (forgotten); a near miss keeps the fail ease.
+
+    With FSRS, Hard means "recalled, with difficulty". Grading every fail Hard records a
+    forgotten card as remembered; grading every fail Again fails each typo.
+    """
+
+    def _ease(self, ratio, **kw):
+        opts = dict(threshold=0.7, pass_ease="good", fail_ease="hard")
+        opts.update(kw)
+        return decide_ease(
+            ratio,
+            opts["threshold"],
+            opts["pass_ease"],
+            opts["fail_ease"],
+            opts.get("high_threshold", 0.0),
+            opts.get("high_ease", "easy"),
+            opts.get("again_threshold", 0.0),
+        )
+
+    def test_four_bands(self):
+        bands = dict(high_threshold=0.95, again_threshold=0.4)
+        assert self._ease(0.2, **bands) == EASE_AGAIN
+        assert self._ease(0.4, **bands) == 2  # the cutoff itself is a near miss
+        assert self._ease(0.69, **bands) == 2
+        assert self._ease(0.7, **bands) == EASE_GOOD
+        assert self._ease(0.97, **bands) == EASE_EASY
+
+    def test_zero_is_off(self):
+        for ratio in (0.0, 0.2, 0.69):
+            assert self._ease(ratio) == 2
+
+    def test_it_applies_whatever_the_fail_ease(self):
+        assert self._ease(0.1, fail_ease="no", again_threshold=0.4) == EASE_AGAIN
+        assert self._ease(0.5, fail_ease="no", again_threshold=0.4) is None
+
+    def test_above_the_pass_mark_it_makes_the_whole_fail_band_again(self):
+        # A synced pair can be inconsistent; a passing answer must never become Again.
+        assert self._ease(0.69, again_threshold=0.9) == EASE_AGAIN
+        assert self._ease(0.8, again_threshold=0.9) == EASE_GOOD
+
+    def test_it_is_not_written_until_it_is_used(self):
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        assert "again_threshold" not in TypedAccuracySettings().dict()
+        assert (
+            TypedAccuracySettings(again_threshold=0.4).dict()["again_threshold"] == 0.4
+        )
+
+    def test_it_reaches_the_grader(self, fake_mw):
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        for ratio, expected in ((0.2, EASE_AGAIN), (0.5, 2)):
+            ctx = _context(
+                TypedAccuracySettings(
+                    threshold=0.7, fail_ease="hard", again_threshold=0.4
+                )
+            )
+            TypedAccuracyPlugin().on_enable(ctx)
+            ctx.web._router.dispatch(
+                build_message(
+                    "typed_accuracy",
+                    "rated",
+                    {"ratio": ratio, "hasGood": True, "hasBad": True, "hasMiss": False},
+                ),
+                None,
+            )
+            assert ctx.ease.compute_ease(fake_mw.card, 3) == expected, ratio
+
+
+class TestOverdueGuardLeavesATypedGradeAlone:
+    """Both plugins on one pipeline, as in Anki: the typed grade measured the recall."""
+
+    def _both(self, fake_mw, monkeypatch):
+        from omnia.core import anki_compat
+        from omnia.plugins.overdue_guard import OverdueGuardPlugin
+        from omnia.plugins.overdue_guard.config import OverdueGuardSettings
+        from omnia.plugins.typed_accuracy.config import TypedAccuracySettings
+
+        # A 10-day card reviewed 30 days late: overdue by any setting.
+        day_ms = 86_400_000
+        monkeypatch.setattr(anki_compat, "card_last_review_ms", lambda card: 0)
+        monkeypatch.setattr(
+            anki_compat, "next_interval_seconds", lambda card, e: 86_400
+        )
+        monkeypatch.setattr("time.time", lambda: 40 * day_ms / 1000)
+        fake_mw.card.ivl = 10
+
+        ctx = _context(
+            TypedAccuracySettings(
+                threshold=0.7,
+                high_threshold=0.95,
+                high_ease="easy",
+                again_threshold=0.4,
+            )
+        )
+        TypedAccuracyPlugin().on_enable(ctx)
+        guard = types.SimpleNamespace(
+            settings=OverdueGuardSettings(force_again_after_days=0), ease=ctx.ease
+        )
+        OverdueGuardPlugin().on_enable(guard)
+        return ctx
+
+    def _rate(self, ctx, ratio):
+        ctx.web._router.dispatch(
+            build_message(
+                "typed_accuracy",
+                "rated",
+                {"ratio": ratio, "hasGood": True, "hasBad": False, "hasMiss": False},
+            ),
+            None,
+        )
+
+    def test_a_perfect_answer_on_an_overdue_card_stays_easy(self, fake_mw, monkeypatch):
+        ctx = self._both(fake_mw, monkeypatch)
+        self._rate(ctx, 1.0)
+        assert (
+            ctx.ease.compute_ease(fake_mw.card, 3, apply=False) == EASE_EASY
+        )  # the label
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == EASE_EASY
+
+    def test_an_overdue_card_nobody_typed_is_still_capped(self, fake_mw, monkeypatch):
+        ctx = self._both(fake_mw, monkeypatch)
+        assert ctx.ease.compute_ease(fake_mw.card, 3) == 2

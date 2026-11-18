@@ -10,7 +10,9 @@ show_timer = true              # show a small countdown in the reviewer
 
 [typed_accuracy]
 threshold = 0.7                # accuracy ratio (0-1) at/above which the answer is a "pass"
-pass_ease = "good"             # auto-answer on a pass: "good", "easy", or "no" (a fail always uses Hard)
+pass_ease = "good"             # auto-answer on a pass: "good", "easy", or "no"
+fail_ease = "hard"             # on a fail: "again", "hard", or "no"
+again_threshold = 0.0          # below this, Again whatever fail_ease says (0 = off; e.g. 0.4)
 show_stats = true              # show the interactive accuracy panel on the Statistics screen
 
 [overdue_guard]
