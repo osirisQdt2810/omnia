@@ -221,7 +221,8 @@ for listening decks.
 
 | Option | Meaning |
 |---|---|
-| `delay_question_seconds` | Seconds on the question before it flips |
+| `mode` | `auto` flips the question and grades the answer. `semi_auto` leaves the question to you: flip it yourself (Enter or Space) and the answer then grades on its own |
+| `delay_question_seconds` | Seconds on the question before it flips (not used in `semi_auto`) |
 | `delay_answer_seconds` | Seconds on the answer before it grades |
 | `wait_for_audio` | Do not advance until the card's audio has finished |
 | `show_timer` | Draw a countdown on the card |
@@ -232,6 +233,10 @@ the card advances on its own.
 
 **Watch for:** with `wait_for_audio` off and a long audio field, the card flips mid-sentence.
 That is the setting doing what it says, not a bug.
+
+**Semi-auto:** set `mode` to `semi_auto` to take your time on the question but not on the answer.
+The question waits for you; once you flip it, the answer counts down `delay_answer_seconds` and
+grades Good, as in `auto` mode. Press Enter during that countdown to stop it and grade yourself.
 
 ### 4.2 Display Interval
 

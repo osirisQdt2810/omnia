@@ -18,6 +18,8 @@ typed_accuracy / overdue_guard). On top of the plain delay this feature adds:
 * **Ctrl+J runtime toggle**: a checkable Tools-menu action suspends/resumes auto-flip without
   disabling the plugin (a runtime ``_active`` flag, distinct from plugin-enabled). It starts
   OFF every session — a fresh Anki launch never auto-flips until you press Ctrl+J.
+* **Semi-auto mode** (``mode = "semi_auto"``): the question side is never flipped for you;
+  once you flip it yourself, the answer side is graded after the usual answer delay.
 * **Two-stage Enter cancel**: the first Enter while a timer is pending cancels it (the
   countdown ring turns "cancelled") without flipping/grading; a second Enter performs the
   real action.
@@ -242,7 +244,8 @@ class AutoFlipPlugin(FeaturePlugin):
 
     # --- arming helpers -------------------------------------------------------------
     def _arm_question(self, card: Any) -> None:
-        if not self._active:
+        if not self._active or not self._flips_question():
+            # Semi-auto leaves the question to the user: their own flip arms the answer side.
             self._cancel()
             return
         enabled, q_delay, _a_delay = self._delays_for(card)
@@ -271,6 +274,10 @@ class AutoFlipPlugin(FeaturePlugin):
         extra_ms = self._mpv_extra_ms(card, "answer")
         self._pending_side = "answer"
         self._schedule(a_delay + extra_ms, self._grade)
+
+    def _flips_question(self) -> bool:
+        settings = self._ctx.settings if self._ctx is not None else None
+        return settings is not None and bool(settings.flips_question)
 
     def _delays_for(self, card: Any) -> tuple[bool, int, int]:
         """Resolve (enabled, q_delay_ms, a_delay_ms) for ``card``'s home deck."""
