@@ -2,6 +2,7 @@
 # omnia.yaml). Validated by each plugin's Pydantic model in plugins/<plugin>/config.py.
 
 [auto_flip]
+mode = "auto"                  # "auto" flips both sides; "semi_auto": you flip the question, the answer advances by itself
 delay_question_seconds = 3.0   # seconds to wait before flipping question -> answer
 delay_answer_seconds = 3.0     # seconds to wait before auto-grading the answer
 wait_for_audio = true          # start the delay only after the card's audio finishes

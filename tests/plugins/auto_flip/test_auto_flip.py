@@ -1014,3 +1014,99 @@ class TestHtml5MediaWait:
         )  # armed: the stale busy flag was reset by the new side
 
         plugin.on_disable(ctx)
+
+
+class TestSemiAutoMode:
+    """You flip the question yourself; only the answer side advances on its own."""
+
+    def _enabled(self, monkeypatch, schedule, calls, **kw):
+        mw = _fake_mw(monkeypatch, schedule, calls, card=object())
+        _record_reviewer_eval(monkeypatch)
+        ctx = types.SimpleNamespace(
+            settings=_settings(
+                mode="semi_auto", delay_question_seconds=3, delay_answer_seconds=2, **kw
+            )
+        )
+        plugin = AutoFlipPlugin()
+        plugin.on_enable(ctx)
+        return mw, ctx, plugin
+
+    def test_the_question_waits_and_the_answer_is_graded(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        mw, ctx, plugin = self._enabled(
+            monkeypatch, schedule, calls, wait_for_audio=False
+        )
+        plugin._on_toggle(True)
+
+        gui_hooks.reviewer_did_show_question.fire(object())
+        assert schedule == [] and "show_answer" not in calls
+
+        mw.reviewer.state = "answer"  # the user flipped it
+        gui_hooks.reviewer_did_show_answer.fire(object())
+        assert schedule[-1][0] == 2000
+        schedule[-1][1]()
+        assert ("answer", 3) in calls
+        plugin.on_disable(ctx)
+
+    def test_the_question_waits_after_its_audio_too(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        mw, ctx, plugin = self._enabled(
+            monkeypatch, schedule, calls, wait_for_audio=True
+        )
+        plugin._active = True
+
+        gui_hooks.reviewer_will_play_question_sounds.fire(object(), ["q.mp3"])
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert schedule == []
+
+        mw.reviewer.state = "answer"
+        gui_hooks.reviewer_will_play_answer_sounds.fire(object(), ["a.mp3"])
+        gui_hooks.av_player_did_end_playing.fire(object())
+        assert [ms for ms, _cb, _t in schedule] == [2000]
+        plugin.on_disable(ctx)
+
+    def test_turning_it_on_over_a_question_arms_nothing(self, gui_hooks, monkeypatch):
+        schedule: list = []
+        calls: list = []
+        _mw, ctx, plugin = self._enabled(
+            monkeypatch, schedule, calls, wait_for_audio=False
+        )
+        plugin._on_toggle(True)  # the reviewer is on the question side
+        assert schedule == []
+        plugin.on_disable(ctx)
+
+    def test_enter_on_the_question_flips_at_once(self, gui_hooks, monkeypatch):
+        """No timer is pending, so there is nothing for the two-stage cancel to eat."""
+        schedule: list = []
+        calls: list = []
+        _mw, ctx, plugin = self._enabled(
+            monkeypatch, schedule, calls, wait_for_audio=False
+        )
+        plugin._on_toggle(True)
+        gui_hooks.reviewer_did_show_question.fire(object())
+        plugin._on_enter_key(None, lambda: calls.append("enter"))
+        assert calls[-1] == "enter"
+        plugin.on_disable(ctx)
+
+
+class TestModeSetting:
+    def test_auto_is_the_default_and_flips_the_question(self):
+        assert AutoFlipSettings().mode == "auto"
+        assert AutoFlipSettings().flips_question
+
+    def test_semi_auto_leaves_the_question_alone(self):
+        assert not AutoFlipSettings(mode="semi_auto").flips_question
+
+    def test_a_mode_this_build_does_not_know_flips_both_sides(self):
+        """A value from a newer build is kept, not refused (ADR-010), and acts as auto."""
+        settings = AutoFlipSettings(mode="something_newer")
+        assert settings.mode == "something_newer" and settings.flips_question
+
+    def test_the_settings_form_offers_both_modes(self):
+        from omnia.core.config.schema import schema_from_model
+
+        fields = {f.key: f for f in schema_from_model(AutoFlipSettings)}
+        assert fields["mode"].kind == "choice"
+        assert fields["mode"].choices == ("auto", "semi_auto")

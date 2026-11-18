@@ -9,6 +9,8 @@ skipped by the schema deriver.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from pydantic import Field
 
 from omnia.core.config.base import PersistedModel
@@ -35,6 +37,22 @@ class AutoFlipDeckOverride(PersistedModel):
 class AutoFlipSettings(PersistedModel):
     """Settings for the auto-flip feature."""
 
+    AUTO: ClassVar[str] = "auto"
+    SEMI_AUTO: ClassVar[str] = "semi_auto"
+
+    # A plain ``str`` with ``choices`` rather than a ``Literal`` (ADR-010): a value saved by a
+    # newer build must not make an older one refuse the whole section. Anything unknown flips
+    # both sides, as before this setting existed.
+    mode: str = Field(
+        AUTO,
+        choices=(AUTO, SEMI_AUTO),
+        description=(
+            "Which sides Omnia advances for you.\n"
+            "• auto: the question flips to the answer, then the answer is graded Good.\n"
+            "• semi_auto: you flip the question yourself (Enter or Space); the answer is then\n"
+            "  graded Good after the answer delay. The question delay is not used."
+        ),
+    )
     delay_question_seconds: float = Field(
         3.0,
         ge=0,
@@ -42,7 +60,8 @@ class AutoFlipSettings(PersistedModel):
         description=(
             "How long the question side stays up before Omnia auto-flips it to the answer.\n"
             "• In seconds (0 = flip as soon as the question renders).\n"
-            "• Per-deck overrides take precedence (deck gear menu → Auto-Flip…)."
+            "• Per-deck overrides take precedence (deck gear menu → Auto-Flip…).\n"
+            "• Not used in semi_auto mode, where you flip the question yourself."
         ),
     )
     delay_answer_seconds: float = Field(
@@ -76,3 +95,8 @@ class AutoFlipSettings(PersistedModel):
     )
     # deck id (as a string) -> override; empty means "use the global delays everywhere".
     per_deck: dict[str, AutoFlipDeckOverride] = Field(default_factory=dict)
+
+    @property
+    def flips_question(self) -> bool:
+        """Whether the question side is flipped for you (every mode but semi-auto)."""
+        return self.mode != self.SEMI_AUTO
