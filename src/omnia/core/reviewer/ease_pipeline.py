@@ -6,6 +6,13 @@ the ease unchanged). When a card is answered, the requested ease is folded throu
 registered transformer in ascending ``priority`` order, so features compose deterministically
 instead of fighting over the monkeypatch.
 
+Transformers come in two kinds. Some *measure* the recall — typed_accuracy reads the grade
+off how much of the typed answer was right — and return a :class:`MeasuredEase`. Others apply
+a rule of thumb — overdue_guard caps a late card because lateness suggests a weaker memory —
+and are registered with ``yields_to_measured=True``: once this answer has a measured grade,
+they are skipped, because evidence of recall beats a guess from the calendar. FSRS learns from
+the grades it is given, so a rule overriding a measurement teaches it something false.
+
 The folding logic (:func:`fold_ease`) is pure and unit-tested; the :class:`EasePipeline`
 class is the thin Anki glue that owns the single patch.
 """
@@ -28,6 +35,15 @@ EASE_MIN = 1
 EASE_MAX = 4
 
 
+class MeasuredEase(int):
+    """An ease read off evidence of this answer's recall, rather than decided by a rule.
+
+    Returned by a transformer instead of a plain ``int`` to mark it as such. It IS an ``int``,
+    so a caller that does not care sees the ease unchanged; :func:`fold_ease` uses the mark to
+    skip the transformers registered with ``yields_to_measured=True``.
+    """
+
+
 def _accepts_apply(fn: EaseTransformer) -> bool:
     """Return True if ``fn`` declares an ``apply`` parameter (opts into preview semantics)."""
     try:
@@ -46,6 +62,8 @@ class _Entry:
     # True when ``fn`` declares an ``apply`` keyword and so opts into preview semantics (peek
     # instead of consume when apply=False). Detected once at registration, not per fold.
     wants_apply: bool = field(default=False, compare=False)
+    # True for a rule of thumb that must not override a measured grade (see MeasuredEase).
+    yields_to_measured: bool = field(default=False, compare=False)
 
 
 def fold_ease(
@@ -66,15 +84,22 @@ def fold_ease(
     ``apply`` distinguishes the real grade (``True``) from a non-destructive preview
     (``False``); it is threaded only to transformers that declare an ``apply`` parameter, so a
     preview never consumes a transformer's staged state.
+
+    Once a transformer returns a :class:`MeasuredEase`, every later entry registered with
+    ``yields_to_measured`` is skipped for this answer, whatever later entries return.
     """
     ease = requested
+    measured = False
     for entry in entries:
+        if measured and entry.yields_to_measured:
+            continue
         if entry.wants_apply:
             result = entry.fn(card, ease, apply=apply)
         else:
             result = entry.fn(card, ease)
         if result is not None:
             ease = max(EASE_MIN, min(ease_max, int(result)))
+            measured = measured or isinstance(result, MeasuredEase)
     return ease
 
 
@@ -88,10 +113,25 @@ class EasePipeline:
 
     # --- registration (used by feature plugins via the context) --------------------
     def add_transformer(
-        self, plugin_id: str, fn: EaseTransformer, priority: int = 100
+        self,
+        plugin_id: str,
+        fn: EaseTransformer,
+        priority: int = 100,
+        *,
+        yields_to_measured: bool = False,
     ) -> None:
-        """Register (or replace) ``plugin_id``'s ease transformer at ``priority``."""
-        self._entries[plugin_id] = _Entry(priority, plugin_id, fn, _accepts_apply(fn))
+        """Register (or replace) ``plugin_id``'s ease transformer at ``priority``.
+
+        Args:
+            plugin_id: The owning plugin; one transformer per plugin.
+            fn: ``(card, ease[, apply=]) -> ease | None``.
+            priority: Lower runs earlier.
+            yields_to_measured: True for a rule of thumb, skipped when an earlier transformer
+                returned a :class:`MeasuredEase` for this answer.
+        """
+        self._entries[plugin_id] = _Entry(
+            priority, plugin_id, fn, _accepts_apply(fn), yields_to_measured
+        )
 
     def remove_transformer(self, plugin_id: str) -> None:
         """Remove ``plugin_id``'s transformer if present (safe if absent)."""

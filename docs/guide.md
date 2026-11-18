@@ -301,7 +301,15 @@ and adds an interactive accuracy panel to the Statistics screen.
 |---|---|
 | `threshold` | Accuracy below this is graded down |
 | `pass_ease` | Which ease a passing answer gets |
+| `fail_ease` | Which ease a failing answer gets |
+| `high_threshold` / `high_ease` | Optional second cutoff for a nearly perfect answer |
+| `again_threshold` | Optional cutoff under the pass mark: below it the answer is graded *Again* (forgotten) |
 | `show_stats` | Add the accuracy panel to Statistics |
+
+**With FSRS:** *Hard* tells FSRS you remembered the card, with difficulty. If every failing answer
+is graded Hard, a card you had forgotten is recorded as remembered. Set `again_threshold`
+(for example `0.4` with a `0.7` pass mark) so a mostly wrong answer is graded *Again* while a near
+miss stays *Hard*.
 
 **Try it:** study a typed card and deliberately mistype one letter. The grade reflects the
 accuracy, not the button. Then open **Statistics** to see the panel.
@@ -324,7 +332,14 @@ have not seen in months cannot jump straight back to a long interval.
 **Try it:** find a badly overdue card and press **Easy**. It is graded down instead.
 
 > Typing Accuracy and Overdue Guard both rewrite the grade. They cooperate rather than fight —
-> both register on one shared pipeline instead of each patching Anki separately.
+> both register on one shared pipeline instead of each patching Anki separately. A grade Typing
+> Accuracy read off your typed answer is left alone: it measured whether you remembered the
+> card, which a count of days late can only guess. Overdue Guard caps the grades nothing
+> measured — your own button press, or Auto Flip's Good on a card without a typing box.
+
+**With FSRS:** FSRS already accounts for how late a review is, and *Again* tells it you forgot
+the card. Set `force_again_after_days` to `0` unless you want an overdue card you may well
+remember recorded as forgotten.
 
 ### 4.6 Note Maintenance
 

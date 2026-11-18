@@ -4,7 +4,8 @@ On the answer side, injected JS measures Anki's typed-answer markup (``.typeGood
 ``.typeBad`` / ``.typeMissed``), polling briefly for late-rendered markup, then ALWAYS reports
 a result — including the empty / no-markup case, which forces Hard. Python maps the accuracy
 ratio to an ease and stages it; when the card is answered, an ease transformer substitutes
-that ease (cooperating with overdue_guard via the shared ease pipeline at priority 100/200).
+that ease as a measured grade, which overdue_guard (a rule of thumb, later in the shared ease
+pipeline) does not override.
 Every outcome is also logged (good/bad/miss/empty) to a SQLite table in the collection, which
 an interactive donut panel on the Statistics screen queries.
 
@@ -32,6 +33,7 @@ from omnia.core import anki_compat
 from omnia.core.logging import get_logger
 from omnia.core.plugin import FeaturePlugin, PluginContext
 from omnia.core.registry import register
+from omnia.core.reviewer.ease_pipeline import MeasuredEase
 from omnia.core.reviewer.web_injector import WebAsset
 from omnia.gui.assets import read_asset
 from omnia.gui.typed_accuracy.stats_injector import StatsInjector
@@ -41,7 +43,7 @@ from omnia.plugins.typed_accuracy.store import SessionTracker, TypedAnswerLog
 
 logger = get_logger()
 
-_PRIORITY = 100  # before overdue_guard (200), which may then cap this grade
+_PRIORITY = 100  # before overdue_guard (200), which steps aside for this measured grade
 
 # display_interval's redraw, asked for by NAME (core.services) once this plugin has staged its
 # ease. The string is repeated here rather than imported: a plugin may not import a sibling —
@@ -108,6 +110,7 @@ class TypedAccuracyPlugin(FeaturePlugin):
         self._fail_ease = "hard"
         self._high_threshold = 0.0
         self._high_ease = "easy"
+        self._again_threshold = 0.0
 
     def on_enable(self, ctx: PluginContext) -> None:
         settings = ctx.settings
@@ -121,6 +124,7 @@ class TypedAccuracyPlugin(FeaturePlugin):
         # while never set, so a settings object built from one carries no such attribute.
         self._high_threshold = float(getattr(settings, "high_threshold", 0.0) or 0.0)
         self._high_ease = getattr(settings, "high_ease", "easy")
+        self._again_threshold = float(getattr(settings, "again_threshold", 0.0) or 0.0)
         # Only build the stats-panel injector when the user wants the donut; leaving it None
         # (and skipping the style hook below) means the panel is never injected.
         self._injector = StatsInjector(_WEB_DIR) if settings.show_stats else None
@@ -164,10 +168,11 @@ class TypedAccuracyPlugin(FeaturePlugin):
         # second answer path finds nothing staged; the pipeline is the only apply point). A
         # non-destructive preview (apply=False, e.g. display_interval's label) only PEEKS, so
         # it can never silently eat the typing grade before the card is actually answered.
+        # The staged ease is a measurement of this answer's recall, so it is returned as one:
+        # rules of thumb later in the pipeline (overdue_guard) leave it alone.
         cid = getattr(card, "id", None)
-        if apply:
-            return self._pending.pop(cid, None)
-        return self._pending.get(cid)
+        ease = self._pending.pop(cid, None) if apply else self._pending.get(cid)
+        return None if ease is None else MeasuredEase(ease)
 
     # --- pycmd handlers (data, context) -> result ----------------------------------
     def _on_rated(self, data: dict[str, Any], _context: Any) -> dict[str, Any]:
@@ -184,6 +189,7 @@ class TypedAccuracyPlugin(FeaturePlugin):
             self._fail_ease,
             self._high_threshold,
             self._high_ease,
+            self._again_threshold,
         )
         if ease is not None:
             self._pending[cid] = ease

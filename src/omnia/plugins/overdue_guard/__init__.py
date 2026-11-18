@@ -11,7 +11,9 @@ from omnia.core.registry import register
 from omnia.plugins.overdue_guard.config import OverdueGuardSettings
 from omnia.plugins.overdue_guard.logic import OverdueRule
 
-# Runs after typed_accuracy (priority 100) so it can cap an over-generous typed grade.
+# Runs after typed_accuracy (priority 100). Lateness only suggests a weaker memory, so this is
+# registered as a rule of thumb: it caps a grade nobody measured (a button press, an auto-flip
+# Good) and leaves a typed grade, which measured the recall, alone.
 _PRIORITY = 200
 _MS_PER_DAY = 86_400_000
 _SECS_PER_DAY = 86_400
@@ -28,8 +30,9 @@ class OverdueGuardPlugin(FeaturePlugin):
     group = "Grading"
     tooltip = (
         "Caps the grade for very overdue cards (forces Hard/Again).\n"
-        "Cooperates with Typing Accuracy: it sets the grade first, then Overdue Guard "
-        "caps it when a card is overdue.\n"
+        "Cooperates with Typing Accuracy: a grade read off your typed answer measured "
+        "the recall, so Overdue Guard leaves it alone. It caps only grades nothing measured "
+        "— your own button press, or Auto Flip's Good on a card without a typing box.\n"
         "Both can be on together — they run in order through the shared ease pipeline, "
         "not against each other.\n"
         "\n"
@@ -56,7 +59,9 @@ class OverdueGuardPlugin(FeaturePlugin):
         def transform(card: Any, ease: int) -> Optional[int]:
             return self._forced_ease(rule, card, ease)
 
-        ctx.ease.add_transformer(self.id, transform, priority=_PRIORITY)
+        ctx.ease.add_transformer(
+            self.id, transform, priority=_PRIORITY, yields_to_measured=True
+        )
 
     def on_disable(self, ctx: PluginContext) -> None:
         ctx.ease.remove_transformer(self.id)

@@ -15,7 +15,7 @@ from omnia.core.config.base import PersistedModel
 
 # Omitted from the serialized form while never set — see TypedAccuracySettings.dict. Listed
 # once so the prune cannot drift from the set it covers.
-_PRUNE_WHILE_UNSET = ("high_threshold", "high_ease")
+_PRUNE_WHILE_UNSET = ("high_threshold", "high_ease", "again_threshold")
 
 
 class TypedAccuracySettings(PersistedModel):
@@ -90,6 +90,24 @@ class TypedAccuracySettings(PersistedModel):
             "same mistake as a misspelt term you are being examined on."
         ),
     )
+    # The low end of the fail band. A fail is graded with ``fail_ease``, and Hard there means
+    # "recalled, with difficulty" to FSRS — right for a typo, wrong for an answer that was
+    # mostly wrong. This cutoff grades those as Again (forgotten), so automatic grading can
+    # record a forgotten card without failing every near miss. Zero means off; a value above
+    # ``threshold`` is read as ``threshold``, which makes the whole fail band Again.
+    again_threshold: float = Field(
+        0.0,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Optional cutoff below the pass mark: under it, the answer is graded Again.\n"
+            "• 0 = off: every fail gets the fail ease.\n"
+            "• 0.4 with a 0.7 pass mark and Hard as the fail ease: under 0.4 is Again "
+            "(forgotten), 0.4–0.7 is Hard (a near miss).\n"
+            "• With FSRS, Hard counts as remembered: this is how a mostly wrong answer is "
+            "recorded as forgotten without failing every typo."
+        ),
+    )
 
     show_stats: bool = Field(
         True,
@@ -101,7 +119,7 @@ class TypedAccuracySettings(PersistedModel):
     )
 
     def dict(self, **kwargs: Any) -> dict[str, Any]:
-        """Serialize, omitting the second-cutoff keys while they have never been set.
+        """Serialize, omitting the optional-cutoff keys while they have never been set.
 
         These settings live in the SYNCED collection blob, so a key written here reaches every
         device the profile touches — including ones on releases that predate the key. Omitting
@@ -117,7 +135,7 @@ class TypedAccuracySettings(PersistedModel):
             **kwargs: Passed through to :meth:`pydantic.BaseModel.dict` unchanged.
 
         Returns:
-            The settings' serialized form, without the never-set second-cutoff keys.
+            The settings' serialized form, without the never-set optional-cutoff keys.
         """
         data: dict[str, Any] = super().dict(**kwargs)
         for key in _PRUNE_WHILE_UNSET:
