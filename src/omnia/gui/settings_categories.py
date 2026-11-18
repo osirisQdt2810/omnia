@@ -84,6 +84,12 @@ CATEGORY_STYLES: dict[str, CategoryStyle] = {
         accent_from="#f59e0b",
         accent_to="#f43f5e",
     ),
+    "Progress": CategoryStyle(
+        icon="M3 17l6-6 4 4 8-8 M14 7h7v7",  # trending up
+        blurb="See how far your learning has come.",
+        accent_from="#0ea5e9",
+        accent_to="#10b981",
+    ),
 }
 
 DEFAULT_CATEGORY_STYLE = CategoryStyle(

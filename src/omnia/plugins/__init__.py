@@ -12,6 +12,7 @@ from __future__ import annotations
 # pyproject per-file-ignore for __init__.py already allows it.
 from omnia.plugins.audio_speed import AudioSpeedPlugin
 from omnia.plugins.auto_flip import AutoFlipPlugin
+from omnia.plugins.cultivation import CultivationPlugin
 from omnia.plugins.display_interval import DisplayIntervalPlugin
 from omnia.plugins.note_maintenance import NoteMaintenancePlugin
 from omnia.plugins.overdue_guard import OverdueGuardPlugin

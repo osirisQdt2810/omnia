@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+{css}
+</style>
+</head>
+<body class="{theme_class}">
+<div class="cv-page">
+  <header class="cv-head">
+    <div>
+      <h1>Cultivation</h1>
+      <p class="cv-sub">Your English (CEFR) and DSA (Elo) level — it rises with practice and falls with neglect.</p>
+    </div>
+    <div class="cv-head-actions">
+      <nav class="cv-tabs" id="cv-tabs">
+        <button class="cv-tab cv-tab-on" data-tab="overview">Overview</button>
+        <button class="cv-tab" data-tab="dsa">DSA</button>
+        <button class="cv-tab" data-tab="setup">How it counts</button>
+      </nav>
+      <button class="cv-btn cv-btn-quiet" id="cv-refresh" title="Recompute both domains">Refresh</button>
+    </div>
+  </header>
+
+  <section class="cv-panel" data-panel="overview">
+    <div class="cv-cards">
+      <article class="cv-card" id="cv-anki"><div class="cv-loading">Reading your collection…</div></article>
+      <article class="cv-card" id="cv-dsa"><div class="cv-loading">Reading the DSA feed…</div></article>
+    </div>
+  </section>
+
+  <section class="cv-panel cv-hidden" data-panel="dsa" id="cv-dsa-detail"></section>
+
+  <section class="cv-panel cv-hidden" data-panel="setup" id="cv-setup">
+    <div class="cv-loading">Loading…</div>
+  </section>
+
+  <div class="cv-toast cv-hidden" id="cv-toast"></div>
+</div>
+<script>
+{js}
+</script>
+</body>
+</html>

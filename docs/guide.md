@@ -75,6 +75,7 @@ returns to the grid.
 | Grading | Typing Accuracy, Overdue Guard |
 | AI | Smart Notes |
 | Editing | Note Maintenance |
+| Progress | Cultivation |
 | General | Word Lookup |
 
 > There is no **Integrations** category here. That word belongs to a tab *inside* Smart Notes
@@ -91,7 +92,7 @@ Each card has two controls: a **toggle switch** and a **Configure…** button.
 
 | Feature | Configure… opens |
 |---|---|
-| Auto Flip, Display Interval, Typing Accuracy, Overdue Guard | A generic options form — changes apply on **OK**, Cancel discards them |
+| Auto Flip, Display Interval, Typing Accuracy, Overdue Guard, Cultivation | A generic options form — changes apply on **OK**, Cancel discards them |
 | Smart Notes, Note Maintenance | A purpose-built panel of their own |
 | Word Lookup | A small form with the loopback **port** and the clipper **token**. What each clipper searches and shows is set per clipper instead, from its own **Lookup…** button in Smart Notes → Integrations (§5) |
 
